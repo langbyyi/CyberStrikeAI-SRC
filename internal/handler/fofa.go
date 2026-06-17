@@ -440,11 +440,18 @@ func (h *FofaHandler) Search(c *gin.Context) {
 		results = append(results, item)
 	}
 
+	// FOFA API 的 size 字段是总匹配数，但无 total 字段（默认 0）。
+	// 前端"共 N 条"读的是 total，所以 total 为 0 时用 size 兜底。
+	total := apiResp.Total
+	if total == 0 {
+		total = apiResp.Size
+	}
+
 	c.JSON(http.StatusOK, fofaSearchResponse{
 		Query:        req.Query,
 		Size:         apiResp.Size,
 		Page:         apiResp.Page,
-		Total:        apiResp.Total,
+		Total:        total,
 		Fields:       fields,
 		ResultsCount: len(results),
 		Results:      results,

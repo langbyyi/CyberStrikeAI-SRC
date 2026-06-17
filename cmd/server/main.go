@@ -41,6 +41,19 @@ func main() {
 		return
 	}
 
+	// 把 config.yaml 的 fofa 配置同步到环境变量，让 MCP 工具（如 tools/fofa_search.yaml）
+	// 通过 os.getenv 也能读到——避免"config.yaml 配了但 MCP 工具仍报未配置"。
+	// 仅当环境变量未设置时才注入（环境变量优先级仍最高，便于运维覆盖）。
+	if v := strings.TrimSpace(cfg.FOFA.APIKey); v != "" && os.Getenv("FOFA_API_KEY") == "" {
+		os.Setenv("FOFA_API_KEY", v)
+	}
+	if v := strings.TrimSpace(cfg.FOFA.Email); v != "" && os.Getenv("FOFA_EMAIL") == "" {
+		os.Setenv("FOFA_EMAIL", v)
+	}
+	if v := strings.TrimSpace(cfg.FOFA.BaseURL); v != "" && os.Getenv("FOFA_BASE_URL") == "" {
+		os.Setenv("FOFA_BASE_URL", v)
+	}
+
 	if *httpsBootstrap {
 		config.ApplyDevHTTPSBootstrap(cfg)
 	}
