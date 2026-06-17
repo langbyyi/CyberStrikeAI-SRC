@@ -1,0 +1,85 @@
+name: "responder"
+command: "python3"
+args:
+  - "-c"
+  - |
+    import shlex
+    import subprocess
+    import sys
+    import time
+
+    interface = sys.argv[1] if len(sys.argv) > 1 else "eth0"
+    analyze = sys.argv[2].lower() == "true" if len(sys.argv) > 2 else False
+    wpad = sys.argv[3].lower() == "true" if len(sys.argv) > 3 else True
+    fingerprint = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else False
+    duration = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else 300
+    extra = sys.argv[6] if len(sys.argv) > 6 else ""
+
+    cmd = ["responder", "-I", interface]
+    if analyze:
+        cmd.append("-A")
+    if wpad:
+        cmd.append("-w")
+    if fingerprint:
+        cmd.append("-f")
+    if extra:
+        cmd.extend(shlex.split(extra))
+
+    proc = subprocess.Popen(cmd)
+    try:
+        if duration > 0:
+            time.sleep(duration)
+            proc.terminate()
+            proc.wait(timeout=10)
+        else:
+            proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        proc.wait(timeout=10)
+enabled: true
+short_description: "LLMNR/NBT-NS/MDNS投毒和凭据收集工具"
+description: |
+  封装 Responder，支持自动在指定持续时间后停止进程，避免占用网络。
+parameters:
+  - name: "interface"
+    type: "string"
+    description: "网络接口（-I）"
+    required: false
+    default: "eth0"
+    position: 0
+    format: "positional"
+  - name: "analyze"
+    type: "bool"
+    description: "仅分析模式（-A）"
+    required: false
+    default: false
+    position: 1
+    format: "positional"
+  - name: "wpad"
+    type: "bool"
+    description: "启用WPAD恶意代理（-w）"
+    required: false
+    default: true
+    position: 2
+    format: "positional"
+  - name: "fingerprint"
+    type: "bool"
+    description: "指纹识别模式（-f）"
+    required: false
+    default: false
+    position: 3
+    format: "positional"
+  - name: "duration"
+    type: "int"
+    description: "运行持续时间（秒，0表示直到手动停止）"
+    required: false
+    default: 300
+    position: 4
+    format: "positional"
+  - name: "additional_args"
+    type: "string"
+    description: "额外的Responder参数（直接追加）"
+    required: false
+    default: ""
+    position: 5
+    format: "positional"

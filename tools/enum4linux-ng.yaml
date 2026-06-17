@@ -1,0 +1,85 @@
+name: "enum4linux-ng"
+command: "enum4linux-ng"
+enabled: true
+short_description: "高级SMB枚举工具（Enum4linux的下一代版本）"
+description: |
+  Enum4linux-ng是Enum4linux的下一代版本，提供更强大的SMB枚举功能。
+
+  **主要功能：**
+  - SMB共享枚举
+  - 用户和组枚举
+  - 策略枚举
+  - 系统信息收集
+
+  **使用场景：**
+  - Windows系统渗透测试
+  - SMB安全评估
+  - 域环境侦察
+  - 安全测试
+parameters:
+  - name: "target"
+    type: "string"
+    description: "目标IP地址"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "username"
+    type: "string"
+    description: "用户名"
+    required: false
+    flag: "-u"
+    format: "flag"
+  - name: "password"
+    type: "string"
+    description: "密码"
+    required: false
+    flag: "-p"
+    format: "flag"
+  - name: "domain"
+    type: "string"
+    description: "域名"
+    required: false
+    flag: "-d"
+    format: "flag"
+  - name: "shares"
+    type: "bool"
+    description: "枚举共享"
+    required: false
+    flag: "-S"
+    format: "flag"
+    default: true
+  - name: "users"
+    type: "bool"
+    description: "枚举用户"
+    required: false
+    flag: "-U"
+    format: "flag"
+    default: true
+  - name: "groups"
+    type: "bool"
+    description: "枚举组"
+    required: false
+    flag: "-G"
+    format: "flag"
+    default: true
+  - name: "policy"
+    type: "bool"
+    description: "枚举策略"
+    required: false
+    flag: "-P"
+    format: "flag"
+    default: true
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的enum4linux-ng参数。用于传递未在参数列表中定义的enum4linux-ng选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

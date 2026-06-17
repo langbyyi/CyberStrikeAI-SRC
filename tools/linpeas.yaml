@@ -1,0 +1,54 @@
+name: "linpeas"
+command: "linpeas.sh"
+enabled: true
+short_description: "Linux 权限提升枚举脚本，自动检测常见提权路径"
+description: |
+  LinPEAS (Linux Privilege Escalation Awesome Script) 是一个自动化权限提升枚举脚本，用于检测 Linux 系统中的常见提权路径。
+
+  **主要功能：**
+  - 系统信息收集
+  - 权限和组检查
+  - 可写文件和目录检测
+  - SUID/SGID 文件查找
+  - 环境变量检查
+  - 定时任务分析
+  - 网络配置检查
+  - 敏感文件查找
+
+  **使用场景：**
+  - 渗透测试中的权限提升
+  - 安全审计
+  - 后渗透测试
+  - CTF 竞赛
+
+  **注意事项：**
+  - 需要目标系统上已下载 linpeas.sh 脚本
+  - 执行时间可能较长
+  - 输出信息量大，建议保存到文件
+parameters:
+  - name: "output"
+    type: "string"
+    description: "输出文件路径（可选）"
+    required: false
+    flag: "-o"
+    format: "flag"
+  - name: "fast"
+    type: "bool"
+    description: "快速模式，跳过耗时检查"
+    required: false
+    flag: "-fast"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的linpeas参数。用于传递未在参数列表中定义的linpeas选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

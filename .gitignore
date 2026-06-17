@@ -1,0 +1,87 @@
+# 二进制
+cyberstrike-ai
+cystrike-ai.exe
+*.exe
+
+# 配置（含 API key，使用 config.yaml.example）
+config.yaml
+config.yaml.local
+config.yaml.backup
+config.yaml.dev
+
+# 运行时数据
+data/
+chat_uploads/
+outputs/
+reports/
+tmp/
+venv/
+node_modules/
+*.log
+
+# 数据库（保险起见，即使意外出现在根目录也不跟踪）
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 升级备份
+.upgrade-backup/
+
+# 会话运行时产物（data/ 已覆盖，显式更安全）
+conversation_artifacts/
+
+# 知识库索引产物（如有）
+knowledge_base/**/*.db
+knowledge_base/**/*.bin
+knowledge_base/**/*.idx
+
+# 凭证 / 会话 / Token 文件（防意外）
+*.session
+*.cookie
+*.token
+.env
+.env.*
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# 测试 / 缓存
+*.test
+*.bak
+*.tmp
+*.old
+*.orig
+*.swp
+__pycache__/
+*.pyc
+
+# 测试 / 调试脚本（项目根目录）
+captcha_*.py
+sqli_*.py
+test_*.py
+xss_test.py
+sqlmap_auto.py
+db_identify.py
+main_login_sqli.py
+jspublic_full.js
+reset-password.js
+register.js
+login_page.html
+cas-login-page.html
+poc_test.*
+vcode_test*.png
+multipart_*.bin
+request_template.txt
+application-*.yml
+application.yml
+
+# 旧目录
+.my-changes/
+reports/
+output/

@@ -1,0 +1,17 @@
+# Python HTTP helpers leveraged by tools like api-fuzzer, dnslog, http-intruder, http-framework-test
+requests>=2.32.3
+httpx>=0.27.0
+charset-normalizer>=3.3.2
+chardet>=5.2.0,<6
+
+# Python exploitation / analysis frameworks referenced by tool recipes
+# angr>=9.2.96
+# pwntools>=4.12.0
+arjun>=2.2.0
+uro>=1.0.2
+
+bloodhound>=1.6.1
+impacket>=0.11.0
+
+# MCP (Model Context Protocol) SDK
+mcp>=1.0.0

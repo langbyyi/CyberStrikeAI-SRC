@@ -1,0 +1,45 @@
+name: "strings"
+command: "strings"
+enabled: true
+short_description: "从二进制文件中提取字符串"
+description: |
+  Strings工具用于从二进制文件中提取可打印字符串。
+
+  **主要功能：**
+  - 字符串提取
+  - 可配置最小长度
+  - 支持多种文件格式
+
+  **使用场景：**
+  - 二进制分析
+  - 恶意软件分析
+  - 取证分析
+  - 逆向工程
+parameters:
+  - name: "file_path"
+    type: "string"
+    description: "要分析的文件路径"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "min_len"
+    type: "int"
+    description: "最小字符串长度"
+    required: false
+    flag: "-n"
+    format: "flag"
+    default: 4
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的strings参数。用于传递未在参数列表中定义的strings选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

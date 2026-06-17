@@ -1,0 +1,20 @@
+name: "api-schema-analyzer"
+command: "spectral"
+args: ["lint"]
+enabled: true
+short_description: "API模式分析工具，识别潜在安全问题"
+description: |
+  调用 `spectral lint` 对 OpenAPI/Swagger/GraphQL 模式进行静态分析，可结合自定义规则集或输出格式。
+parameters:
+  - name: "schema_url"
+    type: "string"
+    description: "API模式文件或URL（传递给 spectral lint 的目标）"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的 Spectral 参数，例如 `--ruleset`, `--format`, `--fail-severity` 等。
+    required: false
+    format: "positional"

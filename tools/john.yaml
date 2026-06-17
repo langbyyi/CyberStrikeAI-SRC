@@ -1,0 +1,43 @@
+name: "john"
+command: "john"
+enabled: true
+short_description: "John the Ripper密码破解工具"
+description: |
+  John the Ripper是一个快速的密码破解工具，支持多种哈希算法。
+
+  **主要功能：**
+  - 多种哈希算法支持
+  - 字典攻击
+  - 暴力破解
+  - 规则引擎
+
+  **使用场景：**
+  - 密码恢复
+  - 哈希破解
+  - 安全测试
+  - 取证分析
+parameters:
+  - name: "hash_file"
+    type: "string"
+    description: "包含哈希的文件"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "wordlist"
+    type: "string"
+    description: "字典文件"
+    required: false
+    default: "/usr/share/wordlists/rockyou.txt"
+    flag: "--wordlist"
+    format: "flag"
+  - name: "format_type"
+    type: "string"
+    description: "哈希格式类型"
+    required: false
+    flag: "--format"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: "额外的John参数"
+    required: false
+    format: "positional"

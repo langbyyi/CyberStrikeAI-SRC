@@ -1,0 +1,60 @@
+name: "hydra"
+command: "hydra"
+enabled: true
+short_description: "密码暴力破解工具，支持多种协议和服务"
+description: |
+  Hydra是一个快速的网络登录破解工具，支持多种协议和服务的密码暴力破解。
+
+  **主要功能：**
+  - 支持多种协议（SSH, FTP, HTTP, SMB等）
+  - 快速并行破解
+  - 支持用户名和密码字典
+  - 可恢复的会话
+
+  **使用场景：**
+  - 密码强度测试
+  - 渗透测试
+  - 安全评估
+  - 弱密码检测
+parameters:
+  - name: "target"
+    type: "string"
+    description: "目标IP或主机名"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "service"
+    type: "string"
+    description: "服务类型（ssh, ftp, http等）"
+    required: true
+    position: 1
+    format: "positional"
+  - name: "username"
+    type: "string"
+    description: "单个用户名"
+    required: false
+    flag: "-l"
+    format: "flag"
+  - name: "username_file"
+    type: "string"
+    description: "用户名字典文件"
+    required: false
+    flag: "-L"
+    format: "flag"
+  - name: "password"
+    type: "string"
+    description: "单个密码"
+    required: false
+    flag: "-p"
+    format: "flag"
+  - name: "password_file"
+    type: "string"
+    description: "密码字典文件"
+    required: false
+    flag: "-P"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: "额外的Hydra参数"
+    required: false
+    format: "positional"

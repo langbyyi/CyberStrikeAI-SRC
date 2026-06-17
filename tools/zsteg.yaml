@@ -1,0 +1,56 @@
+name: "zsteg"
+command: "zsteg"
+enabled: true
+short_description: "LSB 隐写检测工具，用于检测 PNG/BMP 图片中的隐写数据"
+description: |
+  zsteg 是一个用于检测 PNG 和 BMP 图片中 LSB (Least Significant Bit) 隐写的工具。
+
+  **主要功能：**
+  - LSB 隐写检测
+  - 多种隐写算法支持
+  - 自动提取隐写数据
+  - 支持多种图片格式
+
+  **使用场景：**
+  - CTF 隐写题目
+  - 图片隐写分析
+  - 数字取证
+  - 安全研究
+
+  **注意事项：**
+  - 需要 Ruby 环境
+  - 支持 PNG 和 BMP 格式
+  - 可以检测多种隐写算法
+parameters:
+  - name: "file"
+    type: "string"
+    description: "要分析的图片文件路径"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "all"
+    type: "bool"
+    description: "检测所有可能的隐写方法"
+    required: false
+    flag: "--all"
+    format: "flag"
+  - name: "lsb"
+    type: "bool"
+    description: "只检测 LSB 隐写"
+    required: false
+    flag: "--lsb"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的zsteg参数。用于传递未在参数列表中定义的zsteg选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

@@ -1,0 +1,66 @@
+name: "prowler"
+command: "prowler"
+enabled: true
+short_description: "云安全评估工具（AWS, Azure, GCP）"
+description: |
+  Prowler是一个全面的云安全评估工具，支持AWS、Azure和GCP。
+
+  **主要功能：**
+  - 云安全评估
+  - 合规性检查
+  - 安全最佳实践检查
+  - 多种输出格式
+
+  **使用场景：**
+  - 云安全审计
+  - 合规性检查
+  - 安全评估
+  - 云配置审计
+parameters:
+  - name: "provider"
+    type: "string"
+    description: "云提供商（aws, azure, gcp）"
+    required: false
+    default: "aws"
+    position: 0
+    format: "positional"
+  - name: "profile"
+    type: "string"
+    description: "AWS配置文件"
+    required: false
+    flag: "-p"
+    format: "flag"
+    default: "default"
+  - name: "region"
+    type: "string"
+    description: "要扫描的特定区域"
+    required: false
+    flag: "-r"
+    format: "flag"
+  - name: "checks"
+    type: "string"
+    description: "要运行的特定检查"
+    required: false
+    flag: "-c"
+    format: "flag"
+  - name: "output_format"
+    type: "string"
+    description: "输出格式（json, csv, html）"
+    required: false
+    flag: "-M"
+    format: "flag"
+    default: "json"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的prowler参数。用于传递未在参数列表中定义的prowler选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

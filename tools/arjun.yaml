@@ -1,0 +1,68 @@
+name: "arjun"
+command: "arjun"
+enabled: true
+short_description: "HTTP参数发现工具"
+description: |
+  Arjun是一个HTTP参数发现工具，用于发现Web应用中的隐藏参数。
+
+  **主要功能：**
+  - HTTP参数发现
+  - 多种HTTP方法支持
+  - 多线程支持
+  - 稳定模式
+
+  **使用场景：**
+  - 参数发现
+  - Web应用安全测试
+  - Bug bounty侦察
+  - 安全测试
+parameters:
+  - name: "url"
+    type: "string"
+    description: "目标URL"
+    required: true
+    flag: "-u"
+    format: "flag"
+  - name: "method"
+    type: "string"
+    description: "HTTP方法（GET, POST等）"
+    required: false
+    flag: "-m"
+    format: "flag"
+    default: "GET"
+  - name: "wordlist"
+    type: "string"
+    description: "自定义字典文件"
+    required: false
+    flag: "-w"
+    format: "flag"
+  - name: "threads"
+    type: "int"
+    description: "线程数"
+    required: false
+    flag: "-t"
+    format: "flag"
+    default: 25
+  - name: "stable"
+    type: "bool"
+    description: "使用稳定模式"
+    required: false
+    flag: "--stable"
+    format: "flag"
+    default: false
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的Arjun参数。用于传递未在参数列表中定义的Arjun选项。
+
+      **示例值：**
+      - "-o output.txt": 输出到文件
+      - "-q": 安静模式
+      - "-i": 从文件读取URL
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

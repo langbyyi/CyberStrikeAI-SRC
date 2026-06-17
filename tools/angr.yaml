@@ -1,0 +1,95 @@
+name: "angr"
+command: "python3"
+args:
+  - "-c"
+  - |
+    import shlex
+    import sys
+
+    if len(sys.argv) < 2:
+        sys.stderr.write("缺少脚本内容\n")
+        sys.exit(1)
+
+    script_content = sys.argv[1]
+    binary = sys.argv[2] if len(sys.argv) > 2 else ""
+    find_address = sys.argv[3] if len(sys.argv) > 3 else ""
+    avoid_addresses = sys.argv[4] if len(sys.argv) > 4 else ""
+    analysis_type = sys.argv[5] if len(sys.argv) > 5 else ""
+    extra = sys.argv[6] if len(sys.argv) > 6 else ""
+
+    context = {
+        "binary_path": binary,
+        "find_address": find_address,
+        "avoid_addresses": [addr.strip() for addr in avoid_addresses.split(",") if addr.strip()],
+        "analysis_type": analysis_type or "symbolic",
+    }
+
+    if extra:
+        context["additional_args"] = shlex.split(extra)
+    else:
+        context["additional_args"] = []
+
+    # 执行用户脚本，提供上下文变量
+    exec(script_content, context)
+enabled: true
+short_description: "符号执行和二进制分析框架"
+description: |
+  Angr是一个符号执行和二进制分析框架，用于自动化漏洞发现和利用。
+
+  **使用方式：**
+  - 通过 `script_content` 参数提供Python脚本，可直接导入 `angr` 并访问以下变量：
+    - `binary_path`: 目标二进制路径
+    - `find_address`: 待寻找的地址（可为空）
+    - `avoid_addresses`: 需要避开的地址列表
+    - `analysis_type`: 自定义分析类型标记（默认symbolic）
+    - `additional_args`: 额外参数列表（通过 `additional_args` 传入）
+  - 在脚本中自行控制分析流程，可调用 `print()` 输出结果。
+parameters:
+  - name: "script_content"
+    type: "string"
+    description: "要执行的angr Python脚本内容"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "binary"
+    type: "string"
+    description: "要分析的二进制文件路径，将作为 binary_path 变量传递给脚本"
+    required: false
+    default: ""
+    position: 1
+    format: "positional"
+  - name: "find_address"
+    type: "string"
+    description: "符号执行中要查找的地址（可选，传入脚本变量 find_address）"
+    required: false
+    default: ""
+    position: 2
+    format: "positional"
+  - name: "avoid_addresses"
+    type: "string"
+    description: "要避免的地址（逗号分隔，脚本变量 avoid_addresses）"
+    required: false
+    default: ""
+    position: 3
+    format: "positional"
+  - name: "analysis_type"
+    type: "string"
+    description: "用于脚本内自定义分支的分析类型标签（例如 symbolic/cfg/static）"
+    required: false
+    default: "symbolic"
+    position: 4
+    format: "positional"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外参数，脚本中可通过 `additional_args` 列表访问。
+
+      **示例：**
+      - "--max-depth 8 --timeout 60"
+
+      **注意事项：**
+      - 参数会按照shell规则拆分
+    required: false
+    default: ""
+    position: 5
+    format: "positional"

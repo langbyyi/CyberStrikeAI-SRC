@@ -1,0 +1,145 @@
+package multiagent
+
+import (
+	"strings"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/bytedance/sonic"
+)
+
+const (
+	transcriptFileHeader = `# CyberStrikeAI summarization transcript
+# Pre-compaction session record for read_file after context compression.
+# Omits static system/tool-index/skills boilerplate; full user/assistant/tool turns below.
+
+`
+	transcriptStaticSystemOmitNote = "[static system prompt omitted — unchanged in live context after compaction]"
+	transcriptToolIndexStartMarker   = "以下是当前会话绑定的工具名称索引"
+	transcriptPersonaStartMarker     = "你是CyberStrikeAI"
+	transcriptSkillsSystemMarker     = "# Skills System"
+	transcriptProjectBlackboardMarker  = "## 项目黑板索引"
+)
+
+// formatSummarizationTranscript renders pre-compaction messages for transcript.txt.
+// Best practice: keep full user/assistant/tool turns; slim system to dynamic blocks only.
+func formatSummarizationTranscript(msgs []adk.Message) string {
+	var sb strings.Builder
+	sb.WriteString(transcriptFileHeader)
+	wrote := false
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		switch msg.Role {
+		case schema.System:
+			body := sanitizeSystemContentForTranscript(msg.Content)
+			if strings.TrimSpace(body) == "" {
+				continue
+			}
+			if wrote {
+				sb.WriteString("\n")
+			}
+			appendTranscriptSection(&sb, schema.System, body)
+			wrote = true
+		default:
+			if wrote {
+				sb.WriteString("\n")
+			}
+			appendTranscriptMessage(&sb, msg)
+			wrote = true
+		}
+	}
+	return sb.String()
+}
+
+func sanitizeSystemContentForTranscript(content string) string {
+	content = stripToolNamesIndexFromSystem(content)
+	content = stripSkillsSystemBoilerplate(content)
+	blackboard := extractProjectBlackboardSection(content)
+
+	var sb strings.Builder
+	sb.WriteString(transcriptStaticSystemOmitNote)
+	if bb := strings.TrimSpace(blackboard); bb != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(bb)
+	}
+	return sb.String()
+}
+
+func stripToolNamesIndexFromSystem(s string) string {
+	if !strings.Contains(s, transcriptToolIndexStartMarker) {
+		return s
+	}
+	idx := strings.Index(s, transcriptPersonaStartMarker)
+	if idx < 0 {
+		return s
+	}
+	return strings.TrimSpace(s[idx:])
+}
+
+func stripSkillsSystemBoilerplate(s string) string {
+	idx := strings.Index(s, transcriptSkillsSystemMarker)
+	if idx < 0 {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(s[:idx])
+}
+
+func extractProjectBlackboardSection(s string) string {
+	idx := strings.Index(s, transcriptProjectBlackboardMarker)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[idx:])
+}
+
+func appendTranscriptSection(sb *strings.Builder, role schema.RoleType, body string) {
+	sb.WriteString("--- [")
+	sb.WriteString(string(role))
+	sb.WriteString("] ---\n")
+	sb.WriteString(body)
+	if !strings.HasSuffix(body, "\n") {
+		sb.WriteByte('\n')
+	}
+}
+
+func appendTranscriptMessage(sb *strings.Builder, msg adk.Message) {
+	sb.WriteString("--- [")
+	sb.WriteString(string(msg.Role))
+	sb.WriteString("] ---\n")
+	if msg.Content != "" {
+		sb.WriteString(msg.Content)
+		if !strings.HasSuffix(msg.Content, "\n") {
+			sb.WriteByte('\n')
+		}
+	}
+	if msg.ReasoningContent != "" {
+		sb.WriteString("[reasoning]\n")
+		sb.WriteString(msg.ReasoningContent)
+		if !strings.HasSuffix(msg.ReasoningContent, "\n") {
+			sb.WriteByte('\n')
+		}
+	}
+	for _, part := range msg.UserInputMultiContent {
+		if part.Type == schema.ChatMessagePartTypeText && strings.TrimSpace(part.Text) != "" {
+			sb.WriteString(part.Text)
+			if !strings.HasSuffix(part.Text, "\n") {
+				sb.WriteByte('\n')
+			}
+		}
+	}
+	if len(msg.ToolCalls) > 0 {
+		if b, err := sonic.Marshal(msg.ToolCalls); err == nil {
+			sb.WriteString("tool_calls: ")
+			sb.Write(b)
+			sb.WriteByte('\n')
+		}
+	}
+	if msg.ToolCallID != "" {
+		sb.WriteString("tool_call_id: ")
+		sb.WriteString(msg.ToolCallID)
+		sb.WriteByte('\n')
+	}
+}

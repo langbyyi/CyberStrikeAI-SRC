@@ -1,0 +1,63 @@
+name: "steghide"
+command: "steghide"
+enabled: true
+short_description: "隐写术分析工具"
+description: |
+  Steghide是一个隐写术工具，用于在图像和音频文件中隐藏数据。
+
+  **主要功能：**
+  - 数据隐藏
+  - 数据提取
+  - 信息查看
+  - 密码保护
+
+  **使用场景：**
+  - 隐写术分析
+  - 数据隐藏检测
+  - 取证分析
+  - CTF挑战
+parameters:
+  - name: "action"
+    type: "string"
+    description: "操作类型（extract, embed, info）"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "cover_file"
+    type: "string"
+    description: "载体文件路径（embed/info操作使用 -cf）"
+    required: false
+    flag: "-cf"
+    format: "flag"
+  - name: "embed_file"
+    type: "string"
+    description: "要嵌入的文件（embed操作时）"
+    required: false
+    flag: "-ef"
+    format: "flag"
+  - name: "passphrase"
+    type: "string"
+    description: "密码"
+    required: false
+    flag: "-p"
+    format: "flag"
+  - name: "stego_file"
+    type: "string"
+    description: "隐写文件路径（embed时输出，extract时输入）"
+    required: false
+    flag: "-sf"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的steghide参数。用于传递未在参数列表中定义的steghide选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

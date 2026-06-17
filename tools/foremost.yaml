@@ -1,0 +1,52 @@
+name: "foremost"
+command: "foremost"
+enabled: true
+short_description: "文件恢复工具"
+description: |
+  Foremost是一个基于文件头和尾的文件恢复工具。
+
+  **主要功能：**
+  - 文件恢复
+  - 多种文件类型支持
+  - 磁盘镜像分析
+  - 数据恢复
+
+  **使用场景：**
+  - 数据恢复
+  - 取证分析
+  - 文件提取
+  - 磁盘分析
+parameters:
+  - name: "input_file"
+    type: "string"
+    description: "输入文件或设备"
+    required: true
+    flag: "-i"
+    format: "flag"
+  - name: "output_dir"
+    type: "string"
+    description: "输出目录"
+    required: false
+    flag: "-o"
+    format: "flag"
+    default: "/tmp/foremost_output"
+  - name: "file_types"
+    type: "string"
+    description: "要恢复的文件类型（jpg,gif,png等）"
+    required: false
+    flag: "-t"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的foremost参数。用于传递未在参数列表中定义的foremost选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

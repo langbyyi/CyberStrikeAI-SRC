@@ -1,0 +1,61 @@
+name: "netexec"
+command: "netexec"
+enabled: true
+short_description: "网络枚举和利用框架（原CrackMapExec）"
+description: |
+  NetExec（原CrackMapExec）是一个网络枚举和利用框架，支持多种协议。
+
+  **主要功能：**
+  - 多协议支持（SMB, SSH, WinRM等）
+  - 凭证验证
+  - 横向移动
+  - 模块化架构
+
+  **使用场景：**
+  - 网络渗透测试
+  - 域环境测试
+  - 横向移动测试
+  - 凭证验证
+parameters:
+  - name: "protocol"
+    type: "string"
+    description: "协议类型（smb, ssh, winrm等）"
+    required: false
+    default: "smb"
+    position: 0
+    format: "positional"
+  - name: "target"
+    type: "string"
+    description: "目标IP或网络"
+    required: true
+    position: 1
+    format: "positional"
+  - name: "username"
+    type: "string"
+    description: "用户名"
+    required: false
+    flag: "-u"
+    format: "flag"
+  - name: "password"
+    type: "string"
+    description: "密码"
+    required: false
+    flag: "-p"
+    format: "flag"
+  - name: "hash_value"
+    type: "string"
+    description: "NTLM哈希（用于Pass-the-Hash）"
+    required: false
+    flag: "-H"
+    format: "flag"
+  - name: "module"
+    type: "string"
+    description: "要执行的模块"
+    required: false
+    flag: "-M"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: "额外的NetExec参数"
+    required: false
+    format: "positional"

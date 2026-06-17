@@ -1,0 +1,53 @@
+name: "gobuster"
+command: "gobuster"
+enabled: true
+short_description: "Web内容扫描工具，用于发现目录、文件和子域名"
+description: |
+  Gobuster是一个快速的内容发现工具，用于Web应用程序的目录、文件和子域名枚举。
+
+  **主要功能：**
+  - 目录和文件发现
+  - DNS子域名枚举
+  - 虚拟主机发现
+  - 支持多种模式（dir, dns, fuzz, vhost）
+
+  **使用场景：**
+  - Web应用安全测试
+  - 目录枚举和文件发现
+  - 子域名发现
+  - 渗透测试信息收集
+parameters:
+  - name: "mode"
+    type: "string"
+    description: |
+      扫描模式（Gobuster子命令），对应以下取值：
+      - `dir`: 目录/文件枚举
+      - `dns`: DNS子域名枚举
+      - `fuzz`: 模板FUZZ扫描
+      - `vhost`: 虚拟主机发现
+
+      **注意：**
+      Gobuster要求第一个参数为模式子命令，因此这里作为位置参数传递。
+    required: false
+    default: "dir"
+    position: 0
+    format: "positional"
+    options: ["dir", "dns", "fuzz", "vhost"]
+  - name: "url"
+    type: "string"
+    description: "目标URL"
+    required: true
+    flag: "-u"
+    format: "flag"
+  - name: "wordlist"
+    type: "string"
+    description: "字典文件路径"
+    required: false
+    default: "/usr/share/wordlists/dirb/common.txt"
+    flag: "-w"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: "额外的Gobuster参数"
+    required: false
+    format: "positional"

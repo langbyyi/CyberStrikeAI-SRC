@@ -1,0 +1,88 @@
+name: "libc-database"
+command: "python3"
+args:
+  - "-c"
+  - |
+    import shlex
+    import subprocess
+    import sys
+
+    if len(sys.argv) < 2:
+        sys.stderr.write("缺少操作类型（find/dump/download）\n")
+        sys.exit(1)
+
+    action = sys.argv[1]
+    symbols = sys.argv[2] if len(sys.argv) > 2 else ""
+    libc_id = sys.argv[3] if len(sys.argv) > 3 else ""
+    extra = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    cmd = ["libc-database", action]
+
+    if symbols:
+        cmd.extend(shlex.split(symbols))
+
+    if libc_id:
+        cmd.append(libc_id)
+
+    if extra:
+        cmd.extend(shlex.split(extra))
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    sys.exit(proc.returncode)
+enabled: true
+short_description: "libc识别和偏移查找工具"
+description: |
+  Libc-database是一个用于libc识别和偏移查找的工具。
+
+  **主要功能：**
+  - libc识别
+  - 符号偏移查找
+  - libc下载
+  - 数据库查询
+
+  **使用场景：**
+  - CTF挑战
+  - 漏洞利用开发
+  - libc识别
+  - 安全研究
+parameters:
+  - name: "action"
+    type: "string"
+    description: "要执行的操作（find, dump, download）"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "symbols"
+    type: "string"
+    description: "符号和偏移（格式：symbol1:offset1 symbol2:offset2）"
+    required: false
+    default: ""
+    position: 1
+    format: "positional"
+  - name: "libc_id"
+    type: "string"
+    description: "Libc ID（用于dump/download操作）"
+    required: false
+    default: ""
+    position: 2
+    format: "positional"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的libc-database参数。用于传递未在参数列表中定义的libc-database选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    default: ""
+    position: 3
+    format: "positional"

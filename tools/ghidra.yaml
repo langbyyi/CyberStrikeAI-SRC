@@ -1,0 +1,59 @@
+name: "ghidra"
+command: "analyzeHeadless"
+enabled: true
+short_description: "高级二进制分析和逆向工程工具"
+description: |
+  Ghidra是NSA开发的免费二进制分析和逆向工程工具。
+
+  **主要功能：**
+  - 反汇编和反编译
+  - 高级分析
+  - 脚本支持
+  - 协作功能
+
+  **使用场景：**
+  - 二进制分析
+  - 逆向工程
+  - 恶意软件分析
+  - 漏洞研究
+parameters:
+  - name: "project_dir"
+    type: "string"
+    description: "Ghidra项目存放目录"
+    required: false
+    default: "/tmp/ghidra_projects"
+    position: 0
+    format: "positional"
+  - name: "project_name"
+    type: "string"
+    description: "Ghidra项目名称"
+    required: false
+    default: "cyberstrike_analysis"
+    position: 1
+    format: "positional"
+  - name: "binary"
+    type: "string"
+    description: "要分析的二进制文件路径"
+    required: true
+    flag: "-import"
+    format: "flag"
+  - name: "script_file"
+    type: "string"
+    description: "可选的Ghidra脚本文件（通过 -postScript 执行）"
+    required: false
+    flag: "-postScript"
+    format: "flag"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的ghidra参数。用于传递未在参数列表中定义的ghidra选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    format: "positional"

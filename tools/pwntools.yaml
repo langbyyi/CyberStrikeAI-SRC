@@ -1,0 +1,68 @@
+name: "pwntools"
+command: "python3"
+args:
+  - "-c"
+  - |
+    import os
+    import sys
+
+    if len(sys.argv) < 2:
+        sys.stderr.write("缺少脚本内容\n")
+        sys.exit(1)
+
+    script_content = sys.argv[1]
+    target_binary = sys.argv[2] if len(sys.argv) > 2 else ""
+    target_host = sys.argv[3] if len(sys.argv) > 3 else ""
+    target_port = sys.argv[4] if len(sys.argv) > 4 else ""
+    exploit_type = sys.argv[5] if len(sys.argv) > 5 else "local"
+
+    if target_binary:
+        os.environ["PWN_BINARY"] = target_binary
+    if target_host:
+        os.environ["PWN_HOST"] = target_host
+    if target_port:
+        os.environ["PWN_PORT"] = str(target_port)
+    if exploit_type:
+        os.environ["PWN_EXPLOIT_TYPE"] = exploit_type
+
+    exec(script_content, {})
+enabled: true
+short_description: "CTF和漏洞利用开发框架"
+description: |
+  执行自定义pwntools脚本，并通过环境变量注入常用目标信息：
+  - `PWN_BINARY`, `PWN_HOST`, `PWN_PORT`, `PWN_EXPLOIT_TYPE`
+parameters:
+  - name: "script_content"
+    type: "string"
+    description: "Python脚本内容（使用pwntools）"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "target_binary"
+    type: "string"
+    description: "本地二进制文件路径（注入PWN_BINARY）"
+    required: false
+    default: ""
+    position: 1
+    format: "positional"
+  - name: "target_host"
+    type: "string"
+    description: "远程主机地址（PWN_HOST）"
+    required: false
+    default: ""
+    position: 2
+    format: "positional"
+  - name: "target_port"
+    type: "string"
+    description: "远程端口（PWN_PORT）"
+    required: false
+    default: ""
+    position: 3
+    format: "positional"
+  - name: "exploit_type"
+    type: "string"
+    description: "漏洞利用类型标签（PWN_EXPLOIT_TYPE）"
+    required: false
+    default: "local"
+    position: 4
+    format: "positional"

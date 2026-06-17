@@ -1,0 +1,102 @@
+name: "impacket"
+command: "python3"
+args:
+  - "-c"
+  - |
+    import json
+    import shlex
+    import subprocess
+    import sys
+
+    if len(sys.argv) < 2:
+        sys.stderr.write("缺少Impacket脚本路径\n")
+        sys.exit(1)
+
+    script_path = sys.argv[1]
+    args_raw = sys.argv[2] if len(sys.argv) > 2 else ""
+    extra = sys.argv[3] if len(sys.argv) > 3 else ""
+
+    cmd = [script_path]
+
+    if args_raw:
+        parsed = []
+        try:
+            candidate = json.loads(args_raw)
+            if isinstance(candidate, list):
+                parsed = [str(item) for item in candidate]
+            elif isinstance(candidate, str):
+                parsed = shlex.split(candidate)
+        except (json.JSONDecodeError, ValueError):
+            parsed = shlex.split(args_raw)
+        cmd.extend(parsed)
+
+    if extra:
+        cmd.extend(shlex.split(extra))
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    sys.exit(proc.returncode)
+enabled: true
+short_description: "Impacket 网络协议工具集，用于网络协议攻击和横向移动"
+description: |
+  Impacket 是一个 Python 工具集，用于处理网络协议，常用于渗透测试和横向移动。
+
+  **主要功能：**
+  - SMB 协议攻击
+  - Kerberos 协议攻击
+  - RPC 协议攻击
+  - 远程命令执行
+  - 凭证转储
+  - 票据传递攻击
+
+  **常用工具：**
+  - psexec: 远程命令执行
+  - smbexec: SMB 远程执行
+  - wmiexec: WMI 远程执行
+  - secretsdump: 凭证转储
+  - getTGT: Kerberos 票据获取
+
+  **使用场景：**
+  - 横向移动
+  - 凭证转储
+  - 远程命令执行
+  - 后渗透测试
+
+  **注意事项：**
+  - 需要 Python 环境
+  - 需要相应的凭据
+  - 仅用于授权的安全测试
+  - 工具路径通常在 /usr/share/doc/python3-impacket/examples/ 或通过 pip 安装
+parameters:
+  - name: "script"
+    type: "string"
+    description: "Impacket 脚本路径，例如 '/usr/share/doc/python3-impacket/examples/psexec.py'"
+    required: true
+    position: 0
+    format: "positional"
+  - name: "args"
+    type: "string"
+    description: "脚本参数（JSON数组或空格分隔字符串）"
+    required: false
+    default: ""
+    position: 1
+    format: "positional"
+  - name: "additional_args"
+    type: "string"
+    description: |
+      额外的impacket参数。用于传递未在参数列表中定义的impacket选项。
+
+      **示例值：**
+      - 根据工具特性添加常用参数示例
+
+      **注意事项：**
+      - 多个参数用空格分隔
+      - 确保参数格式正确，避免命令注入
+      - 此参数会直接追加到命令末尾
+    required: false
+    default: ""
+    position: 2
+    format: "positional"
