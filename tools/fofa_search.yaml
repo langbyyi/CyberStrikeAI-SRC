@@ -8,20 +8,61 @@ args:
     import base64
     import requests
     import os
+    import re
 
-    # ==================== FOFA配置 ====================
-    # 支持两种 FOFA 服务：
-    #   1. 官方 FOFA (fofa.info)：需 FOFA_EMAIL + FOFA_API_KEY 同时填写
-    #   2. FOFA 代理 (fofa.icu)：只需 FOFA_API_KEY，base_url 改为 fofa.icu
-    # 通过环境变量配置（推荐）：FOFA_EMAIL / FOFA_API_KEY / FOFA_BASE_URL
-    # 也可直接在此处填入（不推荐，会暴露在源码里）
-    FOFA_EMAIL = ""
-    FOFA_API_KEY = ""
-    FOFA_BASE_URL = ""  # 留空默认 https://fofa.info/api/v1/search/all；用代理填 http://fofa.icu/api/v1/search/all
+    # ==================== FOFA 配置获取 ====================
+    # 优先级：环境变量 > config.yaml > 此处硬编码（默认空）
+    # config.yaml 由 CyberStrikeAI 主程序加载并使用，本脚本也会读取，
+    # 这样用户只在 config.yaml 配一次就能同时生效于网页端 + MCP 工具。
+    FOFA_EMAIL_DEFAULT = ""
+    FOFA_API_KEY_DEFAULT = ""
+    FOFA_BASE_URL_DEFAULT = ""  # 留空默认 https://fofa.info/api/v1/search/all
+
+    def read_config_yaml():
+        """从工作目录的 config.yaml 读取 fofa 段（无需 PyYAML 依赖）"""
+        result = {}
+        for path in ('config.yaml', '../config.yaml', '../../config.yaml'):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                # 匹配 fofa: 段下的 key: value（缩进+键值对）
+                m = re.search(r'^fofa:\s*\n((?:[ \t]+\w+:.*\n?)+)', content, re.MULTILINE)
+                if not m:
+                    continue
+                for line in m.group(1).split('\n'):
+                    line = line.strip()
+                    if ':' not in line or line.startswith('#'):
+                        continue
+                    key, _, val = line.partition(':')
+                    val = val.split('#')[0].strip().strip('"\'')
+                    if val:
+                        result[key.strip()] = val
+                if result:
+                    return result
+            except Exception:
+                continue
+        return result
+
+    _cfg = read_config_yaml()
+    email = (
+        os.getenv('FOFA_EMAIL', '').strip()
+        or _cfg.get('email', '').strip()
+        or FOFA_EMAIL_DEFAULT
+    )
+    api_key = (
+        os.getenv('FOFA_API_KEY', '').strip()
+        or _cfg.get('api_key', '').strip()
+        or FOFA_API_KEY_DEFAULT
+    )
+    base_url = (
+        os.getenv('FOFA_BASE_URL', '').strip()
+        or _cfg.get('base_url', '').strip()
+        or FOFA_BASE_URL_DEFAULT
+        or "https://fofa.info/api/v1/search/all"
+    )
     # ==================================================
 
-    # FOFA API基础URL（支持环境变量 FOFA_BASE_URL 覆盖）
-    base_url = os.getenv('FOFA_BASE_URL', FOFA_BASE_URL).strip() or "https://fofa.info/api/v1/search/all"
+    # FOFA API 基础 URL（已根据上面的优先级确定）
 
     # 解析参数（从JSON字符串或命令行参数）
     def parse_args():
@@ -80,9 +121,7 @@ args:
             print(json.dumps(error_result, ensure_ascii=False, indent=2))
             sys.exit(1)
 
-        # 从配置或环境变量获取email和api_key
-        email = os.getenv('FOFA_EMAIL', FOFA_EMAIL).strip()
-        api_key = os.getenv('FOFA_API_KEY', FOFA_API_KEY).strip()
+        # email / api_key / base_url 已在脚本头部按 环境变量 > config.yaml > 默认值 优先级解析完成
         query = config.get('query', '').strip()
 
         if not api_key:
