@@ -10,15 +10,18 @@ args:
     import os
 
     # ==================== FOFA配置 ====================
-    # 请在此处配置您的FOFA账号信息
-    # 您也可以在环境变量中设置：FOFA_EMAIL 和 FOFA_API_KEY
-    # enable 默认为 false，需开启才能调用该MCP
-    FOFA_EMAIL = ""  # 请填写您的FOFA账号邮箱
-    FOFA_API_KEY = ""  # 请填写您的FOFA API密钥
+    # 支持两种 FOFA 服务：
+    #   1. 官方 FOFA (fofa.info)：需 FOFA_EMAIL + FOFA_API_KEY 同时填写
+    #   2. FOFA 代理 (fofa.icu)：只需 FOFA_API_KEY，base_url 改为 fofa.icu
+    # 通过环境变量配置（推荐）：FOFA_EMAIL / FOFA_API_KEY / FOFA_BASE_URL
+    # 也可直接在此处填入（不推荐，会暴露在源码里）
+    FOFA_EMAIL = ""
+    FOFA_API_KEY = ""
+    FOFA_BASE_URL = ""  # 留空默认 https://fofa.info/api/v1/search/all；用代理填 http://fofa.icu/api/v1/search/all
     # ==================================================
 
-    # FOFA API基础URL
-    base_url = "https://fofa.info/api/v1/search/all"
+    # FOFA API基础URL（支持环境变量 FOFA_BASE_URL 覆盖）
+    base_url = os.getenv('FOFA_BASE_URL', FOFA_BASE_URL).strip() or "https://fofa.info/api/v1/search/all"
 
     # 解析参数（从JSON字符串或命令行参数）
     def parse_args():
@@ -82,22 +85,12 @@ args:
         api_key = os.getenv('FOFA_API_KEY', FOFA_API_KEY).strip()
         query = config.get('query', '').strip()
 
-        if not email:
-            error_result = {
-                "status": "error",
-                "message": "缺少FOFA配置: email（FOFA账号邮箱）",
-                "required_config": ["email", "api_key"],
-                "note": "请在YAML文件的FOFA_EMAIL配置项中填写您的FOFA账号邮箱，或在环境变量FOFA_EMAIL中设置"
-            }
-            print(json.dumps(error_result, ensure_ascii=False, indent=2))
-            sys.exit(1)
-
         if not api_key:
             error_result = {
                 "status": "error",
                 "message": "缺少FOFA配置: api_key（FOFA API密钥）",
                 "required_config": ["email", "api_key"],
-                "note": "请在YAML文件的FOFA_API_KEY配置项中填写您的API密钥，或在环境变量FOFA_API_KEY中设置。API密钥可在FOFA个人中心获取: https://fofa.info/userInfo"
+                "note": "请在环境变量 FOFA_API_KEY 中设置，或修改本工具 yaml 里的 FOFA_API_KEY。\n  - 官方 FOFA: 注册 https://fofa.info 获取 email + api_key\n  - FOFA 代理: 注册 http://fofa.icu 获取卡密（无需 email，FOFA_BASE_URL 填 http://fofa.icu/api/v1/search/all）"
             }
             print(json.dumps(error_result, ensure_ascii=False, indent=2))
             sys.exit(1)
@@ -120,12 +113,13 @@ args:
             print(json.dumps(error_result, ensure_ascii=False, indent=2))
             sys.exit(1)
 
-        # 构建请求参数
+        # 构建请求参数（email 可选 - fofa.icu 等代理只需要 key）
         params = {
-            'email': email,
             'key': api_key,
             'qbase64': base64.b64encode(query.encode('utf-8')).decode('utf-8')
         }
+        if email:
+            params['email'] = email
 
         # 可选参数
         if 'size' in config and config['size'] is not None:
