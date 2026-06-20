@@ -1889,9 +1889,23 @@
                         <div id="vulnerabilities-list" class="vulnerabilities-list">
                             <div class="loading-spinner" data-i18n="vulnerabilityPage.loading">加载中...</div>
                         </div>
-                        
+
                         <!-- 分页控件 -->
                         <div id="vulnerability-pagination" class="pagination-container pagination-fixed"></div>
+
+                        <!-- 批量操作栏（二开：全选 + 批量删除）-->
+                        <div id="vuln-select-bar" class="vuln-select-bar" style="display:none;position:sticky;bottom:0;background:var(--bg-card,#1a1a2e);border-top:1px solid var(--border-color,#333);padding:8px 16px;z-index:10;align-items:center;gap:12px;">
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+                                <input type="checkbox" id="vuln-select-all" onchange="toggleVulnSelectAll(this.checked)" />
+                                全选
+                            </label>
+                            <span style="font-size:13px;color:var(--text-secondary,#888);">
+                                已选 <strong class="vuln-select-count">0</strong> 条
+                            </span>
+                            <button class="btn-danger vuln-select-delete-btn" style="display:none;padding:4px 12px;font-size:13px;" onclick="batchDeleteVulnerabilityReports()">
+                                批量删除
+                            </button>
+                        </div>
                     </div>
                 </div>
 
