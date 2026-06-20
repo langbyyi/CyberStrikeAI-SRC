@@ -1822,6 +1822,7 @@
     "loadListFailed": "加载失败",
     "noRecords": "暂无漏洞记录",
     "batchExport": "批量导出",
+    "delete": "删除",
     "batchDelete": "批量删除",
     "batchDeleteNoResults": "当前筛选条件下没有可删除的漏洞",
     "batchDeleteConfirm": "确定要删除当前筛选条件下的 {{count}} 条漏洞吗？此操作不可恢复。",

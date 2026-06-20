@@ -1834,6 +1834,7 @@
     "loadListFailed": "Failed to load",
     "noRecords": "No vulnerability records",
     "batchExport": "Batch export",
+    "delete": "Delete",
     "batchDelete": "Batch delete",
     "batchDeleteNoResults": "No vulnerabilities match the current filters to delete",
     "batchDeleteConfirm": "Delete {{count}} vulnerability record(s) matching the current filters? This cannot be undone.",
