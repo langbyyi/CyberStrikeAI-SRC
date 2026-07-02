@@ -2,15 +2,14 @@ package security
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/storage"
 
 	"go.uber.org/zap"
 )
@@ -26,137 +25,6 @@ func setupTestExecutor(t *testing.T) (*Executor, *mcp.Server) {
 
 	executor := NewExecutor(cfg, mcpServer, logger)
 	return executor, mcpServer
-}
-
-// setupTestStorage 创建测试用的存储
-func setupTestStorage(t *testing.T) *storage.FileResultStorage {
-	tmpDir := filepath.Join(os.TempDir(), "test_executor_storage_"+time.Now().Format("20060102_150405"))
-	logger := zap.NewNop()
-
-	storage, err := storage.NewFileResultStorage(tmpDir, logger)
-	if err != nil {
-		t.Fatalf("创建测试存储失败: %v", err)
-	}
-
-	return storage
-}
-
-func TestExecutor_ExecuteInternalTool_QueryExecutionResult(t *testing.T) {
-	executor, _ := setupTestExecutor(t)
-	testStorage := setupTestStorage(t)
-	executor.SetResultStorage(testStorage)
-
-	// 准备测试数据
-	executionID := "test_exec_001"
-	toolName := "nmap_scan"
-	result := "Line 1: Port 22 open\nLine 2: Port 80 open\nLine 3: Port 443 open\nLine 4: error occurred"
-
-	// 保存测试结果
-	err := testStorage.SaveResult(executionID, toolName, result)
-	if err != nil {
-		t.Fatalf("保存测试结果失败: %v", err)
-	}
-
-	ctx := context.Background()
-
-	// 测试1: 基本查询（第一页）
-	args := map[string]interface{}{
-		"execution_id": executionID,
-		"page":         float64(1),
-		"limit":        float64(2),
-	}
-
-	toolResult, err := executor.executeQueryExecutionResult(ctx, args)
-	if err != nil {
-		t.Fatalf("执行查询失败: %v", err)
-	}
-
-	if toolResult.IsError {
-		t.Fatalf("查询应该成功，但返回了错误: %s", toolResult.Content[0].Text)
-	}
-
-	// 验证结果包含预期内容
-	resultText := toolResult.Content[0].Text
-	if !strings.Contains(resultText, executionID) {
-		t.Errorf("结果中应该包含执行ID: %s", executionID)
-	}
-
-	if !strings.Contains(resultText, "第 1/") {
-		t.Errorf("结果中应该包含分页信息")
-	}
-
-	// 测试2: 搜索功能
-	args2 := map[string]interface{}{
-		"execution_id": executionID,
-		"search":       "error",
-		"page":         float64(1),
-		"limit":        float64(10),
-	}
-
-	toolResult2, err := executor.executeQueryExecutionResult(ctx, args2)
-	if err != nil {
-		t.Fatalf("执行搜索失败: %v", err)
-	}
-
-	if toolResult2.IsError {
-		t.Fatalf("搜索应该成功，但返回了错误: %s", toolResult2.Content[0].Text)
-	}
-
-	resultText2 := toolResult2.Content[0].Text
-	if !strings.Contains(resultText2, "error") {
-		t.Errorf("搜索结果中应该包含关键词: error")
-	}
-
-	// 测试3: 过滤功能
-	args3 := map[string]interface{}{
-		"execution_id": executionID,
-		"filter":       "Port",
-		"page":         float64(1),
-		"limit":        float64(10),
-	}
-
-	toolResult3, err := executor.executeQueryExecutionResult(ctx, args3)
-	if err != nil {
-		t.Fatalf("执行过滤失败: %v", err)
-	}
-
-	if toolResult3.IsError {
-		t.Fatalf("过滤应该成功，但返回了错误: %s", toolResult3.Content[0].Text)
-	}
-
-	resultText3 := toolResult3.Content[0].Text
-	if !strings.Contains(resultText3, "Port") {
-		t.Errorf("过滤结果中应该包含关键词: Port")
-	}
-
-	// 测试4: 缺少必需参数
-	args4 := map[string]interface{}{
-		"page": float64(1),
-	}
-
-	toolResult4, err := executor.executeQueryExecutionResult(ctx, args4)
-	if err != nil {
-		t.Fatalf("执行查询失败: %v", err)
-	}
-
-	if !toolResult4.IsError {
-		t.Fatal("缺少execution_id应该返回错误")
-	}
-
-	// 测试5: 不存在的执行ID
-	args5 := map[string]interface{}{
-		"execution_id": "nonexistent_id",
-		"page":         float64(1),
-	}
-
-	toolResult5, err := executor.executeQueryExecutionResult(ctx, args5)
-	if err != nil {
-		t.Fatalf("执行查询失败: %v", err)
-	}
-
-	if !toolResult5.IsError {
-		t.Fatal("不存在的执行ID应该返回错误")
-	}
 }
 
 func TestExecutor_ExecuteInternalTool_UnknownTool(t *testing.T) {
@@ -179,29 +47,6 @@ func TestExecutor_ExecuteInternalTool_UnknownTool(t *testing.T) {
 
 	if !strings.Contains(toolResult.Content[0].Text, "未知的内部工具类型") {
 		t.Errorf("错误消息应该包含'未知的内部工具类型'")
-	}
-}
-
-func TestExecutor_ExecuteInternalTool_NoStorage(t *testing.T) {
-	executor, _ := setupTestExecutor(t)
-	// 不设置存储，测试未初始化的情况
-
-	ctx := context.Background()
-	args := map[string]interface{}{
-		"execution_id": "test_id",
-	}
-
-	toolResult, err := executor.executeQueryExecutionResult(ctx, args)
-	if err != nil {
-		t.Fatalf("执行查询失败: %v", err)
-	}
-
-	if !toolResult.IsError {
-		t.Fatal("未初始化的存储应该返回错误")
-	}
-
-	if !strings.Contains(toolResult.Content[0].Text, "结果存储未初始化") {
-		t.Errorf("错误消息应该包含'结果存储未初始化'")
 	}
 }
 
@@ -228,63 +73,109 @@ func TestExecuteSystemCommand_BackgroundDoesNotBlockOnChildStdout(t *testing.T) 
 	}
 }
 
-func TestPaginateLines(t *testing.T) {
-	lines := []string{"Line 1", "Line 2", "Line 3", "Line 4", "Line 5"}
+func TestExecuteSystemCommand_FailureFormat(t *testing.T) {
+	executor, _ := setupTestExecutor(t)
+	res, err := executor.executeSystemCommand(context.Background(), map[string]interface{}{
+		"command": "echo fail-msg >&2; exit 7",
+		"shell":   "sh",
+	})
+	if err != nil {
+		t.Fatalf("executeSystemCommand: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError, got %+v", res)
+	}
+	text := res.Content[0].Text
+	if text != FormatCommandFailureResult(7, "fail-msg\n") && text != FormatCommandFailureResult(7, "fail-msg") {
+		t.Fatalf("unexpected failure text: %q", text)
+	}
+	if !strings.Contains(text, "exit status 7") || !strings.Contains(text, "fail-msg") {
+		t.Fatalf("unexpected failure text: %q", text)
+	}
+}
 
-	// 测试第一页
-	page := paginateLines(lines, 1, 2)
-	if page.Page != 1 {
-		t.Errorf("页码不匹配。期望: 1, 实际: %d", page.Page)
-	}
-	if page.Limit != 2 {
-		t.Errorf("每页行数不匹配。期望: 2, 实际: %d", page.Limit)
-	}
-	if page.TotalLines != 5 {
-		t.Errorf("总行数不匹配。期望: 5, 实际: %d", page.TotalLines)
-	}
-	if page.TotalPages != 3 {
-		t.Errorf("总页数不匹配。期望: 3, 实际: %d", page.TotalPages)
-	}
-	if len(page.Lines) != 2 {
-		t.Errorf("第一页行数不匹配。期望: 2, 实际: %d", len(page.Lines))
-	}
-
-	// 测试第二页
-	page2 := paginateLines(lines, 2, 2)
-	if len(page2.Lines) != 2 {
-		t.Errorf("第二页行数不匹配。期望: 2, 实际: %d", len(page2.Lines))
-	}
-	if page2.Lines[0] != "Line 3" {
-		t.Errorf("第二页第一行不匹配。期望: Line 3, 实际: %s", page2.Lines[0])
-	}
-
-	// 测试最后一页
-	page3 := paginateLines(lines, 3, 2)
-	if len(page3.Lines) != 1 {
-		t.Errorf("第三页行数不匹配。期望: 1, 实际: %d", len(page3.Lines))
-	}
-
-	// 测试超出范围的页码（应该返回最后一页）
-	page4 := paginateLines(lines, 4, 2)
-	if page4.Page != 3 {
-		t.Errorf("超出范围的页码应该被修正为最后一页。期望: 3, 实际: %d", page4.Page)
-	}
-	if len(page4.Lines) != 1 {
-		t.Errorf("最后一页应该只有1行。实际: %d行", len(page4.Lines))
+func TestBuildCommandArgs_NmapSkipsEmptyOptionalFlags(t *testing.T) {
+	pos1 := 1
+	executor, _ := setupTestExecutor(t)
+	toolConfig := &config.ToolConfig{
+		Name:    "nmap",
+		Command: "nmap",
+		Args:    []string{"-sT", "-sV", "-sC"},
+		Parameters: []config.ParameterConfig{
+			{Name: "target", Type: "string", Required: true, Position: &pos1, Format: "positional"},
+			{Name: "ports", Type: "string", Flag: "-p", Format: "flag"},
+			{Name: "timing", Type: "string", Template: "-T{value}", Format: "template"},
+			{Name: "nse_scripts", Type: "string", Flag: "--script", Format: "flag"},
+			{Name: "os_detection", Type: "bool", Flag: "-O", Format: "flag", Default: false},
+			{Name: "aggressive", Type: "bool", Flag: "-A", Format: "flag", Default: false},
+			{Name: "scan_type", Type: "string", Format: "template", Template: "{value}"},
+			{Name: "additional_args", Type: "string", Format: "positional"},
+		},
 	}
 
-	// 测试无效页码（小于1）
-	page0 := paginateLines(lines, 0, 2)
-	if page0.Page != 1 {
-		t.Errorf("无效页码应该被修正为1。实际: %d", page0.Page)
+	args := map[string]interface{}{
+		"target":          "110.52.223.114",
+		"ports":           "21, 22, 80, 443",
+		"timing":          "4",
+		"nse_scripts":     "",
+		"scan_type":       "",
+		"os_detection":    false,
+		"aggressive":      false,
+		"additional_args": "-Pn",
 	}
 
-	// 测试空列表
-	emptyPage := paginateLines([]string{}, 1, 10)
-	if emptyPage.TotalLines != 0 {
-		t.Errorf("空列表的总行数应该为0。实际: %d", emptyPage.TotalLines)
+	cmdArgs := executor.buildCommandArgs("nmap", toolConfig, args)
+	joined := strings.Join(cmdArgs, " ")
+
+	if strings.Contains(joined, "--script") {
+		t.Fatalf("empty nse_scripts must not emit --script, got: %v", cmdArgs)
 	}
-	if len(emptyPage.Lines) != 0 {
-		t.Errorf("空列表应该返回空结果。实际: %d行", len(emptyPage.Lines))
+	if !strings.Contains(joined, "110.52.223.114") {
+		t.Fatalf("target missing from args: %v", cmdArgs)
+	}
+	// target 应出现在 -Pn 之前，避免被误当作 --script 的参数
+	pnIdx := indexOf(cmdArgs, "-Pn")
+	targetIdx := indexOf(cmdArgs, "110.52.223.114")
+	if pnIdx < 0 || targetIdx < 0 || targetIdx >= pnIdx {
+		t.Fatalf("expected target before -Pn, got: %v", cmdArgs)
+	}
+}
+
+func indexOf(slice []string, s string) int {
+	for i, v := range slice {
+		if v == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestCombinedOutputCancellable_ContextCancelKillsTree 验证 ctx 取消时能在数秒内结束（杀进程组，非挂死）。
+func TestCombinedOutputCancellable_ContextCancelKillsTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix process group kill")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 300")
+	ConfigureShellCmdForAgentExecute(cmd)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := combinedOutputCancellable(ctx, cmd)
+		done <- err
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected context cancel error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("combinedOutputCancellable did not return within 5s after context cancel")
 	}
 }

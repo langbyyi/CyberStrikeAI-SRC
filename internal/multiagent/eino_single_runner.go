@@ -11,6 +11,7 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/project"
@@ -32,8 +33,10 @@ func RunEinoSingleChatModelAgent(
 	appCfg *config.Config,
 	ma *config.MultiAgentConfig,
 	ag *agent.Agent,
+	db *database.DB,
 	logger *zap.Logger,
 	conversationID string,
+	projectID string,
 	userMessage string,
 	history []agent.ChatMessage,
 	roleTools []string,
@@ -58,10 +61,12 @@ func RunEinoSingleChatModelAgent(
 
 	var mcpIDsMu sync.Mutex
 	var mcpIDs []string
-	recorder := func(id string) {
+	mcpExecBinder := NewMCPExecutionBinder()
+	recorder := func(id, toolCallID string) {
 		if id == "" {
 			return
 		}
+		mcpExecBinder.Bind(toolCallID, id)
 		mcpIDsMu.Lock()
 		mcpIDs = append(mcpIDs, id)
 		mcpIDsMu.Unlock()
@@ -75,29 +80,15 @@ func RunEinoSingleChatModelAgent(
 		return out
 	}
 
-	toolOutputChunk := func(toolName, toolCallID, chunk string) {
-		if progress == nil || toolCallID == "" {
-			return
-		}
-		progress("tool_result_delta", chunk, map[string]interface{}{
-			"toolName":   toolName,
-			"toolCallId": toolCallID,
-			"index":      0,
-			"total":      0,
-			"iteration":  0,
-			"source":     "eino",
-		})
-	}
-
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
-	einoExecMonitor := newEinoExecuteMonitorCallback(ag, recorder)
+	einoExecBegin, einoExecFinish := newEinoExecuteMonitorCallbacks(ag, recorder)
 	mainDefs := ag.ToolsForRole(roleTools)
-	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, toolOutputChunk, toolInvokeNotify, einoSingleAgentName)
+	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, nil, toolInvokeNotify, einoSingleAgentName)
 	if err != nil {
 		return nil, err
 	}
 
-	mainToolsForCfg, mainOrchestratorPre, singleToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWMain, mainTools, einoLoc, skillsRoot, conversationID, logger)
+	mainToolsForCfg, mainOrchestratorPre, singleToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWMain, mainTools, einoLoc, skillsRoot, conversationID, projectID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("eino single eino 中间件: %w", err)
 	}
@@ -132,7 +123,7 @@ func RunEinoSingleChatModelAgent(
 		return nil, fmt.Errorf("eino single 模型: %w", err)
 	}
 
-	mainSumMw, err := newEinoSummarizationMiddleware(ctx, mainModel, appCfg, &ma.EinoMiddleware, conversationID, logger)
+	mainSumMw, err := newEinoSummarizationMiddleware(ctx, mainModel, appCfg, &ma.EinoMiddleware, conversationID, db, projectID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("eino single summarization: %w", err)
 	}
@@ -145,7 +136,7 @@ func RunEinoSingleChatModelAgent(
 	}
 	if einoSkillMW != nil {
 		if einoFSTools && einoLoc != nil {
-			fsMw, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, einoSingleAgentName, einoExecMonitor, agentToolTimeoutMinutes(appCfg), toolOutputChunk)
+			fsMw, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, einoSingleAgentName, einoExecBegin, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 			if fsErr != nil {
 				return nil, fmt.Errorf("eino single filesystem 中间件: %w", fsErr)
 			}
@@ -153,13 +144,14 @@ func RunEinoSingleChatModelAgent(
 		}
 		handlers = append(handlers, einoSkillMW)
 	}
-	handlers = append(handlers, mainSumMw)
-	if teleMw := newEinoModelInputTelemetryMiddleware(logger, appCfg.OpenAI.Model, conversationID, "eino_single"); teleMw != nil {
-		handlers = append(handlers, teleMw)
-	}
-	if capMw := newModelFacingTraceMiddleware(modelFacingTrace); capMw != nil {
-		handlers = append(handlers, capMw)
-	}
+	handlers = appendEinoChatModelTailMiddlewares(handlers, einoChatModelTailConfig{
+		logger:         logger,
+		phase:          "eino_single",
+		summarization:  mainSumMw,
+		modelName:      appCfg.OpenAI.Model,
+		conversationID: conversationID,
+		trace:          modelFacingTrace,
+	})
 
 	maxIter := agentMaxIterations(appCfg)
 
@@ -192,17 +184,15 @@ func RunEinoSingleChatModelAgent(
 		Name:          einoSingleAgentName,
 		Description:   "Eino ADK ChatModelAgent with MCP tools for authorized security testing.",
 		Instruction:   ins,
+		GenModelInput: literalInstructionGenModelInput,
 		Model:         mainModel,
 		ToolsConfig:   mainToolsCfg,
 		MaxIterations: maxIter,
 		Handlers:      handlers,
 	}
-	outKey, modelRetry, _ := deepExtrasFromConfig(ma)
+	outKey, _ := deepExtrasFromConfig(ma)
 	if outKey != "" {
 		chatCfg.OutputKey = outKey
-	}
-	if modelRetry != nil {
-		chatCfg.ModelRetryConfig = modelRetry
 	}
 
 	chatAgent, err := adk.NewChatModelAgent(ctx, chatCfg)
@@ -237,6 +227,7 @@ func RunEinoSingleChatModelAgent(
 		McpIDs:                  &mcpIDs,
 		FilesystemMonitorAgent:  ag,
 		FilesystemMonitorRecord: recorder,
+		MCPExecutionBinder:      mcpExecBinder,
 		ToolInvokeNotify:        toolInvokeNotify,
 		DA:                      chatAgent,
 		ModelFacingTrace:        modelFacingTrace,

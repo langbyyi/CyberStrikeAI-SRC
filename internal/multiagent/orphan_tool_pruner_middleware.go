@@ -27,7 +27,7 @@ import (
 //     本中间件与之互补，专职兜底正向孤儿。
 //   - 仅剔除消息，不向历史里注入虚构 assistant(tc)：虚构 tool_calls 反而会误导模型后续推理。
 //     摘要已覆盖被裁剪段的语义，丢一条原始 tool 结果对对话连贯性影响最小。
-//   - 位置建议：挂在所有可能改写历史的中间件（summarization / reduction / skill / plantask /
+//   - 位置建议：挂在 summarization / reduction / skill / plantask / system 合并 / 续聊 dedup 之后，
 //     tool_search）之后，靠近 ChatModel 调用的那一端。
 type orphanToolPrunerMiddleware struct {
 	adk.BaseChatModelAgentMiddleware

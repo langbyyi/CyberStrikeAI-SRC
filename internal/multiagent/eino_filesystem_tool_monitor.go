@@ -63,10 +63,43 @@ func toolCallArgsFromAccumulated(msgs []adk.Message, toolCallID, expectToolName 
 	return map[string]interface{}{}
 }
 
+// beginEinoADKFilesystemToolMonitor 在 Eino ADK filesystem 工具开始调用时写入 running 状态。
+func beginEinoADKFilesystemToolMonitor(
+	ag *agent.Agent,
+	rec einomcp.ExecutionRecorder,
+	binder *MCPExecutionBinder,
+	toolCallID, toolName string,
+) {
+	if ag == nil || rec == nil {
+		return
+	}
+	name := strings.TrimSpace(toolName)
+	if name == "" || strings.EqualFold(name, "execute") {
+		return
+	}
+	if !isBuiltinEinoADKFilesystemToolName(name) {
+		return
+	}
+	tid := strings.TrimSpace(toolCallID)
+	if tid == "" {
+		return
+	}
+	storedName := "eino_fs::" + strings.ToLower(name)
+	id := ag.BeginLocalToolExecution(storedName, map[string]interface{}{})
+	if id == "" {
+		return
+	}
+	rec(id, tid)
+	if binder != nil {
+		binder.Bind(tid, id)
+	}
+}
+
 // recordEinoADKFilesystemToolMonitor 将 Eino ADK filesystem 中间件工具结果写入 MCP 监控（与 execute / MCP 桥芯片一致）。
 func recordEinoADKFilesystemToolMonitor(
 	ag *agent.Agent,
 	rec einomcp.ExecutionRecorder,
+	binder *MCPExecutionBinder,
 	toolName string,
 	toolCallID string,
 	msgs []adk.Message,
@@ -94,8 +127,12 @@ func recordEinoADKFilesystemToolMonitor(
 			invErr = errors.New(t)
 		}
 	}
-	id := ag.RecordLocalToolExecution(storedName, args, resultText, invErr)
-	if id != "" {
-		rec(id)
+	execID := ""
+	if binder != nil {
+		execID = binder.ExecutionID(toolCallID)
+	}
+	id := ag.FinishLocalToolExecution(execID, storedName, args, resultText, invErr)
+	if id != "" && execID == "" {
+		rec(id, toolCallID)
 	}
 }

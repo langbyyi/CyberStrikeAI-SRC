@@ -2,7 +2,6 @@ package handler
 
 import (
 	"strconv"
-	"time"
 
 	"cyberstrike-ai/internal/database"
 
@@ -20,12 +19,12 @@ func auditFilterFromQuery(c *gin.Context) database.ListAuditLogsFilter {
 		ResourceID:   c.Query("resource_id"),
 	}
 	if since := c.Query("since"); since != "" {
-		if t, err := time.Parse(time.RFC3339, since); err == nil {
+		if t, err := database.ParseRFC3339Time(since); err == nil {
 			filter.Since = &t
 		}
 	}
 	if until := c.Query("until"); until != "" {
-		if t, err := time.Parse(time.RFC3339, until); err == nil {
+		if t, err := database.ParseRFC3339Time(until); err == nil {
 			filter.Until = &t
 		}
 	}

@@ -2,6 +2,7 @@
 
 let wechatBindSessionKey = null;
 let wechatBindPollTimer = null;
+let wechatBindFlashTimer = null;
 
 function wechatT(key, fallback) {
     return typeof t === 'function' ? t(key) : fallback;
@@ -88,13 +89,50 @@ function stopWechatBindPoll() {
     }
 }
 
-/** 已绑定：仅展示成功状态，不显示二维码/配对码 */
+function clearWechatBindSuccessNotice() {
+    if (wechatBindFlashTimer) {
+        clearTimeout(wechatBindFlashTimer);
+        wechatBindFlashTimer = null;
+    }
+    const flash = document.getElementById('robot-wechat-bound-flash');
+    if (flash) {
+        flash.classList.remove('is-visible');
+        flash.hidden = true;
+    }
+}
+
+/** 绑定成功后的内联提示（约 4.5 秒后自动淡出） */
+function showWechatBindSuccessNotice(message) {
+    const text = message || wechatT('settings.robots.wechat.boundSuccess', '绑定成功，微信机器人已启用。');
+    const flash = document.getElementById('robot-wechat-bound-flash');
+    const flashText = document.getElementById('robot-wechat-bound-flash-text');
+
+    if (flash) {
+        if (flashText) flashText.textContent = text;
+        flash.hidden = false;
+        requestAnimationFrame(() => flash.classList.add('is-visible'));
+        if (wechatBindFlashTimer) clearTimeout(wechatBindFlashTimer);
+        wechatBindFlashTimer = setTimeout(() => {
+            flash.classList.remove('is-visible');
+            wechatBindFlashTimer = setTimeout(() => {
+                flash.hidden = true;
+                wechatBindFlashTimer = null;
+            }, 300);
+        }, 4500);
+    }
+
+    if (typeof window.showChatToast === 'function') {
+        window.showChatToast(text, 'success');
+    }
+}
+
+/** 已绑定：收起二维码区，仅展示紧凑摘要 */
 function showWechatBoundUI(wechat) {
     const wc = wechat || {};
     const wrap = document.getElementById('robot-wechat-qr-wrap');
     const boundPanel = document.getElementById('robot-wechat-bound-panel');
     const scanPanel = document.getElementById('robot-wechat-scan-panel');
-    const boundId = document.getElementById('robot-wechat-bound-id');
+    const summary = document.getElementById('robot-wechat-bound-summary');
     const btn = document.getElementById('robot-wechat-bind-btn');
 
     stopWechatBindPoll();
@@ -102,8 +140,8 @@ function showWechatBoundUI(wechat) {
     setWechatBadge('bound');
     setWechatCardBound(true);
 
-    if (wrap) wrap.hidden = false;
-    if (boundPanel) boundPanel.hidden = false;
+    if (wrap) wrap.hidden = true;
+    if (boundPanel) boundPanel.hidden = true;
     if (scanPanel) scanPanel.hidden = true;
 
     const verifyWrap = document.getElementById('robot-wechat-verify-wrap');
@@ -117,14 +155,15 @@ function showWechatBoundUI(wechat) {
     }
     if (ph) ph.hidden = false;
 
-    if (boundId) {
-        const id = wc.ilink_bot_id || document.getElementById('robot-wechat-ilink-bot-id')?.value?.trim() || '';
+    const id = wc.ilink_bot_id || document.getElementById('robot-wechat-ilink-bot-id')?.value?.trim() || '';
+    if (summary) {
         if (id) {
-            boundId.textContent = wechatT('settings.robots.wechat.boundBotId', '已绑定 Bot ID：') + id;
-            boundId.hidden = false;
+            const prefix = wechatT('settings.robots.wechat.boundBotId', '已绑定 Bot ID：');
+            summary.innerHTML = `${prefix}<code>${escapeHtml(id)}</code>`;
+            summary.hidden = false;
         } else {
-            boundId.textContent = '';
-            boundId.hidden = true;
+            summary.textContent = '';
+            summary.hidden = true;
         }
     }
 
@@ -133,21 +172,32 @@ function showWechatBoundUI(wechat) {
     }
 }
 
+function escapeHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 /** 扫码绑定进行中 */
 function showWechatScanUI() {
     const wrap = document.getElementById('robot-wechat-qr-wrap');
     const boundPanel = document.getElementById('robot-wechat-bound-panel');
     const scanPanel = document.getElementById('robot-wechat-scan-panel');
+    const summary = document.getElementById('robot-wechat-bound-summary');
     const btn = document.getElementById('robot-wechat-bind-btn');
 
     setWechatBadge('scanning');
     setWechatCardBound(false);
+    clearWechatBindSuccessNotice();
     ensureWechatSteps();
     updateWechatSteps('generate');
 
     if (wrap) wrap.hidden = false;
     if (boundPanel) boundPanel.hidden = true;
     if (scanPanel) scanPanel.hidden = false;
+    if (summary) summary.hidden = true;
 
     const verifyWrap = document.getElementById('robot-wechat-verify-wrap');
     if (verifyWrap) verifyWrap.hidden = true;
@@ -163,7 +213,10 @@ function showWechatScanUI() {
 /** 未绑定且未在扫码：隐藏面板 */
 function hideWechatQrWrap() {
     const wrap = document.getElementById('robot-wechat-qr-wrap');
+    const summary = document.getElementById('robot-wechat-bound-summary');
     if (wrap) wrap.hidden = true;
+    if (summary) summary.hidden = true;
+    clearWechatBindSuccessNotice();
     setWechatBadge('idle');
     setWechatCardBound(false);
 }
@@ -278,6 +331,9 @@ async function pollWechatBindStatus() {
                     const idEl = document.getElementById('robot-wechat-ilink-bot-id');
                     if (idEl) idEl.value = data.ilink_bot_id;
                 }
+                showWechatBindSuccessNotice(
+                    data.message || wechatT('settings.robots.wechat.boundSuccess', '绑定成功，微信机器人已启用。')
+                );
                 if (typeof loadConfig === 'function') {
                     await loadConfig(false);
                 } else {
@@ -299,6 +355,9 @@ async function pollWechatBindStatus() {
                 break;
             case 'binded_redirect':
                 stopWechatBindPoll();
+                showWechatBindSuccessNotice(
+                    data.message || wechatT('settings.robots.wechat.alreadyBound', '该微信已绑定过，无需重复绑定。')
+                );
                 showWechatBoundUI({ bound: true });
                 return;
             case 'expired':

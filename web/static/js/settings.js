@@ -299,6 +299,7 @@ async function loadConfig(loadTools = true) {
         }
 
         fillVisionConfigFromCurrent(currentConfig.vision || {});
+        initModelListControls();
 
         // 填充FOFA配置
         const fofa = currentConfig.fofa || {};
@@ -1569,9 +1570,397 @@ function syncVisionFormEnabled() {
     if (panel) {
         panel.style.opacity = enabled ? '1' : '0.55';
         panel.querySelectorAll('input, select, textarea, a').forEach(el => {
-            if (el.id === 'test-vision-btn') return;
+            if (el.id === 'test-vision-btn' || el.id === 'fetch-vision-models-btn' || el.id === 'vision-model-select') return;
             el.disabled = !enabled;
         });
+        syncModelListFetchButtons();
+    }
+}
+
+const modelPickSelectMap = {};
+let modelPickSelectDocListener = false;
+
+function modelPickT(key) {
+    return typeof window.t === 'function' ? window.t(key) : key;
+}
+
+function closeAllModelPickDropdowns() {
+    Object.keys(modelPickSelectMap).forEach(function (id) {
+        modelPickSelectMap[id].wrapper.classList.remove('open');
+    });
+}
+
+function syncModelPickDropdown(selectId) {
+    const reg = modelPickSelectMap[selectId];
+    if (!reg) return;
+    const { select, dropdown, trigger, wrapper, menuList, countBadge } = reg;
+    const placeholder = modelPickT('settingsBasic.modelsListSelectPlaceholder');
+
+    menuList.innerHTML = '';
+    let optionCount = 0;
+    Array.prototype.forEach.call(select.options, function (opt) {
+        if (!opt.value) return;
+        optionCount += 1;
+        const item = document.createElement('div');
+        item.className = 'model-pick-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        if (opt.value === select.value) {
+            item.classList.add('is-selected');
+            item.setAttribute('aria-selected', 'true');
+        }
+        const check = document.createElement('span');
+        check.className = 'model-pick-option-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'model-pick-option-label';
+        label.textContent = opt.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        menuList.appendChild(item);
+    });
+
+    const selectedOpt = select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+    const labelEl = trigger.querySelector('.model-pick-trigger-label');
+    if (labelEl) {
+        labelEl.textContent = (selectedOpt && selectedOpt.value) ? selectedOpt.textContent : placeholder;
+    }
+    if (countBadge) {
+        countBadge.textContent = String(optionCount);
+        countBadge.style.display = optionCount > 0 ? '' : 'none';
+    }
+    const header = wrapper.querySelector('.model-pick-menu-header');
+    if (header) {
+        header.textContent = optionCount > 0
+            ? placeholder + ' · ' + optionCount
+            : placeholder;
+    }
+
+    trigger.disabled = !!select.disabled;
+    wrapper.classList.toggle('is-disabled', !!select.disabled);
+    wrapper.style.display = optionCount > 0 ? '' : 'none';
+    select.style.display = 'none';
+}
+
+function enhanceModelPickSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    if (select.dataset.modelPickEnhanced === '1') {
+        syncModelPickDropdown(selectId);
+        return;
+    }
+    select.dataset.modelPickEnhanced = '1';
+    select.classList.add('model-pick-native');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'model-pick-dropdown';
+    wrapper.style.display = 'none';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'model-pick-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'model-pick-trigger-label';
+    labelSpan.textContent = modelPickT('settingsBasic.modelsListSelectPlaceholder');
+
+    const meta = document.createElement('span');
+    meta.className = 'model-pick-trigger-meta';
+
+    const countBadge = document.createElement('span');
+    countBadge.className = 'model-pick-count';
+    countBadge.style.display = 'none';
+
+    const caret = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    caret.setAttribute('class', 'model-pick-caret');
+    caret.setAttribute('viewBox', '0 0 16 16');
+    caret.setAttribute('aria-hidden', 'true');
+    caret.innerHTML = '<path fill="currentColor" d="M4.47 6.47a.75.75 0 0 1 1.06 0L8 8.94l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06z"/>';
+
+    meta.appendChild(countBadge);
+    meta.appendChild(caret);
+    trigger.appendChild(labelSpan);
+    trigger.appendChild(meta);
+
+    const menu = document.createElement('div');
+    menu.className = 'model-pick-menu';
+
+    const header = document.createElement('div');
+    header.className = 'model-pick-menu-header';
+    menu.appendChild(header);
+
+    const menuList = document.createElement('div');
+    menuList.className = 'model-pick-menu-list';
+    menuList.setAttribute('role', 'listbox');
+    menu.appendChild(menuList);
+
+    const parent = select.parentNode;
+    const fetchLink = parent.querySelector('.model-pick-fetch-link');
+    if (fetchLink) {
+        parent.insertBefore(wrapper, fetchLink);
+    } else {
+        parent.appendChild(wrapper);
+    }
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    wrapper.appendChild(select);
+
+    modelPickSelectMap[selectId] = {
+        wrapper,
+        trigger,
+        menu,
+        menuList,
+        countBadge,
+        select
+    };
+
+    if (!modelPickSelectDocListener) {
+        document.addEventListener('click', closeAllModelPickDropdowns);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllModelPickDropdowns();
+        });
+        modelPickSelectDocListener = true;
+    }
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        const open = wrapper.classList.contains('open');
+        closeAllModelPickDropdowns();
+        if (!open) wrapper.classList.add('open');
+    });
+
+    menuList.addEventListener('click', function (e) {
+        const opt = e.target.closest('.model-pick-option');
+        if (!opt) return;
+        const val = opt.getAttribute('data-value');
+        if (val === null || val === '') return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        syncModelPickDropdown(selectId);
+    });
+
+    syncModelPickDropdown(selectId);
+}
+
+function initModelListControls() {
+    const providerEl = document.getElementById('openai-provider');
+    if (providerEl && !providerEl.dataset.modelListBound) {
+        providerEl.dataset.modelListBound = '1';
+        providerEl.addEventListener('change', syncModelListFetchButtons);
+    }
+    const visionProv = document.getElementById('vision-provider');
+    if (visionProv && !visionProv.dataset.modelListBound) {
+        visionProv.dataset.modelListBound = '1';
+        visionProv.addEventListener('change', syncModelListFetchButtons);
+    }
+    bindModelSelect('openai');
+    bindModelSelect('vision');
+    syncModelListFetchButtons();
+}
+
+function modelSelectIds(scope) {
+    if (scope === 'vision') {
+        return { selectId: 'vision-model-select', inputId: 'vision-model' };
+    }
+    return { selectId: 'openai-model-select', inputId: 'openai-model' };
+}
+
+function bindModelSelect(scope) {
+    const { selectId, inputId } = modelSelectIds(scope);
+    const select = document.getElementById(selectId);
+    if (!select || select.dataset.bound) return;
+    select.dataset.bound = '1';
+    enhanceModelPickSelect(selectId);
+    select.addEventListener('change', function () {
+        if (!select.value) return;
+        const input = document.getElementById(inputId);
+        if (input) input.value = select.value;
+    });
+}
+
+function resolveModelListCredentials(scope) {
+    if (scope === 'vision') {
+        const vp = (document.getElementById('vision-provider')?.value || '').trim();
+        const provider = vp || document.getElementById('openai-provider')?.value || 'openai';
+        const baseUrl = (document.getElementById('vision-base-url')?.value || '').trim()
+            || (document.getElementById('openai-base-url')?.value || '').trim();
+        const apiKey = (document.getElementById('vision-api-key')?.value || '').trim()
+            || (document.getElementById('openai-api-key')?.value || '').trim();
+        return { provider, base_url: baseUrl, api_key: apiKey };
+    }
+    return {
+        provider: document.getElementById('openai-provider')?.value || 'openai',
+        base_url: (document.getElementById('openai-base-url')?.value || '').trim(),
+        api_key: (document.getElementById('openai-api-key')?.value || '').trim()
+    };
+}
+
+function syncModelListFetchButtons() {
+    const tFn = typeof window.t === 'function' ? window.t : (k) => k;
+    const openaiProv = document.getElementById('openai-provider')?.value || 'openai';
+    const openaiBtn = document.getElementById('fetch-openai-models-btn');
+    const openaiHint = document.getElementById('fetch-openai-models-hint');
+    const openaiSelect = document.getElementById('openai-model-select');
+    const isClaudeOpenai = openaiProv === 'claude';
+    if (openaiBtn) {
+        openaiBtn.style.display = isClaudeOpenai ? 'none' : '';
+    }
+    if (openaiSelect && isClaudeOpenai) {
+        openaiSelect.style.display = 'none';
+        const openaiWrap = modelPickSelectMap['openai-model-select'];
+        if (openaiWrap) openaiWrap.wrapper.style.display = 'none';
+    } else if (openaiSelect && !isClaudeOpenai) {
+        syncModelPickDropdown('openai-model-select');
+    }
+    if (openaiHint) {
+        if (isClaudeOpenai) {
+            openaiHint.textContent = tFn('settingsBasic.modelsListClaudeHint');
+            openaiHint.style.display = '';
+        } else {
+            openaiHint.textContent = '';
+            openaiHint.style.display = 'none';
+        }
+    }
+
+    const vp = (document.getElementById('vision-provider')?.value || '').trim();
+    const visionEffectiveProv = vp || openaiProv;
+    const visionBtn = document.getElementById('fetch-vision-models-btn');
+    const visionHint = document.getElementById('fetch-vision-models-hint');
+    const visionSelect = document.getElementById('vision-model-select');
+    const isClaudeVision = visionEffectiveProv === 'claude';
+    if (visionBtn) {
+        visionBtn.style.display = isClaudeVision ? 'none' : '';
+    }
+    if (visionSelect && isClaudeVision) {
+        visionSelect.style.display = 'none';
+        const visionWrap = modelPickSelectMap['vision-model-select'];
+        if (visionWrap) visionWrap.wrapper.style.display = 'none';
+    } else if (visionSelect && !isClaudeVision) {
+        syncModelPickDropdown('vision-model-select');
+    }
+    if (visionHint) {
+        if (isClaudeVision) {
+            visionHint.textContent = tFn('settingsBasic.modelsListClaudeHint');
+            visionHint.style.display = '';
+        } else {
+            visionHint.textContent = '';
+            visionHint.style.display = 'none';
+        }
+    }
+}
+
+function populateModelSelect(scope, models, currentValue) {
+    const { selectId, inputId } = modelSelectIds(scope);
+    const select = document.getElementById(selectId);
+    const input = document.getElementById(inputId);
+    if (!select) return;
+    const tFn = typeof window.t === 'function' ? window.t : (k) => k;
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.textContent = tFn('settingsBasic.modelsListSelectPlaceholder');
+    select.appendChild(placeholder);
+
+    const seen = new Set();
+    const addOption = (id) => {
+        const val = (id || '').trim();
+        if (!val || seen.has(val)) return;
+        seen.add(val);
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = val;
+        select.appendChild(opt);
+    };
+    (models || []).forEach(addOption);
+    const cur = (currentValue || (input && input.value) || '').trim();
+    if (cur && seen.has(cur)) {
+        select.value = cur;
+    } else {
+        select.value = '';
+    }
+    enhanceModelPickSelect(selectId);
+    syncModelPickDropdown(selectId);
+}
+
+async function fetchModelList(scope) {
+    const tFn = typeof window.t === 'function' ? window.t : (k) => k;
+    const creds = resolveModelListCredentials(scope);
+    const btnId = scope === 'vision' ? 'fetch-vision-models-btn' : 'fetch-openai-models-btn';
+    const resultId = scope === 'vision' ? 'fetch-vision-models-result' : 'fetch-openai-models-result';
+    const inputId = scope === 'vision' ? 'vision-model' : 'openai-model';
+    const btn = document.getElementById(btnId);
+    const resultEl = document.getElementById(resultId);
+    const inputEl = document.getElementById(inputId);
+
+    if (creds.provider === 'claude') {
+        if (resultEl) {
+            resultEl.textContent = tFn('settingsBasic.modelsListClaudeHint');
+            resultEl.style.color = 'var(--text-muted, #718096)';
+        }
+        return;
+    }
+    if (!creds.api_key) {
+        if (resultEl) {
+            resultEl.textContent = tFn('settingsBasic.modelsListNeedApiKey');
+            resultEl.style.color = 'var(--error-color, #e53e3e)';
+        }
+        return;
+    }
+
+    if (btn) {
+        btn.style.pointerEvents = 'none';
+        btn.style.opacity = '0.5';
+    }
+    if (resultEl) {
+        resultEl.textContent = tFn('settingsBasic.modelsListFetching');
+        resultEl.style.color = 'var(--text-muted, #718096)';
+    }
+
+    try {
+        const response = await apiFetch('/api/config/list-models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(creds)
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error || '请求失败');
+        }
+        if (!result.success) {
+            if (resultEl) {
+                resultEl.textContent = (result.supported === false
+                    ? tFn('settingsBasic.modelsListClaudeHint')
+                    : tFn('settingsBasic.modelsListFailed')) + ': ' + (result.error || '');
+                resultEl.style.color = 'var(--error-color, #e53e3e)';
+            }
+            return;
+        }
+        const currentValue = inputEl ? inputEl.value.trim() : '';
+        populateModelSelect(scope, result.models || [], currentValue);
+        if (resultEl) {
+            const count = result.count != null ? result.count : (result.models || []).length;
+            resultEl.textContent = tFn('settingsBasic.modelsListSuccess').replace('{count}', String(count));
+            resultEl.style.color = 'var(--success-color, #38a169)';
+        }
+    } catch (error) {
+        if (resultEl) {
+            resultEl.textContent = tFn('settingsBasic.modelsListFailed') + ': ' + error.message;
+            resultEl.style.color = 'var(--error-color, #e53e3e)';
+        }
+    } finally {
+        if (btn) {
+            btn.style.pointerEvents = '';
+            btn.style.opacity = '';
+        }
     }
 }
 

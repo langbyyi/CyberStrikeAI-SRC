@@ -119,7 +119,6 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 
 	var cancelWithCause context.CancelCauseFunc
 	curFinalMessage := prep.FinalMessage
-	segmentUserMessage := prep.FinalMessage // 本请求原始用户句，临时重试时不得丢失
 	curHistory := prep.History
 	roleTools := prep.RoleTools
 
@@ -177,10 +176,9 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 	taskOwned = true
 
 	var cumulativeMCPExecutionIDs []string
-	var transientRunAttempts int
-	var emptyResponseAttempts int
 	// 同一请求内分段续跑时，主代理 iteration 事件按偏移累计，避免 UI 出现「第3轮 → 第1轮」回跳。
 	var mainIterationOffset int
+	var emptyResponseContinueAttempt int
 
 	for {
 		segmentMainIterationMax := 0
@@ -215,6 +213,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 		}
 		taskCtxLoop := mcp.WithMCPConversationID(taskCtx, conversationID)
 		taskCtxLoop = mcp.WithToolRunRegistry(taskCtxLoop, h.tasks)
+		taskCtxLoop = mcp.WithEinoExecuteRunRegistry(taskCtxLoop, h.tasks)
 		taskCtxLoop = multiagent.WithHITLToolInterceptor(taskCtxLoop, func(ctx context.Context, toolName, arguments string) (string, error) {
 			return h.interceptHITLForEinoTool(ctx, cancelWithCause, conversationID, assistantMessageID, sendEvent, toolName, arguments)
 		})
@@ -224,66 +223,32 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 			h.config,
 			&h.config.MultiAgent,
 			h.agent,
+			h.db,
 			h.logger,
 			conversationID,
+			h.conversationProjectID(conversationID),
 			curFinalMessage,
 			curHistory,
 			roleTools,
 			progressCallback,
 			chatReasoningToClientIntent(req.Reasoning),
-			h.projectBlackboardBlock(conversationID),
+			h.agentSessionContextBlock(conversationID),
 		)
 
 		if result != nil && len(result.MCPExecutionIDs) > 0 {
 			cumulativeMCPExecutionIDs = mergeMCPExecutionIDLists(cumulativeMCPExecutionIDs, result.MCPExecutionIDs)
 		}
 
-		handledEmpty, exhaustedEmpty := h.handleEinoEmptyResponseContinue(
-			baseCtx, conversationID, result, runErr, &emptyResponseAttempts,
-			&curHistory, &curFinalMessage, segmentUserMessage, progressCallback,
-			func(msg string, extra map[string]interface{}) { sendEvent("progress", msg, extra) },
-		)
-		if exhaustedEmpty {
-			runErr = nil
-			transientRunAttempts = 0
-			timeoutCancel()
-			break
-		}
-		if handledEmpty {
-			mainIterationOffset += segmentMainIterationMax
-			transientRunAttempts = 0
-			timeoutCancel()
-			baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
-			h.tasks.BindTaskCancel(conversationID, cancelWithCause)
-			taskCtx, timeoutCancel = context.WithTimeout(baseCtx, 600*time.Minute)
-			h.tasks.UpdateTaskStatus(conversationID, "running")
-			continue
-		}
-
 		if runErr == nil {
-			// 任一段成功完成后，重置临时错误重试窗口（次数/退避从头开始）。
-			transientRunAttempts = 0
-			emptyResponseAttempts = 0
+			mw := &h.config.MultiAgent.EinoMiddleware
+			if h.tryContinueOnEinoEmptyResponse(taskCtx, mw, conversationID, result, &emptyResponseContinueAttempt, &curHistory, &curFinalMessage, progressCallback) {
+				mainIterationOffset += segmentMainIterationMax
+				timeoutCancel()
+				baseCtx, cancelWithCause, taskCtx, timeoutCancel = h.rebindEinoRunningTask(conversationID, timeoutCancel)
+				continue
+			}
 			timeoutCancel()
 			break
-		}
-
-		handled, fatalErr := h.handleEinoTransientRetryContinue(
-			baseCtx, conversationID, result, runErr, &transientRunAttempts,
-			&curHistory, &curFinalMessage, segmentUserMessage, progressCallback,
-			func(msg string, extra map[string]interface{}) { sendEvent("progress", msg, extra) },
-		)
-		if handled {
-			mainIterationOffset += segmentMainIterationMax
-			timeoutCancel()
-			baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
-			h.tasks.BindTaskCancel(conversationID, cancelWithCause)
-			taskCtx, timeoutCancel = context.WithTimeout(baseCtx, 600*time.Minute)
-			h.tasks.UpdateTaskStatus(conversationID, "running")
-			continue
-		}
-		if fatalErr != nil {
-			runErr = fatalErr
 		}
 
 		cause := context.Cause(baseCtx)
@@ -310,8 +275,6 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 				"source":         "interrupt_continue",
 			})
 			mainIterationOffset += segmentMainIterationMax
-			// 非临时错误分段续跑（用户中断并继续）时，清空 transient 计数，避免跨分段累加。
-			transientRunAttempts = 0
 			timeoutCancel()
 			baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
 			h.tasks.BindTaskCancel(conversationID, cancelWithCause)
@@ -446,44 +409,25 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 	curMsg := prep.FinalMessage
 	var result *multiagent.RunResult
 	var runErr error
-	var transientRunAttempts int
-	var emptyResponseAttempts int
 	for {
 		result, runErr = multiagent.RunEinoSingleChatModelAgent(
 			taskCtx,
 			h.config,
 			&h.config.MultiAgent,
 			h.agent,
+			h.db,
 			h.logger,
 			prep.ConversationID,
+			h.conversationProjectID(prep.ConversationID),
 			curMsg,
 			curHist,
 			prep.RoleTools,
 			progressCallback,
 			chatReasoningToClientIntent(req.Reasoning),
-			h.projectBlackboardBlock(prep.ConversationID),
+			h.agentSessionContextBlock(prep.ConversationID),
 		)
-		handledEmpty, exhaustedEmpty := h.handleEinoEmptyResponseContinue(
-			baseCtx, prep.ConversationID, result, runErr, &emptyResponseAttempts,
-			&curHist, &curMsg, prep.FinalMessage, progressCallback, nil,
-		)
-		if exhaustedEmpty {
-			runErr = nil
-			break
-		}
-		if handledEmpty {
-			continue
-		}
 		if runErr == nil {
 			break
-		}
-		if handled, fatalErr := h.handleEinoTransientRetryContinue(
-			baseCtx, prep.ConversationID, result, runErr, &transientRunAttempts,
-			&curHist, &curMsg, prep.FinalMessage, progressCallback, nil,
-		); handled {
-			continue
-		} else if fatalErr != nil {
-			runErr = fatalErr
 		}
 		if shouldPersistEinoAgentTraceAfterRunError(baseCtx) {
 			h.persistEinoAgentTraceForResume(prep.ConversationID, result)

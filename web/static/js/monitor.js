@@ -173,6 +173,24 @@ function einoMainStreamPlanningTitle(responseData) {
 }
 
 /**
+ * Eino 未捕获助手正文占位文案；终态 response 不应覆盖已有流式 buffer。
+ */
+function isEinoEmptyResponsePlaceholder(text) {
+    if (text == null) return false;
+    const s = String(text);
+    return s.indexOf('no assistant text was captured') !== -1
+        || s.indexOf('未捕获到助手文本输出') !== -1;
+}
+
+function resolveFinalAssistantResponseText(finalMessage, streamState) {
+    const buf = streamState && streamState.buffer != null ? String(streamState.buffer).trim() : '';
+    if (isEinoEmptyResponsePlaceholder(finalMessage) && buf) {
+        return streamState.buffer;
+    }
+    return finalMessage;
+}
+
+/**
  * 主通道 response 结束时：将流式占位条目固化为 planning（与后端 flushResponsePlan 落库类型一致），
  * 避免 integrateProgressToMCPSection 快照前删除占位导致「助手输出」仅刷新后才出现。
  */
@@ -181,8 +199,9 @@ function finalizeMainResponseStreamItem(streamState, finalMessage, responseData)
     const item = document.getElementById(streamState.itemId);
     if (!item || !item.parentNode) return false;
 
-    const fullText = (finalMessage != null && String(finalMessage).trim() !== '')
-        ? String(finalMessage)
+    const resolved = resolveFinalAssistantResponseText(finalMessage, streamState);
+    const fullText = (resolved != null && String(resolved).trim() !== '')
+        ? String(resolved)
         : (streamState.buffer || '');
     if (!String(fullText).trim()) {
         item.parentNode.removeChild(item);
@@ -970,17 +989,22 @@ async function requestCancel(conversationId) {
 }
 
 /** 与 MCP 监控一致：仅终止当前进行中的工具调用，工具返回后本轮推理继续（可选 reason 合并进工具结果） */
-async function requestCancelWithContinue(conversationId, reason) {
+async function requestCancelWithContinue(conversationId, reason, options = {}) {
+    const executionId = options && options.executionId ? String(options.executionId).trim() : '';
+    const body = {
+        conversationId,
+        reason: reason || '',
+        continueAfter: true,
+    };
+    if (executionId) {
+        body.executionId = executionId;
+    }
     const response = await apiFetch('/api/agent-loop/cancel', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            conversationId,
-            reason: reason || '',
-            continueAfter: true,
-        }),
+        body: JSON.stringify(body),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -1003,6 +1027,7 @@ function openUserInterruptModal(progressId, conversationId) {
 
 function closeUserInterruptModal() {
     userInterruptModalPending = null;
+    window.__monitorInterruptContext = null;
     closeAppModal('user-interrupt-modal');
 }
 
@@ -1012,6 +1037,7 @@ async function submitUserInterruptContinue() {
     }
     const reason = (document.getElementById('user-interrupt-reason') && document.getElementById('user-interrupt-reason').value || '').trim();
     const { progressId, conversationId } = userInterruptModalPending;
+    const monitorCtx = window.__monitorInterruptContext;
     closeUserInterruptModal();
     const stopBtn = progressId ? document.getElementById(`${progressId}-stop-btn`) : null;
     try {
@@ -1019,7 +1045,16 @@ async function submitUserInterruptContinue() {
             stopBtn.disabled = true;
             stopBtn.textContent = typeof window.t === 'function' ? window.t('tasks.interruptSubmitting') : '提交中...';
         }
-        await requestCancelWithContinue(conversationId, reason);
+        await requestCancelWithContinue(conversationId, reason, {
+            executionId: monitorCtx && monitorCtx.executionId ? monitorCtx.executionId : '',
+        });
+        if (monitorCtx && monitorCtx.executionId && typeof refreshMonitorPanel === 'function') {
+            const page = (typeof monitorState !== 'undefined' && monitorState.pagination && monitorState.pagination.page)
+                ? monitorState.pagination.page
+                : 1;
+            await refreshMonitorPanel(page);
+            window.__monitorInterruptContext = null;
+        }
         loadActiveTasks();
     } catch (error) {
         console.error('中断并继续失败:', error);
@@ -1259,101 +1294,60 @@ function integrateProgressToMCPSection(progressId, assistantMessageId, mcpExecut
         return;
     }
     
-    // 查找或创建 MCP 区域
-    let mcpSection = assistantElement.querySelector('.mcp-call-section');
-    if (!mcpSection) {
-        mcpSection = document.createElement('div');
-        mcpSection.className = 'mcp-call-section';
-        const mcpLabel = document.createElement('div');
-        mcpLabel.className = 'mcp-call-label';
-        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
-        mcpSection.appendChild(mcpLabel);
-        const buttonsContainerInit = document.createElement('div');
-        buttonsContainerInit.className = 'mcp-call-buttons';
-        mcpSection.appendChild(buttonsContainerInit);
-        contentWrapper.appendChild(mcpSection);
+    // 查找或创建 MCP 区域（工具栏 + 工具列表 + 迭代时间线）
+    if (typeof window.ensureMcpCallSectionChrome === 'function') {
+        window.ensureMcpCallSectionChrome(assistantElement, assistantMessageId);
     }
-    
-    // 获取时间线内容
-    const hasContent = timelineHTML.trim().length > 0;
-    
-    // 检查时间线中是否有错误项
-    const hasError = timeline && timeline.querySelector('.timeline-item-error');
-    
-    // 确保按钮容器存在
-    let buttonsContainer = mcpSection.querySelector('.mcp-call-buttons');
-    if (!buttonsContainer) {
-        buttonsContainer = document.createElement('div');
-        buttonsContainer.className = 'mcp-call-buttons';
-        mcpSection.appendChild(buttonsContainer);
+    const mcpSection = assistantElement.querySelector('.mcp-call-section');
+    if (!mcpSection) {
+        removeMessage(progressId);
+        return;
     }
 
-    let maxExecIndex = 0;
-    const existingExecBtns = buttonsContainer.querySelectorAll('.mcp-detail-btn:not(.process-detail-btn)');
-    existingExecBtns.forEach(function (btn) {
-        const n = parseInt(btn.dataset.execIndex, 10);
-        if (!isNaN(n) && n > maxExecIndex) maxExecIndex = n;
-    });
-    const seenExec = new Set();
-    existingExecBtns.forEach(function (btn) {
-        if (btn.dataset.execId) seenExec.add(String(btn.dataset.execId).trim());
-    });
-    let appendedAny = false;
-    if (mcpIds.length > 0) {
-        mcpIds.forEach(function (execId) {
-            const id = execId != null ? String(execId).trim() : '';
-            if (!id || seenExec.has(id)) return;
-            seenExec.add(id);
-            maxExecIndex += 1;
-            appendedAny = true;
-            const detailBtn = document.createElement('button');
-            detailBtn.className = 'mcp-detail-btn';
-            detailBtn.dataset.execId = id;
-            detailBtn.dataset.execIndex = String(maxExecIndex);
-            detailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.callNumber', { n: maxExecIndex }) : '调用 #' + maxExecIndex) + '</span>';
-            detailBtn.onclick = function () { showMCPDetail(id); };
-            buttonsContainer.appendChild(detailBtn);
-        });
-        if (appendedAny && typeof batchUpdateButtonToolNames === 'function') {
-            batchUpdateButtonToolNames(buttonsContainer, mcpIds);
-        }
+    const hasContent = timelineHTML.trim().length > 0;
+
+    if (mcpIds.length > 0 && typeof window.appendMcpCallButtons === 'function') {
+        window.appendMcpCallButtons(assistantElement, mcpIds);
+        const toolList = mcpSection.querySelector('.mcp-tool-list');
+        if (toolList) toolList.classList.remove('expanded');
     }
-    if (!buttonsContainer.querySelector('.process-detail-btn')) {
+    if (typeof window.syncMcpToolsToggleButton === 'function') {
+        window.syncMcpToolsToggleButton(assistantElement);
+    }
+
+    const toolbar = mcpSection.querySelector('.mcp-call-toolbar');
+    if (toolbar && !toolbar.querySelector('.process-detail-btn')) {
         const progressDetailBtn = document.createElement('button');
         progressDetailBtn.className = 'mcp-detail-btn process-detail-btn';
         progressDetailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') + '</span>';
         progressDetailBtn.onclick = () => toggleProcessDetails(null, assistantMessageId);
-        buttonsContainer.appendChild(progressDetailBtn);
+        toolbar.appendChild(progressDetailBtn);
     }
-    
-    // 创建详情容器，放在MCP按钮区域下方（统一结构）
+
     const detailsId = 'process-details-' + assistantMessageId;
     let detailsContainer = document.getElementById(detailsId);
+    const toolListEl = mcpSection.querySelector('.mcp-tool-list');
     
     if (!detailsContainer) {
         detailsContainer = document.createElement('div');
         detailsContainer.id = detailsId;
         detailsContainer.className = 'process-details-container';
-        // 确保容器在按钮容器之后
-        if (buttonsContainer.nextSibling) {
-            mcpSection.insertBefore(detailsContainer, buttonsContainer.nextSibling);
+        if (toolListEl) {
+            toolListEl.after(detailsContainer);
         } else {
             mcpSection.appendChild(detailsContainer);
         }
     }
     
-    // 设置详情内容（如果有错误，默认折叠；否则默认折叠）
     detailsContainer.innerHTML = `
         <div class="process-details-content">
             ${hasContent ? `<div class="progress-timeline" id="${detailsId}-timeline">${timelineHTML}</div>` : '<div class="progress-timeline-empty">' + (typeof window.t === 'function' ? window.t('chat.noProcessDetail') : '暂无过程详情（可能执行过快或未触发详细事件）') + '</div>'}
         </div>
     `;
     
-    // 确保初始状态是折叠的（默认折叠，特别是错误时）
     if (hasContent) {
         const timeline = document.getElementById(detailsId + '-timeline');
         if (timeline) {
-            // 如果有错误，确保折叠；否则也默认折叠
             timeline.classList.remove('expanded');
         }
         
@@ -1363,9 +1357,46 @@ function integrateProgressToMCPSection(progressId, assistantMessageId, mcpExecut
         });
     }
     
-    // 移除原来的进度消息（详情已快照到助手消息下的 process-details）
     removeMessage(progressId);
 }
+
+const PROCESS_DETAILS_PAGE_SIZE = 100;
+
+/**
+ * 分页加载过程详情并增量渲染，避免数百轮迭代一次性阻塞主线程。
+ */
+async function loadProcessDetailsPaginated(assistantMessageId, backendMessageId) {
+    if (!assistantMessageId || !backendMessageId || typeof apiFetch !== 'function' || typeof renderProcessDetails !== 'function') {
+        return;
+    }
+    const PAGE = PROCESS_DETAILS_PAGE_SIZE;
+    let offset = 0;
+    let isFirst = true;
+    while (true) {
+        const res = await apiFetch(
+            '/api/messages/' + encodeURIComponent(String(backendMessageId)) +
+            '/process-details?limit=' + PAGE + '&offset=' + offset
+        );
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error((j && j.error) ? j.error : String(res.status));
+        }
+        const details = (j && Array.isArray(j.processDetails)) ? j.processDetails : [];
+        const hasMore = !!(j && j.hasMore);
+        renderProcessDetails(assistantMessageId, details, {
+            append: !isFirst,
+            markLoaded: !hasMore
+        });
+        if (!hasMore || details.length === 0) {
+            break;
+        }
+        offset += details.length;
+        isFirst = false;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+}
+
+window.loadProcessDetailsPaginated = loadProcessDetailsPaginated;
 
 // 切换过程详情显示
 function toggleProcessDetails(progressId, assistantMessageId) {
@@ -1383,26 +1414,17 @@ function toggleProcessDetails(progressId, assistantMessageId) {
                 // 正在加载中，避免重复请求
             } else {
                 detailsContainer.dataset.loading = '1';
-                // 先展开容器，显示加载态
                 const timeline = detailsContainer.querySelector('.progress-timeline');
                 if (timeline) {
                     timeline.innerHTML = '<div class="progress-timeline-empty">' + ((typeof window.t === 'function') ? window.t('common.loading') : '加载中…') + '</div>';
                 }
-                apiFetch(`/api/messages/${encodeURIComponent(String(backendMessageId))}/process-details`)
-                    .then(async (res) => {
-                        const j = await res.json().catch(() => ({}));
-                        if (!res.ok) throw new Error((j && j.error) ? j.error : res.status);
-                        const details = (j && Array.isArray(j.processDetails)) ? j.processDetails : [];
-                        // 重新渲染详情（renderProcessDetails 会清掉 lazy 标记并写入 loaded）
-                        renderProcessDetails(assistantMessageId, details);
-                    })
+                loadProcessDetailsPaginated(assistantMessageId, backendMessageId)
                     .catch((e) => {
                         console.error('加载过程详情失败:', e);
                         const tl = detailsContainer.querySelector('.progress-timeline');
                         if (tl) {
                             tl.innerHTML = '<div class="progress-timeline-empty">' + ((typeof window.t === 'function') ? window.t('chat.noProcessDetail') : '暂无过程详情（加载失败）') + '</div>';
                         }
-                        // 失败时保留 lazy 状态，允许用户重试
                         detailsContainer.dataset.lazyNotLoaded = '1';
                         detailsContainer.dataset.loaded = '0';
                     })
@@ -1944,6 +1966,7 @@ function handleStreamEvent(event, progressElement, progressId,
                 message: event.message || '',
                 data: d
             });
+            finalizeOutstandingToolCallsForProgress(progressId, 'failed');
             break;
         }
 
@@ -2059,45 +2082,9 @@ function handleStreamEvent(event, progressElement, progressId,
             }
             break;
 
-        case 'tool_result_delta': {
-            const deltaInfo = event.data || {};
-            const toolCallId = deltaInfo.toolCallId || null;
-            if (!toolCallId) break;
-
-            const key = toolResultStreamKey(progressId, toolCallId);
-            let state = toolResultStreamStateByKey.get(key);
-            const deltaText = event.message || '';
-            if (!deltaText) break;
-
-            if (!state) {
-                const mapping = getToolCallMapping(progressId, toolCallId);
-                let callItemId = mapping && mapping.itemId ? mapping.itemId : null;
-                if (callItemId) {
-                    const callItem = document.getElementById(callItemId);
-                    if (callItem) {
-                        ensureToolCallResultSlot(callItem);
-                        const section = callItem.querySelector('.tool-result-section');
-                        if (section) {
-                            section.classList.remove('pending');
-                            section.className = 'tool-result-section success';
-                        }
-                    }
-                }
-                state = { itemId: callItemId, buffer: '', onCallItem: !!callItemId };
-                toolResultStreamStateByKey.set(key, state);
-            }
-
-            state.buffer += deltaText;
-            const item = state.itemId ? document.getElementById(state.itemId) : null;
-            if (item) {
-                const pre = item.querySelector('pre.tool-result');
-                if (pre) {
-                    pre.classList.remove('tool-result-pending');
-                    scheduleStreamPlainTextUpdate(pre, state.buffer);
-                }
-            }
+        case 'tool_result_delta':
+            // 工具执行过程不流式展示，仅等 tool_result 展示最终结果。
             break;
-        }
             
         case 'tool_result':
             const resultInfo = event.data || {};
@@ -2446,19 +2433,20 @@ function handleStreamEvent(event, progressElement, progressId,
             const streamState = responseStreamStateByProgressId.get(progressId);
             const existingAssistantId = streamState?.assistantId || getAssistantId();
             let assistantIdFinal = existingAssistantId;
+            const bubbleText = resolveFinalAssistantResponseText(event.message, streamState);
 
             if (!assistantIdFinal) {
-                assistantIdFinal = addMessage('assistant', event.message, mcpIds, progressId);
+                assistantIdFinal = addMessage('assistant', bubbleText, mcpIds, progressId);
                 setAssistantId(assistantIdFinal);
             } else {
                 setAssistantId(assistantIdFinal);
-                updateAssistantBubbleContent(assistantIdFinal, event.message, true);
+                updateAssistantBubbleContent(assistantIdFinal, bubbleText, true);
             }
 
             // 将 response_start/response_delta 占位固化为 planning，与后端落库一致后再快照过程详情
             if (streamState && streamState.itemId) {
                 finalizeMainResponseStreamItem(streamState, event.message, responseData);
-            } else if (event.message && String(event.message).trim()) {
+            } else if (bubbleText && String(bubbleText).trim() && !isEinoEmptyResponsePlaceholder(event.message)) {
                 addTimelineItem(timeline, 'planning', {
                     title: typeof einoMainStreamPlanningTitle === 'function'
                         ? einoMainStreamPlanningTitle(responseData)
@@ -2791,12 +2779,16 @@ async function restoreHitlInlineForConversation(conversationId) {
             if (detailsContainer.dataset.lazyNotLoaded === '1' && detailsContainer.dataset.loaded !== '1') {
                 try {
                     detailsContainer.dataset.loading = '1';
-                    const res = await apiFetch('/api/messages/' + encodeURIComponent(backendMsgId) + '/process-details');
-                    const j = await res.json().catch(function () { return {}; });
-                    if (!res.ok) throw new Error((j && j.error) ? j.error : String(res.status));
-                    const details = (j && Array.isArray(j.processDetails)) ? j.processDetails : [];
-                    if (typeof renderProcessDetails === 'function') {
-                        renderProcessDetails(clientMsgId, details);
+                    if (typeof loadProcessDetailsPaginated === 'function') {
+                        await loadProcessDetailsPaginated(clientMsgId, backendMsgId);
+                    } else {
+                        const res = await apiFetch('/api/messages/' + encodeURIComponent(backendMsgId) + '/process-details');
+                        const j = await res.json().catch(function () { return {}; });
+                        if (!res.ok) throw new Error((j && j.error) ? j.error : String(res.status));
+                        const details = (j && Array.isArray(j.processDetails)) ? j.processDetails : [];
+                        if (typeof renderProcessDetails === 'function') {
+                            renderProcessDetails(clientMsgId, details);
+                        }
                     }
                 } catch (e) {
                     console.error('加载过程详情失败（HITL 恢复）:', e);
@@ -3153,6 +3145,12 @@ function attachToolResultToCall(progressId, toolCallId, data, options) {
     if (!item && mapping && mapping.timeline) {
         item = findToolCallItemById(mapping.timeline, toolCallId);
     }
+    if (!item && progressId) {
+        const progressRoot = document.getElementById(String(progressId));
+        if (progressRoot) {
+            item = findToolCallItemById(progressRoot, toolCallId);
+        }
+    }
     if (!item) return false;
     mergeToolResultIntoCallItem(item, data, options);
     return true;
@@ -3189,7 +3187,7 @@ function coalesceProcessDetailsToolPairs(details) {
             if (id) callsById.set(id, copy);
             fifoCalls.push(copy);
             out.push(copy);
-        } else if (et === 'tool_result') {
+        } else         if (et === 'tool_result') {
             let target = null;
             if (id && callsById.has(id)) {
                 target = callsById.get(id);
@@ -3203,6 +3201,12 @@ function coalesceProcessDetailsToolPairs(details) {
                 }
             }
             if (target) {
+                // agentFacing 或较新的 tool_result 覆盖旧合并（历史数据可能含 reduction 前全量正文）
+                const prev = target.data._mergedResult;
+                if (prev && data.agentFacing !== true && prev.agentFacing === true) {
+                    out.push(detail);
+                    continue;
+                }
                 absorbResult(target, detail);
                 continue;
             }
@@ -3456,6 +3460,28 @@ async function loadActiveTasks(showErrors = false) {
     }
 }
 
+function getActiveTaskDisplayName(task) {
+    const _t = function (k) { return typeof window.t === 'function' ? window.t(k) : k; };
+    const unnamedTaskText = _t('tasks.unnamedTask');
+    if (!task) return unnamedTaskText;
+    const title = (task.title || '').trim();
+    if (title) return title;
+    const message = (task.message || '').trim();
+    return message || unnamedTaskText;
+}
+
+function updateActiveTaskConversationTitle(conversationId, newTitle) {
+    const bar = document.getElementById('active-tasks-bar');
+    if (!bar || !conversationId) return;
+    const title = (newTitle || '').trim();
+    if (!title) return;
+    bar.querySelectorAll('.active-task-item[data-conversation-id="' + conversationId + '"] .active-task-message')
+        .forEach(function (el) {
+            el.textContent = title;
+        });
+}
+window.updateActiveTaskConversationTitle = updateActiveTaskConversationTitle;
+
 function renderActiveTasks(tasks) {
     const bar = document.getElementById('active-tasks-bar');
     if (!bar) return;
@@ -3516,13 +3542,17 @@ function renderActiveTasks(tasks) {
         };
         const statusText = statusMap[task.status] || _t('tasks.statusRunning');
         const isFinalStatus = ['failed', 'timeout', 'cancelled', 'completed'].includes(task.status);
-        const unnamedTaskText = _t('tasks.unnamedTask');
+        const taskDisplayName = getActiveTaskDisplayName(task);
         const stopTaskBtnText = _t('tasks.stopTask');
+
+        if (task && task.conversationId) {
+            item.dataset.conversationId = task.conversationId;
+        }
 
         item.innerHTML = `
             <div class="active-task-info">
                 <span class="active-task-status">${statusText}</span>
-                <span class="active-task-message">${escapeHtml(task.message || unnamedTaskText)}</span>
+                <span class="active-task-message">${escapeHtml(taskDisplayName)}</span>
             </div>
             <div class="active-task-actions">
                 ${timeText ? `<span class="active-task-time">${timeText}</span>` : ''}
@@ -3562,11 +3592,15 @@ let monitorPanelFetchSeq = 0;
 // 监控面板状态
 const monitorState = {
     executions: [],
-    stats: {},
+    summary: null,
+    topTools: [],
     timeline: null,
     timelineRange: null,
     timelineError: null,
+    timelineLoading: false,
     lastFetchedAt: null,
+    retentionDays: 0,
+    selectedExecutions: new Set(),
     pagination: {
         page: 1,
         pageSize: (() => {
@@ -3578,6 +3612,33 @@ const monitorState = {
         totalPages: 0
     }
 };
+
+let monitorPollTimer = null;
+const MONITOR_POLL_INTERVAL_MS = 3000;
+
+function startMonitorPoll() {
+    stopMonitorPoll();
+    monitorPollTimer = setInterval(function () {
+        const page = document.getElementById('page-mcp-monitor');
+        if (!page || !page.classList.contains('active')) {
+            stopMonitorPoll();
+            return;
+        }
+        if (document.hidden) {
+            return;
+        }
+        if (typeof refreshMonitorPanel === 'function') {
+            refreshMonitorPanel().catch(function () { /* ignore */ });
+        }
+    }, MONITOR_POLL_INTERVAL_MS);
+}
+
+function stopMonitorPoll() {
+    if (monitorPollTimer) {
+        clearInterval(monitorPollTimer);
+        monitorPollTimer = null;
+    }
+}
 
 function openMonitorPanel() {
     // 切换到MCP监控页面
@@ -3633,17 +3694,14 @@ async function refreshMonitorPanel(page = null) {
 
     try {
         const mySeq = ++monitorPanelFetchSeq;
-        // 如果指定了页码，使用指定页码，否则使用当前页码
         const currentPage = page !== null ? page : monitorState.pagination.page;
         const pageSize = monitorState.pagination.pageSize;
-        
-        // 获取当前的筛选条件
+
         const statusFilter = document.getElementById('monitor-status-filter');
         const toolFilter = document.getElementById('monitor-tool-filter');
         const currentStatusFilter = statusFilter ? statusFilter.value : 'all';
         const currentToolFilter = toolFilter ? (toolFilter.value.trim() || 'all') : 'all';
-        
-        // 构建请求 URL
+
         let url = `/api/monitor?page=${currentPage}&page_size=${pageSize}`;
         if (currentStatusFilter && currentStatusFilter !== 'all') {
             url += `&status=${encodeURIComponent(currentStatusFilter)}`;
@@ -3651,36 +3709,34 @@ async function refreshMonitorPanel(page = null) {
         if (currentToolFilter && currentToolFilter !== 'all') {
             url += `&tool=${encodeURIComponent(currentToolFilter)}`;
         }
-        
-        const { result, timeline, timelineError } = await fetchMonitorAndTimeline(url);
+
+        const range = getMcpMonitorTimelineRange();
+        monitorState.timelineLoading = true;
+        const timelinePromise = fetchMonitorTimeline(range);
+
+        const monitorResp = await apiFetch(url, { method: 'GET' });
+        const result = await monitorResp.json().catch(() => ({}));
+        if (!monitorResp.ok) {
+            throw new Error(result.error || '获取监控数据失败');
+        }
         if (mySeq !== monitorPanelFetchSeq) {
             return;
         }
 
-        monitorState.executions = Array.isArray(result.executions) ? result.executions : [];
-        monitorState.stats = result.stats || {};
+        applyMonitorPayload(result, currentStatusFilter);
+
+        const { timeline, timelineError } = await timelinePromise;
+        if (mySeq !== monitorPanelFetchSeq) {
+            return;
+        }
         monitorState.timeline = timeline;
         monitorState.timelineError = timelineError;
-        monitorState.lastFetchedAt = new Date();
-        
-        // 更新分页信息
-        if (result.total !== undefined) {
-            monitorState.pagination = {
-                page: result.page || currentPage,
-                pageSize: result.page_size || pageSize,
-                total: result.total || 0,
-                totalPages: result.total_pages || 1
-            };
-        }
-
-        renderMonitorStats(monitorState.stats, monitorState.lastFetchedAt);
-        renderMonitorExecutions(monitorState.executions, currentStatusFilter);
-        renderMonitorPagination();
-        
-        // 初始化每页显示数量选择器
+        monitorState.timelineLoading = false;
+        updateMonitorTimelineSection();
         initializeMonitorPageSize();
     } catch (error) {
         console.error('刷新监控面板失败:', error);
+        monitorState.timelineLoading = false;
         if (statsContainer) {
             statsContainer.innerHTML = `<div class="monitor-error">${escapeHtml(typeof window.t === 'function' ? window.t('mcpMonitor.loadStatsError') : '无法加载统计信息')}：${escapeHtml(error.message)}</div>`;
         }
@@ -3723,10 +3779,9 @@ async function refreshMonitorPanelWithFilter(statusFilter = 'all', toolFilter = 
 
     try {
         const mySeq = ++monitorPanelFetchSeq;
-        const currentPage = 1; // 筛选时重置到第一页
+        const currentPage = 1;
         const pageSize = monitorState.pagination.pageSize;
-        
-        // 构建请求 URL
+
         let url = `/api/monitor?page=${currentPage}&page_size=${pageSize}`;
         if (statusFilter && statusFilter !== 'all') {
             url += `&status=${encodeURIComponent(statusFilter)}`;
@@ -3734,42 +3789,97 @@ async function refreshMonitorPanelWithFilter(statusFilter = 'all', toolFilter = 
         if (toolFilter && toolFilter !== 'all') {
             url += `&tool=${encodeURIComponent(toolFilter)}`;
         }
-        
-        const { result, timeline, timelineError } = await fetchMonitorAndTimeline(url);
+
+        const range = getMcpMonitorTimelineRange();
+        monitorState.timelineLoading = true;
+        const timelinePromise = fetchMonitorTimeline(range);
+
+        const monitorResp = await apiFetch(url, { method: 'GET' });
+        const result = await monitorResp.json().catch(() => ({}));
+        if (!monitorResp.ok) {
+            throw new Error(result.error || '获取监控数据失败');
+        }
         if (mySeq !== monitorPanelFetchSeq) {
             return;
         }
 
-        monitorState.executions = Array.isArray(result.executions) ? result.executions : [];
-        monitorState.stats = result.stats || {};
+        applyMonitorPayload(result, statusFilter);
+
+        const { timeline, timelineError } = await timelinePromise;
+        if (mySeq !== monitorPanelFetchSeq) {
+            return;
+        }
         monitorState.timeline = timeline;
         monitorState.timelineError = timelineError;
-        monitorState.lastFetchedAt = new Date();
-        
-        // 更新分页信息
-        if (result.total !== undefined) {
-            monitorState.pagination = {
-                page: result.page || currentPage,
-                pageSize: result.page_size || pageSize,
-                total: result.total || 0,
-                totalPages: result.total_pages || 1
-            };
-        }
-
-        renderMonitorStats(monitorState.stats, monitorState.lastFetchedAt);
-        renderMonitorExecutions(monitorState.executions, statusFilter);
-        renderMonitorPagination();
-        
-        // 初始化每页显示数量选择器
+        monitorState.timelineLoading = false;
+        updateMonitorTimelineSection();
         initializeMonitorPageSize();
     } catch (error) {
         console.error('刷新监控面板失败:', error);
+        monitorState.timelineLoading = false;
         if (statsContainer) {
             statsContainer.innerHTML = `<div class="monitor-error">${escapeHtml(typeof window.t === 'function' ? window.t('mcpMonitor.loadStatsError') : '无法加载统计信息')}：${escapeHtml(error.message)}</div>`;
         }
         if (execContainer) {
             execContainer.innerHTML = `<div class="monitor-error">${escapeHtml(typeof window.t === 'function' ? window.t('mcpMonitor.loadExecutionsError') : '无法加载执行记录')}：${escapeHtml(error.message)}</div>`;
         }
+    }
+}
+
+function applyMonitorPayload(result, statusFilter) {
+    const currentPage = monitorState.pagination.page;
+    const pageSize = monitorState.pagination.pageSize;
+
+    monitorState.executions = Array.isArray(result.executions) ? result.executions : [];
+    monitorState.summary = result.summary || null;
+    monitorState.topTools = Array.isArray(result.topTools) ? result.topTools : [];
+    monitorState.lastFetchedAt = new Date();
+    monitorState.retentionDays = typeof result.retentionDays === 'number' ? result.retentionDays : 0;
+
+    if (result.total !== undefined) {
+        monitorState.pagination = {
+            page: result.page || currentPage,
+            pageSize: result.pageSize || pageSize,
+            total: result.total || 0,
+            totalPages: result.totalPages || 1
+        };
+    }
+
+    renderMonitorStats(monitorState.summary, monitorState.topTools, monitorState.lastFetchedAt);
+    renderMonitorExecutions(monitorState.executions, statusFilter);
+    renderMonitorPagination();
+}
+
+async function fetchMonitorTimeline(range) {
+    try {
+        const timelineResp = await apiFetch(`/api/monitor/calls-timeline?range=${encodeURIComponent(range)}`, { method: 'GET' });
+        const timelineJson = await timelineResp.json().catch(() => ({}));
+        if (!timelineResp.ok) {
+            return { timeline: null, timelineError: timelineJson.error || 'timeline failed' };
+        }
+        return { timeline: timelineJson, timelineError: null };
+    } catch (err) {
+        return { timeline: null, timelineError: err && err.message ? err.message : 'timeline failed' };
+    }
+}
+
+function updateMonitorTimelineSection() {
+    const timelineInner = document.querySelector('#monitor-stats .mcp-stats-combined__timeline-inner');
+    if (timelineInner) {
+        const combined = timelineInner.closest('.mcp-stats-combined');
+        const compactEmpty = combined && !!combined.querySelector('.mcp-stats-combined__main');
+        timelineInner.innerHTML = renderMcpStatsTimelineBody(
+            monitorState.timeline,
+            monitorState.timelineError,
+            compactEmpty,
+            monitorState.timelineLoading
+        );
+        bindMcpStatsTimelineEvents();
+        syncMcpMonitorTimelineRangeUI();
+        return;
+    }
+    if (monitorState.summary) {
+        renderMonitorStats(monitorState.summary, monitorState.topTools, monitorState.lastFetchedAt);
     }
 }
 
@@ -3787,29 +3897,14 @@ function getMcpMonitorTimelineRange() {
     return range;
 }
 
-async function fetchMonitorAndTimeline(monitorUrl) {
-    const range = getMcpMonitorTimelineRange();
-    const [monitorResp, timelineResp] = await Promise.all([
-        apiFetch(monitorUrl, { method: 'GET' }),
-        apiFetch(`/api/monitor/calls-timeline?range=${encodeURIComponent(range)}`, { method: 'GET' })
-    ]);
-    const result = await monitorResp.json().catch(() => ({}));
-    if (!monitorResp.ok) {
-        throw new Error(result.error || '获取监控数据失败');
-    }
-    let timeline = null;
-    let timelineError = null;
-    try {
-        const timelineJson = await timelineResp.json().catch(() => ({}));
-        if (timelineResp.ok) {
-            timeline = timelineJson;
-        } else {
-            timelineError = timelineJson.error || 'timeline failed';
-        }
-    } catch (err) {
-        timelineError = err && err.message ? err.message : 'timeline failed';
-    }
-    return { result, timeline, timelineError };
+function buildMonitorTotals(summary) {
+    const s = summary && typeof summary === 'object' ? summary : {};
+    return {
+        total: s.totalCalls || 0,
+        success: s.successCalls || 0,
+        failed: s.failedCalls || 0,
+        lastCallTime: s.lastCallTime ? new Date(s.lastCallTime) : null,
+    };
 }
 
 function formatMcpTimelineLabel(isoOrDate, rangeKey, locale) {
@@ -3887,7 +3982,7 @@ function buildMcpTimelineSvg(points, rangeKey) {
         const tipTime = formatMcpTimelineLabel(c.p.t, rangeKey, locale);
         const isPeak = c.i === peakIdx && (c.p.total || 0) > 0;
         const dotClass = 'mcp-stats-timeline-dot' + (isPeak ? ' mcp-stats-timeline-dot--peak' : '');
-        return `<circle class="${dotClass}" cx="${c.x.toFixed(2)}" cy="${c.y.toFixed(2)}" r="${isPeak ? 3 : 2.5}"
+        return `<circle class="${dotClass}" cx="${c.x.toFixed(2)}" cy="${c.y.toFixed(2)}" r="${isPeak ? 2 : 1.5}"
             data-time="${escapeHtml(tipTime)}"
             data-total="${c.p.total || 0}"
             data-failed="${c.p.failed || 0}" />`;
@@ -3895,7 +3990,7 @@ function buildMcpTimelineSvg(points, rangeKey) {
 
     const peakC = coords[peakIdx];
     const peakMarker = (peakC.p.total || 0) > 0
-        ? `<circle class="mcp-stats-timeline-peak-glow" cx="${peakC.x.toFixed(2)}" cy="${peakC.y.toFixed(2)}" r="7" />`
+        ? `<circle class="mcp-stats-timeline-peak-glow" cx="${peakC.x.toFixed(2)}" cy="${peakC.y.toFixed(2)}" r="5" />`
         : '';
 
     return `<svg class="mcp-stats-timeline__chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
@@ -4033,34 +4128,19 @@ async function setMcpMonitorTimelineRange(range) {
     localStorage.setItem('mcpMonitorTimelineRange', range);
     monitorState.timelineRange = range;
     monitorState.timelineError = null;
+    monitorState.timelineLoading = true;
     syncMcpMonitorTimelineRangeUI(range);
+    updateMonitorTimelineSection();
     try {
-        const timelineResp = await apiFetch(`/api/monitor/calls-timeline?range=${encodeURIComponent(range)}`, { method: 'GET' });
-        const timelineJson = await timelineResp.json().catch(() => ({}));
-        if (!timelineResp.ok) {
-            throw new Error(timelineJson.error || '加载趋势失败');
-        }
-        monitorState.timeline = timelineJson;
-        const timelineInner = document.querySelector('#monitor-stats .mcp-stats-combined__timeline-inner');
-        if (timelineInner) {
-            const combined = timelineInner.closest('.mcp-stats-combined');
-            const compactEmpty = combined && !!combined.querySelector('.mcp-stats-combined__main');
-            timelineInner.innerHTML = renderMcpStatsTimelineBody(monitorState.timeline, monitorState.timelineError, compactEmpty);
-            bindMcpStatsTimelineEvents();
-            syncMcpMonitorTimelineRangeUI(range);
-        } else if (monitorState.stats && Object.keys(monitorState.stats).length > 0) {
-            renderMonitorStats(monitorState.stats, monitorState.lastFetchedAt);
-        }
+        const { timeline, timelineError } = await fetchMonitorTimeline(range);
+        monitorState.timeline = timeline;
+        monitorState.timelineError = timelineError;
+        monitorState.timelineLoading = false;
+        updateMonitorTimelineSection();
     } catch (err) {
         monitorState.timelineError = err.message || 'error';
-        const timelineInner = document.querySelector('#monitor-stats .mcp-stats-combined__timeline-inner');
-        if (timelineInner) {
-            const combined = timelineInner.closest('.mcp-stats-combined');
-            const compactEmpty = combined && !!combined.querySelector('.mcp-stats-combined__main');
-            timelineInner.innerHTML = renderMcpStatsTimelineBody(monitorState.timeline, monitorState.timelineError, compactEmpty);
-            bindMcpStatsTimelineEvents();
-            syncMcpMonitorTimelineRangeUI(range);
-        }
+        monitorState.timelineLoading = false;
+        updateMonitorTimelineSection();
     }
 }
 window.setMcpMonitorTimelineRange = setMcpMonitorTimelineRange;
@@ -4089,7 +4169,12 @@ function renderMcpStatsTimelineEmptyState(compact) {
     </div>`;
 }
 
-function renderMcpStatsTimelineBody(timeline, timelineError, compactEmpty) {
+function renderMcpStatsTimelineBody(timeline, timelineError, compactEmpty, loading) {
+    if (loading) {
+        const loadingText = mcpMonitorT('timelineLoading') || monitorFallback('趋势加载中…', 'Loading trend…');
+        return `<div class="monitor-empty monitor-empty--inline">${escapeHtml(loadingText)}</div>`;
+    }
+
     const hint = mcpMonitorT('timelineHint') || monitorFallback('全部工具合计', 'All tools combined');
 
     if (timelineError) {
@@ -4157,7 +4242,7 @@ function renderMcpStatsCombinedSection(topTools, totals, activeToolFilter, timel
     const timelineCol = showTimeline
         ? `<div class="mcp-stats-combined__timeline">
             <p class="mcp-stats-combined__col-label">${escapeHtml(timelineTitle)}</p>
-            <div class="mcp-stats-combined__timeline-inner">${renderMcpStatsTimelineBody(timeline, timelineError, hasTools)}</div>
+            <div class="mcp-stats-combined__timeline-inner">${renderMcpStatsTimelineBody(timeline, timelineError, hasTools, monitorState.timelineLoading)}</div>
         </div>`
         : '';
 
@@ -4212,18 +4297,9 @@ function refreshMonitorPanelFromState() {
     if (!monitorState.lastFetchedAt) return;
     const statusFilter = document.getElementById('monitor-status-filter');
     const currentStatusFilter = statusFilter ? statusFilter.value : 'all';
-    renderMonitorStats(monitorState.stats || {}, monitorState.lastFetchedAt);
+    renderMonitorStats(monitorState.summary, monitorState.topTools, monitorState.lastFetchedAt);
     renderMonitorExecutions(monitorState.executions || [], currentStatusFilter);
     renderMonitorPagination();
-}
-
-function normalizeMonitorStatsEntries(statsMap) {
-    if (!statsMap || typeof statsMap !== 'object') return [];
-    return Object.entries(statsMap).map(([key, item]) => {
-        const stat = item && typeof item === 'object' ? { ...item } : {};
-        if (!stat.toolName) stat.toolName = key;
-        return stat;
-    });
 }
 
 const MCP_STATS_TOOL_CHEVRON = '<svg class="mcp-stats-tool-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>';
@@ -4562,15 +4638,20 @@ function renderMcpStatsStackedBar(success, failed) {
     </div>`;
 }
 
-function updateMonitorStatsSubtitle(lastFetchedAt, toolCount) {
+function updateMonitorStatsSubtitle(lastFetchedAt, toolCount, retentionDays) {
     const subtitle = document.getElementById('monitor-stats-subtitle');
     if (!subtitle) return;
     const locale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
     const timeText = lastFetchedAt
         ? (lastFetchedAt.toLocaleString ? lastFetchedAt.toLocaleString(locale) : String(lastFetchedAt))
         : '—';
-    const text = mcpMonitorT('statsSubtitle', { time: timeText, count: toolCount })
+    let text = mcpMonitorT('statsSubtitle', { time: timeText, count: toolCount })
         || monitorFallback(`最后刷新 ${timeText} · 共 ${toolCount} 个工具`, `Refreshed ${timeText} · ${toolCount} tools`);
+    if (typeof retentionDays === 'number' && retentionDays > 0) {
+        const hint = mcpMonitorT('retentionHint', { days: retentionDays })
+            || monitorFallback(`执行记录保留 ${retentionDays} 天，超期自动清理`, `Execution records are kept for ${retentionDays} days, then purged automatically.`);
+        text += ' · ' + hint;
+    }
     subtitle.textContent = text;
     subtitle.hidden = false;
 }
@@ -4915,35 +4996,25 @@ function renderMcpStatsToolRanking(topTools, totals, activeToolFilter = '', opti
     return renderMcpStatsDetailSection(topTools, totals, activeToolFilter);
 }
 
-function renderMonitorStats(statsMap = {}, lastFetchedAt = null) {
+function renderMonitorStats(summary = null, topTools = [], lastFetchedAt = null) {
     const container = document.getElementById('monitor-stats');
     if (!container) {
         return;
     }
 
-    const entries = normalizeMonitorStatsEntries(statsMap);
-    const showTimeline = monitorState.timeline != null || !!monitorState.timelineError;
-    if (entries.length === 0 && !showTimeline) {
+    const tools = Array.isArray(topTools) ? topTools : [];
+    const totals = buildMonitorTotals(summary);
+    const toolCount = summary && typeof summary.toolCount === 'number' ? summary.toolCount : tools.length;
+    const showTimeline = monitorState.timelineLoading || monitorState.timeline != null || !!monitorState.timelineError;
+    const hasSummaryData = toolCount > 0 || totals.total > 0;
+
+    if (!hasSummaryData && !showTimeline) {
         const noStats = mcpMonitorT('noStatsData') || monitorFallback('暂无统计数据', 'No statistical data');
         container.innerHTML = '<div class="monitor-empty">' + escapeHtml(noStats) + '</div>';
         const subtitle = document.getElementById('monitor-stats-subtitle');
         if (subtitle) subtitle.hidden = true;
         return;
     }
-
-    const totals = entries.reduce(
-        (acc, item) => {
-            acc.total += item.totalCalls || 0;
-            acc.success += item.successCalls || 0;
-            acc.failed += item.failedCalls || 0;
-            const lastCall = item.lastCallTime ? new Date(item.lastCallTime) : null;
-            if (lastCall && (!acc.lastCallTime || lastCall > acc.lastCallTime)) {
-                acc.lastCallTime = lastCall;
-            }
-            return acc;
-        },
-        { total: 0, success: 0, failed: 0, lastCallTime: null }
-    );
 
     const hasCalls = totals.total > 0;
     const successRateNum = hasCalls ? (totals.success / totals.total) * 100 : 0;
@@ -4965,19 +5036,13 @@ function renderMonitorStats(statsMap = {}, lastFetchedAt = null) {
     const toolFilterEl = document.getElementById('monitor-tool-filter');
     const activeToolFilter = toolFilterEl ? toolFilterEl.value.trim() : '';
 
-    const topTools = entries
-        .filter(tool => (tool.totalCalls || 0) > 0)
-        .slice()
-        .sort((a, b) => (b.totalCalls || 0) - (a.totalCalls || 0))
-        .slice(0, MCP_STATS_TOP_N);
-
     const hasAnyCalls = totals.total > 0;
-    const showCombined = hasAnyCalls && (topTools.length > 0 || showTimeline);
+    const showCombined = hasAnyCalls && (tools.length > 0 || showTimeline);
     const html = `
         <div class="mcp-exec-stats">
             ${renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, lastCallText, hasCalls)}
             ${showCombined ? renderMcpStatsCombinedSection(
-                topTools,
+                tools,
                 totals,
                 activeToolFilter,
                 monitorState.timeline,
@@ -4995,7 +5060,7 @@ function renderMonitorStats(statsMap = {}, lastFetchedAt = null) {
     } else if (toolFilterEl) {
         toolFilterEl.classList.remove('is-filter-active');
     }
-    updateMonitorStatsSubtitle(lastFetchedAt, entries.length);
+    updateMonitorStatsSubtitle(lastFetchedAt, toolCount, monitorState.retentionDays);
 }
 
 function renderMonitorExecutions(executions = [], statusFilter = 'all') {
@@ -5052,10 +5117,12 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
             const terminateBtn = status === 'running'
                 ? `<button type="button" class="btn-secondary btn-monitor-abort" onclick="cancelMCPToolExecution('${rawExecId.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">${escapeHtml(terminateLabel)}</button>`
                 : '';
+            const jsExecId = rawExecId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            const isSelected = monitorState.selectedExecutions.has(rawExecId);
             return `
                 <tr>
                     <td>
-                        <input type="checkbox" class="monitor-execution-checkbox" value="${executionId}" onchange="updateBatchActionsState()" />
+                        <input type="checkbox" class="monitor-execution-checkbox" value="${executionId}" ${isSelected ? 'checked' : ''} onchange="toggleExecutionSelection('${jsExecId}', this.checked)" />
                     </td>
                     <td>${toolName}</td>
                     <td><span class="${statusClass}">${escapeHtml(statusLabel)}</span></td>
@@ -5201,6 +5268,8 @@ async function deleteExecution(executionId) {
             throw new Error(error.error || deleteFailedMsg);
         }
         
+        monitorState.selectedExecutions.delete(executionId);
+
         // 删除成功后刷新当前页面
         const currentPage = monitorState.pagination.page;
         await refreshMonitorPanel(currentPage);
@@ -5214,10 +5283,22 @@ async function deleteExecution(executionId) {
     }
 }
 
+// 切换单条执行记录选中状态（持久化到 monitorState，避免轮询刷新后丢失）
+function toggleExecutionSelection(executionId, selected) {
+    if (!executionId) {
+        return;
+    }
+    if (selected) {
+        monitorState.selectedExecutions.add(executionId);
+    } else {
+        monitorState.selectedExecutions.delete(executionId);
+    }
+    updateBatchActionsState();
+}
+
 // 更新批量操作状态
 function updateBatchActionsState() {
-    const checkboxes = document.querySelectorAll('.monitor-execution-checkbox:checked');
-    const selectedCount = checkboxes.length;
+    const selectedCount = monitorState.selectedExecutions.size;
     const batchActions = document.getElementById('monitor-batch-actions');
     const selectedCountSpan = document.getElementById('monitor-selected-count');
     
@@ -5234,13 +5315,18 @@ function updateBatchActionsState() {
         selectedCountSpan.textContent = typeof window.t === 'function' ? window.t('mcp.selectedCount', { count: selectedCount }) : '已选择 ' + selectedCount + ' 项';
     }
     
-    // 更新全选复选框状态
+    // 更新全选复选框状态（仅反映当前页）
     const selectAllCheckbox = document.getElementById('monitor-select-all');
     if (selectAllCheckbox) {
         const allCheckboxes = document.querySelectorAll('.monitor-execution-checkbox');
-        const allChecked = allCheckboxes.length > 0 && Array.from(allCheckboxes).every(cb => cb.checked);
-        selectAllCheckbox.checked = allChecked;
-        selectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < allCheckboxes.length;
+        if (allCheckboxes.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        } else {
+            const checkedOnPage = Array.from(allCheckboxes).filter(cb => monitorState.selectedExecutions.has(cb.value)).length;
+            selectAllCheckbox.checked = checkedOnPage === allCheckboxes.length;
+            selectAllCheckbox.indeterminate = checkedOnPage > 0 && checkedOnPage < allCheckboxes.length;
+        }
     }
 }
 
@@ -5249,6 +5335,11 @@ function toggleSelectAll(checkbox) {
     const checkboxes = document.querySelectorAll('.monitor-execution-checkbox');
     checkboxes.forEach(cb => {
         cb.checked = checkbox.checked;
+        if (checkbox.checked) {
+            monitorState.selectedExecutions.add(cb.value);
+        } else {
+            monitorState.selectedExecutions.delete(cb.value);
+        }
     });
     updateBatchActionsState();
 }
@@ -5258,6 +5349,7 @@ function selectAllExecutions() {
     const checkboxes = document.querySelectorAll('.monitor-execution-checkbox');
     checkboxes.forEach(cb => {
         cb.checked = true;
+        monitorState.selectedExecutions.add(cb.value);
     });
     const selectAllCheckbox = document.getElementById('monitor-select-all');
     if (selectAllCheckbox) {
@@ -5273,6 +5365,7 @@ function deselectAllExecutions() {
     checkboxes.forEach(cb => {
         cb.checked = false;
     });
+    monitorState.selectedExecutions.clear();
     const selectAllCheckbox = document.getElementById('monitor-select-all');
     if (selectAllCheckbox) {
         selectAllCheckbox.checked = false;
@@ -5283,14 +5376,12 @@ function deselectAllExecutions() {
 
 // 批量删除执行记录
 async function batchDeleteExecutions() {
-    const checkboxes = document.querySelectorAll('.monitor-execution-checkbox:checked');
-    if (checkboxes.length === 0) {
+    const ids = Array.from(monitorState.selectedExecutions);
+    if (ids.length === 0) {
         const selectFirstMsg = typeof window.t === 'function' ? window.t('mcpMonitor.selectExecFirst') : '请先选择要删除的执行记录';
         alert(selectFirstMsg);
         return;
     }
-    
-    const ids = Array.from(checkboxes).map(cb => cb.value);
     const count = ids.length;
     const batchConfirmMsg = typeof window.t === 'function' ? window.t('mcpMonitor.batchDeleteConfirm', { count: count }) : `确定要删除选中的 ${count} 条执行记录吗？此操作不可恢复。`;
     if (!confirm(batchConfirmMsg)) {
@@ -5314,6 +5405,10 @@ async function batchDeleteExecutions() {
         
         const result = await response.json().catch(() => ({}));
         const deletedCount = result.deleted || count;
+
+        ids.forEach(function (id) {
+            monitorState.selectedExecutions.delete(id);
+        });
         
         // 删除成功后刷新当前页面
         const currentPage = monitorState.pagination.page;
@@ -5494,6 +5589,22 @@ function refreshProgressAndTimelineI18n() {
         const timeline = document.getElementById(detailsId) && document.getElementById(detailsId).querySelector('.progress-timeline');
         const expanded = timeline && timeline.classList.contains('expanded');
         span.textContent = expanded ? _t('tasks.collapseDetail') : _t('chat.expandDetail');
+    });
+
+    document.querySelectorAll('#chat-messages .message.assistant').forEach(function (msgEl) {
+        if (typeof window.syncMcpToolsToggleButton === 'function') {
+            window.syncMcpToolsToggleButton(msgEl);
+        }
+    });
+
+    const copyLabel = _t('common.copy');
+    const copyTitle = _t('chat.copyMessageTitle');
+    document.querySelectorAll('#chat-messages .message-copy-btn').forEach(function (btn) {
+        if (btn.dataset.copySuccessActive === '1') return;
+        const span = btn.querySelector('span');
+        if (span) span.textContent = copyLabel;
+        btn.title = copyTitle;
+        btn.setAttribute('aria-label', copyTitle);
     });
 }
 

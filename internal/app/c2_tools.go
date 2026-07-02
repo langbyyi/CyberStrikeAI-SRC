@@ -61,6 +61,7 @@ func registerC2ListenerTool(s *mcp.Server, m *c2.Manager, l *zap.Logger, webList
 - stop: 停止监听器（需 listener_id）
 - delete: 删除监听器（需 listener_id）
 监听器类型: tcp_reverse, http_beacon, https_beacon, websocket
+tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + ImplantToken）才登记会话；经典 bash/nc 反弹需在 config.allow_legacy_shell=true（公网不推荐）。
 端口约束：create/update 的 bind_port 禁止与本平台 Web/API 所用端口相同。当前本服务该端口为 %d（配置项 server.port，随进程启动从配置文件加载）。若 bind_port 与此相同会导致本服务或监听器 bind 失败、Beacon/oneliner 误连到 Web 而非 C2。请为监听器另选空闲端口。`, webListenPort),
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -74,7 +75,7 @@ func registerC2ListenerTool(s *mcp.Server, m *c2.Manager, l *zap.Logger, webList
 				"bind_port":   map[string]interface{}{"type": "integer", "description": fmt.Sprintf("绑定端口（create 必填）。须 ≠ %d（当前本服务 Web/API 端口，配置 server.port）", webListenPort), "minimum": 1, "maximum": 65535},
 				"profile_id":  map[string]interface{}{"type": "string", "description": "Malleable Profile ID"},
 				"remark":      map[string]interface{}{"type": "string", "description": "备注"},
-				"config":      map[string]interface{}{"type": "object", "description": "高级配置（beacon 路径/TLS/OPSEC 等），create/update 可用"},
+				"config":      map[string]interface{}{"type": "object", "description": "高级配置（beacon 路径/TLS/OPSEC 等），create/update 可用。tcp_reverse 可选 allow_legacy_shell:true 允许未加密经典 shell（默认 false）"},
 			},
 			"required": []string{"action"},
 		},
@@ -222,20 +223,23 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 	s.RegisterTool(mcp.Tool{
 		Name: builtin.ToolC2Session,
 		Description: `C2 会话管理。通过 action 参数选择操作：
-- list: 列出会话（可按 listener_id/status/os/search 过滤）
+- list: 列出会话（可按 listener_id/status/os/search/suspicious 过滤）
 - get: 获取会话详情及最近任务历史（需 session_id）
 - set_sleep: 设置心跳间隔（需 session_id）
 - kill: 下发 exit 任务让 implant 退出（需 session_id）
-- delete: 删除会话记录（需 session_id）`,
+- delete: 删除单个会话记录（需 session_id）
+- delete_batch: 批量删除会话（需 session_ids 数组）`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"action":         map[string]interface{}{"type": "string", "description": "操作: list/get/set_sleep/kill/delete", "enum": []string{"list", "get", "set_sleep", "kill", "delete"}},
+				"action":         map[string]interface{}{"type": "string", "description": "操作: list/get/set_sleep/kill/delete/delete_batch", "enum": []string{"list", "get", "set_sleep", "kill", "delete", "delete_batch"}},
 				"session_id":     map[string]interface{}{"type": "string", "description": "会话 ID（get/set_sleep/kill/delete 需要）"},
+				"session_ids":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "会话 ID 列表（delete_batch）"},
 				"listener_id":    map[string]interface{}{"type": "string", "description": "按监听器过滤（list）"},
 				"status":         map[string]interface{}{"type": "string", "description": "按状态过滤: active/sleeping/dead/killed（list）"},
 				"os":             map[string]interface{}{"type": "string", "description": "按 OS 过滤: linux/windows/darwin（list）"},
 				"search":         map[string]interface{}{"type": "string", "description": "模糊搜索 hostname/username/IP（list）"},
+				"suspicious":     map[string]interface{}{"type": "boolean", "description": "仅疑似误报：离线且 tcp_* / unknown / PID 0（list）"},
 				"limit":          map[string]interface{}{"type": "integer", "description": "返回数量上限（list）"},
 				"sleep_seconds":  map[string]interface{}{"type": "integer", "description": "心跳间隔秒数（set_sleep）"},
 				"jitter_percent": map[string]interface{}{"type": "integer", "description": "抖动百分比 0-100（set_sleep）"},
@@ -257,6 +261,9 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 			if limit := int(getFloat64(params, "limit")); limit > 0 {
 				filter.Limit = limit
 			}
+			if v, ok := params["suspicious"].(bool); ok && v {
+				filter.Suspicious = true
+			}
 			sessions, err := m.DB().ListC2Sessions(filter)
 			return makeC2Result(map[string]interface{}{"sessions": sessions, "count": len(sessions)}, err)
 
@@ -274,8 +281,16 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 		case "set_sleep":
 			sleep := int(getFloat64(params, "sleep_seconds"))
 			jitter := int(getFloat64(params, "jitter_percent"))
-			err := m.DB().SetC2SessionSleep(id, sleep, jitter)
-			return makeC2Result(map[string]interface{}{"updated": err == nil, "sleep_seconds": sleep, "jitter_percent": jitter}, err)
+			task, err := m.SetSessionSleep(id, sleep, jitter)
+			out := map[string]interface{}{
+				"updated":        err == nil,
+				"sleep_seconds":  sleep,
+				"jitter_percent": jitter,
+			}
+			if task != nil {
+				out["task_id"] = task.ID
+			}
+			return makeC2Result(out, err)
 
 		case "kill":
 			task, err := m.EnqueueTask(c2.EnqueueTaskInput{
@@ -291,6 +306,17 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 		case "delete":
 			err := m.DB().DeleteC2Session(id)
 			return makeC2Result(map[string]interface{}{"deleted": err == nil}, err)
+
+		case "delete_batch":
+			rawIDs, _ := params["session_ids"].([]interface{})
+			ids := make([]string, 0, len(rawIDs))
+			for _, v := range rawIDs {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					ids = append(ids, strings.TrimSpace(s))
+				}
+			}
+			n, err := m.DB().DeleteC2SessionsByIDs(ids)
+			return makeC2Result(map[string]interface{}{"deleted": n}, err)
 
 		default:
 			return makeC2Result(nil, fmt.Errorf("unknown action: %s", action))
@@ -491,11 +517,11 @@ func registerC2PayloadTool(s *mcp.Server, m *c2.Manager, l *zap.Logger, webListe
 		Name: builtin.ToolC2Payload,
 		Description: fmt.Sprintf(`C2 Payload 生成。通过 action 参数选择操作：
 - oneliner: 生成单行 payload。kind 必须与监听器协议一致，否则会失败：
-  • tcp_reverse：裸 TCP 反弹，可用 kind: bash, nc, nc_mkfifo, python, perl, powershell（bash 指 /dev/tcp 类，不是 HTTP）。
+  • tcp_reverse：默认仅支持 build 加密 Beacon；若监听器 config.allow_legacy_shell=true，才可用 kind: bash, nc, nc_mkfifo, python, perl, powershell。
   • http_beacon / https_beacon / websocket：仅 HTTP(S) Beacon 轮询，oneliner 只能用 kind: curl_beacon（脚本内用 bash+curl，与「tcp 的 bash」不同）。curl_beacon 返回串末尾含「 &」用于把整个 bash -c 放后台；若用 exec/execute 同步执行，必须整段原样复制（含末尾 &）。若删掉 &，内部 while 死循环占满前台，调用会一直阻塞到超时/杀进程。
-  • 需要经典 bash 反弹 shell 时：先 c2_listener create type=tcp_reverse，再对该监听器用 kind=bash。
+  • 公网部署 tcp_reverse 请用 build 生成加密 Beacon，勿开启 allow_legacy_shell。
   • 省略 kind 时，会按监听器类型自动选第一个兼容类型（HTTP 系默认为 curl_beacon）。
-- build: 交叉编译 beacon 二进制。支持 http_beacon / https_beacon / websocket / tcp_reverse（tcp_reverse 下植入端回连后先发魔数 CSB1，再走与 HTTP 相同的 AES-GCM JSON 语义；未发魔数的连接仍按经典交互 shell 处理）。
+- build: 交叉编译 beacon 二进制。支持 http_beacon / https_beacon / websocket / tcp_reverse（tcp_reverse 植入端回连后先发魔数 CSB1，再经 AES-GCM 解密且校验 ImplantToken 后才登记会话）。
 依赖的监听器 bind_port 须避开本服务 Web 端口 %d（配置 server.port，与 c2_listener 描述一致），否则 Beacon 无法正确回连。`, webListenPort),
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -539,6 +565,9 @@ func registerC2PayloadTool(s *mcp.Server, m *c2.Manager, l *zap.Logger, webListe
 					names[i] = string(k)
 				}
 				return makeC2Result(nil, fmt.Errorf("监听器类型 %s 不支持 %s，兼容类型: %v", listener.Type, kind, names))
+			}
+			if err := c2.ValidateOnelinerForListener(listener, kind); err != nil {
+				return makeC2Result(nil, err)
 			}
 			input := c2.OnelinerInput{
 				Kind:         kind,

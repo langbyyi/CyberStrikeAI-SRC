@@ -362,6 +362,20 @@ function wsProjectT(key, fallback) {
     return fallback;
 }
 
+function wsProjectPickerT(key) {
+    var fallbacks = {
+        'projects.noProject': '无项目',
+        'projects.noProjectDescription': '不绑定项目黑板',
+        'projects.sharedFactBoard': '共享事实黑板',
+        'common.untitled': '未命名',
+        'common.loading': '加载中…',
+        'chat.filterProjectSearchEmpty': '没有匹配的项目',
+        'chat.filterProjectSearchMore': '更多项目请输入关键字搜索',
+        'chat.filterProjectSearchFailed': '加载项目失败，请重试',
+    };
+    return wsProjectT(key, fallbacks[key]);
+}
+
 function getWebshellAiConvId(conn) {
     if (!conn || !conn.id) return '';
     return webshellAiConvMap[conn.id] || '';
@@ -409,51 +423,32 @@ function wsUpdateProjectButtonLabel() {
     textEl.textContent = id && nameMap[id] ? nameMap[id] : wsProjectT('projects.noProject', '无项目');
 }
 
-async function wsRenderProjectPanelList() {
-    var list = document.getElementById('ws-project-list');
-    if (!list || !webshellCurrentConn) return;
-    var conn = webshellCurrentConn;
-    var selected = wsResolveWebshellAiProjectSelection(conn);
-    var projects = [];
-    try {
-        if (typeof window.fetchAllProjects === 'function') {
-            projects = await window.fetchAllProjects(false);
-        }
-    } catch (e) {
-        list.innerHTML = '<div class="chat-project-panel-empty">' + escapeHtml(wsProjectT('projects.loadFailedRetry', '加载失败，请重试')) + '</div>';
-        return;
-    }
-    if (typeof window.rebuildProjectNameMap === 'function') {
-        window.rebuildProjectNameMap(projects);
-    }
-    var activeProjects = projects.filter(function (p) { return p.status !== 'archived'; });
-    var items = [{ id: '', name: wsProjectT('projects.noProject', '无项目'), description: wsProjectT('projects.noProjectDescription', '不绑定项目') }].concat(activeProjects);
-    list.innerHTML = '';
-    items.forEach(function (p) {
-        var isNone = !p.id;
-        var isSelected = isNone ? !selected : selected === p.id;
-        var desc = isNone
-            ? (p.description || '')
-            : ((p.description || '').trim().slice(0, 80) || wsProjectT('projects.sharedFactBoard', '共享事实黑板'));
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'role-selection-item-main' + (isSelected ? ' selected' : '');
-        btn.setAttribute('role', 'option');
-        btn.onclick = function () { wsSelectProject(p.id || ''); };
-        btn.innerHTML = '<div class="role-selection-item-icon-main">' + (isNone ? '—' : '📁') + '</div>' +
-            '<div class="role-selection-item-content-main">' +
-            '<div class="role-selection-item-name-main">' + escapeHtml(p.name || '未命名') + '</div>' +
-            '<div class="role-selection-item-description-main">' + escapeHtml(desc) + '</div></div>' +
-            (isSelected ? '<div class="role-selection-checkmark-main">✓</div>' : '');
-        list.appendChild(btn);
+async function wsLoadProjectPanelList() {
+    if (typeof window.renderProjectPickerPanel !== 'function') return;
+    await window.renderProjectPickerPanel('webshell', {
+        listId: 'ws-project-list',
+        searchInputId: 'ws-project-search',
+        getSelectedId: function () {
+            return webshellCurrentConn ? wsResolveWebshellAiProjectSelection(webshellCurrentConn) : '';
+        },
+        onSelect: function (projectId) { wsSelectProject(projectId); },
+        t: wsProjectPickerT,
     });
 }
 
 async function wsRenderProjectPanel() {
-    var list = document.getElementById('ws-project-list');
-    if (!list) return;
-    list.innerHTML = '<div class="chat-project-panel-loading">' + escapeHtml(wsProjectT('common.loading', '加载中...')) + '</div>';
-    await wsRenderProjectPanelList();
+    if (typeof window.initProjectPickerPanelSearch === 'function') {
+        window.initProjectPickerPanelSearch('webshell', 'ws-project-search', function () {
+            if (typeof window.scheduleProjectPickerPanelSearch === 'function') {
+                window.scheduleProjectPickerPanelSearch('webshell', function () { wsLoadProjectPanelList(); });
+            }
+        });
+    }
+    if (typeof window.clearProjectPickerPanelSearch === 'function') {
+        window.clearProjectPickerPanelSearch('webshell', 'ws-project-search');
+    }
+    await wsLoadProjectPanelList();
+    requestAnimationFrame(function () { document.getElementById('ws-project-search')?.focus(); });
 }
 
 function wsCloseProjectPanel() {
@@ -463,6 +458,9 @@ function wsCloseProjectPanel() {
     if (btn) {
         btn.classList.remove('active');
         btn.setAttribute('aria-expanded', 'false');
+    }
+    if (typeof window.clearProjectPickerPanelSearch === 'function') {
+        window.clearProjectPickerPanelSearch('webshell', 'ws-project-search');
     }
 }
 
@@ -1989,6 +1987,10 @@ function buildWebshellTimelineItemFromDetail(detail) {
 // 渲染「执行过程及调用工具」折叠块（默认折叠，刷新后加载历史时保留并可展开）
 function renderWebshellProcessDetailsBlock(processDetails, defaultCollapsed) {
     if (!processDetails || processDetails.length === 0) return null;
+    if (typeof window.filterNoiseProcessDetails === 'function') {
+        processDetails = window.filterNoiseProcessDetails(processDetails);
+    }
+    if (!processDetails.length) return null;
     if (typeof window.coalesceProcessDetailsToolPairs === 'function') {
         processDetails = window.coalesceProcessDetailsToolPairs(processDetails);
     }
@@ -2226,6 +2228,9 @@ function selectWebshell(id, stateReady) {
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
         '</div>' +
         '<div class="chat-project-panel-body">' +
+        '<div class="chat-project-panel-search">' +
+        '<input type="search" id="ws-project-search" class="chat-project-panel-search-input" autocomplete="off" placeholder="' + escapeHtml(wsProjectT('projects.searchProjectsPlaceholder', '搜索项目…')) + '">' +
+        '</div>' +
         '<div id="ws-project-list" class="role-selection-list-main"></div>' +
         '<div class="chat-project-panel-footer">' +
         '<button type="button" class="role-selection-item-main chat-project-panel-create-btn" onclick="showNewProjectModalFromWebshellAi()">' +
@@ -3388,28 +3393,6 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         var callItem = appendTimelineItem('tool_call', webshellAgentPx(_ed) + '🔧 ' + callTitle, _em || '', _ed);
                         if (_ed.toolCallId && callItem) {
                             wsToolCallItems.set(_ed.toolCallId, callItem);
-                        }
-                        if (!streamingTarget) assistantDiv.textContent = '…';
-
-                    // ─── Tool result delta (streaming output) ───
-                    } else if (_et === 'tool_result_delta' && _ed.toolCallId) {
-                        var trdKey = _ed.toolCallId;
-                        var trdDelta = _em || '';
-                        if (trdDelta) {
-                            var trdState = wsToolResultStreams.get(trdKey);
-                            if (!trdState) {
-                                var callEl = wsToolCallItems.get(trdKey);
-                                trdState = { el: callEl || null, buf: '', onCall: !!callEl };
-                                wsToolResultStreams.set(trdKey, trdState);
-                            }
-                            trdState.buf += trdDelta;
-                            if (trdState.el) {
-                                var trdPre = trdState.el.querySelector('pre.tool-result');
-                                if (trdPre) {
-                                    trdPre.classList.remove('tool-result-pending');
-                                    trdPre.textContent = trdState.buf;
-                                }
-                            }
                         }
                         if (!streamingTarget) assistantDiv.textContent = '…';
 

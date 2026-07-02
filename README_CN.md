@@ -111,9 +111,8 @@ CyberStrikeAI 是一款 **AI 原生安全测试平台**，基于 Go 构建，集
 - 🔒 Web 登录保护、审计日志、SQLite 持久化
 - 📚 知识库（RAG）：向量嵌入与余弦相似度检索（与 Eino `retriever.Retriever` 语义一致），可选 **Eino Compose** 索引流水线及检索后处理（预算、重排等配置项）
 - 📁 对话分组管理：支持分组创建、置顶、重命名、删除等操作
-- 📂 **项目管理**：按项目归类对话与漏洞；**共享事实**（项目黑板）在多会话间沉淀目标/环境/认证等认知，自动注入 Agent 上下文，支持 MCP 工具读写（`upsert_project_fact`、`get_project_fact` 等）
+- 📂 **项目管理**：共享事实（黑板）跨会话沉淀认知，`upsert_project_fact` + `links` 串联攻击路径；聊天攻击链与项目事实图可视化
 - 🛡️ 漏洞管理功能：完整的漏洞 CRUD 操作，支持严重程度分级、状态流转、按对话/严重程度/状态过滤，以及统计看板
-- 📊 **双平台漏洞报告模板（EDUSRC / 企业 SRC）**：项目创建时选择 `report_type`（`enterprise` 或 `edusrc`），漏洞导出自动按类型分发 Markdown 模板——EDUSRC 模板含 SRC 专属字段（开发方 / 资产所在网段 / 漏洞验证所需账号 / 密码 / 漏洞URL），企业 SRC 模板用 漏洞类型 / 危害等级 / 目标系统 / 漏洞地址。每条漏洞记录内置 13 道校验（标题格式、目标、PoC 双重证据、影响关键词等）+ 内存级**硬拒绝黑名单**（30 分钟 TTL），防止 AI 被拒绝后换分类绕过校验（如 CORS / 缺失安全头 一次被拒后无法换"逻辑缺陷"重提交）
 - 📋 批量任务管理：创建任务队列，批量添加任务，依次顺序执行，支持任务编辑与状态跟踪
 - 🎭 角色化测试：预设安全测试角色（渗透测试、CTF、Web 应用扫描等），支持自定义提示词和工具限制
 - 🧩 **Agent 编排（CloudWeGo Eino）**：**单代理** `POST /api/eino-agent/stream`（Eino ADK）；**多代理** `POST /api/multi-agent/stream`，`orchestration` 选 **`deep`** / **`plan_execute`** / **`supervisor`**。ADK **Summarization** 在上下文过长时压缩历史；压缩前将可恢复 **转录** 写入 `data/conversation_artifacts/<会话ID>/summarization/transcript.txt`（保留完整 user/assistant/tool 轮次，省略静态 system）。`agents/` 下主代理与子代理 Markdown 见 [多代理说明](docs/MULTI_AGENT_EINO.md)
@@ -162,7 +161,7 @@ CyberStrikeAI 是一款 **AI 原生安全测试平台**，基于 Go 构建，集
 
 **一条命令部署：**
 ```bash
-git clone https://github.com/langbyyi/CyberStrikeAI-SRC.git
+git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
 cd CyberStrikeAI
 chmod +x run.sh && ./run.sh
 ```
@@ -222,7 +221,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 ### CyberStrikeAI 版本更新（无兼容性问题）
 
 1. （首次使用）启用脚本：`chmod +x upgrade.sh`
-2. 一键升级：`./upgrade.sh`（可选参数：`--tag vX.Y.Z`、`--no-venv`、`--yes`、`--no-sync-roles-skills`）。本地 `tools/` 始终保留；`roles/` 和 `skills/` 默认从仓库同步以获取最新角色与技能包（如需保留本地修改，加 `--no-sync-roles-skills`）。
+2. 一键升级：`./upgrade.sh`（可选参数：`--tag vX.Y.Z`、`--no-venv`、`--yes`）。本地的 `tools/`、`roles/`、`skills/` 会始终保留不被覆盖。
 3. 脚本会备份你的 `config.yaml` 和 `data/`，从 GitHub Release 升级代码，更新 `config.yaml` 的 `version` 字段后重启服务。
 
 推荐的一键指令：
@@ -262,7 +261,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 ## 进阶使用
 
 ### 角色化测试
-- **预设角色**：系统内置 16 个预设安全测试角色，位于 `roles/`：渗透测试、EDUSRC渗透测试、企业SRC渗透测试、信息收集、CTF、Web应用扫描、Web框架测试、API安全测试、综合漏洞扫描、后渗透测试、数字取证、容器安全、云安全审计、二进制分析、默认，外加 `README.md`。两个 **SRC 角色**（EDUSRC / 企业 SRC）贯通"项目 report_type → 漏洞校验 → 报告导出"全链路。
+- **预设角色**：系统内置 12+ 个预设的安全测试角色（渗透测试、CTF、Web 应用扫描、API 安全测试、二进制分析、云安全审计等），位于 `roles/` 目录。
 - **自定义提示词**：每个角色可定义 `user_prompt`，会在用户消息前自动添加，引导 AI 采用特定的测试方法和关注重点。
 - **工具限制**：角色可指定 `tools` 列表，限制可用工具，实现聚焦的测试流程（如 CTF 角色限制为 CTF 专用工具）。
 - **Skills**：技能包位于 `skills_dir`；启用 **`multi_agent.eino_skills`** 后，**单代理与多代理**均可通过 Eino **`skill`** 工具按需加载。可选 **`eino_middleware`**（tool_search、plantask、reduction、checkpoint、Summarization 转录等）与本机 read_file/glob/grep 等见文档。
@@ -311,7 +310,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 ### 工具编排与扩展
 - `tools/*.yaml` 定义命令、参数、提示词与元数据，可热加载。
 - `security.tools_dir` 指向目录即可批量启用；仍支持在主配置里内联定义。
-- **大结果分页**：超过 200KB 的输出会保存为附件，可通过 `query_execution_result` 工具分页、过滤、正则检索。
+- **大工具输出**：超过 `reduction_max_length_for_trunc` 时由 Eino reduction 摘要，完整内容落盘至 `tmp/reduction/`；按 `<persisted-output>` 中的路径用 `read_file` 读取。
 - **结果压缩/摘要**：多兆字节日志可先压缩或生成摘要再写入 SQLite，减小档案体积。
 
 **自定义工具的一般步骤**
@@ -460,7 +459,7 @@ CyberStrikeAI 支持通过三种传输模式连接外部 MCP 服务器：
 - **检索日志**：记录所有知识检索操作，便于审计与调试。
 
 **快速开始（使用预构建知识库）：**
-1. **下载知识数据库**：从 [GitHub Releases](https://github.com/langbyyi/CyberStrikeAI-SRC/releases) 下载预构建的知识数据库文件。
+1. **下载知识数据库**：从 [GitHub Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases) 下载预构建的知识数据库文件。
 2. **解压并放置**：将下载的知识数据库文件（`knowledge.db`）解压后放到项目的 `data/` 目录下。
 3. **重启服务**：重启 CyberStrikeAI 服务，知识库即可直接使用，无需重新构建索引。
 
@@ -550,6 +549,11 @@ multi_agent:
   # orchestrator_instruction_plan_execute / orchestrator_instruction_supervisor 可选
   # eino_skills: { disable: false, filesystem_tools: true, skill_tool_name: skill }
   # eino_middleware: plantask_enable、checkpoint_dir、deep_model_retry_max_retries、deep_output_key 等
+project:
+  enabled: true              # 启用项目黑板与事实 MCP 工具
+  fact_index_max_runes: 65000
+  fact_summary_max_runes: 24000
+  default_inject_deprecated: false
 ```
 
 ### 工具模版示例（`tools/nmap.yaml`）
@@ -605,8 +609,8 @@ CyberStrikeAI/
 ├── internal/            # Agent、MCP 核心、路由、C2（`internal/c2`）与执行器
 ├── web/                 # 前端静态资源与模板
 ├── tools/               # YAML 工具目录（含 100+ 示例）
-├── roles/               # 角色配置文件目录（16 个预设角色，含 EDUSRC + 企业 SRC）
-├── skills/              # Agent Skills 目录（29 个技能包：SQLi/XSS/SSRF/SSTI/XXE/CSRF/JNDI/命令注入/IDOR/JWT 等；每个含 SKILL.md + 可选文件）
+├── roles/               # 角色配置文件目录（含 12+ 预设安全测试角色）
+├── skills/              # Agent Skills 目录（SKILL.md + 可选文件；示例 cyberstrike-eino-demo）
 ├── agents/              # 多代理 Markdown（orchestrator.md + 子代理 *.md）
 ├── docs/                # 说明文档（如机器人使用说明、MULTI_AGENT_EINO.md）
 ├── images/              # 文档配图
@@ -647,7 +651,7 @@ CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404Star
 </div>
 
 ## Stargazers over time
-![Stargazers over time](https://starchart.cc/langbyyi/CyberStrikeAI-SRC.svg)
+![Stargazers over time](https://starchart.cc/Ed1s0nZ/CyberStrikeAI.svg)
 
 ---
 

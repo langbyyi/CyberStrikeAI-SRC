@@ -335,7 +335,9 @@ async function initPage(pageId) {
             }
             break;
         case 'hitl':
-            if (typeof refreshHitlPending === 'function') {
+            if (typeof refreshHitlActivePanel === 'function') {
+                refreshHitlActivePanel();
+            } else if (typeof refreshHitlPending === 'function') {
                 refreshHitlPending();
             }
             break;
@@ -355,6 +357,9 @@ async function initPage(pageId) {
             // 初始化监控面板
             if (typeof refreshMonitorPanel === 'function') {
                 refreshMonitorPanel();
+            }
+            if (typeof startMonitorPoll === 'function') {
+                startMonitorPoll();
             }
             break;
         case 'mcp-management':

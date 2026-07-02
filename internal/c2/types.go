@@ -141,6 +141,8 @@ type ListenerConfig struct {
 	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
 	// CallbackHost 植入端/Payload 使用的回连主机名（可选）；与 bind_host 分离，便于 NAT/ECS 等场景
 	CallbackHost string `json:"callback_host,omitempty"`
+	// AllowLegacyShell 为 true 时 tcp_reverse 允许未加密的经典 bash/nc 反弹 shell 登记会话（默认 false，公网部署强烈不建议开启）
+	AllowLegacyShell bool `json:"allow_legacy_shell,omitempty"`
 }
 
 // ApplyDefaults 对未填字段填默认值；调用方负责持久化时序列化新值

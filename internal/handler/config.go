@@ -688,11 +688,9 @@ type UpdateConfigRequest struct {
 // AgentConfigUpdate 用于 PATCH /api/config 的 agent 段：仅 JSON 中出现的字段（指针非 nil）覆盖内存配置。
 // 避免旧版「整包替换 *AgentConfig」时，未传的整型字段被反序列化为 0 误覆盖（例如 tool_timeout_minutes 变成 0）。
 type AgentConfigUpdate struct {
-	MaxIterations        *int    `json:"max_iterations,omitempty"`
-	LargeResultThreshold *int    `json:"large_result_threshold,omitempty"`
-	ResultStorageDir     *string `json:"result_storage_dir,omitempty"`
-	ToolTimeoutMinutes   *int    `json:"tool_timeout_minutes,omitempty"`
-	SystemPromptPath     *string `json:"system_prompt_path,omitempty"`
+	MaxIterations      *int    `json:"max_iterations,omitempty"`
+	ToolTimeoutMinutes *int    `json:"tool_timeout_minutes,omitempty"`
+	SystemPromptPath   *string `json:"system_prompt_path,omitempty"`
 }
 
 func applyAgentConfigUpdate(dst *config.AgentConfig, src *AgentConfigUpdate) {
@@ -701,12 +699,6 @@ func applyAgentConfigUpdate(dst *config.AgentConfig, src *AgentConfigUpdate) {
 	}
 	if src.MaxIterations != nil {
 		dst.MaxIterations = *src.MaxIterations
-	}
-	if src.LargeResultThreshold != nil {
-		dst.LargeResultThreshold = *src.LargeResultThreshold
-	}
-	if src.ResultStorageDir != nil {
-		dst.ResultStorageDir = *src.ResultStorageDir
 	}
 	if src.ToolTimeoutMinutes != nil {
 		dst.ToolTimeoutMinutes = *src.ToolTimeoutMinutes
@@ -806,6 +798,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 	// 更新机器人配置
 	if req.Robots != nil {
+		if err := config.ValidateWecomConfig(req.Robots.Wecom); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		h.config.Robots = *req.Robots
 		h.logger.Info("更新机器人配置",
 			zap.Bool("wechat_enabled", h.config.Robots.Wechat.Enabled),
@@ -1076,6 +1072,80 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 	})
 }
 
+// ListModelsRequest 获取模型列表请求（OpenAI 兼容 GET /models）。
+type ListModelsRequest struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+}
+
+// ListModels 代理调用上游 GET /models，返回可用模型 id 列表。
+func (h *ConfigHandler) ListModels(c *gin.Context) {
+	var req ListModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数: " + err.Error()})
+		return
+	}
+
+	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		provider = "openai"
+	}
+	if strings.EqualFold(provider, "claude") {
+		c.JSON(http.StatusOK, gin.H{
+			"success":   false,
+			"supported": false,
+			"error":     "Claude (Anthropic Messages API) 不支持自动获取模型列表，请手动填写",
+		})
+		return
+	}
+
+	if strings.TrimSpace(req.APIKey) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "API Key 不能为空"})
+		return
+	}
+
+	baseURL := strings.TrimSuffix(strings.TrimSpace(req.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	tmpCfg := &config.OpenAIConfig{
+		Provider: provider,
+		BaseURL:  baseURL,
+		APIKey:   strings.TrimSpace(req.APIKey),
+	}
+	client := openai.NewClient(tmpCfg, nil, h.logger)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	models, err := client.ListModels(ctx)
+	if err != nil {
+		if apiErr, ok := err.(*openai.APIError); ok {
+			c.JSON(http.StatusOK, gin.H{
+				"success":   false,
+				"supported": true,
+				"error":     fmt.Sprintf("API 返回错误 (HTTP %d): %s", apiErr.StatusCode, apiErr.Body),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success":   false,
+			"supported": true,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"supported": true,
+		"models":    models,
+		"count":     len(models),
+	})
+}
+
 // TestVisionRequest 测试 Vision 模型连接；vision.api_key/base_url 留空时可传 openai 段作回退。
 type TestVisionRequest struct {
 	Vision config.VisionConfig `json:"vision"`
@@ -1262,6 +1332,17 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 		}
 		h.logger.Info("已更新嵌入模型配置记录")
 	}
+
+	// 从 tools 目录重新加载工具配置（新增/修改/删除 yaml 后无需重启）
+	if err := config.ReloadSecurityToolsFromDir(h.config, h.configPath); err != nil {
+		h.logger.Error("重新加载工具配置失败", zap.Error(err))
+		if h.audit != nil {
+			h.audit.RecordFail(c, "config", "apply", "应用配置失败：重新加载工具", map[string]interface{}{"error": err.Error()})
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重新加载工具配置失败: " + err.Error()})
+		return
+	}
+	h.logger.Info("已从 tools 目录重新加载工具配置", zap.Int("tools_count", len(h.config.Security.Tools)))
 
 	// 重新注册工具（根据新的启用状态）
 	h.logger.Info("重新注册工具")
@@ -1532,8 +1613,6 @@ func updateAgentConfig(doc *yaml.Node, agent config.AgentConfig) {
 	agentNode := ensureMap(root, "agent")
 	setIntInMap(agentNode, "max_iterations", agent.MaxIterations)
 	setIntInMap(agentNode, "tool_timeout_minutes", agent.ToolTimeoutMinutes)
-	setIntInMap(agentNode, "large_result_threshold", agent.LargeResultThreshold)
-	setStringInMap(agentNode, "result_storage_dir", agent.ResultStorageDir)
 	setStringInMap(agentNode, "system_prompt_path", agent.SystemPromptPath)
 }
 
@@ -1687,6 +1766,20 @@ func mergeHitlToolWhitelistSlice(existing, add []string) []string {
 	return out
 }
 
+// SetHitlToolWhitelist 将全局免审批工具白名单整表写入 config.yaml（替换，非合并）。
+func (h *ConfigHandler) SetHitlToolWhitelist(tools []string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.Hitl.ToolWhitelist = mergeHitlToolWhitelistSlice(nil, tools)
+	if err := h.saveConfig(); err != nil {
+		return err
+	}
+	h.logger.Info("HITL 全局工具白名单已写入配置文件",
+		zap.Int("count", len(h.config.Hitl.ToolWhitelist)),
+	)
+	return nil
+}
+
 // MergeHitlToolWhitelistIntoConfig 将会话侧栏提交的免审批工具名合并进内存配置并写入 config.yaml（与全局白名单去重规则一致：小写键、保留首次出现的原始大小写）。
 func (h *ConfigHandler) MergeHitlToolWhitelistIntoConfig(add []string) error {
 	h.mu.Lock()
@@ -1707,6 +1800,21 @@ func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	hitlNode := ensureMap(root, "hitl")
 	// flow 样式 [a, b, c] 单行展示，工具多时比块序列省行数
 	setFlowStringSliceInMap(hitlNode, "tool_whitelist", cfg.ToolWhitelist)
+	setStringInMap(hitlNode, "audit_agent_prompt", cfg.AuditAgentPrompt)
+	setStringInMap(hitlNode, "audit_agent_prompt_review_edit", cfg.AuditAgentPromptReviewEdit)
+}
+
+// UpdateHitlAuditAgentStrategy 更新审批/审查编辑两套审计 Agent 提示词并写入 config.yaml。
+func (h *ConfigHandler) UpdateHitlAuditAgentStrategy(approvalPrompt, reviewEditPrompt string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(approvalPrompt)
+	h.config.Hitl.AuditAgentPromptReviewEdit = strings.TrimSpace(reviewEditPrompt)
+	if err := h.saveConfig(); err != nil {
+		return err
+	}
+	h.logger.Info("HITL 审计 Agent 提示词已写入配置文件")
+	return nil
 }
 
 func updateRobotsConfig(doc *yaml.Node, cfg config.RobotsConfig) {

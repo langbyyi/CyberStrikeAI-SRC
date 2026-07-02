@@ -1,4 +1,4 @@
-// 仪表盘页面：拉取运行中任务、漏洞统计、批量任务、工具与 Skills 统计并渲染。
+// 仪表盘页面：拉取运行中对话、漏洞统计、批量任务、工具与 Skills 统计并渲染。
 //
 // 工程基础设施：
 //   - dashboardState 集中保存运行时状态（in-flight controller / 自动轮询 timer / 上次更新时间 /
@@ -118,7 +118,7 @@ async function refreshDashboard() {
             fetchJson('/api/agent-loop/tasks'),
             fetchJson('/api/vulnerabilities/stats'),
             fetchJson('/api/batch-tasks?limit=500&page=1'),
-            fetchJson('/api/monitor/stats'),
+            fetchJson('/api/monitor/stats?top=30'),
             fetchJson('/api/knowledge/stats'),
             fetchJson('/api/skills/stats'),
             fetchJson('/api/vulnerabilities?limit=10&page=1'),
@@ -150,36 +150,24 @@ async function refreshDashboard() {
         // 如果在 await 期间 controller 已被 abort，说明又有新刷新启动了，丢弃本次结果
         if (signal && signal.aborted) return;
 
-        // 运行中任务：Agent 循环任务 + 批量队列「执行中」数量统一统计，避免顶部 KPI 与运行概览不一致
+        // 运行中对话：仅统计 Agent 循环任务；批量队列见右侧「批量任务队列」
         let agentRunningCount = null;
         if (tasksRes && Array.isArray(tasksRes.tasks)) {
             agentRunningCount = tasksRes.tasks.length;
         }
         let batchRunningCount = 0;
-        let batchPendingCount = 0;
         if (batchRes && Array.isArray(batchRes.queues)) {
             batchRes.queues.forEach(q => {
                 const s = (q.status || '').toLowerCase();
                 if (s === 'running') batchRunningCount++;
-                else if (s === 'pending' || s === 'paused') batchPendingCount++;
             });
         }
-        const totalRunning = (agentRunningCount || 0) + batchRunningCount;
+        const runningConversations = agentRunningCount !== null ? agentRunningCount : 0;
         if (runningEl) {
-            if (agentRunningCount !== null) {
-                runningEl.textContent = String(totalRunning);
-            } else if (batchRes && Array.isArray(batchRes.queues)) {
-                runningEl.textContent = String(batchRunningCount);
-            } else {
-                runningEl.textContent = '-';
-            }
+            runningEl.textContent = agentRunningCount !== null ? String(agentRunningCount) : '-';
         }
-        // KPI 副标：N 待执行 / 全部空闲
-        if (batchPendingCount > 0) {
-            setKpiSubBadge('dashboard-kpi-tasks-sub-text',
-                dt('dashboard.pendingCountLabel', { count: batchPendingCount }, batchPendingCount + ' 待执行'),
-                'pending');
-        } else if (totalRunning === 0) {
+        // KPI 副标：全部空闲 / 正在执行
+        if (runningConversations === 0) {
             setKpiSubBadge('dashboard-kpi-tasks-sub-text', dt('dashboard.allIdle', null, '系统空闲'), 'idle');
         } else {
             setKpiSubBadge('dashboard-kpi-tasks-sub-text', dt('dashboard.executingNow', null, '正在执行'), 'running');
@@ -301,36 +289,27 @@ async function refreshDashboard() {
             updateProgressBar('dashboard-batch-progress-done', '0');
         }
 
-        // 工具调用：monitor/stats 为 { toolName: { totalCalls, successCalls, failedCalls, ... } }
+        // 工具调用：monitor/stats 为 { summary, topTools }
         let toolsCount = 0, toolsTotalCalls = 0, toolsSuccessRate = -1, toolsFailedCount = 0;
-        if (monitorRes && typeof monitorRes === 'object') {
-            const names = Object.keys(monitorRes);
-            let totalCalls = 0, totalSuccess = 0, totalFailed = 0;
-            names.forEach(k => {
-                const v = monitorRes[k];
-                const n = v && (v.totalCalls ?? v.TotalCalls);
-                if (typeof n === 'number') totalCalls += n;
-                const s = v && (v.successCalls ?? v.SuccessCalls);
-                if (typeof s === 'number') totalSuccess += s;
-                const f = v && (v.failedCalls ?? v.FailedCalls);
-                if (typeof f === 'number') totalFailed += f;
-            });
-            toolsCount = names.length;
-            toolsTotalCalls = totalCalls;
-            toolsFailedCount = totalFailed;
-            setEl('dashboard-kpi-tools-calls', formatNumber(totalCalls));
+        if (monitorRes && monitorRes.summary) {
+            const s = monitorRes.summary;
+            toolsCount = s.toolCount || 0;
+            toolsTotalCalls = s.totalCalls || 0;
+            toolsFailedCount = s.failedCalls || 0;
+            const totalSuccess = s.successCalls || 0;
+            setEl('dashboard-kpi-tools-calls', formatNumber(toolsTotalCalls));
             setKpiSubText('dashboard-kpi-tools-sub-text',
                 dt('dashboard.toolsCountLabel', { count: toolsCount }, toolsCount + ' 个工具'));
-            if (totalCalls > 0) {
-                toolsSuccessRate = (totalSuccess / totalCalls) * 100;
+            if (toolsTotalCalls > 0) {
+                toolsSuccessRate = (totalSuccess / toolsTotalCalls) * 100;
                 const rateStr = toolsSuccessRate.toFixed(1) + '%';
                 setEl('dashboard-kpi-success-rate', rateStr);
-                setKpiRateBadge('dashboard-kpi-rate-sub-text', toolsSuccessRate, totalFailed);
+                setKpiRateBadge('dashboard-kpi-rate-sub-text', toolsSuccessRate, toolsFailedCount);
             } else {
                 setEl('dashboard-kpi-success-rate', '-');
                 setKpiSubText('dashboard-kpi-rate-sub-text', dt('dashboard.noCallYet', null, '暂无调用'));
             }
-            renderDashboardToolsBar(monitorRes);
+            renderDashboardToolsBar(monitorRes.topTools);
         } else {
             setEl('dashboard-kpi-tools-calls', '-');
             setEl('dashboard-kpi-success-rate', '-');
@@ -414,7 +393,7 @@ async function refreshDashboard() {
         var toolsConfiguredCount = (toolsConfigRes && typeof toolsConfigRes.total === 'number')
             ? toolsConfigRes.total : 0;
         updateSmartCTA({
-            totalRunning: totalRunning,
+            totalRunning: runningConversations + batchRunningCount,
             totalVulns: (vulnRes && typeof vulnRes.total === 'number') ? vulnRes.total : 0,
             totalCalls: toolsTotalCalls,
             toolsConfigured: toolsConfiguredCount,
@@ -430,7 +409,7 @@ async function refreshDashboard() {
             failedTools: toolsFailedCount,
             toolsConfigured: toolsConfiguredCount,
             totalVulns: (vulnRes && typeof vulnRes.total === 'number') ? vulnRes.total : 0,
-            totalRunning: totalRunning
+            totalRunning: runningConversations + batchRunningCount
         });
 
         // 更新「上次更新」时间
@@ -1615,12 +1594,12 @@ function renderSeverityInsights(bySeverityOpen, totalOpen, recentVulnsRes) {
     }
 }
 
-function renderDashboardToolsBar(monitorRes) {
+function renderDashboardToolsBar(topTools) {
     const placeholder = document.getElementById('dashboard-tools-pie-placeholder');
     const barChartEl = document.getElementById('dashboard-tools-bar-chart');
     if (!placeholder || !barChartEl) return;
 
-    if (!monitorRes || typeof monitorRes !== 'object') {
+    if (!Array.isArray(topTools) || topTools.length === 0) {
         placeholder.style.removeProperty('display');
         placeholder.textContent = (typeof window.t === 'function' ? window.t('dashboard.noCallData') : '暂无调用数据');
         barChartEl.style.display = 'none';
@@ -1628,11 +1607,12 @@ function renderDashboardToolsBar(monitorRes) {
         return;
     }
 
-    const entries = Object.keys(monitorRes).map(function (k) {
-        const v = monitorRes[k];
-        const totalCalls = v && (v.totalCalls ?? v.TotalCalls);
-        return { name: k, totalCalls: typeof totalCalls === 'number' ? totalCalls : 0 };
-    }).filter(function (e) { return e.totalCalls > 0; })
+    const entries = topTools.map(function (t) {
+        return {
+            name: t.toolName || '',
+            totalCalls: typeof t.totalCalls === 'number' ? t.totalCalls : 0,
+        };
+    }).filter(function (e) { return e.name && e.totalCalls > 0; })
         .sort(function (a, b) { return b.totalCalls - a.totalCalls; })
         .slice(0, 30);
 

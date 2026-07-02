@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,9 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+// ProjectFilterUnbound 列表 API 中 project_id=__none__ 表示仅未绑定项目的对话。
+const ProjectFilterUnbound = "__none__"
 
 // Conversation 对话
 type Conversation struct {
@@ -352,8 +356,8 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 
 	conv.Pinned = pinned != 0
 
-	// 加载消息（不加载 process_details）
-	messages, err := db.GetMessages(id)
+	// 加载消息（不加载 process_details / reasoning_content，减少历史会话切换 payload）
+	messages, err := db.GetMessagesLite(id)
 	if err != nil {
 		return nil, fmt.Errorf("加载消息失败: %w", err)
 	}
@@ -361,20 +365,44 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 	return &conv, nil
 }
 
+func conversationProjectIDColumn(alias string) string {
+	if alias != "" {
+		return alias + ".project_id"
+	}
+	return "project_id"
+}
+
+func appendConversationProjectFilter(where string, args []interface{}, projectID, alias string) (string, []interface{}) {
+	pid := strings.TrimSpace(projectID)
+	if pid == "" {
+		return where, args
+	}
+	col := conversationProjectIDColumn(alias)
+	if pid == ProjectFilterUnbound {
+		return where + fmt.Sprintf(" AND (%s IS NULL OR TRIM(COALESCE(%s, '')) = '')", col, col), args
+	}
+	return where + fmt.Sprintf(" AND %s = ?", col), append(args, pid)
+}
+
 // CountConversations 统计对话数量。
-func (db *DB) CountConversations(search string) (int, error) {
+func (db *DB) CountConversations(search, projectID string) (int, error) {
 	var count int
 	var err error
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		err = db.QueryRow(
-			`SELECT COUNT(*) FROM conversations c
-			 WHERE c.title LIKE ?
-			    OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ?)`,
-			searchPattern, searchPattern,
-		).Scan(&count)
+		where := ` WHERE (c.title LIKE ?
+			    OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ?))`
+		args := []interface{}{searchPattern, searchPattern}
+		where, args = appendConversationProjectFilter(where, args, projectID, "c")
+		err = db.QueryRow(`SELECT COUNT(*) FROM conversations c`+where, args...).Scan(&count)
 	} else {
-		err = db.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&count)
+		where := ""
+		args := []interface{}{}
+		where, args = appendConversationProjectFilter(where, args, projectID, "")
+		if where != "" {
+			where = " WHERE" + strings.TrimPrefix(where, " AND")
+		}
+		err = db.QueryRow(`SELECT COUNT(*) FROM conversations`+where, args...).Scan(&count)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("统计对话失败: %w", err)
@@ -382,27 +410,51 @@ func (db *DB) CountConversations(search string) (int, error) {
 	return count, nil
 }
 
+func conversationOrderClause(sortBy, tableAlias string) string {
+	col := "updated_at"
+	if strings.TrimSpace(strings.ToLower(sortBy)) == "created_at" {
+		col = "created_at"
+	}
+	prefix := tableAlias
+	if prefix != "" {
+		prefix += "."
+	}
+	return "ORDER BY " + prefix + col + " DESC"
+}
+
 // ListConversations 列出所有对话
-func (db *DB) ListConversations(limit, offset int, search string) ([]*Conversation, error) {
+func (db *DB) ListConversations(limit, offset int, search, sortBy, projectID string) ([]*Conversation, error) {
 	var rows *sql.Rows
 	var err error
 
 	if search != "" {
 		// 使用 EXISTS 子查询代替 LEFT JOIN + DISTINCT，避免大表笛卡尔积
 		searchPattern := "%" + search + "%"
+		orderClause := conversationOrderClause(sortBy, "c")
+		where := ` WHERE (c.title LIKE ?
+			    OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ?))`
+		args := []interface{}{searchPattern, searchPattern}
+		where, args = appendConversationProjectFilter(where, args, projectID, "c")
+		args = append(args, limit, offset)
 		rows, err = db.Query(
 			`SELECT c.id, c.title, COALESCE(c.pinned, 0), c.created_at, c.updated_at, c.project_id
-			 FROM conversations c
-			 WHERE c.title LIKE ?
-			    OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ?)
-			 ORDER BY c.updated_at DESC
+			 FROM conversations c`+where+`
+			 `+orderClause+`
 			 LIMIT ? OFFSET ?`,
-			searchPattern, searchPattern, limit, offset,
+			args...,
 		)
 	} else {
+		orderClause := conversationOrderClause(sortBy, "")
+		where := ""
+		args := []interface{}{}
+		where, args = appendConversationProjectFilter(where, args, projectID, "")
+		if where != "" {
+			where = " WHERE" + strings.TrimPrefix(where, " AND")
+		}
+		args = append(args, limit, offset)
 		rows, err = db.Query(
-			"SELECT id, title, COALESCE(pinned, 0), created_at, updated_at, project_id FROM conversations ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-			limit, offset,
+			"SELECT id, title, COALESCE(pinned, 0), created_at, updated_at, project_id FROM conversations"+where+" "+orderClause+" LIMIT ? OFFSET ?",
+			args...,
 		)
 	}
 
@@ -458,22 +510,30 @@ const ungroupedConversationsSQL = `
 	)`
 
 // CountUngroupedConversations 统计不在任何分组中的对话数量。
-func (db *DB) CountUngroupedConversations() (int, error) {
+func (db *DB) CountUngroupedConversations(projectID string) (int, error) {
+	where := ungroupedConversationsSQL
+	args := []interface{}{}
+	where, args = appendConversationProjectFilter(where, args, projectID, "c")
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) ` + ungroupedConversationsSQL).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) `+where, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("统计未分组对话失败: %w", err)
 	}
 	return count, nil
 }
 
 // ListUngroupedConversations 列出不在任何分组中的对话（最近对话侧栏）。
-func (db *DB) ListUngroupedConversations(limit, offset int) ([]*Conversation, error) {
+func (db *DB) ListUngroupedConversations(limit, offset int, sortBy, projectID string) ([]*Conversation, error) {
+	orderClause := conversationOrderClause(sortBy, "c")
+	where := ungroupedConversationsSQL
+	args := []interface{}{}
+	where, args = appendConversationProjectFilter(where, args, projectID, "c")
+	args = append(args, limit, offset)
 	rows, err := db.Query(
 		`SELECT c.id, c.title, COALESCE(c.pinned, 0), c.created_at, c.updated_at, c.project_id `+
-			ungroupedConversationsSQL+`
-		 ORDER BY c.updated_at DESC
+			where+`
+		 `+orderClause+`
 		 LIMIT ? OFFSET ?`,
-		limit, offset,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("查询未分组对话失败: %w", err)
@@ -516,6 +576,19 @@ func (db *DB) ListUngroupedConversations(limit, offset int) ([]*Conversation, er
 	}
 
 	return conversations, rows.Err()
+}
+
+// GetConversationTitle 获取对话标题（轻量查询，不加载消息）
+func (db *DB) GetConversationTitle(id string) (string, error) {
+	var title string
+	err := db.QueryRow("SELECT title FROM conversations WHERE id = ?", id).Scan(&title)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("对话不存在")
+		}
+		return "", fmt.Errorf("查询对话标题失败: %w", err)
+	}
+	return title, nil
 }
 
 // UpdateConversationTitle 更新对话标题
@@ -570,12 +643,14 @@ func (db *DB) DeleteConversation(id string) error {
 		// 不返回错误，继续删除对话
 	}
 
+	projectID, _ := db.GetConversationProjectID(id)
+
 	// 删除对话（外键CASCADE会自动删除其他相关数据）
 	_, err = db.Exec("DELETE FROM conversations WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("删除对话失败: %w", err)
 	}
-	db.removeConversationScopedDirs(id)
+	db.removeConversationScopedDirs(id, projectID)
 
 	db.logger.Info("对话已删除（漏洞记录已保留）", zap.String("conversationId", id))
 	return nil
@@ -613,13 +688,50 @@ func (db *DB) removeConversationScopedDir(base, conversationID, label string) {
 	}
 }
 
-func (db *DB) removeConversationScopedDirs(conversationID string) {
-	// summarization transcript, reduction files, etc.
+func (db *DB) einoReductionBaseDir() string {
+	if db == nil {
+		return ""
+	}
+	if base := strings.TrimSpace(db.einoReductionRootDir); base != "" {
+		return base
+	}
+	return filepath.Join("tmp", "reduction")
+}
+
+func (db *DB) einoWorkspaceBaseDir() string {
+	if db == nil {
+		return ""
+	}
+	if base := strings.TrimSpace(db.einoWorkspaceRootDir); base != "" {
+		return base
+	}
+	return filepath.Join("tmp", "workspace")
+}
+
+func (db *DB) removeConversationScopedDirs(conversationID, projectID string) {
+	// summarization transcript, etc.
 	db.removeConversationScopedDir(db.conversationArtifactsDir, conversationID, "conversation_artifacts")
 	// Eino plantask JSON boards (skills_dir/.eino/plantask/<id>/).
 	db.removeConversationScopedDir(db.einoPlantaskBaseDir, conversationID, "plantask")
 	// Eino ADK runner checkpoints (checkpoint_dir/<id>/).
 	db.removeConversationScopedDir(db.einoCheckpointBaseDir, conversationID, "eino_checkpoint")
+	// Eino reduction persisted tool outputs (tmp/reduction/conversations/<id>/).
+	// Project-bound sessions share projects/<id>/ — skip on single conversation delete.
+	if strings.TrimSpace(projectID) == "" {
+		reductionBase := filepath.Join(db.einoReductionBaseDir(), "conversations")
+		db.removeConversationScopedDir(reductionBase, conversationID, "reduction")
+		workspaceBase := filepath.Join(db.einoWorkspaceBaseDir(), "conversations")
+		db.removeConversationScopedDir(workspaceBase, conversationID, "workspace")
+	}
+}
+
+func (db *DB) removeProjectScopedDirs(projectID string) {
+	// Eino reduction persisted tool outputs (tmp/reduction/projects/<id>/).
+	reductionBase := filepath.Join(db.einoReductionBaseDir(), "projects")
+	db.removeConversationScopedDir(reductionBase, projectID, "reduction")
+	// Agent download/analysis workspace (tmp/workspace/projects/<id>/).
+	workspaceBase := filepath.Join(db.einoWorkspaceBaseDir(), "projects")
+	db.removeConversationScopedDir(workspaceBase, projectID, "workspace")
 }
 
 // SaveAgentTrace 保存最后一轮代理消息轨迹与助手输出摘要。
@@ -796,6 +908,62 @@ func (db *DB) GetMessages(conversationID string) ([]Message, error) {
 	return messages, nil
 }
 
+// GetMessagesLite 获取对话消息（不含 reasoning_content），用于历史会话快速切换。
+func (db *DB) GetMessagesLite(conversationID string) ([]Message, error) {
+	rows, err := db.Query(
+		"SELECT id, conversation_id, role, content, mcp_execution_ids, created_at, updated_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+		conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查询消息失败: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var mcpIDsJSON sql.NullString
+		var createdAt string
+		var updatedAt sql.NullString
+
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &mcpIDsJSON, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("扫描消息失败: %w", err)
+		}
+
+		var err error
+		msg.CreatedAt, err = time.Parse("2006-01-02 15:04:05.999999999-07:00", createdAt)
+		if err != nil {
+			msg.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt)
+		}
+		if err != nil {
+			msg.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		}
+
+		if updatedAt.Valid && strings.TrimSpace(updatedAt.String) != "" {
+			msg.UpdatedAt, err = time.Parse("2006-01-02 15:04:05.999999999-07:00", updatedAt.String)
+			if err != nil {
+				msg.UpdatedAt, err = time.Parse("2006-01-02 15:04:05", updatedAt.String)
+			}
+			if err != nil {
+				msg.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt.String)
+			}
+		}
+		if msg.UpdatedAt.IsZero() {
+			msg.UpdatedAt = msg.CreatedAt
+		}
+
+		if mcpIDsJSON.Valid && mcpIDsJSON.String != "" {
+			if err := json.Unmarshal([]byte(mcpIDsJSON.String), &msg.MCPExecutionIDs); err != nil {
+				db.logger.Warn("解析MCP执行ID失败", zap.Error(err))
+			}
+		}
+
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
 // turnSliceRange 根据任意一条消息 ID 定位「一轮对话」在 msgs 中的 [start, end) 下标区间（msgs 须已按时间升序，与 GetMessages 一致）。
 // 一轮 = 从某条 user 消息起，至下一条 user 之前（含中间所有 assistant）。
 func turnSliceRange(msgs []Message, anchorID string) (start, end int, err error) {
@@ -903,6 +1071,77 @@ type ProcessDetail struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+// GetTurnUserMessage 返回锚点消息所在轮次中的用户原文（最近一条 user 消息，不含完整历史）。
+func (db *DB) GetTurnUserMessage(conversationID, anchorMessageID string) (string, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	anchorMessageID = strings.TrimSpace(anchorMessageID)
+	if conversationID == "" || anchorMessageID == "" {
+		return "", nil
+	}
+	var content string
+	err := db.QueryRow(`
+SELECT m.content FROM messages m
+WHERE m.conversation_id = ? AND m.role = 'user'
+  AND m.created_at <= COALESCE((SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?), m.created_at)
+ORDER BY m.created_at DESC, m.rowid DESC
+LIMIT 1`, conversationID, anchorMessageID, conversationID).Scan(&content)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("query turn user message: %w", err)
+	}
+	return content, nil
+}
+
+// AssistantCognitionTexts 单条助手消息上的思考/推理/规划文本。
+type AssistantCognitionTexts struct {
+	Thinking       string
+	ReasoningChain string
+	Planning       string
+}
+
+// GetAssistantCognitionTexts 聚合助手消息在 process_details 中的 thinking / reasoning_chain / planning。
+func (db *DB) GetAssistantCognitionTexts(assistantMessageID string) (AssistantCognitionTexts, error) {
+	assistantMessageID = strings.TrimSpace(assistantMessageID)
+	if assistantMessageID == "" {
+		return AssistantCognitionTexts{}, nil
+	}
+	rows, err := db.Query(`
+SELECT event_type, message FROM process_details
+WHERE message_id = ? AND event_type IN ('thinking', 'reasoning_chain', 'planning')
+ORDER BY created_at ASC, rowid ASC`, assistantMessageID)
+	if err != nil {
+		return AssistantCognitionTexts{}, fmt.Errorf("query assistant cognition: %w", err)
+	}
+	defer rows.Close()
+
+	var thinkingParts, reasoningParts, planningParts []string
+	for rows.Next() {
+		var eventType, message string
+		if err := rows.Scan(&eventType, &message); err != nil {
+			continue
+		}
+		msg := strings.TrimSpace(message)
+		if msg == "" {
+			continue
+		}
+		switch eventType {
+		case "thinking":
+			thinkingParts = append(thinkingParts, msg)
+		case "reasoning_chain":
+			reasoningParts = append(reasoningParts, msg)
+		case "planning":
+			planningParts = append(planningParts, msg)
+		}
+	}
+	return AssistantCognitionTexts{
+		Thinking:       strings.Join(thinkingParts, "\n\n"),
+		ReasoningChain: strings.Join(reasoningParts, "\n\n"),
+		Planning:       strings.Join(planningParts, "\n\n"),
+	}, nil
+}
+
 // AddProcessDetail 添加过程详情事件
 func (db *DB) AddProcessDetail(messageID, conversationID, eventType, message string, data interface{}) error {
 	id := uuid.New().String()
@@ -962,6 +1201,107 @@ func (db *DB) GetProcessDetails(messageID string) ([]ProcessDetail, error) {
 	}
 
 	return details, nil
+}
+
+// ProcessDetailsSummary 过程详情摘要（用于折叠态展示，避免全量加载）。
+type ProcessDetailsSummary struct {
+	Total          int `json:"total"`
+	IterationCount int `json:"iterationCount"`
+	MaxIteration   int `json:"maxIteration"`
+}
+
+// GetProcessDetailsSummary 统计消息的过程详情数量与迭代轮次。
+func (db *DB) GetProcessDetailsSummary(messageID string) (*ProcessDetailsSummary, error) {
+	var total int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM process_details WHERE message_id = ?",
+		messageID,
+	).Scan(&total); err != nil {
+		return nil, fmt.Errorf("统计过程详情失败: %w", err)
+	}
+
+	summary := &ProcessDetailsSummary{Total: total}
+	if total == 0 {
+		return summary, nil
+	}
+
+	rows, err := db.Query(
+		"SELECT data FROM process_details WHERE message_id = ? AND event_type = 'iteration' ORDER BY created_at ASC, rowid ASC",
+		messageID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查询迭代详情失败: %w", err)
+	}
+	defer rows.Close()
+
+	maxIter := 0
+	iterCount := 0
+	for rows.Next() {
+		var dataJSON string
+		if err := rows.Scan(&dataJSON); err != nil {
+			return nil, fmt.Errorf("扫描迭代详情失败: %w", err)
+		}
+		iterCount++
+		if dataJSON == "" {
+			continue
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(dataJSON), &payload); err != nil {
+			continue
+		}
+		if n, ok := payload["iteration"].(float64); ok && int(n) > maxIter {
+			maxIter = int(n)
+		}
+	}
+	summary.IterationCount = iterCount
+	summary.MaxIteration = maxIter
+	return summary, nil
+}
+
+// GetProcessDetailsPage 分页获取消息的过程详情（按时间升序）。
+func (db *DB) GetProcessDetailsPage(messageID string, limit, offset int) ([]ProcessDetail, int, error) {
+	var total int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM process_details WHERE message_id = ?",
+		messageID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("统计过程详情失败: %w", err)
+	}
+	if total == 0 || offset >= total {
+		return nil, total, nil
+	}
+
+	rows, err := db.Query(
+		"SELECT id, message_id, conversation_id, event_type, message, data, created_at FROM process_details WHERE message_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?",
+		messageID, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("查询过程详情失败: %w", err)
+	}
+	defer rows.Close()
+
+	var details []ProcessDetail
+	for rows.Next() {
+		var detail ProcessDetail
+		var createdAt string
+
+		if err := rows.Scan(&detail.ID, &detail.MessageID, &detail.ConversationID, &detail.EventType, &detail.Message, &detail.Data, &createdAt); err != nil {
+			return nil, 0, fmt.Errorf("扫描过程详情失败: %w", err)
+		}
+
+		var parseErr error
+		detail.CreatedAt, parseErr = time.Parse("2006-01-02 15:04:05.999999999-07:00", createdAt)
+		if parseErr != nil {
+			detail.CreatedAt, parseErr = time.Parse("2006-01-02 15:04:05", createdAt)
+		}
+		if parseErr != nil {
+			detail.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		}
+
+		details = append(details, detail)
+	}
+
+	return details, total, nil
 }
 
 // GetProcessDetailsByConversation 获取对话的所有过程详情（按消息分组）

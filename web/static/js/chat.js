@@ -1,6 +1,39 @@
 let currentConversationId = null;
 let loadConversationRequestSeq = 0;
 
+/** 轻量会话 LRU 缓存：来回切换已加载会话时避免重复网络 + 全量 DOM 重建 */
+const CONVERSATION_LITE_CACHE_MAX = 12;
+const conversationLiteCache = new Map();
+
+function getConversationLiteFromCache(conversationId) {
+    if (!conversationId) return null;
+    const hit = conversationLiteCache.get(conversationId);
+    if (!hit) return null;
+    conversationLiteCache.delete(conversationId);
+    conversationLiteCache.set(conversationId, hit);
+    return hit;
+}
+
+function putConversationLiteCache(conversationId, data) {
+    if (!conversationId || !data) return;
+    conversationLiteCache.delete(conversationId);
+    conversationLiteCache.set(conversationId, data);
+    while (conversationLiteCache.size > CONVERSATION_LITE_CACHE_MAX) {
+        const oldest = conversationLiteCache.keys().next().value;
+        conversationLiteCache.delete(oldest);
+    }
+}
+
+function invalidateConversationLiteCache(conversationId) {
+    if (conversationId) {
+        conversationLiteCache.delete(conversationId);
+    } else {
+        conversationLiteCache.clear();
+    }
+}
+
+window.invalidateConversationLiteCache = invalidateConversationLiteCache;
+
 // @ 提及相关状态
 let mentionTools = [];
 let mentionToolsLoaded = false;
@@ -106,9 +139,16 @@ function normalizeHitlMode(mode) {
 function defaultHitlConfig() {
     return {
         mode: HITL_MODE_OFF,
+        reviewer: 'human',
         sensitiveTools: '',
         updatedAt: ''
     };
+}
+
+function normalizeHitlReviewer(v) {
+    const x = String(v || '').trim().toLowerCase();
+    if (x === 'audit_agent' || x === 'agent' || x === 'ai') return 'audit_agent';
+    return 'human';
 }
 
 /** 白名单字符串拆成数组（逗号或换行分隔，与 textarea 一致） */
@@ -185,6 +225,7 @@ function getHitlLastGlobalConfig() {
         if (!parsed || typeof parsed !== 'object') return null;
         return {
             mode: normalizeHitlMode(parsed.mode),
+            reviewer: normalizeHitlReviewer(parsed.reviewer),
             sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
             updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
         };
@@ -215,6 +256,7 @@ function getHitlConfigForConversation(conversationId) {
                 if (parsed && typeof parsed === 'object') {
                     draftCfg = {
                         mode: normalizeHitlMode(parsed.mode),
+                        reviewer: normalizeHitlReviewer(parsed.reviewer),
                         sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
                         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
                     };
@@ -225,6 +267,7 @@ function getHitlConfigForConversation(conversationId) {
         }
         const g = globalLast ? {
             mode: normalizeHitlMode(globalLast.mode),
+            reviewer: normalizeHitlReviewer(globalLast.reviewer),
             sensitiveTools: typeof globalLast.sensitiveTools === 'string' ? globalLast.sensitiveTools : fallback.sensitiveTools,
             updatedAt: typeof globalLast.updatedAt === 'string' ? globalLast.updatedAt : ''
         } : null;
@@ -247,6 +290,7 @@ function getHitlConfigForConversation(conversationId) {
         }
         return {
             mode: normalizeHitlMode(parsed.mode),
+            reviewer: normalizeHitlReviewer(parsed.reviewer),
             sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
             updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
         };
@@ -255,10 +299,52 @@ function getHitlConfigForConversation(conversationId) {
     }
 }
 
+function setHitlReviewerUI(reviewer) {
+    const v = normalizeHitlReviewer(reviewer);
+    const hidden = document.getElementById('hitl-reviewer-select');
+    if (hidden) hidden.value = v;
+    document.querySelectorAll('.hitl-reviewer-toggle-btn').forEach(function (btn) {
+        const active = btn.getAttribute('data-reviewer') === v;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+async function onHitlReviewerChanged(reviewer) {
+    setHitlReviewerUI(reviewer);
+    const cfg = readHitlConfigFromForm();
+    const cid = typeof currentConversationId === 'string' ? currentConversationId.trim() : '';
+    saveHitlConfigForConversation(cid, cfg, { syncGlobalLast: true });
+    if (cid && typeof window.saveHitlConversationConfig === 'function') {
+        try {
+            await window.saveHitlConversationConfig(cid, cfg);
+            const ok = typeof window.t === 'function' ? window.t('hitl.pageReviewerSaved') : '审批方已保存。';
+            showChatToast(ok, 'success');
+        } catch (e) {
+            console.warn('onHitlReviewerChanged', e);
+            const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
+            showChatToast(prefix, 'error');
+        }
+    }
+}
+
+function bindHitlReviewerToggleListeners() {
+    document.querySelectorAll('.hitl-reviewer-toggle-btn').forEach(function (btn) {
+        if (btn.dataset.hitlReviewerBound === '1') return;
+        btn.dataset.hitlReviewerBound = '1';
+        btn.addEventListener('click', function () {
+            const v = btn.getAttribute('data-reviewer');
+            if (!v) return;
+            onHitlReviewerChanged(v);
+        });
+    });
+}
+
 function saveHitlConfigForConversation(conversationId, cfg, opts) {
     const syncGlobalLast = !!(opts && opts.syncGlobalLast);
     const payload = {
         mode: normalizeHitlMode(cfg && cfg.mode),
+        reviewer: normalizeHitlReviewer(cfg && cfg.reviewer),
         sensitiveTools: typeof (cfg && cfg.sensitiveTools) === 'string' ? cfg.sensitiveTools : '',
         updatedAt: typeof (cfg && cfg.updatedAt) === 'string' ? cfg.updatedAt : ''
     };
@@ -275,8 +361,10 @@ function saveHitlConfigForConversation(conversationId, cfg, opts) {
 
 function readHitlConfigFromForm() {
     const modeEl = document.getElementById('hitl-mode-select');
+    const reviewerEl = document.getElementById('hitl-reviewer-select');
     const toolsEl = document.getElementById('hitl-sensitive-tools');
     const mode = normalizeHitlMode(modeEl ? modeEl.value : HITL_MODE_OFF);
+    const reviewer = normalizeHitlReviewer(reviewerEl ? reviewerEl.value : 'human');
     let sensitiveTools = toolsEl ? String(toolsEl.value || '').trim() : '';
     const g = typeof window !== 'undefined' ? window.csaiHitlGlobalToolWhitelist : null;
     if (Array.isArray(g) && g.length > 0) {
@@ -284,6 +372,7 @@ function readHitlConfigFromForm() {
     }
     return {
         mode,
+        reviewer,
         sensitiveTools,
         updatedAt: new Date().toISOString()
     };
@@ -297,7 +386,9 @@ function applyHitlConfigToUI(cfg) {
     const conf = cfg || defaultHitlConfig();
     const modeEl = document.getElementById('hitl-mode-select');
     const toolsEl = document.getElementById('hitl-sensitive-tools');
-    if (modeEl) modeEl.value = normalizeHitlMode(conf.mode);
+    const uiMode = normalizeHitlMode(conf.mode);
+    if (modeEl) modeEl.value = uiMode;
+    setHitlReviewerUI(conf.reviewer);
     let toolsVal = conf.sensitiveTools || '';
     const g = typeof window !== 'undefined' ? window.csaiHitlGlobalToolWhitelist : null;
     if (Array.isArray(g) && g.length > 0) {
@@ -306,6 +397,15 @@ function applyHitlConfigToUI(cfg) {
     }
     if (toolsEl) toolsEl.value = toolsVal;
     updateHitlStatusUI(conf);
+}
+
+function bindHitlSidebarModeListener() {
+    const modeEl = document.getElementById('hitl-mode-select');
+    if (!modeEl || modeEl.dataset.hitlModeBound === '1') return;
+    modeEl.dataset.hitlModeBound = '1';
+    modeEl.addEventListener('change', function () {
+        applyHitlConfigToUI(readHitlConfigFromForm());
+    });
 }
 
 function refreshHitlConfigByCurrentConversation() {
@@ -380,6 +480,9 @@ async function applyHitlSidebarConfig() {
             const localOnly = typeof window.t === 'function' ? window.t('chat.hitlApplyOkLocal') : '已保存到本浏览器。';
             showHitlApplyFeedback(localOnly, false);
         }
+        if (typeof window.refreshHitlPageWhitelist === 'function') {
+            window.refreshHitlPageWhitelist();
+        }
     } catch (e) {
         console.warn('applyHitlSidebarConfig', e);
         const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
@@ -416,6 +519,12 @@ if (typeof window !== 'undefined') {
     window.readHitlConfigFromForm = readHitlConfigFromForm;
     window.applyHitlConfigToUI = applyHitlConfigToUI;
     window.saveHitlConfigForConversation = saveHitlConfigForConversation;
+    window.getHitlConfigForConversation = getHitlConfigForConversation;
+    bindHitlSidebarModeListener();
+    bindHitlReviewerToggleListeners();
+    window.setHitlReviewerUI = setHitlReviewerUI;
+    window.onHitlReviewerChanged = onHitlReviewerChanged;
+    window.bindHitlReviewerToggleListeners = bindHitlReviewerToggleListeners;
     window.getHitlLastGlobalConfig = getHitlLastGlobalConfig;
     window.hitlMergeToolsForDisplay = hitlMergeToolsForDisplay;
     window.hitlStripGlobalToolsFromFormString = hitlStripGlobalToolsFromFormString;
@@ -710,6 +819,9 @@ async function initChatAgentModeFromConfig() {
                 window.csaiHitlGlobalToolWhitelist = tw.slice();
             }
         }
+        if (typeof window.refreshHitlPageWhitelist === 'function') {
+            window.refreshHitlPageWhitelist();
+        }
         document.querySelectorAll('.agent-mode-option').forEach(function (el) {
             const v = el.getAttribute('data-value');
             if (v === 'deep' || v === 'plan_execute' || v === 'supervisor') {
@@ -886,6 +998,9 @@ async function sendMessage() {
         window.CyberStrikeChatScroll.onUserSendMessage();
     }
     addMessage('user', displayMessage, null, null, null, { scroll: 'none' });
+    if (currentConversationId) {
+        invalidateConversationLiteCache(currentConversationId);
+    }
     
     // 清除防抖定时器，防止在清空输入框后重新保存草稿
     if (draftSaveTimer) {
@@ -923,6 +1038,7 @@ async function sendMessage() {
         body.hitl = {
             enabled: true,
             mode: normalizeHitlMode(hitlCfg.mode),
+            reviewer: normalizeHitlReviewer(hitlCfg.reviewer),
             sensitiveTools: sensitiveTools
         };
     }
@@ -2027,31 +2143,13 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     
     // 有 MCP 执行记录且非流式占位消息时展示调用按钮；带 progressId 的流式占位不挂此条（与进度卡片一致，结束时 integrate 再创建）
     if (role === 'assistant' && (mcpExecutionIds && Array.isArray(mcpExecutionIds) && mcpExecutionIds.length > 0) && !progressId) {
-        const mcpSection = document.createElement('div');
-        mcpSection.className = 'mcp-call-section';
-        
-        const mcpLabel = document.createElement('div');
-        mcpLabel.className = 'mcp-call-label';
-        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
-        mcpSection.appendChild(mcpLabel);
-        
-        const buttonsContainer = document.createElement('div');
-        buttonsContainer.className = 'mcp-call-buttons';
-        
-        mcpExecutionIds.forEach((execId, index) => {
-            const detailBtn = document.createElement('button');
-            detailBtn.className = 'mcp-detail-btn';
-            detailBtn.dataset.execId = execId;
-            detailBtn.dataset.execIndex = String(index + 1);
-            detailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.callNumber', { n: index + 1 }) : '调用 #' + (index + 1)) + '</span>';
-            detailBtn.onclick = () => showMCPDetail(execId);
-            buttonsContainer.appendChild(detailBtn);
-        });
-        // 使用批量 API 一次性获取所有工具名称（消除 N 次单独请求）
-        batchUpdateButtonToolNames(buttonsContainer, mcpExecutionIds);
-        
-        mcpSection.appendChild(buttonsContainer);
-        contentWrapper.appendChild(mcpSection);
+        if (options && options.deferMcpButtons) {
+            try {
+                messageDiv.dataset.pendingMcpExecutionIds = JSON.stringify(mcpExecutionIds);
+            } catch (e) { /* ignore */ }
+        } else {
+            appendMcpCallButtons(messageDiv, mcpExecutionIds);
+        }
     }
     
     messageDiv.appendChild(contentWrapper);
@@ -2151,11 +2249,13 @@ function copyMessageToClipboard(messageDiv, button) {
 function showCopySuccess(button) {
     if (button) {
         const originalText = button.innerHTML;
+        button.dataset.copySuccessActive = '1';
         button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>' + (typeof window.t === 'function' ? window.t('common.copied') : '已复制') + '</span>';
         button.style.color = '#10b981';
         button.style.background = 'rgba(16, 185, 129, 0.1)';
         button.style.borderColor = 'rgba(16, 185, 129, 0.3)';
         setTimeout(() => {
+            delete button.dataset.copySuccessActive;
             button.innerHTML = originalText;
             button.style.color = '';
             button.style.background = '';
@@ -2252,10 +2352,22 @@ async function syncAssistantReasoningContentFromServer(backendMessageId, domAssi
 window.normalizeReasoningContentForDisplay = normalizeReasoningContentForDisplay;
 window.setMessageReasoningContent = setMessageReasoningContent;
 window.getMessageReasoningContent = getMessageReasoningContent;
+window.filterNoiseProcessDetails = filterNoiseProcessDetails;
 window.mergeMessageReasoningContentIntoProcessDetails = mergeMessageReasoningContentIntoProcessDetails;
 window.syncAssistantReasoningContentFromServer = syncAssistantReasoningContentFromServer;
 
 /** 相邻且类型/正文/data 完全一致的过程详情只保留一条（与后端去重一致，避免时间线叠多条相同块） */
+function isEinoAgentHeartbeatProgress(detail) {
+    if (!detail || detail.eventType !== 'progress') return false;
+    const msg = String(detail.message != null ? detail.message : '').trim();
+    return /^\[Eino\]\s+\S/.test(msg);
+}
+
+function filterNoiseProcessDetails(details) {
+    if (!Array.isArray(details)) return details;
+    return details.filter(function (d) { return !isEinoAgentHeartbeatProgress(d); });
+}
+
 function dedupeConsecutiveProcessDetailRows(details) {
     if (!Array.isArray(details) || details.length < 2) {
         return details;
@@ -2289,47 +2401,20 @@ function processDetailRowFingerprint(d) {
 }
 
 // 渲染过程详情
-function renderProcessDetails(messageId, processDetails) {
+// options.append=true 时分页追加；options.markLoaded=false 时保留 lazy 标记（分页加载中）
+function renderProcessDetails(messageId, processDetails, options) {
+    const renderOpts = options || {};
+    const appendMode = !!renderOpts.append;
+    const markLoaded = renderOpts.markLoaded !== false;
     const messageElement = document.getElementById(messageId);
     if (!messageElement) {
         return;
     }
     
-    // 查找或创建MCP调用区域
-    let mcpSection = messageElement.querySelector('.mcp-call-section');
-    if (!mcpSection) {
-        mcpSection = document.createElement('div');
-        mcpSection.className = 'mcp-call-section';
-        
-        const contentWrapper = messageElement.querySelector('.message-content');
-        if (contentWrapper) {
-            contentWrapper.appendChild(mcpSection);
-        } else {
-            return;
-        }
-    }
-    
-    // 确保有标签和按钮容器（统一结构）
-    let mcpLabel = mcpSection.querySelector('.mcp-call-label');
-    let buttonsContainer = mcpSection.querySelector('.mcp-call-buttons');
-    
-    // 如果没有标签，创建一个（当没有工具调用时）
-    if (!mcpLabel && !buttonsContainer) {
-        mcpLabel = document.createElement('div');
-        mcpLabel.className = 'mcp-call-label';
-        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
-        mcpSection.appendChild(mcpLabel);
-    } else if (mcpLabel && mcpLabel.textContent !== ('📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情'))) {
-        // 如果标签存在但不是统一格式，更新它
-        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
-    }
-    
-    // 如果没有按钮容器，创建一个
-    if (!buttonsContainer) {
-        buttonsContainer = document.createElement('div');
-        buttonsContainer.className = 'mcp-call-buttons';
-        mcpSection.appendChild(buttonsContainer);
-    }
+    // 查找或创建 MCP 区域（工具栏 + 工具列表 + 迭代时间线 分区）
+    const chrome = ensureMcpCallSectionChrome(messageElement, messageId);
+    if (!chrome) return;
+    const { mcpSection, toolbar: buttonsContainer } = chrome;
     
     // 添加过程详情按钮（如果还没有）
     let processDetailBtn = buttonsContainer.querySelector('.process-detail-btn');
@@ -2340,17 +2425,20 @@ function renderProcessDetails(messageId, processDetails) {
         processDetailBtn.onclick = () => toggleProcessDetails(null, messageId);
         buttonsContainer.appendChild(processDetailBtn);
     }
+    syncMcpToolsToggleButton(messageElement);
     
-    // 创建过程详情容器（放在按钮容器之后）
+    // 创建过程详情容器（放在工具列表之后）
     const detailsId = 'process-details-' + messageId;
     let detailsContainer = document.getElementById(detailsId);
+    const toolListEl = chrome.toolList;
     
     if (!detailsContainer) {
         detailsContainer = document.createElement('div');
         detailsContainer.id = detailsId;
         detailsContainer.className = 'process-details-container';
-        // 确保容器在按钮容器之后
-        if (buttonsContainer.nextSibling) {
+        if (toolListEl) {
+            toolListEl.after(detailsContainer);
+        } else if (buttonsContainer.nextSibling) {
             mcpSection.insertBefore(detailsContainer, buttonsContainer.nextSibling);
         } else {
             mcpSection.appendChild(detailsContainer);
@@ -2379,36 +2467,42 @@ function renderProcessDetails(messageId, processDetails) {
     if (isLazyNotLoaded && !reasoningFromMessage) {
         detailsContainer.dataset.lazyNotLoaded = '1';
         detailsContainer.dataset.loaded = '0';
-        timeline.innerHTML = '<div class="progress-timeline-empty">' +
-            (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') +
-            '（点击后加载）</div>';
+        const expandLabel = typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情';
+        let lazyHint = expandLabel + '（点击后加载迭代详情）';
+        timeline.innerHTML = '<div class="progress-timeline-empty">' + lazyHint + '</div>';
         timeline.classList.remove('expanded');
+        prefetchProcessDetailsSummaryHint(messageId, messageElement);
         return;
     }
     if (isLazyNotLoaded) {
         detailsContainer.dataset.lazyNotLoaded = '1';
         detailsContainer.dataset.loaded = '0';
         processDetails = [];
-    } else {
+        if (!appendMode) {
+            prefetchProcessDetailsSummaryHint(messageId, messageElement);
+        }
+    } else if (markLoaded) {
         detailsContainer.dataset.lazyNotLoaded = '0';
         detailsContainer.dataset.loaded = '1';
     }
     processDetails = mergeMessageReasoningContentIntoProcessDetails(processDetails, reasoningFromMessage);
+    processDetails = filterNoiseProcessDetails(processDetails);
     processDetails = dedupeConsecutiveProcessDetailRows(processDetails);
     if (typeof window.coalesceProcessDetailsToolPairs === 'function') {
         processDetails = window.coalesceProcessDetailsToolPairs(processDetails);
     }
     // 如果没有processDetails或为空，显示空状态
     if (!processDetails || processDetails.length === 0) {
-        // 显示空状态提示
-        timeline.innerHTML = '<div class="progress-timeline-empty">' + (typeof window.t === 'function' ? window.t('chat.noProcessDetail') : '暂无过程详情（可能执行过快或未触发详细事件）') + '</div>';
-        // 默认折叠
-        timeline.classList.remove('expanded');
+        if (!appendMode) {
+            timeline.innerHTML = '<div class="progress-timeline-empty">' + (typeof window.t === 'function' ? window.t('chat.noProcessDetail') : '暂无过程详情（可能执行过快或未触发详细事件）') + '</div>';
+            timeline.classList.remove('expanded');
+        }
         return;
     }
     
-    // 清空时间线并重新渲染
-    timeline.innerHTML = '';
+    if (!appendMode) {
+        timeline.innerHTML = '';
+    }
     
     
     function processDetailAgentPrefix(d) {
@@ -2417,14 +2511,12 @@ function renderProcessDetails(messageId, processDetails) {
         return s ? ('[' + s + '] ') : '';
     }
 
-    // 渲染每个过程详情事件
-    processDetails.forEach(detail => {
+    function renderOneProcessDetail(detail) {
         const eventType = detail.eventType || '';
         const title = detail.message || '';
         const data = detail.data || {};
         const agPx = processDetailAgentPrefix(data);
         
-        // 根据事件类型渲染不同的内容
         let itemTitle = title;
         if (eventType === 'iteration') {
             const n = data.iteration || 1;
@@ -2517,15 +2609,38 @@ function renderProcessDetails(messageId, processDetails) {
             title: itemTitle,
             message: detail.message || '',
             data: data,
-            createdAt: detail.createdAt // 传递实际的事件创建时间
+            createdAt: detail.createdAt
         };
         if (eventType === 'tool_call' && data._mergedResult) {
             timelineOpts.mergedResult = data._mergedResult;
         }
         addTimelineItem(timeline, eventType, timelineOpts);
-    });
+    }
 
-    if (isLazyNotLoaded && reasoningFromMessage) {
+    const TIMELINE_RENDER_BATCH = 40;
+    const renderTimelineBatch = (startIdx) => {
+        const endIdx = Math.min(startIdx + TIMELINE_RENDER_BATCH, processDetails.length);
+        for (let i = startIdx; i < endIdx; i++) {
+            renderOneProcessDetail(processDetails[i]);
+        }
+        if (endIdx < processDetails.length) {
+            requestAnimationFrame(() => renderTimelineBatch(endIdx));
+        } else if (markLoaded) {
+            finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoaded, timeline);
+        }
+    };
+    if (processDetails.length > TIMELINE_RENDER_BATCH) {
+        renderTimelineBatch(0);
+    } else {
+        processDetails.forEach(renderOneProcessDetail);
+        if (markLoaded) {
+            finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoaded, timeline);
+        }
+    }
+}
+
+function finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoaded, timeline) {
+    if (isLazyNotLoaded && getMessageReasoningContent(messageElement)) {
         const lazyHint = document.createElement('div');
         lazyHint.className = 'progress-timeline-empty progress-timeline-lazy-hint';
         lazyHint.textContent = (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') +
@@ -2533,20 +2648,47 @@ function renderProcessDetails(messageId, processDetails) {
         timeline.appendChild(lazyHint);
     }
     
-    // 检查是否有错误或取消事件，如果有，确保详情默认折叠（但仍有待审批 HITL 时保持展开，由 restoreHitlInlineForConversation 处理）
     const hasPendingHitlInDetails = processDetails.some(d => d && d.eventType === 'hitl_interrupt');
     const hasErrorOrCancelled = processDetails.some(d => 
         d.eventType === 'error' || d.eventType === 'cancelled'
     );
     if (hasErrorOrCancelled && !hasPendingHitlInDetails) {
-        // 确保时间线是折叠的
         timeline.classList.remove('expanded');
-        // 更新按钮文本为"展开详情"
         const processDetailBtn = messageElement.querySelector('.process-detail-btn');
         if (processDetailBtn) {
             processDetailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') + '</span>';
         }
     }
+}
+
+/** 懒加载折叠态：后台拉摘要，提示迭代规模而不加载全量详情 */
+function prefetchProcessDetailsSummaryHint(messageId, messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.backendMessageId) return;
+    const backendId = String(messageElement.dataset.backendMessageId).trim();
+    if (!backendId || typeof apiFetch !== 'function') return;
+    const detailsContainer = document.getElementById('process-details-' + messageId);
+    if (!detailsContainer || detailsContainer.dataset.summaryFetched === '1') return;
+    detailsContainer.dataset.summaryFetched = '1';
+    apiFetch('/api/messages/' + encodeURIComponent(backendId) + '/process-details?summary=1')
+        .then(async (res) => {
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok || !j.summary) return;
+            const s = j.summary;
+            const timeline = detailsContainer.querySelector('.progress-timeline');
+            if (!timeline || detailsContainer.dataset.loaded === '1') return;
+            const expandLabel = typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情';
+            let hint = expandLabel + '（点击后加载迭代详情）';
+            if (s.maxIteration > 0) {
+                hint = expandLabel + '（共 ' + s.maxIteration + ' 轮迭代，' + (s.total || 0) + ' 条详情）';
+            } else if (s.total > 0) {
+                hint = expandLabel + '（共 ' + (s.total || 0) + ' 条详情）';
+            }
+            const empty = timeline.querySelector('.progress-timeline-empty');
+            if (empty) {
+                empty.textContent = hint;
+            }
+        })
+        .catch(() => {});
 }
 
 // 移除消息
@@ -2610,6 +2752,201 @@ async function updateButtonWithToolName(button, executionId, index) {
     }
 }
 
+function getPendingMcpExecutionCount(messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.pendingMcpExecutionIds) {
+        return 0;
+    }
+    try {
+        const ids = JSON.parse(messageElement.dataset.pendingMcpExecutionIds);
+        return Array.isArray(ids) ? ids.length : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function getMcpExecutionCount(messageElement) {
+    const pending = getPendingMcpExecutionCount(messageElement);
+    if (pending > 0) return pending;
+    const toolList = messageElement && messageElement.querySelector('.mcp-tool-list');
+    if (toolList) {
+        return toolList.querySelectorAll('.mcp-detail-btn[data-exec-id]').length;
+    }
+    return 0;
+}
+
+function formatMcpToolsToggleLabel(count, expanded) {
+    if (expanded) {
+        if (typeof window.t === 'function') {
+            const s = window.t('chat.collapseToolExecutions');
+            if (s && s !== 'chat.collapseToolExecutions') return s;
+        }
+        return '收起工具执行';
+    }
+    if (typeof window.t === 'function') {
+        const s = window.t('chat.toolExecutionsCount', { n: count });
+        if (s && s !== 'chat.toolExecutionsCount') return s;
+    }
+    return count + '次工具执行';
+}
+
+/** 渗透测试区：工具栏（展开详情 | N次工具执行）+ 独立工具列表 + 迭代时间线 */
+function ensureMcpCallSectionChrome(messageElement, messageId) {
+    const contentWrapper = messageElement && messageElement.querySelector('.message-content');
+    if (!contentWrapper) return null;
+
+    let mcpSection = messageElement.querySelector('.mcp-call-section');
+    if (!mcpSection) {
+        mcpSection = document.createElement('div');
+        mcpSection.className = 'mcp-call-section';
+        const mcpLabel = document.createElement('div');
+        mcpLabel.className = 'mcp-call-label';
+        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
+        mcpSection.appendChild(mcpLabel);
+        contentWrapper.appendChild(mcpSection);
+    } else {
+        const mcpLabel = mcpSection.querySelector('.mcp-call-label');
+        const labelText = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
+        if (mcpLabel && mcpLabel.textContent !== labelText) {
+            mcpLabel.textContent = labelText;
+        }
+    }
+
+    let toolbar = mcpSection.querySelector('.mcp-call-toolbar');
+    const legacyButtons = mcpSection.querySelector('.mcp-call-buttons');
+    if (!toolbar) {
+        toolbar = document.createElement('div');
+        toolbar.className = 'mcp-call-toolbar';
+        if (legacyButtons) {
+            const processBtn = legacyButtons.querySelector('.process-detail-btn');
+            if (processBtn) toolbar.appendChild(processBtn);
+            mcpSection.replaceChild(toolbar, legacyButtons);
+        } else {
+            mcpSection.appendChild(toolbar);
+        }
+    }
+
+    let toolList = mcpSection.querySelector('.mcp-tool-list');
+    if (!toolList) {
+        toolList = document.createElement('div');
+        toolList.className = 'mcp-tool-list';
+        const detailsContainer = mcpSection.querySelector('.process-details-container');
+        if (detailsContainer) {
+            mcpSection.insertBefore(toolList, detailsContainer);
+        } else {
+            toolbar.after(toolList);
+        }
+    }
+
+    if (legacyButtons && legacyButtons.parentNode === mcpSection) {
+        legacyButtons.querySelectorAll('.mcp-detail-btn[data-exec-id]').forEach((btn) => toolList.appendChild(btn));
+        legacyButtons.remove();
+    }
+
+    const clientId = messageId || messageElement.id;
+    if (clientId && !toolbar.querySelector('.process-detail-btn')) {
+        const processDetailBtn = document.createElement('button');
+        processDetailBtn.className = 'mcp-detail-btn process-detail-btn';
+        processDetailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') + '</span>';
+        processDetailBtn.onclick = () => toggleProcessDetails(null, clientId);
+        toolbar.appendChild(processDetailBtn);
+    }
+
+    return { mcpSection, toolbar, toolList };
+}
+
+function syncMcpToolsToggleButton(messageElement) {
+    if (!messageElement) return;
+    const chrome = ensureMcpCallSectionChrome(messageElement, messageElement.id);
+    if (!chrome) return;
+    const { toolbar, toolList } = chrome;
+    const count = getMcpExecutionCount(messageElement);
+    let toolsToggle = toolbar.querySelector('.mcp-tools-toggle-btn');
+    if (count <= 0) {
+        if (toolsToggle) toolsToggle.remove();
+        return;
+    }
+    if (!toolsToggle) {
+        toolsToggle = document.createElement('button');
+        toolsToggle.type = 'button';
+        toolsToggle.className = 'mcp-detail-btn mcp-tools-toggle-btn';
+        toolsToggle.onclick = function (e) {
+            e.stopPropagation();
+            toggleMcpToolList(messageElement.id);
+        };
+        toolbar.appendChild(toolsToggle);
+    }
+    const expanded = toolList.classList.contains('expanded');
+    toolsToggle.innerHTML = '<span>' + formatMcpToolsToggleLabel(count, expanded) + '</span>';
+}
+
+function toggleMcpToolList(assistantMessageId) {
+    const messageEl = document.getElementById(assistantMessageId);
+    if (!messageEl) return;
+    const chrome = ensureMcpCallSectionChrome(messageEl, assistantMessageId);
+    if (!chrome) return;
+    const { toolList } = chrome;
+    const willExpand = !toolList.classList.contains('expanded');
+    if (willExpand) {
+        ensureMcpCallButtons(messageEl);
+        toolList.classList.add('expanded');
+    } else {
+        toolList.classList.remove('expanded');
+    }
+    syncMcpToolsToggleButton(messageEl);
+}
+
+window.toggleMcpToolList = toggleMcpToolList;
+window.syncMcpToolsToggleButton = syncMcpToolsToggleButton;
+window.ensureMcpCallSectionChrome = ensureMcpCallSectionChrome;
+
+/** 将 MCP 工具按钮挂到独立工具列表，并批量解析工具名 */
+function appendMcpCallButtons(messageElement, executionIds) {
+    if (!messageElement || !Array.isArray(executionIds) || executionIds.length === 0) {
+        return;
+    }
+    const chrome = ensureMcpCallSectionChrome(messageElement, messageElement.id);
+    if (!chrome) return;
+    const toolList = chrome.toolList;
+
+    executionIds.forEach((execId, index) => {
+        if (toolList.querySelector('.mcp-detail-btn[data-exec-id="' + CSS.escape(String(execId)) + '"]')) {
+            return;
+        }
+        const detailBtn = document.createElement('button');
+        detailBtn.className = 'mcp-detail-btn';
+        detailBtn.dataset.execId = execId;
+        detailBtn.dataset.execIndex = String(index + 1);
+        detailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.callNumber', { n: index + 1 }) : '调用 #' + (index + 1)) + '</span>';
+        detailBtn.onclick = () => showMCPDetail(execId);
+        toolList.appendChild(detailBtn);
+    });
+    batchUpdateButtonToolNames(toolList, executionIds);
+    syncMcpToolsToggleButton(messageElement);
+}
+
+/** 历史会话懒加载：用户展开工具列表时再渲染工具按钮 */
+function ensureMcpCallButtons(messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.pendingMcpExecutionIds) {
+        return;
+    }
+    let executionIds;
+    try {
+        executionIds = JSON.parse(messageElement.dataset.pendingMcpExecutionIds);
+    } catch (e) {
+        delete messageElement.dataset.pendingMcpExecutionIds;
+        return;
+    }
+    if (!Array.isArray(executionIds) || executionIds.length === 0) {
+        delete messageElement.dataset.pendingMcpExecutionIds;
+        return;
+    }
+    appendMcpCallButtons(messageElement, executionIds);
+    delete messageElement.dataset.pendingMcpExecutionIds;
+}
+
+window.ensureMcpCallButtons = ensureMcpCallButtons;
+window.appendMcpCallButtons = appendMcpCallButtons;
+
 // 批量获取工具名称并更新按钮（消除 N 次单独 API 请求，合并为 1 次）
 async function batchUpdateButtonToolNames(buttonsContainer, executionIds) {
     if (!executionIds || executionIds.length === 0) return;
@@ -2639,6 +2976,57 @@ async function batchUpdateButtonToolNames(buttonsContainer, executionIds) {
 }
 
 // 显示MCP调用详情
+const MCP_DETAIL_MAX_CHARS = 120000;
+
+function extractMCPResultText(result) {
+    if (!result) return '';
+    const content = result.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content
+            .map(item => (item && typeof item === 'object' && typeof item.text === 'string') ? item.text : '')
+            .filter(Boolean)
+            .join('\n\n');
+    }
+    if (content && typeof content === 'object' && typeof content.text === 'string') {
+        return content.text;
+    }
+    return '';
+}
+
+function truncateMCPDetailText(text, maxChars) {
+    if (text == null) return '';
+    const s = String(text);
+    if (s.length <= maxChars) return s;
+    const hint = typeof window.t === 'function'
+        ? window.t('mcpDetailModal.contentTruncated')
+        : '…（展示已截断；完整内容见 persisted-output 中的文件路径，用 read_file 读取）';
+    return s.slice(0, maxChars) + '\n\n' + hint;
+}
+
+/** 响应结果区 JSON 展示（过大时截断 content 内 text，避免 stringify 卡死页面） */
+function formatMCPResultJsonForDisplay(result, maxChars) {
+    if (!result) return '{}';
+    const payload = {
+        content: result.content,
+        isError: !!result.isError
+    };
+    let json = JSON.stringify(payload, null, 2);
+    if (json.length <= maxChars) {
+        return json;
+    }
+    const text = extractMCPResultText(result);
+    const truncatedPayload = {
+        content: [{ type: 'text', text: truncateMCPDetailText(text, Math.min(maxChars - 800, MCP_DETAIL_MAX_CHARS)) }],
+        isError: !!result.isError
+    };
+    json = JSON.stringify(truncatedPayload, null, 2);
+    if (json.length > maxChars) {
+        return json.slice(0, maxChars) + '\n…';
+    }
+    return json;
+}
+
 async function showMCPDetail(executionId) {
     try {
         openAppModal('mcp-detail-modal', { focus: false });
@@ -2700,42 +3088,22 @@ async function showMCPDetail(executionId) {
             }
 
             if (exec.result) {
-                const responseData = {
-                    content: exec.result.content,
-                    isError: exec.result.isError
-                };
-                responseElement.textContent = JSON.stringify(responseData, null, 2);
+                const agentVisibleText = truncateMCPDetailText(extractMCPResultText(exec.result), MCP_DETAIL_MAX_CHARS);
+                const emptyText = typeof window.t === 'function' ? window.t('mcpDetailModal.execSuccessNoContent') : '执行成功，未返回可展示的文本内容。';
 
                 if (exec.result.isError) {
-                    // 错误场景：响应结果标红 + 错误信息区块
                     responseElement.className = 'code-block error';
+                    responseElement.textContent = formatMCPResultJsonForDisplay(exec.result, MCP_DETAIL_MAX_CHARS);
                     if (exec.error && errorSection && errorElement) {
                         errorSection.style.display = 'block';
                         errorElement.textContent = exec.error;
                     }
                 } else {
-                    // 成功场景：响应结果保持普通样式，正确信息单独拎出来
                     responseElement.className = 'code-block';
+                    responseElement.textContent = formatMCPResultJsonForDisplay(exec.result, MCP_DETAIL_MAX_CHARS);
                     if (successSection && successElement) {
                         successSection.style.display = 'block';
-                        let successText = '';
-                        const content = exec.result.content;
-                        if (typeof content === 'string') {
-                            successText = content;
-                        } else if (Array.isArray(content)) {
-                            const texts = content
-                                .map(item => (item && typeof item === 'object' && typeof item.text === 'string') ? item.text : '')
-                                .filter(Boolean);
-                            if (texts.length > 0) {
-                                successText = texts.join('\n\n');
-                            }
-                        } else if (content && typeof content === 'object' && typeof content.text === 'string') {
-                            successText = content.text;
-                        }
-                        if (!successText) {
-                            successText = typeof window.t === 'function' ? window.t('mcpDetailModal.execSuccessNoContent') : '执行成功，未返回可展示的文本内容。';
-                        }
-                        successElement.textContent = successText;
+                        successElement.textContent = agentVisibleText || emptyText;
                     }
                 }
             } else {
@@ -2822,15 +3190,26 @@ async function cancelMCPToolExecutionSubmit(executionId, userNote, options = {})
     if (!executionId) {
         return;
     }
+    let conversationId = '';
+    if (typeof monitorState !== 'undefined' && Array.isArray(monitorState.executions)) {
+        const exec = monitorState.executions.find(e => e && e.id === executionId);
+        if (exec) {
+            conversationId = (exec.conversationId || '').trim();
+        }
+    }
     try {
-        const res = await apiFetch(`/api/monitor/execution/${encodeURIComponent(executionId)}/cancel`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ note: userNote || '' }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            throw new Error(body.error || body.message || res.statusText);
+        if (conversationId && typeof requestCancelWithContinue === 'function') {
+            await requestCancelWithContinue(conversationId, userNote || '', { executionId });
+        } else {
+            const res = await apiFetch(`/api/monitor/execution/${encodeURIComponent(executionId)}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: userNote || '' }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(body.error || body.message || res.statusText);
+            }
         }
         const okMsg = typeof window.t === 'function' ? window.t('mcpDetailModal.abortSuccess') : '已发送终止请求';
         alert(okMsg);
@@ -2848,12 +3227,24 @@ async function cancelMCPToolExecutionSubmit(executionId, userNote, options = {})
 }
 
 /**
- * 取消单次 MCP 工具执行（监控页「终止」）。弹出说明框后提交；仅取消该次 tools/call，不停止整条对话/迭代任务。
+ * 取消单次 MCP 工具执行（监控页「终止」）。有 conversationId 时复用对话页「中断并继续」弹窗与 API。
  * @param {string} executionId
  * @param {{ refreshDetail?: boolean }} [options]
  */
 async function cancelMCPToolExecution(executionId, options = {}) {
     if (!executionId) {
+        return;
+    }
+    let conversationId = '';
+    if (typeof monitorState !== 'undefined' && Array.isArray(monitorState.executions)) {
+        const exec = monitorState.executions.find(e => e && e.id === executionId);
+        if (exec) {
+            conversationId = (exec.conversationId || '').trim();
+        }
+    }
+    if (conversationId && typeof openUserInterruptModal === 'function') {
+        openUserInterruptModal(null, conversationId);
+        window.__monitorInterruptContext = { executionId: executionId, options: options || {} };
         return;
     }
     openMcpToolAbortModal(executionId, options);
@@ -3011,6 +3402,18 @@ function createConversationListItem(conversation) {
     title.title = titleText; // 设置完整标题以便悬停查看
     contentWrapper.appendChild(title);
 
+    if (!getConversationProjectFilter()) {
+        const pid = conversation.projectId || conversation.project_id || '';
+        const projectName = pid && window.projectNameById ? window.projectNameById[pid] : '';
+        if (projectName) {
+            const badge = document.createElement('div');
+            badge.className = 'conversation-item-project-badge';
+            badge.textContent = projectName;
+            badge.title = projectName;
+            contentWrapper.appendChild(badge);
+        }
+    }
+
     const time = document.createElement('div');
     time.className = 'conversation-time';
     time.textContent = conversation._timeText || formatConversationTimestamp(conversation._time || new Date());
@@ -3044,7 +3447,7 @@ function createConversationListItem(conversation) {
 // 处理历史记录搜索
 let conversationSearchTimer = null;
 function handleConversationSearch(query) {
-    conversationsPagination.page = 1;
+    commitConversationsPage(1, { bumpNavigateGen: true });
     conversationsSearchQuery = query || '';
     // 防抖处理，避免频繁请求
     if (conversationSearchTimer) {
@@ -3079,7 +3482,7 @@ function clearConversationSearch() {
         clearBtn.style.display = 'none';
     }
     
-    conversationsPagination.page = 1;
+    commitConversationsPage(1, { bumpNavigateGen: true });
     conversationsSearchQuery = '';
     loadConversations('');
 }
@@ -3138,40 +3541,63 @@ function getConversationGroup(dateObj, todayStart, sevenDaysCutoff, yesterdaySta
 }
 
 // 加载对话
-/** 轻量加载会话后，拉取最后一条助手消息的 process_details（机器人等无 SSE 场景） */
+/** 轻量加载会话后，仅对「处理中…」占位回复拉取过程详情（机器人等非 SSE 场景）；已完成会话不预取全量 */
 async function prefetchLastAssistantProcessDetails() {
     const nodes = document.querySelectorAll('#chat-messages .message.assistant');
     if (!nodes.length) return;
     const last = nodes[nodes.length - 1];
     if (!last || !last.id) return;
+    const bubble = last.querySelector('.message-bubble');
+    const visibleText = bubble ? String(bubble.textContent || '').trim() : '';
+    const isPlaceholder = visibleText === '处理中...' || visibleText === 'Processing...';
+    if (!isPlaceholder) return;
     const container = document.getElementById('process-details-' + last.id);
     if (!container || container.dataset.lazyNotLoaded !== '1') return;
     const backendId = last.dataset && last.dataset.backendMessageId;
     if (!backendId || typeof apiFetch !== 'function') return;
+    if (typeof window.loadProcessDetailsPaginated === 'function') {
+        await window.loadProcessDetailsPaginated(last.id, backendId);
+        return;
+    }
     const res = await apiFetch('/api/messages/' + encodeURIComponent(String(backendId)) + '/process-details');
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !Array.isArray(j.processDetails) || j.processDetails.length === 0) return;
     if (typeof renderProcessDetails === 'function') {
         renderProcessDetails(last.id, j.processDetails);
     }
-    if (typeof window.expandProcessDetailsTimeline === 'function') {
-        window.expandProcessDetailsTimeline(last.id);
-    }
 }
 
 async function loadConversation(conversationId) {
     const seq = ++loadConversationRequestSeq;
     try {
-        // 轻量加载：不带 processDetails，避免历史会话切换卡顿；展开详情时再按需拉取
-        const response = await apiFetch(`/api/conversations/${conversationId}?include_process_details=0`);
-        if (seq !== loadConversationRequestSeq) {
-            return;
-        }
-        const conversation = await response.json();
-        
-        if (!response.ok) {
-            showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
-            return;
+        const cachedConversation = getConversationLiteFromCache(conversationId);
+        const fetchPromise = apiFetch(`/api/conversations/${conversationId}?include_process_details=0`)
+            .then(async (response) => {
+                const data = await response.json();
+                return { response, data };
+            });
+
+        let conversation;
+        let response;
+        if (cachedConversation) {
+            conversation = cachedConversation;
+            fetchPromise.then(({ response: freshResp, data }) => {
+                if (freshResp.ok && data && seq === loadConversationRequestSeq && currentConversationId === conversationId) {
+                    putConversationLiteCache(conversationId, data);
+                }
+            }).catch(() => {});
+        } else {
+            const fetched = await fetchPromise;
+            response = fetched.response;
+            conversation = fetched.data;
+            if (seq !== loadConversationRequestSeq) {
+                return;
+            }
+            if (!response.ok) {
+                showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
+                return;
+            }
+            putConversationLiteCache(conversationId, conversation);
         }
         if (seq !== loadConversationRequestSeq) {
             return;
@@ -3221,11 +3647,15 @@ async function loadConversation(conversationId) {
         if (typeof refreshChatProjectSelector === 'function') {
             refreshChatProjectSelector();
         }
-        if (typeof window.syncHitlConfigFromServer === 'function') {
-            await window.syncHitlConfigFromServer(conversationId);
-        } else {
-            refreshHitlConfigByCurrentConversation();
-        }
+        refreshHitlConfigByCurrentConversation();
+        const hitlSyncPromise = (typeof window.syncHitlConfigFromServer === 'function')
+            ? window.syncHitlConfigFromServer(conversationId).then(() => {
+                if (seq === loadConversationRequestSeq && currentConversationId === conversationId) {
+                    refreshHitlConfigByCurrentConversation();
+                }
+            }).catch(() => {})
+            : Promise.resolve();
+        void hitlSyncPromise;
         updateActiveConversation();
         
         // 如果攻击链模态框打开且显示的不是当前对话，关闭它
@@ -3292,7 +3722,9 @@ async function loadConversation(conversationId) {
                 // - user: createdAt 即可（发送后不会再更新）
                 // - assistant: 如果后端提供 updatedAt（任务完成时写回），优先用它，避免占位消息“任务开始时间”误导
                 const msgTime = (msg && msg.role === 'assistant' && msg.updatedAt) ? msg.updatedAt : (msg ? msg.createdAt : null);
-                const messageId = addMessage(msg.role, displayContent, msg.mcpExecutionIds || [], null, msgTime);
+                const mcpIds = (msg.mcpExecutionIds && Array.isArray(msg.mcpExecutionIds)) ? msg.mcpExecutionIds : [];
+                const addOpts = (msg.role === 'assistant' && mcpIds.length > 0) ? { deferMcpButtons: true } : null;
+                const messageId = addMessage(msg.role, displayContent, mcpIds, null, msgTime, addOpts);
                 const messageEl = document.getElementById(messageId);
                 if (messageEl && msg && msg.id) {
                     messageEl.dataset.backendMessageId = String(msg.id);
@@ -3460,6 +3892,7 @@ async function deleteConversationTurnFromUI(anchorBackendMessageId) {
         if (!response.ok) {
             throw new Error(data.error || data.message || 'delete failed');
         }
+        invalidateConversationLiteCache(currentConversationId);
         await loadConversation(currentConversationId);
         if (typeof loadConversationsWithGroups === 'function') {
             loadConversationsWithGroups();
@@ -3506,6 +3939,7 @@ async function deleteConversation(conversationId, skipConfirm = false) {
         
         // 更新缓存 - 立即删除，确保后续加载时能正确识别
         delete conversationGroupMappingCache[conversationId];
+        invalidateConversationLiteCache(conversationId);
         // 同时从待保留映射中移除
         delete pendingGroupMappings[conversationId];
         
@@ -3525,14 +3959,7 @@ async function deleteConversation(conversationId, skipConfirm = false) {
         const batchModal = document.getElementById('batch-manage-modal');
         if (batchModal && isAppModalOpen('batch-manage-modal')) {
             allConversationsForBatch = allConversationsForBatch.filter(c => c.id !== conversationId);
-            updateBatchManageTitle(allConversationsForBatch.length);
-            const searchInput = document.getElementById('batch-search-input');
-            const query = searchInput ? searchInput.value : '';
-            if (query && query.trim()) {
-                filterBatchConversations(query);
-            } else {
-                renderBatchConversations();
-            }
+            applyBatchConversationFilters();
         }
 
         // 通知其他模块（如 WebShell AI 助手）同步删除，保持列表一致
@@ -5731,7 +6158,497 @@ let groupsCache = [];
 let conversationGroupMappingCache = {};
 let pendingGroupMappings = {}; // 待保留的分组映射（用于处理后端API延迟的情况）
 let conversationsListLoadSeq = 0; // 对话列表加载序号，避免并发请求导致重复渲染
+let conversationsListNavigateGen = 0; // 用户主动翻页代数，防止后台刷新覆盖翻页结果
 const CONVERSATIONS_PAGE_SIZE_KEY = 'cyberstrike.conversations_page_size';
+const CONVERSATIONS_SORT_KEY = 'cyberstrike.conversations_sort_by';
+const CONVERSATIONS_PROJECT_FILTER_KEY = 'cyberstrike.conversations_project_filter';
+const CONVERSATION_PROJECT_FILTER_NONE = '__none__';
+const CONVERSATION_PROJECT_FILTER_SELECT_ID = 'conversation-project-filter';
+const CONVERSATION_PROJECT_FILTER_CARET = '<svg class="conversation-project-filter-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const BATCH_PROJECT_FILTER_SELECT_ID = 'batch-project-filter';
+const projectFilterCustomSelectRegistry = {};
+let projectFilterCustomSelectDocBound = false;
+
+function projectFilterT(key, fallback) {
+    if (typeof window.t === 'function') {
+        const value = window.t(key);
+        if (value && value !== key) return value;
+    }
+    return fallback;
+}
+
+function closeProjectFilterCustomSelect(selectId) {
+    const reg = projectFilterCustomSelectRegistry[selectId];
+    if (!reg || !reg.wrapper) return;
+    reg.wrapper.classList.remove('open');
+    if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    if (reg.filterSearchTimer) {
+        clearTimeout(reg.filterSearchTimer);
+        reg.filterSearchTimer = null;
+    }
+    reg.filterSearchSeq = (reg.filterSearchSeq || 0) + 1;
+    if (reg.searchInput) reg.searchInput.value = '';
+}
+
+function closeAllProjectFilterCustomSelects() {
+    Object.keys(projectFilterCustomSelectRegistry).forEach(closeProjectFilterCustomSelect);
+}
+
+function ensureProjectFilterSearchUi(reg) {
+    if (reg.searchInput && reg.optionsList) return;
+    const { dropdown } = reg;
+    dropdown.innerHTML = '';
+
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'conversation-project-filter-search';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'conversation-project-filter-search-input';
+    searchInput.setAttribute('autocomplete', 'off');
+    searchInput.setAttribute('data-i18n', 'chat.filterProjectSearch');
+    searchInput.setAttribute('data-i18n-attr', 'placeholder');
+    searchInput.placeholder = projectFilterT('chat.filterProjectSearch', '搜索项目…');
+    searchWrap.appendChild(searchInput);
+    dropdown.appendChild(searchWrap);
+    reg.searchInput = searchInput;
+
+    const optionsList = document.createElement('div');
+    optionsList.className = 'conversation-project-filter-options';
+    dropdown.appendChild(optionsList);
+    reg.optionsList = optionsList;
+    reg.filterSearchSeq = 0;
+    reg.filterSearchTimer = null;
+
+    searchInput.addEventListener('input', () => loadProjectFilterLocalOptions(reg.select.id));
+    searchInput.addEventListener('click', (e) => e.stopPropagation());
+    searchInput.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') closeProjectFilterCustomSelect(reg.select.id);
+    });
+}
+
+function createProjectFilterOptionButton(value, label, selectedValue) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'conversation-project-filter-option';
+    item.setAttribute('role', 'option');
+    item.setAttribute('data-value', value);
+    item.title = label;
+    if (value === selectedValue) {
+        item.classList.add('is-selected');
+        item.setAttribute('aria-selected', 'true');
+    } else {
+        item.setAttribute('aria-selected', 'false');
+    }
+    const check = document.createElement('span');
+    check.className = 'conversation-project-filter-check';
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '✓';
+    const labelEl = document.createElement('span');
+    labelEl.className = 'conversation-project-filter-option-label';
+    labelEl.textContent = label;
+    labelEl.title = label;
+    item.appendChild(check);
+    item.appendChild(labelEl);
+    return item;
+}
+
+function appendProjectFilterStatusMessage(optionsList, className, text) {
+    const el = document.createElement('div');
+    el.className = className;
+    el.textContent = text;
+    optionsList.appendChild(el);
+    return el;
+}
+
+function renderProjectFilterPinnedOptions(reg) {
+    const { select, optionsList } = reg;
+    optionsList.innerHTML = '';
+    Array.prototype.forEach.call(select.options, (opt) => {
+        if (opt.value === '' || opt.value === CONVERSATION_PROJECT_FILTER_NONE) {
+            optionsList.appendChild(createProjectFilterOptionButton(opt.value, opt.textContent || '', select.value));
+        }
+    });
+}
+
+function ensureNativeProjectFilterOption(select, projectId, label) {
+    if (!projectId || projectId === CONVERSATION_PROJECT_FILTER_NONE) return;
+    if (Array.prototype.some.call(select.options, (opt) => opt.value === projectId)) return;
+    const opt = document.createElement('option');
+    opt.value = projectId;
+    opt.textContent = label || projectId;
+    select.appendChild(opt);
+}
+
+async function loadProjectFilterLocalOptions(selectId) {
+    const reg = projectFilterCustomSelectRegistry[selectId];
+    if (!reg || !reg.optionsList) return;
+    const query = (reg.searchInput?.value || '').trim();
+    const seq = ++reg.filterSearchSeq;
+
+    const needsFetch = typeof window.isProjectsCacheReady === 'function' && !window.isProjectsCacheReady();
+    let loadingEl = null;
+    if (needsFetch) {
+        renderProjectFilterPinnedOptions(reg);
+        loadingEl = appendProjectFilterStatusMessage(
+            reg.optionsList,
+            'conversation-project-filter-status',
+            projectFilterT('common.loading', '加载中…')
+        );
+    }
+
+    try {
+        const ensureLoaded = typeof window.ensureProjectsLoaded === 'function'
+            ? window.ensureProjectsLoaded
+            : null;
+        const filterLocal = typeof window.filterActiveProjectsLocal === 'function'
+            ? window.filterActiveProjectsLocal
+            : null;
+        if (!ensureLoaded || !filterLocal) throw new Error('projects cache unavailable');
+
+        const all = await ensureLoaded();
+        if (seq !== reg.filterSearchSeq) return;
+
+        renderProjectFilterPinnedOptions(reg);
+        const selected = reg.select.value;
+        const pinnedValues = new Set(['', CONVERSATION_PROJECT_FILTER_NONE]);
+        const projects = filterLocal(all, query);
+        projects.forEach((p) => {
+            if (pinnedValues.has(p.id)) return;
+            reg.optionsList.appendChild(
+                createProjectFilterOptionButton(p.id, p.name || p.id, selected)
+            );
+        });
+
+        if (query && projects.length === 0) {
+            appendProjectFilterStatusMessage(
+                reg.optionsList,
+                'conversation-project-filter-empty',
+                projectFilterT('chat.filterProjectSearchEmpty', '没有匹配的项目')
+            );
+        }
+    } catch (e) {
+        if (seq !== reg.filterSearchSeq) return;
+        renderProjectFilterPinnedOptions(reg);
+        appendProjectFilterStatusMessage(
+            reg.optionsList,
+            'conversation-project-filter-empty',
+            projectFilterT('chat.filterProjectSearchFailed', '加载项目失败，请重试')
+        );
+    } finally {
+        if (loadingEl && loadingEl.parentNode) loadingEl.remove();
+    }
+}
+
+function syncProjectFilterCustomSelect(selectId) {
+    const reg = projectFilterCustomSelectRegistry[selectId];
+    if (!reg) return;
+    ensureProjectFilterSearchUi(reg);
+    const { select, trigger } = reg;
+    const valueSpan = trigger.querySelector('.conversation-project-filter-value');
+    const selectedOpt = select.options[select.selectedIndex];
+    const selectedText = selectedOpt ? (selectedOpt.textContent || '') : '';
+    if (valueSpan) {
+        valueSpan.textContent = selectedText;
+        valueSpan.title = selectedText;
+    }
+}
+
+function initProjectFilterCustomSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    if (select.dataset.projectCustomSelect === '1') {
+        syncProjectFilterCustomSelect(selectId);
+        return;
+    }
+    select.dataset.projectCustomSelect = '1';
+    select.classList.add('conversation-project-filter-native');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'conversation-project-filter-ui';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'conversation-project-filter-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'conversation-project-filter-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', CONVERSATION_PROJECT_FILTER_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'conversation-project-filter-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    projectFilterCustomSelectRegistry[selectId] = { wrapper, trigger, dropdown, select };
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = wrapper.classList.contains('open');
+        closeAllProjectFilterCustomSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+            ensureProjectFilterSearchUi(projectFilterCustomSelectRegistry[selectId]);
+            const reg = projectFilterCustomSelectRegistry[selectId];
+            if (reg?.searchInput) {
+                reg.searchInput.value = '';
+                loadProjectFilterLocalOptions(selectId);
+                requestAnimationFrame(() => reg.searchInput.focus());
+            }
+        }
+    });
+
+    dropdown.addEventListener('click', (e) => {
+        const opt = e.target.closest('.conversation-project-filter-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        const label = opt.querySelector('.conversation-project-filter-option-label')?.textContent || val;
+        ensureNativeProjectFilterOption(select, val, label);
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        closeProjectFilterCustomSelect(selectId);
+        syncProjectFilterCustomSelect(selectId);
+    });
+
+    if (!projectFilterCustomSelectDocBound) {
+        projectFilterCustomSelectDocBound = true;
+        document.addEventListener('click', closeAllProjectFilterCustomSelects);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeAllProjectFilterCustomSelects();
+        });
+    }
+    syncProjectFilterCustomSelect(selectId);
+}
+
+function syncConversationProjectCustomSelect() {
+    syncProjectFilterCustomSelect(CONVERSATION_PROJECT_FILTER_SELECT_ID);
+}
+
+function initConversationProjectCustomSelect() {
+    initProjectFilterCustomSelect(CONVERSATION_PROJECT_FILTER_SELECT_ID);
+}
+
+function getConversationProjectFilter() {
+    try {
+        return localStorage.getItem(CONVERSATIONS_PROJECT_FILTER_KEY) || '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function setConversationProjectFilter(projectId) {
+    const value = (projectId || '').trim();
+    try {
+        if (value) localStorage.setItem(CONVERSATIONS_PROJECT_FILTER_KEY, value);
+        else localStorage.removeItem(CONVERSATIONS_PROJECT_FILTER_KEY);
+    } catch (e) { /* ignore */ }
+    const sel = document.getElementById('conversation-project-filter');
+    if (sel && sel.value !== value) sel.value = value;
+    syncConversationProjectCustomSelect();
+    updateConversationSidebarFilterUI();
+}
+
+function appendProjectFilterPinnedNativeOptions(sel) {
+    const tFn = typeof window.t === 'function' ? window.t.bind(window) : null;
+    const allLabel = tFn ? tFn('chat.filterAllProjects') : '全部项目';
+    const unboundLabel = tFn ? tFn('chat.filterUnboundProjects') : '未绑定项目';
+    sel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '';
+    allOpt.textContent = allLabel;
+    allOpt.setAttribute('data-i18n', 'chat.filterAllProjects');
+    sel.appendChild(allOpt);
+    const unboundOpt = document.createElement('option');
+    unboundOpt.value = CONVERSATION_PROJECT_FILTER_NONE;
+    unboundOpt.textContent = unboundLabel;
+    unboundOpt.setAttribute('data-i18n', 'chat.filterUnboundProjects');
+    sel.appendChild(unboundOpt);
+}
+
+async function resolveProjectFilterSelection(projectId) {
+    const saved = (projectId || '').trim();
+    if (!saved || saved === CONVERSATION_PROJECT_FILTER_NONE) return saved;
+    const fetchSummary = typeof window.fetchProjectSummary === 'function'
+        ? window.fetchProjectSummary
+        : null;
+    if (!fetchSummary) return saved;
+    const project = await fetchSummary(saved);
+    if (!project || !project.id || project.status === 'archived') return '';
+    return project.id;
+}
+
+async function appendSelectedProjectFilterOption(sel, projectId) {
+    const id = (projectId || '').trim();
+    if (!id || id === CONVERSATION_PROJECT_FILTER_NONE) return;
+    if (Array.prototype.some.call(sel.options, (opt) => opt.value === id)) return;
+    const fetchSummary = typeof window.fetchProjectSummary === 'function'
+        ? window.fetchProjectSummary
+        : null;
+    const project = fetchSummary ? await fetchSummary(id) : null;
+    const label = (project && (project.name || project.id)) || (window.projectNameById && window.projectNameById[id]) || id;
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = label;
+    sel.appendChild(opt);
+}
+
+async function refreshConversationProjectFilter() {
+    const sel = document.getElementById('conversation-project-filter');
+    if (!sel) return;
+    const saved = getConversationProjectFilter();
+    appendProjectFilterPinnedNativeOptions(sel);
+    const normalized = await resolveProjectFilterSelection(saved);
+    if (normalized && normalized !== CONVERSATION_PROJECT_FILTER_NONE) {
+        await appendSelectedProjectFilterOption(sel, normalized);
+    }
+    if (normalized !== saved) setConversationProjectFilter(normalized);
+    sel.value = normalized;
+    syncConversationProjectCustomSelect();
+    updateConversationSidebarFilterUI();
+}
+
+function onConversationProjectFilterChange(projectId) {
+    setConversationProjectFilter(projectId || '');
+    commitConversationsPage(1, { bumpNavigateGen: true });
+    loadConversationsWithGroups(conversationsSearchQuery);
+}
+
+function updateConversationSidebarFilterUI() {
+    const groupsSection = document.querySelector('.conversation-groups-section');
+    const titleEl = document.querySelector('.recent-conversations-section .section-title');
+    const filter = getConversationProjectFilter();
+    const hasSearch = !!(conversationsSearchQuery && conversationsSearchQuery.trim());
+    if (groupsSection) {
+        groupsSection.hidden = !!filter || hasSearch;
+    }
+    if (!titleEl) return;
+    const tFn = typeof window.t === 'function' ? window.t.bind(window) : null;
+    if (filter && filter !== CONVERSATION_PROJECT_FILTER_NONE) {
+        const name = (window.projectNameById && window.projectNameById[filter]) || filter;
+        const fullTitle = tFn ? tFn('chat.projectConversationsTitle', { name }) : `${name} · 对话`;
+        titleEl.textContent = fullTitle;
+        titleEl.title = fullTitle;
+        titleEl.classList.add('section-title--filtered');
+        titleEl.removeAttribute('data-i18n');
+    } else if (filter === CONVERSATION_PROJECT_FILTER_NONE) {
+        const fullTitle = tFn ? tFn('chat.unboundConversationsTitle') : '未绑定项目';
+        titleEl.textContent = fullTitle;
+        titleEl.title = fullTitle;
+        titleEl.classList.add('section-title--filtered');
+        titleEl.setAttribute('data-i18n', 'chat.unboundConversationsTitle');
+    } else {
+        titleEl.classList.remove('section-title--filtered');
+        titleEl.removeAttribute('title');
+        titleEl.setAttribute('data-i18n', 'chat.recentConversations');
+        if (tFn) titleEl.textContent = tFn('chat.recentConversations');
+    }
+}
+
+window.onConversationProjectBindingChanged = function onConversationProjectBindingChanged() {
+    loadConversationsWithGroups(conversationsSearchQuery);
+};
+
+function getConversationSortBy() {
+    try {
+        const saved = localStorage.getItem(CONVERSATIONS_SORT_KEY);
+        if (saved === 'created_at' || saved === 'updated_at') return saved;
+    } catch (e) { /* ignore */ }
+    return 'updated_at';
+}
+
+let conversationSortBy = getConversationSortBy();
+
+function getConversationSortTime(conv) {
+    const field = conversationSortBy === 'created_at' ? 'createdAt' : 'updatedAt';
+    const raw = conv && conv[field];
+    if (!raw) return new Date(0);
+    const date = new Date(raw);
+    return isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function updateConversationSortMenuUI() {
+    const menu = document.getElementById('conversation-sort-menu');
+    const btn = document.getElementById('conversation-sort-btn');
+    if (!menu) return;
+    menu.querySelectorAll('.conversation-sort-option').forEach((option) => {
+        const selected = option.dataset.sort === conversationSortBy;
+        option.classList.toggle('is-selected', selected);
+        option.setAttribute('aria-checked', selected ? 'true' : 'false');
+    });
+    if (btn) {
+        btn.setAttribute('aria-expanded', menu.hidden ? 'false' : 'true');
+    }
+}
+
+function closeConversationSortMenu() {
+    const menu = document.getElementById('conversation-sort-menu');
+    const btn = document.getElementById('conversation-sort-btn');
+    if (menu) menu.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleConversationSortMenu(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const menu = document.getElementById('conversation-sort-menu');
+    const btn = document.getElementById('conversation-sort-btn');
+    if (!menu || !btn) return;
+    const willOpen = menu.hidden;
+    closeConversationSortMenu();
+    if (willOpen) {
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        updateConversationSortMenuUI();
+    }
+}
+
+function setConversationSortBy(sortBy) {
+    const next = sortBy === 'created_at' ? 'created_at' : 'updated_at';
+    if (next === conversationSortBy) {
+        closeConversationSortMenu();
+        return;
+    }
+    conversationSortBy = next;
+    try {
+        localStorage.setItem(CONVERSATIONS_SORT_KEY, next);
+    } catch (e) { /* ignore */ }
+    updateConversationSortMenuUI();
+    closeConversationSortMenu();
+    commitConversationsPage(1, { bumpNavigateGen: true });
+    loadConversationsWithGroups(conversationsSearchQuery);
+}
+
+if (!window.__conversationSortMenuBound) {
+    window.__conversationSortMenuBound = true;
+    document.addEventListener('click', (event) => {
+        const dropdown = document.getElementById('conversation-sort-dropdown');
+        if (!dropdown || dropdown.contains(event.target)) return;
+        closeConversationSortMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeConversationSortMenu();
+    });
+}
+
+window.toggleConversationSortMenu = toggleConversationSortMenu;
+window.setConversationSortBy = setConversationSortBy;
+window.closeConversationSortMenu = closeConversationSortMenu;
 
 function getConversationsPageSize() {
     try {
@@ -5741,8 +6658,106 @@ function getConversationsPageSize() {
     return 50;
 }
 
-let conversationsPagination = { page: 1, pageSize: getConversationsPageSize(), total: 0 };
+let conversationsPagination = {
+    page: 1,
+    pageSize: getConversationsPageSize(),
+    total: 0,
+    visibleCount: 0,
+};
 let conversationsSearchQuery = '';
+let conversationsPaginationEventsBound = false;
+
+function getConversationsTotalPages() {
+    const { total, pageSize } = conversationsPagination;
+    return Math.max(1, Math.ceil((total || 0) / pageSize) || 1);
+}
+
+/**
+ * 分页状态约定：
+ * - conversationsPagination.page 仅在此处（用户操作 / reconcile 钳制 / clamp）写入
+ * - loadConversationsWithGroups 只读页码，用 intentPage 或当前 page 计算 offset
+ * - isStaleConversationListLoad 丢弃页码或 navigateGen 已变的在途请求
+ */
+function commitConversationsPage(page, { bumpNavigateGen = false } = {}) {
+    const next = Math.max(1, parseInt(page, 10) || 1);
+    if (bumpNavigateGen) {
+        conversationsListNavigateGen += 1;
+    }
+    conversationsPagination.page = next;
+    return next;
+}
+
+function isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage) {
+    if (loadSeq !== conversationsListLoadSeq) return true;
+    // 后台刷新期间用户已翻页（含 2→1、1→2），丢弃过期结果
+    if (intentPage == null && navigateGenAtStart !== conversationsListNavigateGen) return true;
+    // 用户主动翻页后，丢弃目标页已变化的请求
+    if (intentPage != null && intentPage !== conversationsPagination.page) return true;
+    // 后台刷新完成时页码已变（如 reconcile 钳制），丢弃过期结果
+    if (intentPage == null && activePage != null && activePage !== conversationsPagination.page) return true;
+    return false;
+}
+
+function reconcileConversationsPageAfterTotal(activePage, intentPage, parsed, pageSize, offset, resolvedTotal) {
+    let total = resolvedTotal;
+    const totalPages = () => Math.max(1, Math.ceil((total || 0) / pageSize) || 1);
+
+    if (activePage <= totalPages()) {
+        return { ok: true, total };
+    }
+
+    const serverTotal = parseListTotalValue(parsed.total, parsed.items.length);
+    const hasPageData = parsed.items.length > 0;
+    const knownTotal = conversationsPagination.total || 0;
+    // 用户主动翻页且服务端确有该页数据时，不信过期/偏低的 total（避免 2>1 被钳回第 1 页）
+    if (intentPage != null && (hasPageData || serverTotal > offset || total > offset || knownTotal > offset)) {
+        total = Math.max(total, serverTotal, knownTotal, offset + parsed.items.length);
+        if (activePage <= totalPages()) {
+            return { ok: true, total };
+        }
+    }
+
+    const clampedPage = totalPages();
+    commitConversationsPage(clampedPage);
+    return { ok: false, total, clampedPage };
+}
+
+function clampConversationsPageToTotal() {
+    const totalPages = getConversationsTotalPages();
+    if (conversationsPagination.page > totalPages) {
+        commitConversationsPage(totalPages);
+        return true;
+    }
+    if (conversationsPagination.page < 1) {
+        commitConversationsPage(1);
+        return true;
+    }
+    return false;
+}
+
+let conversationsPaginationRenderLock = false;
+
+function initConversationsPaginationEvents() {
+    if (conversationsPaginationEventsBound) return;
+    const el = document.getElementById('conversations-pagination');
+    if (!el) return;
+    conversationsPaginationEventsBound = true;
+    el.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-conv-page]');
+        if (!btn || btn.disabled) return;
+        e.preventDefault();
+        const page = parseInt(btn.getAttribute('data-conv-page'), 10);
+        if (Number.isFinite(page)) {
+            goConversationsPage(page);
+        }
+    });
+    el.addEventListener('change', (e) => {
+        if (conversationsPaginationRenderLock) return;
+        if (e.target && e.target.id === 'conversations-page-size-pagination') {
+            changeConversationsPageSize();
+        }
+    });
+}
 
 function parseListTotalValue(raw, itemsLength) {
     if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return raw;
@@ -5779,6 +6794,9 @@ function parseConversationsListResponse(data) {
 
 async function resolveConversationsListTotal(params, parsed, pageSize, offset) {
     const serverTotal = parsed.total;
+    if (!parsed.isLegacyArray && typeof serverTotal === 'number' && Number.isFinite(serverTotal) && serverTotal >= 0) {
+        return serverTotal;
+    }
     if (!parsed.isLegacyArray && serverTotal > offset + parsed.items.length) {
         return serverTotal;
     }
@@ -5821,6 +6839,13 @@ async function fetchAllConversations(searchQuery) {
 }
 
 function getConversationListEmptyHtml() {
+    const filter = getConversationProjectFilter();
+    if (filter && filter !== CONVERSATION_PROJECT_FILTER_NONE) {
+        return '<div class="conversations-list-empty" data-i18n="chat.noProjectConversations"></div>';
+    }
+    if (filter === CONVERSATION_PROJECT_FILTER_NONE) {
+        return '<div class="conversations-list-empty" data-i18n="chat.noUnboundConversations"></div>';
+    }
     return '<div class="conversations-list-empty" data-i18n="chat.noHistoryConversations"></div>';
 }
 
@@ -5828,19 +6853,20 @@ function renderConversationsPagination(visibleCount) {
     const el = document.getElementById('conversations-pagination');
     if (!el) return;
     const { page, pageSize, total } = conversationsPagination;
-    const count = typeof visibleCount === 'number' ? visibleCount : (conversationsPagination.visibleCount || 0);
-    conversationsPagination.visibleCount = count;
+    if (typeof visibleCount === 'number') {
+        conversationsPagination.visibleCount = visibleCount;
+    }
 
-    if (count === 0 || total === 0) {
+    if (!total) {
         el.innerHTML = '';
         el.hidden = true;
         return;
     }
 
-    const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+    const totalPages = getConversationsTotalPages();
     const navDisabled = totalPages <= 1;
     el.hidden = false;
-    const start = (page - 1) * pageSize + 1;
+    const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
     const end = Math.min(page * pageSize, total);
     const tFn = typeof window.t === 'function' ? window.t.bind(window) : null;
     const infoText = tFn
@@ -5852,42 +6878,54 @@ function renderConversationsPagination(visibleCount) {
     const perPageLabel = tFn ? tFn('chat.paginationPerPage') : 'Per page';
     const prevLabel = tFn ? tFn('chat.paginationPrev') : 'Prev';
     const nextLabel = tFn ? tFn('chat.paginationNext') : 'Next';
-    el.innerHTML = `
+    const prevPage = page - 1;
+    const nextPage = page + 1;
+    conversationsPaginationRenderLock = true;
+    try {
+        el.innerHTML = `
         <div class="sidebar-list-pagination-inner sidebar-list-pagination-inner--compact">
             <span class="pagination-info">${escapeHtml(infoText)}</span>
             <div class="pagination-controls">
-                <button type="button" class="btn-icon-pagination" onclick="goConversationsPage(${page - 1})" ${page <= 1 || navDisabled ? 'disabled' : ''} title="${escapeHtml(prevLabel)}" aria-label="${escapeHtml(prevLabel)}">‹</button>
+                <button type="button" class="btn-icon-pagination" data-conv-page="${prevPage}" ${page <= 1 || navDisabled ? 'disabled' : ''} title="${escapeHtml(prevLabel)}" aria-label="${escapeHtml(prevLabel)}">‹</button>
                 <span class="pagination-page">${escapeHtml(pageText)}</span>
-                <button type="button" class="btn-icon-pagination" onclick="goConversationsPage(${page + 1})" ${page >= totalPages || navDisabled ? 'disabled' : ''} title="${escapeHtml(nextLabel)}" aria-label="${escapeHtml(nextLabel)}">›</button>
+                <button type="button" class="btn-icon-pagination" data-conv-page="${nextPage}" ${page >= totalPages || navDisabled ? 'disabled' : ''} title="${escapeHtml(nextLabel)}" aria-label="${escapeHtml(nextLabel)}">›</button>
             </div>
             <label class="pagination-page-size">
                 ${escapeHtml(perPageLabel)}
-                <select id="conversations-page-size-pagination" onchange="changeConversationsPageSize()">
+                <select id="conversations-page-size-pagination">
                     <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
                     <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
                     <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
                 </select>
             </label>
         </div>`;
+    } finally {
+        conversationsPaginationRenderLock = false;
+    }
 }
 
 function goConversationsPage(page) {
-    const totalPages = Math.max(1, Math.ceil((conversationsPagination.total || 0) / conversationsPagination.pageSize) || 1);
-    const next = Math.min(Math.max(1, page), totalPages);
-    if (next === conversationsPagination.page) return;
-    conversationsPagination.page = next;
-    loadConversationsWithGroups(conversationsSearchQuery);
+    const requestedPage = Math.max(1, parseInt(page, 10) || 1);
+    const scrollToTop = requestedPage !== conversationsPagination.page;
+    commitConversationsPage(requestedPage, { bumpNavigateGen: true });
+    loadConversationsWithGroups(conversationsSearchQuery, {
+        refreshMeta: false,
+        scrollToTop,
+        intentPage: requestedPage,
+    });
 }
 
 function changeConversationsPageSize() {
     const sel = document.getElementById('conversations-page-size-pagination');
     const newSize = sel ? parseInt(sel.value, 10) : 50;
     if (![20, 50, 100].includes(newSize)) return;
+    // 重建 DOM 后浏览器可能异步触发 change，值未变时不应重置页码
+    if (newSize === conversationsPagination.pageSize) return;
     try {
         localStorage.setItem(CONVERSATIONS_PAGE_SIZE_KEY, String(newSize));
     } catch (e) { /* ignore */ }
     conversationsPagination.pageSize = newSize;
-    conversationsPagination.page = 1;
+    commitConversationsPage(1, { bumpNavigateGen: true });
     loadConversationsWithGroups(conversationsSearchQuery);
 }
 
@@ -5986,26 +7024,40 @@ async function loadGroups() {
 }
 
 // 加载对话列表（修改为支持分组和置顶）
-async function loadConversationsWithGroups(searchQuery = '') {
+async function loadConversationsWithGroups(searchQuery = '', options = {}) {
+    const refreshMeta = options.refreshMeta !== false;
+    const scrollToTop = options.scrollToTop === true;
+    const intentPage = Number.isFinite(options.intentPage) ? options.intentPage : null;
+    const navigateGenAtStart = conversationsListNavigateGen;
     const loadSeq = ++conversationsListLoadSeq;
     try {
         conversationsSearchQuery = searchQuery || '';
-        conversationsPagination.pageSize = getConversationsPageSize();
-        const pageSize = conversationsPagination.pageSize;
-        const offset = (conversationsPagination.page - 1) * pageSize;
+        const pageSize = getConversationsPageSize();
+        conversationsPagination.pageSize = pageSize;
+        const activePage = intentPage != null ? intentPage : conversationsPagination.page;
+        const offset = (activePage - 1) * pageSize;
         const convParams = new URLSearchParams({ limit: String(pageSize), offset: String(offset) });
+        if (conversationSortBy === 'created_at') {
+            convParams.set('sort_by', 'created_at');
+        }
+        const projectFilter = getConversationProjectFilter();
+        if (projectFilter) {
+            convParams.set('project_id', projectFilter);
+        }
         if (searchQuery && searchQuery.trim()) {
             convParams.set('search', searchQuery.trim());
-        } else {
+        } else if (!projectFilter) {
             convParams.set('exclude_grouped', 'true');
         }
+        updateConversationSidebarFilterUI();
         const url = `/api/conversations?${convParams}`;
-        const [,, response] = await Promise.all([
-            loadGroups(),
-            loadConversationGroupMapping(),
-            apiFetch(url),
-        ]);
-        if (loadSeq !== conversationsListLoadSeq) return;
+        const fetchTasks = [apiFetch(url)];
+        if (refreshMeta) {
+            fetchTasks.unshift(loadGroups(), loadConversationGroupMapping());
+        }
+        const results = await Promise.all(fetchTasks);
+        const response = results[results.length - 1];
+        if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
 
         const listContainer = document.getElementById('conversations-list');
         if (!listContainer) {
@@ -6028,9 +7080,34 @@ async function loadConversationsWithGroups(searchQuery = '') {
         }
 
         const data = await response.json();
-        if (loadSeq !== conversationsListLoadSeq) return;
+        if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
         const parsed = parseConversationsListResponse(data);
-        conversationsPagination.total = await resolveConversationsListTotal(convParams, parsed, pageSize, offset);
+        const resolvedTotal = await resolveConversationsListTotal(convParams, parsed, pageSize, offset);
+        if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
+        conversationsPagination.total = resolvedTotal;
+
+        const pageCheck = reconcileConversationsPageAfterTotal(
+            activePage, intentPage, parsed, pageSize, offset, resolvedTotal
+        );
+        conversationsPagination.total = pageCheck.total;
+        if (!pageCheck.ok) {
+            if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
+            // 用户主动翻页被钳制时仍保留 intent，并 bump navigateGen 使在途后台刷新失效
+            if (intentPage != null) {
+                commitConversationsPage(pageCheck.clampedPage, { bumpNavigateGen: true });
+            }
+            loadConversationsWithGroups(searchQuery, {
+                ...options,
+                intentPage: pageCheck.clampedPage,
+                scrollToTop: options.scrollToTop === true || activePage !== pageCheck.clampedPage,
+            });
+            return;
+        }
+        if (intentPage == null && clampConversationsPageToTotal()) {
+            if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
+            loadConversationsWithGroups(searchQuery, options);
+            return;
+        }
 
         // 双重保险：后端或并发情况下若出现重复ID，前端按ID去重
         const uniqueConversations = [];
@@ -6043,17 +7120,21 @@ async function loadConversationsWithGroups(searchQuery = '') {
             uniqueConversations.push(conv);
         });
 
+        const hasSearchQuery = searchQuery && searchQuery.trim();
+        const hasProjectFilter = !!getConversationProjectFilter();
+        // 与请求参数 exclude_grouped 一致：后端已排除分组内对话，勿再用 mapping 缓存二次过滤（易导致 2→1 等页被滤空）
+        const listUsesUngroupedApi = !hasSearchQuery && !hasProjectFilter;
+
         if (uniqueConversations.length === 0) {
             listContainer.innerHTML = emptyStateHtml;
             if (typeof window.applyTranslations === 'function') window.applyTranslations(listContainer);
             renderConversationsPagination(0);
             return;
         }
-        
+
         // 分离置顶和普通对话
         const pinnedConvs = [];
         const normalConvs = [];
-        const hasSearchQuery = searchQuery && searchQuery.trim();
 
         uniqueConversations.forEach(conv => {
             // 如果有搜索关键词，显示所有匹配的对话（全局搜索，包括分组中的）
@@ -6067,11 +7148,18 @@ async function loadConversationsWithGroups(searchQuery = '') {
                 return;
             }
 
-            // 如果没有搜索关键词，使用原有逻辑
-            // "最近对话"列表应该只显示不在任何分组中的对话
-            // 无论是否在分组详情页，都不应该在"最近对话"中显示分组中的对话
-            if (conversationGroupMappingCache[conv.id]) {
-                // 对话在某个分组中，不应该显示在"最近对话"列表中
+            // 按项目筛选时展示该项目下全部对话（含分组内）
+            if (hasProjectFilter) {
+                if (conv.pinned) {
+                    pinnedConvs.push(conv);
+                } else {
+                    normalConvs.push(conv);
+                }
+                return;
+            }
+
+            // 未走 exclude_grouped 接口时，才用 mapping 缓存过滤分组内对话
+            if (!listUsesUngroupedApi && conversationGroupMappingCache[conv.id]) {
                 return;
             }
 
@@ -6083,11 +7171,7 @@ async function loadConversationsWithGroups(searchQuery = '') {
         });
 
         // 按时间排序
-        const sortByTime = (a, b) => {
-            const timeA = a.updatedAt ? new Date(a.updatedAt) : new Date(0);
-            const timeB = b.updatedAt ? new Date(b.updatedAt) : new Date(0);
-            return timeB - timeA;
-        };
+        const sortByTime = (a, b) => getConversationSortTime(b) - getConversationSortTime(a);
 
         pinnedConvs.sort(sortByTime);
         normalConvs.sort(sortByTime);
@@ -6115,8 +7199,8 @@ async function loadConversationsWithGroups(searchQuery = '') {
         };
 
         normalConvs.forEach(conv => {
-            const dateObj = conv.updatedAt ? new Date(conv.updatedAt) : new Date();
-            const validDate = isNaN(dateObj.getTime()) ? new Date() : dateObj;
+            const dateObj = getConversationSortTime(conv);
+            const validDate = dateObj.getTime() === 0 ? new Date() : dateObj;
             const groupKey = getConversationGroup(validDate, todayStart, sevenDaysCutoff, yesterdayStart);
             groups[groupKey].push({
                 ...conv,
@@ -6128,8 +7212,8 @@ async function loadConversationsWithGroups(searchQuery = '') {
 
         if (pinnedConvs.length > 0) {
             pinnedConvs.forEach(conv => {
-                const dateObj = conv.updatedAt ? new Date(conv.updatedAt) : new Date();
-                const validDate = isNaN(dateObj.getTime()) ? new Date() : dateObj;
+                const dateObj = getConversationSortTime(conv);
+                const validDate = dateObj.getTime() === 0 ? new Date() : dateObj;
                 fragment.appendChild(createConversationListItemWithMenu({
                     ...conv,
                     _timeText: formatConversationTimestamp(validDate, todayStart, yesterdayStart),
@@ -6160,15 +7244,6 @@ async function loadConversationsWithGroups(searchQuery = '') {
         const visibleCount = pinnedConvs.length + Object.values(groups).reduce((n, arr) => n + (arr ? arr.length : 0), 0);
         conversationsPagination.visibleCount = visibleCount;
 
-        if (!hasSearchQuery && visibleCount === 0 && parsed.items.length > 0) {
-            const totalPages = Math.max(1, Math.ceil(parsed.total / pageSize));
-            if (conversationsPagination.page < totalPages) {
-                conversationsPagination.page += 1;
-                loadConversationsWithGroups(searchQuery);
-                return;
-            }
-        }
-
         if (fragment.children.length === 0) {
             listContainer.innerHTML = emptyStateHtml;
             if (typeof window.applyTranslations === 'function') window.applyTranslations(listContainer);
@@ -6176,22 +7251,21 @@ async function loadConversationsWithGroups(searchQuery = '') {
             return;
         }
 
-        if (loadSeq !== conversationsListLoadSeq) return;
+        if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
         listContainer.appendChild(fragment);
         updateActiveConversation();
         renderConversationsPagination(visibleCount);
         
-        // 恢复滚动位置
+        // 翻页时回到列表顶部；后台刷新保留滚动位置
         if (sidebarContent) {
-            // 使用 requestAnimationFrame 确保 DOM 已经更新
             requestAnimationFrame(() => {
-                if (loadSeq === conversationsListLoadSeq) {
-                    sidebarContent.scrollTop = savedScrollTop;
+                if (!isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) {
+                    sidebarContent.scrollTop = scrollToTop ? 0 : savedScrollTop;
                 }
             });
         }
     } catch (error) {
-        if (loadSeq !== conversationsListLoadSeq) return;
+        if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
         console.error('加载对话列表失败:', error);
         // 错误时显示空状态，而不是错误提示（更友好的用户体验）
         const listContainer = document.getElementById('conversations-list');
@@ -6610,6 +7684,11 @@ async function renameConversation() {
             if (groupTitleEl) {
                 groupTitleEl.textContent = newTitle.trim();
             }
+        }
+
+        // 同步更新顶栏正在运行的任务名称
+        if (typeof updateActiveTaskConversationTitle === 'function') {
+            updateActiveTaskConversationTitle(convId, newTitle.trim());
         }
 
         // 重新加载对话列表
@@ -7301,6 +8380,74 @@ function closeContextMenu() {
 // 显示批量管理模态框
 let allConversationsForBatch = [];
 
+function getConversationProjectId(conv) {
+    return (conv?.projectId || conv?.project_id || '').trim();
+}
+
+function getConversationProjectLabel(conv) {
+    const pid = getConversationProjectId(conv);
+    if (!pid) {
+        return typeof window.t === 'function' ? window.t('batchManageModal.noProject') : '无项目';
+    }
+    const name = window.projectNameById && window.projectNameById[pid];
+    if (name) return name;
+    return typeof window.t === 'function' ? window.t('batchManageModal.unknownProject') : '未知项目';
+}
+
+async function prefetchProjectNamesForConversations(conversations) {
+    const missing = new Set();
+    for (const conv of conversations || []) {
+        const pid = getConversationProjectId(conv);
+        if (pid && !(window.projectNameById && window.projectNameById[pid])) {
+            missing.add(pid);
+        }
+    }
+    if (!missing.size) return;
+    const fetchSummary = typeof window.fetchProjectSummary === 'function'
+        ? window.fetchProjectSummary
+        : null;
+    if (!fetchSummary) return;
+    await Promise.all([...missing].map((id) => fetchSummary(id).catch(() => null)));
+}
+
+async function refreshBatchProjectFilter() {
+    const sel = document.getElementById('batch-project-filter');
+    if (!sel) return;
+    const saved = sel.value || '';
+    appendProjectFilterPinnedNativeOptions(sel);
+    const normalized = await resolveProjectFilterSelection(saved);
+    if (normalized && normalized !== CONVERSATION_PROJECT_FILTER_NONE) {
+        await appendSelectedProjectFilterOption(sel, normalized);
+    }
+    sel.value = normalized;
+    syncProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
+}
+
+function getBatchFilteredConversations() {
+    const query = (document.getElementById('batch-search-input')?.value || '').trim().toLowerCase();
+    const projectFilter = (document.getElementById('batch-project-filter')?.value || '').trim();
+    return allConversationsForBatch.filter((conv) => {
+        const pid = getConversationProjectId(conv);
+        if (projectFilter) {
+            if (projectFilter === CONVERSATION_PROJECT_FILTER_NONE) {
+                if (pid) return false;
+            } else if (pid !== projectFilter) {
+                return false;
+            }
+        }
+        if (!query) return true;
+        const title = (conv.title || '').toLowerCase();
+        const projectName = getConversationProjectLabel(conv).toLowerCase();
+        return title.includes(query) || projectName.includes(query);
+    });
+}
+
+function applyBatchConversationFilters() {
+    const filtered = getBatchFilteredConversations();
+    updateBatchManageTitle(filtered.length);
+    renderBatchConversations(filtered);
+}
+
 // 更新批量管理模态框标题（含条数），支持 i18n；count 为当前条数
 function updateBatchManageTitle(count) {
     const titleEl = document.getElementById('batch-manage-title');
@@ -7312,20 +8459,29 @@ function updateBatchManageTitle(count) {
 
 async function showBatchManageModal() {
     try {
+        initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
         allConversationsForBatch = await fetchAllConversations('');
-
-        const modal = document.getElementById('batch-manage-modal');
-        updateBatchManageTitle(allConversationsForBatch.length);
-
-        renderBatchConversations();
-        openAppModal('batch-manage-modal');
+        await prefetchProjectNamesForConversations(allConversationsForBatch);
+        await refreshBatchProjectFilter();
+        const sidebarFilter = getConversationProjectFilter();
+        const batchSel = document.getElementById('batch-project-filter');
+        if (batchSel && sidebarFilter && (
+            sidebarFilter === CONVERSATION_PROJECT_FILTER_NONE ||
+            (window.projectNameById && window.projectNameById[sidebarFilter])
+        )) {
+            batchSel.value = sidebarFilter;
+        }
+        const searchInput = document.getElementById('batch-search-input');
+        if (searchInput) searchInput.value = '';
+        applyBatchConversationFilters();
+        openAppModal('batch-manage-modal', { focus: false });
     } catch (error) {
         console.error('加载对话列表失败:', error);
-        // 错误时使用空数组，不显示错误提示（更友好的用户体验）
+        initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
         allConversationsForBatch = [];
-        updateBatchManageTitle(0);
-        renderBatchConversations();
-        openAppModal('batch-manage-modal');
+        await refreshBatchProjectFilter();
+        applyBatchConversationFilters();
+        openAppModal('batch-manage-modal', { focus: false });
     }
 }
 
@@ -7385,15 +8541,28 @@ function renderBatchConversations(filtered = null) {
         checkbox.type = 'checkbox';
         checkbox.className = 'batch-conversation-checkbox';
         checkbox.dataset.conversationId = conv.id;
+        checkbox.addEventListener('change', syncSelectAllBatchCheckbox);
+
+        const checkboxCol = document.createElement('div');
+        checkboxCol.className = 'batch-table-col-checkbox';
+        checkboxCol.appendChild(checkbox);
 
         const name = document.createElement('div');
         name.className = 'batch-table-col-name';
         const originalTitle = conv.title || (typeof window.t === 'function' ? window.t('batchManageModal.unnamedConversation') : '未命名对话');
-        // 使用安全截断函数，限制最大长度为45个字符（留出空间显示省略号）
-        const truncatedTitle = safeTruncateText(originalTitle, 45);
+        const truncatedTitle = safeTruncateText(originalTitle, 36);
         name.textContent = truncatedTitle;
-        // 设置title属性以显示完整文本（鼠标悬停时）
         name.title = originalTitle;
+
+        const project = document.createElement('div');
+        project.className = 'batch-table-col-project';
+        const projectLabel = getConversationProjectLabel(conv);
+        const truncatedProject = safeTruncateText(projectLabel, 28);
+        project.textContent = truncatedProject;
+        project.title = projectLabel;
+        if (!getConversationProjectId(conv)) {
+            project.classList.add('is-unbound');
+        }
 
         const time = document.createElement('div');
         time.className = 'batch-table-col-time';
@@ -7410,43 +8579,71 @@ function renderBatchConversations(filtered = null) {
         const action = document.createElement('div');
         action.className = 'batch-table-col-action';
         const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
         deleteBtn.className = 'batch-delete-btn';
-        deleteBtn.innerHTML = '🗑️';
-        deleteBtn.onclick = () => deleteConversation(conv.id);
+        deleteBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14zM10 11v6M14 11v6"
+                      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        `;
+        const deleteLabel = typeof window.t === 'function' ? window.t('contextMenu.deleteConversation') : '删除此对话';
+        deleteBtn.title = deleteLabel;
+        deleteBtn.setAttribute('aria-label', deleteLabel);
+        deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteConversation(conv.id);
+        };
         action.appendChild(deleteBtn);
 
-        row.appendChild(checkbox);
+        row.appendChild(checkboxCol);
         row.appendChild(name);
+        row.appendChild(project);
         row.appendChild(time);
         row.appendChild(action);
 
         list.appendChild(row);
     });
+
+    syncSelectAllBatchCheckbox();
 }
 
 // 筛选批量管理对话
-function filterBatchConversations(query) {
-    if (!query || !query.trim()) {
-        renderBatchConversations();
-        return;
-    }
-
-    const filtered = allConversationsForBatch.filter(conv => {
-        const title = (conv.title || '').toLowerCase();
-        return title.includes(query.toLowerCase());
-    });
-
-    renderBatchConversations(filtered);
+function filterBatchConversations() {
+    applyBatchConversationFilters();
 }
 
 // 全选/取消全选
 function toggleSelectAllBatch() {
     const selectAll = document.getElementById('batch-select-all');
     const checkboxes = document.querySelectorAll('.batch-conversation-checkbox');
-    
+
+    if (selectAll) {
+        selectAll.indeterminate = false;
+    }
     checkboxes.forEach(cb => {
         cb.checked = selectAll.checked;
     });
+}
+
+function syncSelectAllBatchCheckbox() {
+    const selectAll = document.getElementById('batch-select-all');
+    if (!selectAll) return;
+
+    const checkboxes = document.querySelectorAll('.batch-conversation-checkbox');
+    const total = checkboxes.length;
+    const checked = document.querySelectorAll('.batch-conversation-checkbox:checked').length;
+
+    if (total === 0 || checked === 0) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+    } else if (checked === total) {
+        selectAll.checked = true;
+        selectAll.indeterminate = false;
+    } else {
+        selectAll.checked = false;
+        selectAll.indeterminate = true;
+    }
 }
 
 // 删除选中的对话
@@ -7468,8 +8665,12 @@ async function deleteSelectedConversations() {
         for (const id of ids) {
             await deleteConversation(id, true); // 跳过内部确认，因为批量删除时已经确认过了
         }
-        closeBatchManageModal();
-        loadConversationsWithGroups();
+        // 删除后保持弹窗打开，便于继续管理剩余对话
+        const selectAll = document.getElementById('batch-select-all');
+        if (selectAll) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        }
     } catch (error) {
         console.error('删除失败:', error);
         const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.deleteFailed') : '删除失败';
@@ -7484,7 +8685,12 @@ function closeBatchManageModal() {
     const selectAll = document.getElementById('batch-select-all');
     if (selectAll) {
         selectAll.checked = false;
+        selectAll.indeterminate = false;
     }
+    const searchInput = document.getElementById('batch-search-input');
+    if (searchInput) searchInput.value = '';
+    const batchProj = document.getElementById('batch-project-filter');
+    if (batchProj) batchProj.value = '';
     allConversationsForBatch = [];
 }
 
@@ -7518,6 +8724,20 @@ function refreshChatPanelI18n() {
             const expanded = timeline && timeline.classList.contains('expanded');
             span.textContent = expanded ? t('tasks.collapseDetail') : t('chat.expandDetail');
         });
+        const copyLabel = t('common.copy');
+        const copyTitle = t('chat.copyMessageTitle');
+        messagesEl.querySelectorAll('.message-copy-btn').forEach(function (btn) {
+            if (btn.dataset.copySuccessActive === '1') return;
+            const span = btn.querySelector('span');
+            if (span) span.textContent = copyLabel;
+            btn.title = copyTitle;
+            btn.setAttribute('aria-label', copyTitle);
+        });
+        messagesEl.querySelectorAll('.message.assistant').forEach(function (msgEl) {
+            if (typeof window.syncMcpToolsToggleButton === 'function') {
+                window.syncMcpToolsToggleButton(msgEl);
+            }
+        });
     }
 
     if (isAppModalOpen('mcp-detail-modal')) {
@@ -7541,9 +8761,16 @@ function refreshChatPanelI18n() {
 document.addEventListener('languagechange', function () {
     refreshSystemReadyMessageBubbles();
     refreshChatPanelI18n();
-    const modal = document.getElementById('batch-manage-modal');
-    if (isAppModalOpen('batch-manage-modal')) {
-        updateBatchManageTitle(allConversationsForBatch.length);
+    if (typeof refreshConversationProjectFilter === 'function') {
+        refreshConversationProjectFilter();
+    }
+    if (typeof refreshBatchProjectFilter === 'function') {
+        refreshBatchProjectFilter().then(() => {
+            const modal = document.getElementById('batch-manage-modal');
+            if (modal && isAppModalOpen('batch-manage-modal') && typeof applyBatchConversationFilters === 'function') {
+                applyBatchConversationFilters();
+            }
+        });
     }
     // 侧边栏最近对话等列表的时间戳会随语言变化（24h/12h 等），重新拉列表以统一格式
     if (typeof loadConversationsWithGroups === 'function') {
@@ -8474,6 +9701,11 @@ function clearGroupSearch() {
 
 // 初始化时加载分组
 document.addEventListener('DOMContentLoaded', async () => {
+    if (window.i18nReady) await window.i18nReady;
+    updateConversationSortMenuUI();
+    initConversationProjectCustomSelect();
+    initConversationsPaginationEvents();
+    await refreshConversationProjectFilter();
     await loadGroups();
     await loadConversationsWithGroups();
     
@@ -8530,8 +9762,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 });
 
+async function refreshAllProjectFilterSelects() {
+    await refreshConversationProjectFilter();
+    await refreshBatchProjectFilter();
+}
+
 // 顶层 async function 不会自动挂到 window，hitl 等脚本依赖 window.loadConversation
 if (typeof window !== 'undefined') {
     window.loadConversation = loadConversation;
     window.startNewConversation = startNewConversation;
+    window.refreshConversationProjectFilter = refreshConversationProjectFilter;
+    window.refreshAllProjectFilterSelects = refreshAllProjectFilterSelects;
+    window.onConversationProjectFilterChange = onConversationProjectFilterChange;
 }

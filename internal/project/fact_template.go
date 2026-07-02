@@ -3,6 +3,8 @@ package project
 import (
 	"fmt"
 	"strings"
+
+	"cyberstrike-ai/internal/projectprompt"
 )
 
 // 事实 category 常量（写入 upsert_project_fact 的 category 字段）。
@@ -90,7 +92,8 @@ const attackChainFactBodyTemplate = `## 结论（可验证，一句话）
 
 ## 关联
 - related_vulnerability_id: <可选，对应 record_vulnerability 的 id>
-- 依赖事实: <fact_key，如 auth/session_cookie>
+- links（upsert 参数）: [{ "from": "<fact_key>", "type": "discovered_on|..." }]（from → 当前 fact）
+- 依赖事实（body 可读镜像）: <fact_key，如 auth/session_cookie>
 
 ## 备注与不确定性
 <待验证假设、环境差异、绕过尝试记录>`
@@ -109,15 +112,7 @@ const envFactBodyTemplate = `## 摘要
 
 // FactRecordingGuidanceBlock 写入系统提示：要求事实沉淀攻击链上下文而非仅结论。
 func FactRecordingGuidanceBlock() string {
-	return `### 事实写入规范（审计复现 / 知识沉淀）
-
-- **summary**：索引用一行，须含「什么 + 在哪 + 如何触发/验证」要点，禁止只写结论（如仅写「存在 SQLi」）。
-- **body**：完整可复现上下文，写入 ` + "`upsert_project_fact`" + ` 的 body 字段；索引不含 body，后续会话须靠 ` + "`get_project_fact`" + ` 取回。
-- **category / fact_key 建议**：
-  - 环境认知：` + "`target/`" + `、` + "`auth/`" + `、` + "`infra/`" + `、` + "`business/`" + `（body 用环境模板即可）
-  - 发现与利用：` + "`finding/`" + `、` + "`chain/`" + `、` + "`exploit/`" + `、` + "`poc/`" + `（**必须**用攻击链模板填满 body：入口、逐步攻击链、原始请求/响应或命令、证据、关联漏洞 ID）
-- **与漏洞记录分工**：` + "`record_vulnerability`" + ` 记可交付 findings；事实记**复现所需的全部上下文**（含失败尝试、绕过、依赖会话），二者可各记一次。
-- 更新同一发现时保持相同 ` + "`fact_key`" + ` 覆盖写入，勿散落多个 key 导致上下文丢失。`
+	return projectprompt.FactRecordingGuidanceBlock()
 }
 
 // SparseBodyWarning 攻击链类事实 body 不足时的工具返回提示（不阻断保存）。

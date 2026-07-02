@@ -23,6 +23,9 @@ import (
 // tcpBeaconMagic 二进制 Beacon 在反向 TCP 连接建立后首先发送的 4 字节，用于与经典 shell 反弹区分。
 const tcpBeaconMagic = "CSB1"
 
+// tcpBeaconPeekTimeout 等待 CSB1 魔数的探测窗口；合法 Beacon 连接后立即发送魔数。
+const tcpBeaconPeekTimeout = 2 * time.Second
+
 // tcpBeaconMaxFrame 单帧密文（base64 字符串）最大字节数，防止 OOM。
 const tcpBeaconMaxFrame = 64 << 20
 

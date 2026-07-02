@@ -11,7 +11,16 @@ type ToolRunRegistry interface {
 	UnregisterRunningTool(conversationID, executionID string)
 }
 
+// EinoExecuteRunRegistry 登记进行中的 Eino filesystem execute，供「中断并继续」终止 amass 等长命令。
+type EinoExecuteRunRegistry interface {
+	RegisterActiveEinoExecute(conversationID string, cancel context.CancelFunc)
+	UnregisterActiveEinoExecute(conversationID string)
+	AbortActiveEinoExecute(conversationID, note string) bool
+	TakeEinoExecuteAbortNote(conversationID string) string
+}
+
 type toolRunRegistryCtxKey struct{}
+type einoExecuteRunRegistryCtxKey struct{}
 type mcpConversationIDCtxKey struct{}
 
 // WithToolRunRegistry 将登记器注入 ctx（Eino / 原生 Agent 任务 ctx）。
@@ -28,6 +37,23 @@ func ToolRunRegistryFromContext(ctx context.Context) ToolRunRegistry {
 		return nil
 	}
 	v, _ := ctx.Value(toolRunRegistryCtxKey{}).(ToolRunRegistry)
+	return v
+}
+
+// WithEinoExecuteRunRegistry 将 Eino execute 取消登记器注入 ctx。
+func WithEinoExecuteRunRegistry(ctx context.Context, reg EinoExecuteRunRegistry) context.Context {
+	if ctx == nil || reg == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, einoExecuteRunRegistryCtxKey{}, reg)
+}
+
+// EinoExecuteRunRegistryFromContext 取出 Eino execute 登记器（无则 nil）。
+func EinoExecuteRunRegistryFromContext(ctx context.Context) EinoExecuteRunRegistry {
+	if ctx == nil {
+		return nil
+	}
+	v, _ := ctx.Value(einoExecuteRunRegistryCtxKey{}).(EinoExecuteRunRegistry)
 	return v
 }
 

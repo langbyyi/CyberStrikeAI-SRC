@@ -3,11 +3,30 @@ package multiagent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
+
+func TestReductionCacheRootDir(t *testing.T) {
+	got := reductionCacheRootDir("", "proj-1", "conv-1")
+	want := filepath.Join("tmp", "reduction", "projects", "proj-1")
+	if got != want {
+		t.Fatalf("project scope: got %q want %q", got, want)
+	}
+	got = reductionCacheRootDir("", "", "conv-abc")
+	want = filepath.Join("tmp", "reduction", "conversations", "conv-abc")
+	if got != want {
+		t.Fatalf("conversation scope: got %q want %q", got, want)
+	}
+	custom := reductionCacheRootDir("/data/cache", "p1", "c1")
+	if !strings.HasSuffix(custom, filepath.Join("projects", "p1")) {
+		t.Fatalf("custom base should still scope by project, got %q", custom)
+	}
+}
 
 type stubTool struct{ name string }
 

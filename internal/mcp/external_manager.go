@@ -814,6 +814,23 @@ func (m *ExternalMCPManager) CancelToolExecution(id string) bool {
 	return m.CancelToolExecutionWithNote(id, "")
 }
 
+// ActiveRunningExecutionIDs 返回当前进程内仍登记 cancel 的外部 MCP executionId 快照。
+func (m *ExternalMCPManager) ActiveRunningExecutionIDs() map[string]struct{} {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.runningCancels) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(m.runningCancels))
+	for id := range m.runningCancels {
+		out[id] = struct{}{}
+	}
+	return out
+}
+
 // updateStats 更新统计信息
 func (m *ExternalMCPManager) updateStats(toolName string, failed bool) {
 	now := time.Now()

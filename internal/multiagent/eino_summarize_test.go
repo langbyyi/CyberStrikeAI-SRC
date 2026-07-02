@@ -7,9 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai/internal/project"
+
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/schema"
+	"go.uber.org/zap"
 )
 
 // fixedTokenCounter 让 tool 消息按 tokensPerToolMessage 计，其它消息按 1 计。
@@ -187,8 +192,8 @@ func TestSummarizeFinalize_KeepsToolRoundIntact(t *testing.T) {
 	if len(out) < 2 {
 		t.Fatalf("output too short: %d", len(out))
 	}
-	if out[0] != sys {
-		t.Fatalf("first message must be system")
+	if out[0].Role != schema.System || out[0].Content != "sys" {
+		t.Fatalf("first message must be system sys, got %s: %q", out[0].Role, out[0].Content)
 	}
 	if out[1] != summary {
 		t.Fatalf("second message must be summary")
@@ -288,12 +293,12 @@ func TestSummarizeFinalize_BudgetZeroFallsBackToSummaryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(out) != 2 || out[0] != sys || out[1] != summary {
+	if len(out) != 2 || out[0].Role != schema.System || out[0].Content != "sys" || out[1] != summary {
 		t.Fatalf("budget=0 must yield [system, summary] only, got %+v", out)
 	}
 }
 
-func TestSummarizeFinalize_PreservesAllSystemMessages(t *testing.T) {
+func TestSummarizeFinalize_MergesSystemMessages(t *testing.T) {
 	sys1 := schema.SystemMessage("sys1")
 	sys2 := schema.SystemMessage("sys2")
 	summary := schema.AssistantMessage("s", nil)
@@ -316,10 +321,13 @@ func TestSummarizeFinalize_PreservesAllSystemMessages(t *testing.T) {
 	for _, m := range out {
 		if m != nil && m.Role == schema.System {
 			systemCount++
+			if got := m.Content; got != "sys1\n\nsys2" {
+				t.Fatalf("unexpected merged system content: %q", got)
+			}
 		}
 	}
-	if systemCount != 2 {
-		t.Fatalf("want 2 system messages retained, got %d", systemCount)
+	if systemCount != 1 {
+		t.Fatalf("want 1 merged system message, got %d", systemCount)
 	}
 }
 
@@ -373,6 +381,12 @@ func TestWriteSummarizationTranscript(t *testing.T) {
 	if !strings.Contains(text, "tool_calls:") || !strings.Contains(text, "nmap output") {
 		t.Fatalf("missing tool round: %q", text)
 	}
+	if !strings.Contains(text, `"name":"stub_tool"`) || !strings.Contains(text, `"arguments":"{}"`) {
+		t.Fatalf("missing tool name/arguments: %q", text)
+	}
+	if strings.Contains(text, "tool_call_id") || strings.Contains(text, `"id":"tc1"`) {
+		t.Fatalf("transcript should omit tool_call_id: %q", text)
+	}
 }
 
 func TestSanitizeSystemContentForTranscript_BestPractice(t *testing.T) {
@@ -389,13 +403,15 @@ func TestSanitizeSystemContentForTranscript_BestPractice(t *testing.T) {
 		"你是CyberStrikeAI，是一个专业的网络安全渗透测试专家。",
 		"高强度扫描要求：全力出击",
 		"",
+		project.FactIndexSectionStartMarker,
 		"## 项目黑板索引（project: 123, id: abc）",
 		"（暂无事实）",
 		"需要写入请使用 upsert_project_fact。",
+		project.FactIndexSectionEndMarker,
 		"",
-		"# Skills System",
-		"**How to Use Skills**",
-		"Remember: Skills make you more capable",
+		transcriptSkillsSystemMarker,
+		"**如何使用 Skill（技能）（渐进式展示）：**",
+		"记住：Skill 让你更加强大和稳定",
 	}, "\n")
 
 	out := sanitizeSystemContentForTranscript(system)
@@ -405,7 +421,7 @@ func TestSanitizeSystemContentForTranscript_BestPractice(t *testing.T) {
 	if strings.Contains(out, "- nmap") || strings.Contains(out, "高强度扫描要求") {
 		t.Fatalf("static persona should be stripped: %q", out)
 	}
-	if strings.Contains(out, "# Skills System") || strings.Contains(out, "How to Use Skills") {
+	if strings.Contains(out, transcriptSkillsSystemMarker) || strings.Contains(out, "如何使用 Skill") {
 		t.Fatalf("skills boilerplate should be stripped: %q", out)
 	}
 	if !strings.Contains(out, transcriptStaticSystemOmitNote) {
@@ -419,7 +435,7 @@ func TestSanitizeSystemContentForTranscript_BestPractice(t *testing.T) {
 func TestFormatSummarizationTranscript_OmitsBloatedSystem(t *testing.T) {
 	t.Parallel()
 	msgs := []adk.Message{
-		schema.SystemMessage("以下是当前会话绑定的工具名称索引\n- nmap\n\n你是CyberStrikeAI\n## 项目黑板索引（project: p1, id: x）\n（暂无事实）\n# Skills System\nboiler"),
+		schema.SystemMessage("以下是当前会话绑定的工具名称索引\n- nmap\n\n你是CyberStrikeAI\n" + project.FactIndexSectionStartMarker + "\n## 项目黑板索引（project: p1, id: x）\n（暂无事实）\n" + project.FactIndexSectionEndMarker + "\n" + transcriptSkillsSystemMarker + "\nboiler"),
 		schema.UserMessage("hello"),
 		schema.AssistantMessage("reply", nil),
 	}
@@ -432,5 +448,53 @@ func TestFormatSummarizationTranscript_OmitsBloatedSystem(t *testing.T) {
 	}
 	if !strings.Contains(out, "## 项目黑板索引（project: p1, id: x）") {
 		t.Fatalf("dynamic blackboard missing: %q", out)
+	}
+}
+
+func TestRefreshFactIndexInMessages(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "summarize-facts.db")
+	db, err := database.NewDB(dbPath, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	proj, err := db.CreateProject(&database.Project{Name: "summarize-proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.ProjectConfig{Enabled: true}
+	oldIndex, err := project.BuildFactIndexBlock(db, proj.ID, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.UpsertProjectFact(&database.ProjectFact{
+		ProjectID: proj.ID,
+		FactKey:   "target/host",
+		Category:  "target",
+		Summary:   "fresh host fact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []adk.Message{
+		schema.SystemMessage("instruction\n\n" + oldIndex),
+		schema.UserMessage("hi"),
+	}
+
+	out := refreshFactIndexInMessages(msgs, db, proj.ID, cfg, nil)
+	sys := out[0].Content
+	if strings.Contains(sys, "（暂无事实）") {
+		t.Fatalf("expected refreshed index, got: %q", sys)
+	}
+	if !strings.Contains(sys, "fresh host fact") {
+		t.Fatalf("expected new fact in index: %q", sys)
+	}
+	if !strings.Contains(sys, "instruction") {
+		t.Fatalf("non-index system content should be preserved: %q", sys)
 	}
 }

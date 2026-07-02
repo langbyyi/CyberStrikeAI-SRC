@@ -103,14 +103,26 @@ func mergeAlwaysVisibleToolNames(configured []string) []string {
 	return merged
 }
 
-func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, convID string, loc *localbk.Local, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
+func reductionCacheRootDir(configuredBase, projectID, conversationID string) string {
+	base := strings.TrimSpace(configuredBase)
+	if base == "" {
+		base = filepath.Join("tmp", "reduction")
+	}
+	if pid := strings.TrimSpace(projectID); pid != "" {
+		return filepath.Join(base, "projects", sanitizeEinoPathSegment(pid))
+	}
+	conv := strings.TrimSpace(conversationID)
+	if conv == "" {
+		conv = "default"
+	}
+	return filepath.Join(base, "conversations", sanitizeEinoPathSegment(conv))
+}
+
+func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
 	if loc == nil {
 		return nil, fmt.Errorf("reduction: local backend nil")
 	}
-	root := strings.TrimSpace(mw.ReductionRootDir)
-	if root == "" {
-		root = filepath.Join(os.TempDir(), "cyberstrike-reduction", sanitizeEinoPathSegment(convID))
-	}
+	root := reductionCacheRootDir(mw.ReductionRootDir, projectID, convID)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("reduction root: %w", err)
 	}
@@ -148,6 +160,7 @@ func prependEinoMiddlewares(
 	einoLoc *localbk.Local,
 	skillsRoot string,
 	conversationID string,
+	projectID string,
 	logger *zap.Logger,
 ) (outTools []tool.BaseTool, extraHandlers []adk.ChatModelAgentMiddleware, toolSearchActive bool, err error) {
 	if mw == nil {
@@ -167,7 +180,7 @@ func prependEinoMiddlewares(
 		if place == einoMWSub && !mw.ReductionSubAgents {
 			// skip
 		} else {
-			redMW, rerr := buildReductionMiddleware(ctx, *mw, conversationID, einoLoc, logger)
+			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, logger)
 			if rerr != nil {
 				return nil, nil, false, rerr
 			}
@@ -230,16 +243,13 @@ func prependEinoMiddlewares(
 	return outTools, extraHandlers, toolSearchActive, nil
 }
 
-func deepExtrasFromConfig(ma *config.MultiAgentConfig) (outputKey string, retry *adk.ModelRetryConfig, taskDesc func(context.Context, []adk.Agent) (string, error)) {
+func deepExtrasFromConfig(ma *config.MultiAgentConfig) (outputKey string, taskDesc func(context.Context, []adk.Agent) (string, error)) {
 	if ma == nil {
-		return "", nil, nil
+		return "", nil
 	}
 	mw := ma.EinoMiddleware
 	if k := strings.TrimSpace(mw.DeepOutputKey); k != "" {
 		outputKey = k
-	}
-	if mw.DeepModelRetryMaxRetries > 0 {
-		retry = &adk.ModelRetryConfig{MaxRetries: mw.DeepModelRetryMaxRetries}
 	}
 	prefix := strings.TrimSpace(mw.TaskToolDescriptionPrefix)
 	if prefix != "" {
@@ -261,5 +271,5 @@ func deepExtrasFromConfig(ma *config.MultiAgentConfig) (outputKey string, retry 
 			return prefix + "\n可用子代理（按名称 transfer / task 调用）：" + strings.Join(names, "、"), nil
 		}
 	}
-	return outputKey, retry, taskDesc
+	return outputKey, taskDesc
 }

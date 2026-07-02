@@ -84,8 +84,8 @@ func (db *DB) CreateProject(p *Project) (*Project, error) {
 	p.UpdatedAt = now
 
 	_, err := db.Exec(
-		`INSERT INTO projects (id, name, description, scope_json, status, report_type, pinned, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO projects (id, name, description, scope_json, status, pinned, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Description, p.ScopeJSON, p.Status, p.ReportType, boolToInt(p.Pinned), p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {
@@ -115,19 +115,43 @@ func (db *DB) GetProject(id string) (*Project, error) {
 	return &p, nil
 }
 
-// CountProjects 统计项目数量。
-func (db *DB) CountProjects(status, search string) (int, error) {
-	query := `SELECT COUNT(*) FROM projects WHERE 1=1`
-	args := []interface{}{}
+func projectListSearchPattern(q string) string {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteByte('%')
+	for _, r := range q {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('%')
+	return b.String()
+}
+
+func appendProjectListFilters(query string, args []interface{}, status, search string) (string, []interface{}) {
 	if s := strings.TrimSpace(status); s != "" {
 		query += " AND status = ?"
 		args = append(args, s)
 	}
-	if q := strings.TrimSpace(search); q != "" {
-		pattern := "%" + q + "%"
-		query += " AND (name LIKE ? OR COALESCE(description,'') LIKE ?)"
-		args = append(args, pattern, pattern)
+	if pattern := projectListSearchPattern(search); pattern != "" {
+		query += ` AND (LOWER(name) LIKE LOWER(?) ESCAPE '\' OR LOWER(COALESCE(description,'')) LIKE LOWER(?) ESCAPE '\' OR LOWER(id) LIKE LOWER(?) ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
 	}
+	return query, args
+}
+
+// CountProjects 统计项目数量。
+func (db *DB) CountProjects(status, search string) (int, error) {
+	query := `SELECT COUNT(*) FROM projects WHERE 1=1`
+	args := []interface{}{}
+	query, args = appendProjectListFilters(query, args, status, search)
 	var count int
 	if err := db.QueryRow(query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("统计项目失败: %w", err)
@@ -143,15 +167,7 @@ func (db *DB) ListProjects(status, search string, limit, offset int) ([]*Project
 	query := `SELECT id, name, COALESCE(description,''), COALESCE(scope_json,''), COALESCE(report_type,'enterprise'), status, pinned, created_at, updated_at
 		FROM projects WHERE 1=1`
 	args := []interface{}{}
-	if s := strings.TrimSpace(status); s != "" {
-		query += " AND status = ?"
-		args = append(args, s)
-	}
-	if q := strings.TrimSpace(search); q != "" {
-		pattern := "%" + q + "%"
-		query += " AND (name LIKE ? OR COALESCE(description,'') LIKE ?)"
-		args = append(args, pattern, pattern)
-	}
+	query, args = appendProjectListFilters(query, args, status, search)
 	query += " ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
@@ -202,6 +218,7 @@ func (db *DB) DeleteProject(id string) error {
 	if err != nil {
 		return fmt.Errorf("删除项目失败: %w", err)
 	}
+	db.removeProjectScopedDirs(id)
 	return nil
 }
 
@@ -396,7 +413,7 @@ func (db *DB) UpsertProjectFact(f *ProjectFact) (*ProjectFact, error) {
 	return f, nil
 }
 
-// DeprecateProjectFact 将事实标记为 deprecated。
+// DeprecateProjectFact 将事实标记为 deprecated（关联边同步 deprecated）。
 func (db *DB) DeprecateProjectFact(projectID, factKey string) error {
 	res, err := db.Exec(
 		`UPDATE project_facts SET confidence = 'deprecated', updated_at = ? WHERE project_id = ? AND fact_key = ?`,
@@ -409,7 +426,7 @@ func (db *DB) DeprecateProjectFact(projectID, factKey string) error {
 	if n == 0 {
 		return fmt.Errorf("事实不存在")
 	}
-	return nil
+	return db.DeprecateProjectFactEdgesForKey(projectID, factKey)
 }
 
 // RestoreProjectFact 将已废弃事实恢复为 tentative 或 confirmed（重新参与黑板索引）。
@@ -437,9 +454,16 @@ func (db *DB) RestoreProjectFact(projectID, factKey, confidence string) error {
 	return err
 }
 
-// DeleteProjectFact 删除事实。
+// DeleteProjectFact 删除事实（级联删除相关边）。
 func (db *DB) DeleteProjectFact(id string) error {
-	_, err := db.Exec(`DELETE FROM project_facts WHERE id = ?`, id)
+	f, err := db.GetProjectFact(id)
+	if err != nil {
+		return err
+	}
+	if err := db.DeleteProjectFactEdgesForKey(f.ProjectID, f.FactKey); err != nil {
+		return err
+	}
+	_, err = db.Exec(`DELETE FROM project_facts WHERE id = ?`, id)
 	return err
 }
 

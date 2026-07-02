@@ -112,9 +112,8 @@ CyberStrikeAI is an **AI-native security testing platform** built in Go. It inte
 - 🔒 Password-protected web UI, audit logs, and SQLite persistence
 - 📚 Knowledge base (RAG) with embedding-based vector retrieval (cosine similarity), optional **Eino Compose** indexing pipeline, and configurable post-retrieval budgets / reranking hooks
 - 📁 Conversation grouping with pinning, rename, and batch management
-- 📂 **Project management**: group conversations and vulnerabilities by project; **shared facts** (project blackboard) persist cross-session context (targets, env, auth notes) with auto-injection for agents and MCP tools (`upsert_project_fact`, `get_project_fact`, …)
+- 📂 **Project management**: shared facts (blackboard) across sessions, `upsert_project_fact` + `links` to chain paths; attack-chain and project fact graph views
 - 🛡️ Vulnerability management with CRUD operations, severity tracking, status workflow, and statistics
-- 📊 **Dual vulnerability report templates (EDUSRC / Enterprise SRC)**: each project picks a `report_type` (`enterprise` or `edusrc`) at creation; vulnerability export auto-dispatches to the matching Markdown template—EDUSRC adds SRC-specific fields (开发方 / 资产所在网段 / 漏洞验证所需账号 / 密码 / 漏洞URL), Enterprise SRC uses 漏洞类型 / 危害等级 / 目标系统 / 漏洞地址. Per-vulnerability 13-gate validation (title format, target, PoC double-check, impact keywords, etc.) plus an in-memory **hard-reject blacklist** (30-min TTL) that blocks AI from bypassing the validator by switching `category` after a rejection (e.g. CORS / missing security headers get rejected and stay rejected)
 - 📋 Batch task management: create task queues, add multiple tasks, and execute them sequentially
 - 🎭 Role-based testing: predefined security testing roles (Penetration Testing, CTF, Web App Scanning, etc.) with custom prompts and tool restrictions
 - 🧩 **Agent orchestration (CloudWeGo Eino)**: **single-agent** via **`/api/eino-agent/stream`** (Eino ADK `ChatModelAgent`); **multi-agent** via **`/api/multi-agent/stream`** with **`deep`** (coordinator + `task` sub-agents), **`plan_execute`**, or **`supervisor`** (`orchestration` in the request body). ADK **summarization** compresses long contexts; pre-compaction **transcripts** land at `data/conversation_artifacts/<conversation-id>/summarization/transcript.txt` (full user/assistant/tool turns; static system omitted). Markdown under `agents/`: `orchestrator.md`, `orchestrator-plan-execute.md`, `orchestrator-supervisor.md`, plus sub-agent `*.md` (see [Multi-agent doc](docs/MULTI_AGENT_EINO.md))
@@ -163,7 +162,7 @@ CyberStrikeAI ships with 100+ curated tools covering the whole kill chain:
 
 **One-Command Deployment:**
 ```bash
-git clone https://github.com/langbyyi/CyberStrikeAI-SRC.git
+git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
 cd CyberStrikeAI
 chmod +x run.sh && ./run.sh
 ```
@@ -224,7 +223,7 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 **CyberStrikeAI one-click upgrade (recommended):**
 1. (First time) enable the script: `chmod +x upgrade.sh`
-2. Upgrade with: `./upgrade.sh` (optional flags: `--tag vX.Y.Z`, `--no-venv`, `--yes`, `--no-sync-roles-skills`). Local `tools/` is always preserved. `roles/` and `skills/` are synced from upstream by default so the latest predefined roles and skill packs ship on upgrade (use `--no-sync-roles-skills` to keep local edits).
+2. Upgrade with: `./upgrade.sh` (optional flags: `--tag vX.Y.Z`, `--no-venv`, `--yes`). Local `tools/`, `roles/`, and `skills/` are always preserved.
 3. The script will back up your `config.yaml` and `data/`, upgrade the code from GitHub Release, update `config.yaml`'s `version`, then restart the server.
 
 Recommended one-liner:
@@ -264,7 +263,7 @@ Requirements / tips:
 ## Advanced Usage
 
 ### Role-Based Testing
-- **Predefined roles** – System includes 16 predefined security testing roles in `roles/`: 渗透测试, EDUSRC渗透测试, 企业SRC渗透测试, 信息收集, CTF, Web应用扫描, Web框架测试, API安全测试, 综合漏洞扫描, 后渗透测试, 数字取证, 容器安全, 云安全审计, 二进制分析, 默认, plus a `README.md`. The two **SRC roles** (EDUSRC / 企业 SRC) wire the dual-report-template workflow end-to-end (project report_type → validator → export).
+- **Predefined roles** – System includes 12+ predefined security testing roles (Penetration Testing, CTF, Web App Scanning, API Security Testing, Binary Analysis, Cloud Security Audit, etc.) in the `roles/` directory.
 - **Custom prompts** – Each role can define a `user_prompt` that prepends to user messages, guiding the AI to adopt specialized testing methodologies and focus areas.
 - **Tool restrictions** – Roles can specify a `tools` list to limit available tools, ensuring focused testing workflows (e.g., CTF role restricts to CTF-specific utilities).
 - **Skills** – Skill packs live under `skills_dir` and load via the Eino ADK **`skill`** tool (**progressive disclosure**) in both **single- and multi-agent** sessions when **`multi_agent.eino_skills`** is enabled. Optional host **read_file / glob / grep / write / edit / execute** and **`eino_middleware`** (tool_search, plantask, reduction, checkpoints, summarization transcripts, etc.) apply per mode—see docs.
@@ -313,7 +312,7 @@ Requirements / tips:
 ### Tool Orchestration & Extensions
 - **YAML recipes** in `tools/*.yaml` describe commands, arguments, prompts, and metadata.
 - **Directory hot-reload** – pointing `security.tools_dir` to a folder is usually enough; inline definitions in `config.yaml` remain supported for quick experiments.
-- **Large-result pagination** – outputs beyond 200 KB are stored as artifacts retrievable through the `query_execution_result` tool with paging, filters, and regex search.
+- **Large tool outputs** – outputs beyond `reduction_max_length_for_trunc` are summarized via Eino reduction with full content persisted under `tmp/reduction/`; use `read_file` on the path in `<persisted-output>`.
 - **Result compression** – multi-megabyte logs can be summarized or losslessly compressed before persisting to keep SQLite lean.
 
 **Creating a custom tool (typical flow)**
@@ -462,7 +461,7 @@ A test SSE MCP server is available at `cmd/test-sse-mcp-server/` for validation 
 - **Retrieval logs** – tracks all knowledge retrieval operations for audit and debugging.
 
 **Quick Start (Using Pre-built Knowledge Base):**
-1. **Download the knowledge database** – Download the pre-built knowledge database file from [GitHub Releases](https://github.com/langbyyi/CyberStrikeAI-SRC/releases).
+1. **Download the knowledge database** – Download the pre-built knowledge database file from [GitHub Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases).
 2. **Extract and place** – Extract the downloaded knowledge database file (`knowledge.db`) and place it in the project's `data/` directory.
 3. **Restart the service** – Restart the CyberStrikeAI service, and the knowledge base will be ready to use immediately without rebuilding the index.
 
@@ -552,6 +551,11 @@ multi_agent:
   # orchestrator_instruction_plan_execute / orchestrator_instruction_supervisor optional
   # eino_skills: { disable: false, filesystem_tools: true, skill_tool_name: skill }
   # eino_middleware: plantask_enable, checkpoint_dir, deep_model_retry_max_retries, deep_output_key, ...
+project:
+  enabled: true              # Enable project blackboard & fact MCP tools
+  fact_index_max_runes: 65000
+  fact_summary_max_runes: 24000
+  default_inject_deprecated: false
 ```
 
 ### Tool Definition Example (`tools/nmap.yaml`)
@@ -607,8 +611,8 @@ CyberStrikeAI/
 ├── internal/            # Agent, MCP core, handlers, C2 (`internal/c2`), security executor
 ├── web/                 # Static SPA + templates
 ├── tools/               # YAML tool recipes (100+ examples provided)
-├── roles/               # Role configurations (16 predefined roles incl. EDUSRC + 企业 SRC)
-├── skills/              # Agent Skills dirs (29 packs: SQLi/XSS/SSRF/SSTI/XXE/CSRF/JNDI/CmdI/IDOR/JWT/...; each = SKILL.md + optional files)
+├── roles/               # Role configurations (12+ predefined security testing roles)
+├── skills/              # Agent Skills dirs (SKILL.md + optional files; demo: cyberstrike-eino-demo)
 ├── agents/              # Multi-agent Markdown (orchestrator.md + sub-agent *.md)
 ├── docs/                # Documentation (e.g. robot/chatbot guide, MULTI_AGENT_EINO.md)
 ├── images/              # Docs screenshots & diagrams
@@ -650,7 +654,7 @@ CyberStrikeAI has joined [404Starlink](https://github.com/knownsec/404StarLink)
 </div>
 
 ## Stargazers over time
-![Stargazers over time](https://starchart.cc/langbyyi/CyberStrikeAI-SRC.svg)
+![Stargazers over time](https://starchart.cc/Ed1s0nZ/CyberStrikeAI.svg)
 
 
 ---

@@ -3,7 +3,6 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
-	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +69,23 @@ func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
 	}
 
 	return nil
+}
+
+// UpdateToolExecutionResult 仅更新结果字段（用于 reduction 后将监控展示与模型上下文对齐）。
+func (db *DB) UpdateToolExecutionResult(id string, result *mcp.ToolResult) error {
+	id = strings.TrimSpace(id)
+	if id == "" || result == nil {
+		return nil
+	}
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE tool_executions SET result = ? WHERE id = ?`, string(resultBytes), id)
+	if err != nil {
+		db.logger.Warn("更新工具执行结果失败", zap.Error(err), zap.String("executionId", id))
+	}
+	return err
 }
 
 // CountToolExecutions 统计工具执行记录总数
@@ -210,6 +226,167 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 	return executions, nil
 }
 
+func toolExecutionsFilterSQL(status, toolName string) (string, []interface{}) {
+	args := []interface{}{}
+	conditions := []string{}
+	if status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+	if toolName != "" {
+		conditions = append(conditions, "LOWER(tool_name) LIKE ?")
+		args = append(args, "%"+strings.ToLower(toolName)+"%")
+	}
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return ` WHERE ` + strings.Join(conditions, ` AND `), args
+}
+
+// ToolStatsSummary 工具调用汇总（全量聚合，不含逐工具明细）
+type ToolStatsSummary struct {
+	TotalCalls   int
+	SuccessCalls int
+	FailedCalls  int
+	LastCallTime *time.Time
+	ToolCount    int
+}
+
+// ToolStatsSummaryResult 汇总 + Top N 工具排行
+type ToolStatsSummaryResult struct {
+	Summary  ToolStatsSummary
+	TopTools []*mcp.ToolStats
+}
+
+// LoadToolStatsSummary 聚合统计信息，仅返回汇总与 Top N 工具（避免全量 map 传输）
+func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
+	if topN <= 0 {
+		topN = 6
+	}
+	if topN > 100 {
+		topN = 100
+	}
+
+	result := &ToolStatsSummaryResult{
+		TopTools: make([]*mcp.ToolStats, 0, topN),
+	}
+
+	summaryQuery := `
+		SELECT COUNT(*),
+			COALESCE(SUM(total_calls), 0),
+			COALESCE(SUM(success_calls), 0),
+			COALESCE(SUM(failed_calls), 0),
+			MAX(last_call_time)
+		FROM tool_stats
+	`
+	var lastCallRaw sql.NullString
+	err := db.QueryRow(summaryQuery).Scan(
+		&result.Summary.ToolCount,
+		&result.Summary.TotalCalls,
+		&result.Summary.SuccessCalls,
+		&result.Summary.FailedCalls,
+		&lastCallRaw,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if lastCallRaw.Valid && strings.TrimSpace(lastCallRaw.String) != "" {
+		if t, parseErr := time.Parse(time.RFC3339Nano, lastCallRaw.String); parseErr == nil {
+			result.Summary.LastCallTime = &t
+		} else if t, parseErr := time.Parse("2006-01-02 15:04:05.999999999-07:00", lastCallRaw.String); parseErr == nil {
+			result.Summary.LastCallTime = &t
+		} else if t, parseErr := time.Parse("2006-01-02 15:04:05", lastCallRaw.String); parseErr == nil {
+			result.Summary.LastCallTime = &t
+		}
+	}
+
+	topQuery := `
+		SELECT tool_name, total_calls, success_calls, failed_calls, last_call_time
+		FROM tool_stats
+		WHERE total_calls > 0
+		ORDER BY total_calls DESC, tool_name ASC
+		LIMIT ?
+	`
+	rows, err := db.Query(topQuery, topN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var stat mcp.ToolStats
+		var lastCallTime sql.NullTime
+		if err := rows.Scan(
+			&stat.ToolName,
+			&stat.TotalCalls,
+			&stat.SuccessCalls,
+			&stat.FailedCalls,
+			&lastCallTime,
+		); err != nil {
+			db.logger.Warn("加载 Top 工具统计失败", zap.Error(err))
+			continue
+		}
+		if lastCallTime.Valid {
+			stat.LastCallTime = &lastCallTime.Time
+		}
+		result.TopTools = append(result.TopTools, &stat)
+	}
+
+	return result, nil
+}
+
+// LoadToolExecutionListPage 分页加载执行记录列表（不含 arguments/result，供监控列表使用）
+func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName string) ([]*mcp.ToolExecution, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	query := `
+		SELECT id, tool_name, status, start_time, end_time, duration_ms
+		FROM tool_executions
+	`
+	whereSQL, args := toolExecutionsFilterSQL(status, toolName)
+	query += whereSQL + ` ORDER BY start_time DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	executions := make([]*mcp.ToolExecution, 0, limit)
+	for rows.Next() {
+		var exec mcp.ToolExecution
+		var endTime sql.NullTime
+		var durationMs sql.NullInt64
+
+		if err := rows.Scan(
+			&exec.ID,
+			&exec.ToolName,
+			&exec.Status,
+			&exec.StartTime,
+			&endTime,
+			&durationMs,
+		); err != nil {
+			db.logger.Warn("加载执行记录列表失败", zap.Error(err))
+			continue
+		}
+		if endTime.Valid {
+			exec.EndTime = &endTime.Time
+		}
+		if durationMs.Valid {
+			exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
 // GetToolExecution 根据ID获取单条工具执行记录
 func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	query := `
@@ -269,6 +446,93 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	}
 
 	return &exec, nil
+}
+
+// CancelOrphanedRunningToolExecutions 将仍为 running 的记录批量标记为 cancelled（如进程重启后无对应执行协程）。
+func (db *DB) CancelOrphanedRunningToolExecutions(endTime time.Time, errMsg string) (int64, error) {
+	errMsg = strings.TrimSpace(errMsg)
+	if errMsg == "" {
+		errMsg = "执行已中断（服务重启或会话结束）"
+	}
+	query := `
+		UPDATE tool_executions
+		SET status = 'cancelled',
+		    error = ?,
+		    end_time = ?,
+		    duration_ms = MAX(0, CAST((julianday(?) - julianday(start_time)) * 86400000 AS INTEGER))
+		WHERE status = 'running'
+	`
+	res, err := db.Exec(query, errMsg, endTime, endTime)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// FinalizeStaleRunningToolExecutions 将「非活跃且超过 minAge」的 running 记录标记为 cancelled。
+// activeIDs 为当前进程内仍登记 cancel 的 executionId；不在集合内且已超时的视为孤儿记录。
+func (db *DB) FinalizeStaleRunningToolExecutions(endTime time.Time, minAge time.Duration, activeIDs map[string]struct{}, errMsg string) (int64, error) {
+	errMsg = strings.TrimSpace(errMsg)
+	if errMsg == "" {
+		errMsg = "执行已中断（会话已结束）"
+	}
+	if minAge < 0 {
+		minAge = 0
+	}
+	cutoff := endTime.Add(-minAge)
+	rows, err := db.Query(`
+		SELECT id, start_time FROM tool_executions
+		WHERE status = 'running' AND start_time <= ?
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type staleRow struct {
+		id        string
+		startTime time.Time
+	}
+	var stale []staleRow
+	for rows.Next() {
+		var row staleRow
+		if err := rows.Scan(&row.id, &row.startTime); err != nil {
+			db.logger.Warn("读取 stale running 执行记录失败", zap.Error(err))
+			continue
+		}
+		if activeIDs != nil {
+			if _, active := activeIDs[row.id]; active {
+				continue
+			}
+		}
+		stale = append(stale, row)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	var affected int64
+	for _, row := range stale {
+		durationMs := endTime.Sub(row.startTime).Milliseconds()
+		if durationMs < 0 {
+			durationMs = 0
+		}
+		res, err := db.Exec(`
+			UPDATE tool_executions
+			SET status = 'cancelled', error = ?, end_time = ?, duration_ms = ?
+			WHERE id = ? AND status = 'running'
+		`, errMsg, endTime, durationMs, row.id)
+		if err != nil {
+			db.logger.Warn("更新 stale running 执行记录失败", zap.Error(err), zap.String("executionId", row.id))
+			continue
+		}
+		n, _ := res.RowsAffected()
+		affected += n
+	}
+	return affected, nil
 }
 
 // DeleteToolExecution 删除工具执行记录
@@ -393,6 +657,76 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 	return executions, nil
 }
 
+type toolExecutionStatDelta struct {
+	totalCalls   int
+	successCalls int
+	failedCalls  int
+}
+
+// PurgeToolExecutionsBefore deletes executions older than cutoff and adjusts tool_stats.
+func (db *DB) PurgeToolExecutionsBefore(cutoff time.Time) (int64, error) {
+	query := `
+		SELECT tool_name, status, COUNT(*) AS cnt
+		FROM tool_executions
+		WHERE ` + sqliteEpochGE("start_time", "<") + `
+		GROUP BY tool_name, status
+	`
+	rows, err := db.Query(query, formatSQLiteUTC(cutoff))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	deltas := make(map[string]*toolExecutionStatDelta)
+	for rows.Next() {
+		var toolName, status string
+		var count int
+		if err := rows.Scan(&toolName, &status, &count); err != nil {
+			db.logger.Warn("读取待清理执行记录统计失败", zap.Error(err))
+			continue
+		}
+		toolName = strings.TrimSpace(toolName)
+		if toolName == "" || count <= 0 {
+			continue
+		}
+		delta := deltas[toolName]
+		if delta == nil {
+			delta = &toolExecutionStatDelta{}
+			deltas[toolName] = delta
+		}
+		delta.totalCalls += count
+		switch status {
+		case "failed", "cancelled":
+			delta.failedCalls += count
+		case "completed":
+			delta.successCalls += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	res, err := db.Exec(`DELETE FROM tool_executions WHERE `+sqliteEpochGE("start_time", "<"), formatSQLiteUTC(cutoff))
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	for toolName, delta := range deltas {
+		if err := db.DecreaseToolStats(toolName, delta.totalCalls, delta.successCalls, delta.failedCalls); err != nil {
+			db.logger.Warn("清理过期执行记录后更新统计失败",
+				zap.Error(err),
+				zap.String("toolName", toolName),
+			)
+		}
+	}
+
+	return deleted, nil
+}
+
 // SaveToolStats 保存工具统计信息
 func (db *DB) SaveToolStats(toolName string, stats *mcp.ToolStats) error {
 	var lastCallTime sql.NullTime
@@ -513,13 +847,28 @@ func truncateCallsTimelineBucket(t time.Time, dailyBuckets bool) time.Time {
 
 // LoadCallsTimeline 按时间范围加载调用趋势（since 起至今，含边界）
 func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTimelineBucket, error) {
-	// 在 Go 侧按本地时区分桶，避免 SQLite strftime 对 UTC 存储时间分桶后再误当本地时间解析（差 8h 等问题）
-	query := `
-		SELECT start_time,
-			CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END AS failed
-		FROM tool_executions
-		WHERE start_time >= ?
-	`
+	var query string
+	if dailyBuckets {
+		query = `
+			SELECT date(start_time, 'localtime') AS bucket,
+				COUNT(*) AS total,
+				SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS failed
+			FROM tool_executions
+			WHERE start_time >= ?
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	} else {
+		query = `
+			SELECT strftime('%Y-%m-%d %H:00:00', start_time, 'localtime') AS bucket,
+				COUNT(*) AS total,
+				SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS failed
+			FROM tool_executions
+			WHERE start_time >= ?
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	}
 
 	rows, err := db.Query(query, since)
 	if err != nil {
@@ -527,33 +876,33 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 	}
 	defer rows.Close()
 
-	bucketMap := make(map[time.Time]struct{ total, failed int })
+	buckets := make([]CallsTimelineBucket, 0)
 	for rows.Next() {
-		var startTime time.Time
-		var failed int
-		if err := rows.Scan(&startTime, &failed); err != nil {
+		var bucketStr string
+		var total, failed int
+		if err := rows.Scan(&bucketStr, &total, &failed); err != nil {
 			db.logger.Warn("加载调用趋势失败", zap.Error(err))
 			continue
 		}
-		key := truncateCallsTimelineBucket(startTime, dailyBuckets)
-		entry := bucketMap[key]
-		entry.total++
-		entry.failed += failed
-		bucketMap[key] = entry
-	}
-
-	buckets := make([]CallsTimelineBucket, 0, len(bucketMap))
-	for bucketTime, counts := range bucketMap {
+		bucketTime, err := parseCallsTimelineBucket(bucketStr, dailyBuckets)
+		if err != nil {
+			db.logger.Warn("解析调用趋势时间桶失败", zap.Error(err), zap.String("bucket", bucketStr))
+			continue
+		}
 		buckets = append(buckets, CallsTimelineBucket{
 			BucketTime: bucketTime,
-			Total:      counts.total,
-			Failed:     counts.failed,
+			Total:      total,
+			Failed:     failed,
 		})
 	}
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].BucketTime.Before(buckets[j].BucketTime)
-	})
 	return buckets, nil
+}
+
+func parseCallsTimelineBucket(bucketStr string, dailyBuckets bool) (time.Time, error) {
+	if dailyBuckets {
+		return time.ParseInLocation("2006-01-02", bucketStr, time.Local)
+	}
+	return time.ParseInLocation("2006-01-02 15:04:05", bucketStr, time.Local)
 }
 
 // DecreaseToolStats 减少工具统计信息（用于删除执行记录时）

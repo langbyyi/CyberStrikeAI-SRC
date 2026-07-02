@@ -17,6 +17,9 @@ var ErrNoValidC2EventIDs = errors.New("no valid event ids")
 // ErrNoValidC2TaskIDs 批量删除任务时未提供任何合法 ID
 var ErrNoValidC2TaskIDs = errors.New("no valid task ids")
 
+// ErrNoValidC2SessionIDs 批量删除会话时未提供任何合法 ID
+var ErrNoValidC2SessionIDs = errors.New("no valid session ids")
+
 // validC2TextIDForDelete 校验 C2 文本主键（e_/t_/s_/… 等）用于批量删除入参
 func validC2TextIDForDelete(id string) bool {
 	if len(id) < 2 || len(id) > 80 {
@@ -473,6 +476,7 @@ type ListC2SessionsFilter struct {
 	Status     string // active|sleeping|dead|killed；空表示全部
 	OS         string
 	Search     string // 模糊匹配 hostname/username/internal_ip
+	Suspicious bool   // 疑似误报：离线且 hostname 为 tcp_* / 用户名为 unknown / PID 为 0
 	Limit      int    // 0 表示无限制
 }
 
@@ -496,6 +500,11 @@ func (db *DB) ListC2Sessions(filter ListC2SessionsFilter) ([]*C2Session, error) 
 		conditions = append(conditions, "(hostname LIKE ? OR username LIKE ? OR internal_ip LIKE ?)")
 		kw := "%" + filter.Search + "%"
 		args = append(args, kw, kw, kw)
+	}
+	if filter.Suspicious {
+		conditions = append(conditions, `status = 'dead' AND (
+			hostname LIKE 'tcp_%' OR LOWER(COALESCE(username,'')) = 'unknown' OR COALESCE(pid, 0) = 0
+		)`)
 	}
 	query := `
 		SELECT id, listener_id, implant_uuid, COALESCE(hostname,''), COALESCE(username,''),
@@ -552,6 +561,44 @@ func (db *DB) DeleteC2Session(id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// DeleteC2SessionsByIDs 按主键批量删除会话
+func (db *DB) DeleteC2SessionsByIDs(ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	const maxBatch = 500
+	if len(ids) > maxBatch {
+		ids = ids[:maxBatch]
+	}
+	clean := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if !validC2TextIDForDelete(id) {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return 0, ErrNoValidC2SessionIDs
+	}
+	placeholders := strings.Repeat("?,", len(clean)-1) + "?"
+	args := make([]interface{}, len(clean))
+	for i := range clean {
+		args[i] = clean[i]
+	}
+	query := `DELETE FROM c2_sessions WHERE id IN (` + placeholders + `)`
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ----------------------------------------------------------------------------

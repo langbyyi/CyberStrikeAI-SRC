@@ -2,10 +2,8 @@ package handler
 
 import (
 	"net/http"
-	"time"
 
 	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -15,17 +13,15 @@ import (
 type OpenAPIHandler struct {
 	db               *database.DB
 	logger           *zap.Logger
-	resultStorage    storage.ResultStorage
 	conversationHdlr *ConversationHandler
 	agentHdlr        *AgentHandler
 }
 
 // NewOpenAPIHandler 创建新的OpenAPI处理器
-func NewOpenAPIHandler(db *database.DB, logger *zap.Logger, resultStorage storage.ResultStorage, conversationHdlr *ConversationHandler, agentHdlr *AgentHandler) *OpenAPIHandler {
+func NewOpenAPIHandler(db *database.DB, logger *zap.Logger, conversationHdlr *ConversationHandler, agentHdlr *AgentHandler) *OpenAPIHandler {
 	return &OpenAPIHandler{
 		db:               db,
 		logger:           logger,
-		resultStorage:    resultStorage,
 		conversationHdlr: conversationHdlr,
 		agentHdlr:        agentHdlr,
 	}
@@ -744,14 +740,21 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"properties": map[string]interface{}{
 						"executions": map[string]interface{}{
 							"type":        "array",
-							"description": "执行记录列表",
+							"description": "执行记录列表（轻量字段，不含 arguments/result）",
 							"items": map[string]interface{}{
 								"$ref": "#/components/schemas/ToolExecution",
 							},
 						},
-						"stats": map[string]interface{}{
+						"summary": map[string]interface{}{
 							"type":        "object",
-							"description": "统计信息",
+							"description": "工具调用汇总",
+						},
+						"topTools": map[string]interface{}{
+							"type":        "array",
+							"description": "调用量 Top N 工具",
+							"items": map[string]interface{}{
+								"type": "object",
+							},
 						},
 						"timestamp": map[string]interface{}{
 							"type":        "string",
@@ -760,19 +763,23 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 						"total": map[string]interface{}{
 							"type":        "integer",
-							"description": "总数",
+							"description": "执行记录总数",
 						},
 						"page": map[string]interface{}{
 							"type":        "integer",
 							"description": "当前页",
 						},
-						"page_size": map[string]interface{}{
+						"pageSize": map[string]interface{}{
 							"type":        "integer",
 							"description": "每页数量",
 						},
-						"total_pages": map[string]interface{}{
+						"totalPages": map[string]interface{}{
 							"type":        "integer",
 							"description": "总页数",
+						},
+						"retentionDays": map[string]interface{}{
+							"type":        "integer",
+							"description": "执行记录保留天数",
 						},
 					},
 				},
@@ -1234,6 +1241,34 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"description": "搜索关键词",
 							"schema": map[string]interface{}{
 								"type": "string",
+							},
+						},
+						{
+							"name":        "project_id",
+							"in":          "query",
+							"required":    false,
+							"description": "按项目筛选；传 __none__ 表示仅未绑定项目的对话",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+						{
+							"name":        "exclude_grouped",
+							"in":          "query",
+							"required":    false,
+							"description": "为 true 时排除已加入分组的对话（默认在未搜索且未按项目筛选时启用）",
+							"schema": map[string]interface{}{
+								"type": "boolean",
+							},
+						},
+						{
+							"name":        "sort_by",
+							"in":          "query",
+							"required":    false,
+							"description": "排序字段：updated_at（默认）或 created_at",
+							"schema": map[string]interface{}{
+								"type": "string",
+								"enum": []string{"updated_at", "created_at"},
 							},
 						},
 					},
@@ -2468,15 +2503,106 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"parameters": []map[string]interface{}{
 						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
 						{"name": "fact_key", "in": "query", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "include_links", "in": "query", "schema": map[string]interface{}{"type": "boolean"}},
+						{"name": "include_link_counts", "in": "query", "schema": map[string]interface{}{"type": "boolean"}},
 					},
-					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "事实列表或单条"}},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "事实列表或单条（可含 link_counts / outgoing_links）"}},
 				},
 				"post": map[string]interface{}{
 					"tags": []string{"项目管理"}, "summary": "创建/更新事实", "operationId": "upsertProjectFactREST",
 					"parameters": []map[string]interface{}{
 						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
 					},
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"fact_key": map[string]interface{}{"type": "string"},
+										"summary":  map[string]interface{}{"type": "string"},
+										"links": map[string]interface{}{
+											"type": "array",
+											"items": map[string]interface{}{
+												"type": "object",
+												"properties": map[string]interface{}{
+													"to":   map[string]interface{}{"type": "string"},
+													"type": map[string]interface{}{"type": "string"},
+												},
+											},
+										},
+										"links_text": map[string]interface{}{"type": "string", "description": "type: fact_key 每行一条"},
+									},
+								},
+							},
+						},
+					},
 					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}},
+				},
+			},
+			"/api/projects/{id}/fact-graph": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags": []string{"项目管理"}, "summary": "获取项目事实攻击路径图", "operationId": "getProjectFactGraph",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+						{"name": "view", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"path", "full"}, "default": "path"}},
+						{"name": "exclude_deprecated", "in": "query", "schema": map[string]interface{}{"type": "boolean", "default": true}},
+					},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "nodes + edges"}},
+				},
+			},
+			"/api/projects/{id}/fact-edges": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags": []string{"项目管理"}, "summary": "列出项目全部事实边", "operationId": "listProjectFactEdges",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+					},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "边列表"}},
+				},
+				"post": map[string]interface{}{
+					"tags": []string{"项目管理"}, "summary": "添加事实边", "operationId": "createProjectFactEdge",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+					},
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"required": []string{"source_fact_key", "target_fact_key", "edge_type"},
+									"properties": map[string]interface{}{
+										"source_fact_key": map[string]interface{}{"type": "string"},
+										"target_fact_key": map[string]interface{}{"type": "string"},
+										"edge_type":       map[string]interface{}{"type": "string"},
+										"confidence":      map[string]interface{}{"type": "string"},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "边已创建"}},
+				},
+			},
+			"/api/projects/{id}/fact-edges/{edgeId}": map[string]interface{}{
+				"delete": map[string]interface{}{
+					"tags": []string{"项目管理"}, "summary": "删除事实边", "operationId": "deleteProjectFactEdge",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+						{"name": "edgeId", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+					},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "删除成功"}},
+				},
+			},
+			"/api/projects/{id}/promote-attack-chain/{conversationId}": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags": []string{"项目管理"}, "summary": "将对话攻击链沉淀到项目事实图", "operationId": "promoteAttackChainToProject",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+						{"name": "conversationId", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+					},
+					"responses": map[string]interface{}{"200": map[string]interface{}{"description": "沉淀结果（facts/edges/graph）"}},
 				},
 			},
 			"/api/vulnerabilities": map[string]interface{}{
@@ -5034,6 +5160,51 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
+			"/api/config/list-models": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"配置管理"},
+					"summary":     "获取模型列表",
+					"description": "代理调用 OpenAI 兼容 GET /models，返回可用模型 id 列表。Claude 不支持。",
+					"operationId": "listModels",
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":     "object",
+									"required": []string{"api_key"},
+									"properties": map[string]interface{}{
+										"provider": map[string]interface{}{"type": "string", "description": "LLM提供商（openai/claude）", "example": "openai"},
+										"base_url": map[string]interface{}{"type": "string", "description": "API基地址（可选）"},
+										"api_key":  map[string]interface{}{"type": "string", "description": "API密钥"},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "获取结果",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"success":   map[string]interface{}{"type": "boolean"},
+											"supported": map[string]interface{}{"type": "boolean"},
+											"error":     map[string]interface{}{"type": "string"},
+											"models":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+											"count":     map[string]interface{}{"type": "integer"},
+										},
+									},
+								},
+							},
+						},
+						"400": map[string]interface{}{"description": "参数错误"},
+						"401": map[string]interface{}{"description": "未授权"},
+					},
+				},
+			},
 
 			// ==================== 终端 ====================
 			"/api/terminal/run": map[string]interface{}{
@@ -6354,35 +6525,8 @@ func (h *OpenAPIHandler) GetConversationResults(c *gin.Context) {
 		vulnerabilities[i] = *v
 	}
 
-	// 获取执行结果（从MCP执行记录中获取）
+	// 获取执行结果（历史大结果由 Eino reduction 落盘，此处不再聚合文件存储）
 	executionResults := []map[string]interface{}{}
-	for _, msg := range messages {
-		if len(msg.MCPExecutionIDs) > 0 {
-			for _, execID := range msg.MCPExecutionIDs {
-				// 尝试从结果存储中获取执行结果
-				if h.resultStorage != nil {
-					result, err := h.resultStorage.GetResult(execID)
-					if err == nil && result != "" {
-						// 获取元数据以获取工具名称和创建时间
-						metadata, err := h.resultStorage.GetResultMetadata(execID)
-						toolName := "unknown"
-						createdAt := time.Now()
-						if err == nil && metadata != nil {
-							toolName = metadata.ToolName
-							createdAt = metadata.CreatedAt
-						}
-						executionResults = append(executionResults, map[string]interface{}{
-							"id":        execID,
-							"toolName":  toolName,
-							"status":    "success",
-							"result":    result,
-							"createdAt": createdAt.Format(time.RFC3339),
-						})
-					}
-				}
-			}
-		}
-	}
 
 	response := map[string]interface{}{
 		"conversationId":   conv.ID,

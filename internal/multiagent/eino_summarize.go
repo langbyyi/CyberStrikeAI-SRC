@@ -9,7 +9,9 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	copenai "cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/project"
 
 	"github.com/bytedance/sonic"
 	"github.com/cloudwego/eino/adk"
@@ -20,17 +22,60 @@ import (
 	"go.uber.org/zap"
 )
 
-const defaultSummarizationRetryMax = 3
+// einoSummarizeUserInstruction：压缩历史时保留渗透测试与用户约束关键信息。
+// 结构对齐 Eino 最佳实践（禁止工具、<analysis>+<summary>、<all_user_messages>），章节为安全测试领域化。
+const einoSummarizeUserInstruction = `关键：仅以纯文本响应。禁止调用任何工具（read_file、exec、grep、glob、write、edit 等）。
+上述对话中已包含全部待压缩上下文；不要要求用户粘贴历史，不要输出「请提供待压缩的对话历史」等占位/meta 回复。
+工具调用将被拒绝并浪费唯一一次摘要机会。
 
-// einoSummarizeUserInstruction：压缩历史时保留渗透测试关键信息。
-const einoSummarizeUserInstruction = `在保持所有关键安全测试信息完整的前提下压缩对话历史。
+你的任务：在保持所有关键安全测试信息完整的前提下压缩对话历史，使后续代理能无缝继续同一授权测试任务。
 
-必须保留：已确认漏洞与攻击路径、工具输出中的核心发现、凭证与认证细节、架构与薄弱点、当前进度、失败尝试与死路、策略决策。
-保留精确技术细节（URL、路径、参数、Payload、版本号、报错原文可摘要但要点不丢）。
-将冗长扫描输出概括为结论；重复发现合并表述。
-已枚举资产须保留**可继承的摘要**：主域、关键子域/主机短表（或数量+代表样例）、高价值目标与已识别服务/端口要点，避免后续子代理因「看不见清单」而重复全量枚举。
+压缩原则：
+- 必须保留：已确认漏洞与攻击路径、工具输出核心发现、凭证与认证细节、架构与薄弱点、当前进度、失败尝试与死路、策略决策
+- 保留精确技术细节（URL、路径、参数、Payload、版本号；报错原文可摘要但要点不丢）
+- 冗长扫描输出概括为结论；重复发现合并表述
+- 已枚举资产须保留可继承摘要：主域、关键子域/主机短表（或数量+代表样例）、高价值目标、已识别服务/端口要点
 
-输出须使后续代理能无缝继续同一授权测试任务。`
+输出格式（严格遵循，仅一轮回复）：
+1. 先输出 <analysis> 块：按时间顺序梳理对话，检查是否涵盖下方各章节要点；analysis 仅供自检，保持简洁（建议 ≤400 字）
+2. 再输出 <summary> 块：按以下章节写入可继承的压缩报告（无信息处写「无」，禁止留空模板占位符）
+
+<summary>
+## 1. 授权范围与约束
+- 目标/范围/禁止项（域名、路径、IP、环境）
+- 凭证/认证信息（账号、Token、Cookie；敏感值原文保留）
+- 用户指定的方法、工具、优先级与待办
+- 否定约束（不测什么、不用什么手法）
+
+## 2. 资产与服务枚举摘要
+- 主域/核心资产、关键子域或主机短表（或数量+代表样例）
+- 高价值目标、已识别服务/端口要点
+- 资产状态（存活/可攻/已排除/待验证）
+
+## 3. 架构与已知薄弱点
+- 技术栈/部署拓扑/信任边界
+- 已识别薄弱点列表
+
+## 4. 已确认漏洞与攻击路径
+- 漏洞名/CVE、URL/路径、参数/Payload、PoC 要点、影响等级
+- 攻击链/利用路径（步骤化）
+
+## 5. 工具核心发现与扫描结论
+- 各工具结论（概括核心输出，非冗长日志）
+- 重复发现合并表述
+
+## 6. 所有用户消息
+<all_user_messages>
+- [逐条列出非 tool 结果的用户消息要点；敏感约束与原文措辞尽量保留]
+</all_user_messages>
+
+## 7. 当前进度、策略决策与下一步
+- 当前位置（已完成/进行中/卡点）
+- 失败尝试与死路（方法、现象/报错摘要、结论）
+- 策略决策与下一步具体操作（须与最近用户请求及未完成任务一致）
+</summary>
+
+提醒：不要调用任何工具；必须基于上文已有对话直接输出 <analysis> 与 <summary>，勿输出 analysis 以外的正文。`
 
 // newEinoSummarizationMiddleware 使用 Eino ADK Summarization 中间件（见 https://www.cloudwego.io/zh/docs/eino/core_modules/eino_adk/eino_adk_chatmodelagentmiddleware/middleware_summarization/）。
 // 触发阈值：估算 token 超过 openai.max_total_tokens * summarization_trigger_ratio（默认 0.8）时摘要。
@@ -40,6 +85,8 @@ func newEinoSummarizationMiddleware(
 	appCfg *config.Config,
 	mwCfg *config.MultiAgentEinoMiddlewareConfig,
 	conversationID string,
+	db *database.DB,
+	projectID string,
 	logger *zap.Logger,
 ) (adk.ChatModelAgentMiddleware, error) {
 	if summaryModel == nil || appCfg == nil {
@@ -93,10 +140,8 @@ func newEinoSummarizationMiddleware(
 		}
 	}
 
-	retryMax := defaultSummarizationRetryMax
-	if mwCfg != nil && mwCfg.SummarizationRetryMaxAttempts > 0 {
-		retryMax = mwCfg.SummarizationRetryMaxAttempts
-	}
+	retryPolicy := einoTransientRunRetryPolicyFromMW(mwCfg)
+	retryMax := retryPolicy.maxAttempts
 
 	// ModelOptions apply only to summarization Generate (same ChatModel instance as the agent).
 	// Strip thinking/reasoning on this call path; mark requests for empty-choices diagnostics.
@@ -133,17 +178,26 @@ func newEinoSummarizationMiddleware(
 		Retry: &summarization.RetryConfig{
 			MaxRetries: &retryMax,
 			ShouldRetry: func(_ context.Context, _ adk.Message, err error) bool {
-				if err != nil && logger != nil {
-					logger.Warn("eino summarization generate attempt failed, will retry if attempts remain",
+				retry := isEinoTransientRunError(err)
+				if retry && logger != nil {
+					logger.Warn("eino summarization generate transient error, will retry if attempts remain",
 						zap.Error(err),
 						zap.Int("max_retries", retryMax),
 					)
 				}
-				return err != nil
+				return retry
 			},
 		},
 		Finalize: func(ctx context.Context, originalMessages []adk.Message, summary adk.Message) ([]adk.Message, error) {
-			return summarizeFinalizeWithRecentAssistantToolTrail(ctx, originalMessages, summary, tokenCounter, recentTrailMax)
+			summary = stripAnalysisFromSummarizationMessage(summary)
+			out, ferr := summarizeFinalizeWithRecentAssistantToolTrail(ctx, originalMessages, summary, tokenCounter, recentTrailMax)
+			if ferr != nil {
+				return nil, ferr
+			}
+			if appCfg != nil {
+				out = refreshFactIndexInMessages(out, db, projectID, appCfg.Project, logger)
+			}
+			return out, nil
 		},
 		Callback: func(ctx context.Context, before, after adk.ChatModelAgentState) error {
 			if transcriptPath != "" && len(before.Messages) > 0 {
@@ -176,6 +230,50 @@ func newEinoSummarizationMiddleware(
 	return mw, nil
 }
 
+// refreshFactIndexInMessages 在 summarization 压缩后，用 DB 最新索引替换 system 中已有的项目黑板索引段。
+func refreshFactIndexInMessages(msgs []adk.Message, db *database.DB, projectID string, cfg config.ProjectConfig, logger *zap.Logger) []adk.Message {
+	if db == nil || !cfg.Enabled {
+		return msgs
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return msgs
+	}
+	freshIndex, err := project.BuildFactIndexBlock(db, projectID, cfg)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("summarization: 刷新项目黑板索引失败", zap.String("projectId", projectID), zap.Error(err))
+		}
+		return msgs
+	}
+	freshIndex = strings.TrimSpace(freshIndex)
+	if freshIndex == "" {
+		return msgs
+	}
+
+	changed := false
+	out := make([]adk.Message, len(msgs))
+	for i, msg := range msgs {
+		if msg == nil || msg.Role != schema.System {
+			out[i] = msg
+			continue
+		}
+		newContent, ok := project.ReplaceFactIndexSection(msg.Content, freshIndex)
+		if !ok {
+			out[i] = msg
+			continue
+		}
+		cloned := *msg
+		cloned.Content = newContent
+		out[i] = &cloned
+		changed = true
+	}
+	if changed && logger != nil {
+		logger.Info("summarization: 已刷新项目黑板索引", zap.String("projectId", projectID))
+	}
+	return out
+}
+
 // summarizeFinalizeWithRecentAssistantToolTrail 在摘要消息后保留最近 assistant/tool 轨迹，避免压缩后执行链断裂。
 //
 // 关键不变量：tool_call ↔ tool_result 的 pair 必须整体保留或整体丢弃。
@@ -205,17 +303,19 @@ func summarizeFinalizeWithRecentAssistantToolTrail(
 		nonSystem = append(nonSystem, msg)
 	}
 
+	mergedSystem := mergeCollectedSystemMessages(systemMsgs)
+
 	if recentTrailTokenBudget <= 0 || len(nonSystem) == 0 {
-		out := make([]adk.Message, 0, len(systemMsgs)+1)
-		out = append(out, systemMsgs...)
+		out := make([]adk.Message, 0, len(mergedSystem)+1)
+		out = append(out, mergedSystem...)
 		out = append(out, summary)
 		return out, nil
 	}
 
 	rounds := splitMessagesIntoRounds(nonSystem)
 	if len(rounds) == 0 {
-		out := make([]adk.Message, 0, len(systemMsgs)+1)
-		out = append(out, systemMsgs...)
+		out := make([]adk.Message, 0, len(mergedSystem)+1)
+		out = append(out, mergedSystem...)
 		out = append(out, summary)
 		return out, nil
 	}
@@ -267,8 +367,8 @@ func summarizeFinalizeWithRecentAssistantToolTrail(
 		selectedMsgs = append(selectedMsgs, selectedRoundsReverse[i].messages...)
 	}
 
-	out := make([]adk.Message, 0, len(systemMsgs)+1+len(selectedMsgs))
-	out = append(out, systemMsgs...)
+	out := make([]adk.Message, 0, len(mergedSystem)+1+len(selectedMsgs))
+	out = append(out, mergedSystem...)
 	out = append(out, summary)
 	out = append(out, selectedMsgs...)
 	return out, nil

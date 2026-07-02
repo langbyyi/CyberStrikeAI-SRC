@@ -2,20 +2,37 @@ package multiagent
 
 import "testing"
 
-func TestShouldEinoEmptyResponseContinue(t *testing.T) {
-	t.Parallel()
-	hint := "(empty hint)"
-	out := &RunResult{Response: hint}
-	if !shouldEinoEmptyResponseContinue(out, hint, 3, 1) {
-		t.Fatal("expected continue when response is empty hint and trace grew")
+func TestIsEinoEmptyResponseResult(t *testing.T) {
+	empty := &RunResult{
+		Response: "(Eino ADK single-agent session completed but no assistant text was captured. Check process details or logs.) " +
+			"（Eino ADK 单代理会话已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}
-	if shouldEinoEmptyResponseContinue(out, hint, 1, 1) {
-		t.Fatal("expected no continue when trace did not grow")
+	if !IsEinoEmptyResponseResult(empty) {
+		t.Fatal("expected empty placeholder response")
 	}
-	if shouldEinoEmptyResponseContinue(&RunResult{Response: "hello"}, hint, 3, 1) {
-		t.Fatal("expected no continue when response has content")
+	ok := &RunResult{Response: "扫描完成，发现 2 个开放端口。"}
+	if IsEinoEmptyResponseResult(ok) {
+		t.Fatalf("expected real response, got placeholder match")
 	}
-	if shouldEinoEmptyResponseContinue(nil, hint, 3, 1) {
-		t.Fatal("expected no continue for nil result")
+	if IsEinoEmptyResponseResult(nil) {
+		t.Fatal("nil result should be false")
+	}
+}
+
+func TestHasEinoResumeTrace(t *testing.T) {
+	if HasEinoResumeTrace(nil) {
+		t.Fatal("nil")
+	}
+	if HasEinoResumeTrace(&RunResult{LastAgentTraceInput: "[]"}) {
+		t.Fatal("enable resume on empty trace")
+	}
+	if !HasEinoResumeTrace(&RunResult{LastAgentTraceInput: `[{"role":"user","content":"hi"}]`}) {
+		t.Fatal("expected resume trace")
+	}
+}
+
+func TestEmptyResponseContinueMaxAttemptsFromConfig(t *testing.T) {
+	if got := EmptyResponseContinueMaxAttemptsFromConfig(nil); got != defaultEmptyResponseContinueMaxAttempts {
+		t.Fatalf("default: got %d want %d", got, defaultEmptyResponseContinueMaxAttempts)
 	}
 }

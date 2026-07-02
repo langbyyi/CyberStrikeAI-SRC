@@ -21,6 +21,7 @@ import (
 // MonitorStorage 监控数据存储接口
 type MonitorStorage interface {
 	SaveToolExecution(exec *ToolExecution) error
+	UpdateToolExecutionResult(id string, result *ToolResult) error
 	LoadToolExecutions() ([]*ToolExecution, error)
 	GetToolExecution(id string) (*ToolExecution, error)
 	SaveToolStats(toolName string, stats *ToolStats) error
@@ -920,9 +921,8 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	return finalResult, executionID, nil
 }
 
-// RecordCompletedToolInvocation 将已在其它路径完成的工具调用写入监控存储（格式与 CallTool 结束后一致），
-// 用于 Eino ADK filesystem execute 等未经过 CallTool 的场景；返回 executionId 供助手消息 mcpExecutionIds 关联。
-func (s *Server) RecordCompletedToolInvocation(toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+// BeginToolExecution 创建 running 状态的执行记录，供 Eino 等非 CallTool 路径在工具开始时落库。
+func (s *Server) BeginToolExecution(toolName string, args map[string]interface{}) string {
 	if s == nil {
 		return ""
 	}
@@ -930,21 +930,73 @@ func (s *Server) RecordCompletedToolInvocation(toolName string, args map[string]
 		args = map[string]interface{}{}
 	}
 	executionID := uuid.New().String()
-	now := time.Now()
-	failed := invokeErr != nil
-	exec := &ToolExecution{
+	execution := &ToolExecution{
 		ID:        executionID,
 		ToolName:  toolName,
 		Arguments: args,
-		StartTime: now,
-		EndTime:   &now,
-		Duration:  0,
+		Status:    "running",
+		StartTime: time.Now(),
 	}
+
+	s.mu.Lock()
+	s.executions[executionID] = execution
+	s.cleanupOldExecutions()
+	s.mu.Unlock()
+
+	if s.storage != nil {
+		if err := s.storage.SaveToolExecution(execution); err != nil {
+			s.logger.Warn("保存执行记录到数据库失败", zap.Error(err))
+		}
+	}
+	return executionID
+}
+
+// FinishToolExecution 完成先前 BeginToolExecution 创建的记录；executionID 为空时等同 RecordCompletedToolInvocation。
+func (s *Server) FinishToolExecution(executionID, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+	if s == nil {
+		return ""
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	id := strings.TrimSpace(executionID)
+	if id == "" {
+		return s.RecordCompletedToolInvocation(toolName, args, resultText, invokeErr)
+	}
+
+	now := time.Now()
+	failed := invokeErr != nil
+	var finalResult *ToolResult
+
+	s.mu.Lock()
+	exec, inMem := s.executions[id]
+	if !inMem || exec == nil {
+		exec = &ToolExecution{
+			ID:        id,
+			ToolName:  toolName,
+			Arguments: args,
+			StartTime: now,
+		}
+		s.executions[id] = exec
+	} else if toolName != "" {
+		exec.ToolName = toolName
+	}
+	if len(args) > 0 {
+		exec.Arguments = args
+	}
+	exec.EndTime = &now
+	if exec.StartTime.IsZero() {
+		exec.StartTime = now
+	}
+	exec.Duration = now.Sub(exec.StartTime)
+
 	if failed {
-		exec.Status = "failed"
-		exec.Error = invokeErr.Error()
+		st, msg := executionStatusAndMessage(invokeErr)
+		exec.Status = st
+		exec.Error = msg
 		if strings.TrimSpace(resultText) != "" {
-			exec.Result = &ToolResult{Content: []Content{{Type: "text", Text: resultText}}}
+			finalResult = &ToolResult{Content: []Content{{Type: "text", Text: resultText}}}
+			exec.Result = finalResult
 		}
 	} else {
 		exec.Status = "completed"
@@ -952,15 +1004,51 @@ func (s *Server) RecordCompletedToolInvocation(toolName string, args map[string]
 		if strings.TrimSpace(text) == "" {
 			text = "（无输出）"
 		}
-		exec.Result = &ToolResult{Content: []Content{{Type: "text", Text: text}}}
+		finalResult = &ToolResult{Content: []Content{{Type: "text", Text: text}}}
+		exec.Result = finalResult
 	}
+	s.mu.Unlock()
+
 	if s.storage != nil {
 		if err := s.storage.SaveToolExecution(exec); err != nil {
-			s.logger.Warn("RecordCompletedToolInvocation 保存失败", zap.Error(err))
+			s.logger.Warn("保存执行记录到数据库失败", zap.Error(err))
 		}
 	}
-	s.updateStats(toolName, failed)
-	return executionID
+
+	s.updateStats(exec.ToolName, failed)
+
+	if s.storage != nil {
+		s.mu.Lock()
+		delete(s.executions, id)
+		s.mu.Unlock()
+	}
+	return id
+}
+
+// RecordCompletedToolInvocation 将已在其它路径完成的工具调用写入监控存储（格式与 CallTool 结束后一致），
+// 用于 Eino ADK filesystem execute 等未经过 CallTool 的场景；返回 executionId 供助手消息 mcpExecutionIds 关联。
+func (s *Server) RecordCompletedToolInvocation(toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+	return s.FinishToolExecution("", toolName, args, resultText, invokeErr)
+}
+
+// UpdateToolExecutionResult 将监控库中的工具结果更新为送入模型的展示正文（如 reduction 后的 persisted-output）。
+func (s *Server) UpdateToolExecutionResult(executionID string, result *ToolResult) error {
+	if s == nil {
+		return nil
+	}
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" || result == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if exec, ok := s.executions[executionID]; ok && exec != nil {
+		exec.Result = result
+	}
+	s.mu.Unlock()
+	if s.storage != nil {
+		return s.storage.UpdateToolExecutionResult(executionID, result)
+	}
+	return nil
 }
 
 // cleanupOldExecutions 清理旧的执行记录，防止内存无限增长
@@ -1080,6 +1168,23 @@ func (s *Server) CancelToolExecutionWithNote(id string, note string) bool {
 // CancelToolExecution 取消正在执行的内部工具调用（无用户说明）。
 func (s *Server) CancelToolExecution(id string) bool {
 	return s.CancelToolExecutionWithNote(id, "")
+}
+
+// ActiveRunningExecutionIDs 返回当前进程内仍登记 cancel 的 executionId 快照。
+func (s *Server) ActiveRunningExecutionIDs() map[string]struct{} {
+	if s == nil {
+		return nil
+	}
+	s.runningCancelsMu.Lock()
+	defer s.runningCancelsMu.Unlock()
+	if len(s.runningCancels) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(s.runningCancels))
+	for id := range s.runningCancels {
+		out[id] = struct{}{}
+	}
+	return out
 }
 
 // initDefaultPrompts 初始化默认提示词模板

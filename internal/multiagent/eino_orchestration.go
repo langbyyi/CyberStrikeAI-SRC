@@ -7,6 +7,7 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
@@ -29,7 +30,9 @@ type PlanExecuteRootArgs struct {
 	MwCfg  *config.MultiAgentEinoMiddlewareConfig
 	// ConversationID is used for transcript/isolation paths in middleware.
 	ConversationID string
-	Logger *zap.Logger
+	DB             *database.DB
+	ProjectID      string
+	Logger         *zap.Logger
 	// ModelName is used for model input token estimation logs.
 	ModelName string
 	// ExecPreMiddlewares 是由 prependEinoMiddlewares 构建的前置中间件（patchtoolcalls, reduction, toolsearch, plantask），
@@ -91,24 +94,20 @@ func NewPlanExecuteRoot(ctx context.Context, a *PlanExecuteRootArgs) (adk.Resuma
 	if a.SkillMiddleware != nil {
 		execHandlers = append(execHandlers, a.SkillMiddleware)
 	}
-	// 4. summarization（最后，与 Deep/Supervisor 一致）
+	// 4. pre-summarization normalize + continuation dedup, then summarization (与 Deep/Supervisor 一致)
 	if a.AppCfg != nil {
-		sumMw, sumErr := newEinoSummarizationMiddleware(ctx, a.ExecModel, a.AppCfg, a.MwCfg, a.ConversationID, a.Logger)
+		sumMw, sumErr := newEinoSummarizationMiddleware(ctx, a.ExecModel, a.AppCfg, a.MwCfg, a.ConversationID, a.DB, a.ProjectID, a.Logger)
 		if sumErr != nil {
 			return nil, fmt.Errorf("plan_execute executor summarization: %w", sumErr)
 		}
-		execHandlers = append(execHandlers, sumMw)
-	}
-	// 5. 孤儿 tool 消息兜底：必须挂在所有改写历史中间件（summarization/reduction/skill）之后、
-	//    telemetry 之前，保证送入 ChatModel 的消息序列 tool_call ↔ tool_result 配对完整。
-	execHandlers = append(execHandlers, newOrphanToolPrunerMiddleware(a.Logger, "plan_execute_executor"))
-	if teleMw := newEinoModelInputTelemetryMiddleware(a.Logger, a.ModelName, a.ConversationID, "plan_execute_executor"); teleMw != nil {
-		execHandlers = append(execHandlers, teleMw)
-	}
-	if a.ModelFacingTrace != nil {
-		if capMw := newModelFacingTraceMiddleware(a.ModelFacingTrace); capMw != nil {
-			execHandlers = append(execHandlers, capMw)
-		}
+		execHandlers = appendEinoChatModelTailMiddlewares(execHandlers, einoChatModelTailConfig{
+			logger:         a.Logger,
+			phase:          "plan_execute_executor",
+			summarization:  sumMw,
+			modelName:      a.ModelName,
+			conversationID: a.ConversationID,
+			trace:          a.ModelFacingTrace,
+		})
 	}
 	executor, err := newPlanExecuteExecutor(ctx, &planexecute.ExecutorConfig{
 		Model:         a.ExecModel,

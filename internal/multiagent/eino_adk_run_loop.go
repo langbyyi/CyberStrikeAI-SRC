@@ -18,6 +18,7 @@ import (
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/einoobserve"
 	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -88,8 +89,9 @@ type einoADKRunLoopArgs struct {
 	// 在完成时写入 MCP 监控；execute 仍由 eino_execute_monitor 记录，此处跳过。
 	FilesystemMonitorAgent  *agent.Agent
 	FilesystemMonitorRecord einomcp.ExecutionRecorder
+	MCPExecutionBinder      *MCPExecutionBinder
 
-	// ToolInvokeNotify 与 einomcp.ToolsFromDefinitions 共享：run loop 在迭代前 Set，MCP 桥 Fire 以补全 tool_result。
+	// ToolInvokeNotify 与 einomcp.ToolsFromDefinitions 共享：run loop 在迭代前 Set，execute/MCP 桥 Fire 时立即推送 tool_result（ADK 晚到经 toolResultSent 去重）。
 	ToolInvokeNotify *einomcp.ToolInvokeNotifyHolder
 
 	DA adk.Agent
@@ -195,6 +197,16 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		pendingByID[tc.ToolCallID] = tc
 		pendingQueueByAgent[tc.EinoAgent] = append(pendingQueueByAgent[tc.EinoAgent], tc.ToolCallID)
 	}
+	markPendingWithMonitor := func(tc toolCallPendingInfo) {
+		markPending(tc)
+		beginEinoADKFilesystemToolMonitor(
+			args.FilesystemMonitorAgent,
+			args.FilesystemMonitorRecord,
+			args.MCPExecutionBinder,
+			tc.ToolCallID,
+			tc.ToolName,
+		)
+	}
 	popNextPendingForAgent := func(agentName string) (toolCallPendingInfo, bool) {
 		pendingMu.Lock()
 		defer pendingMu.Unlock()
@@ -285,54 +297,61 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		executeStdoutDupMu.Unlock()
 	}
 
-	var toolResultSent sync.Map // toolCallID -> struct{}；与 ADK Tool 消息去重，避免 bridge 与事件流各推一次
-	if args.ToolInvokeNotify != nil {
-		args.ToolInvokeNotify.Set(func(toolCallID, toolName, einoAgent string, success bool, content string, invokeErr error) {
-			tid := strings.TrimSpace(toolCallID)
-			removePendingByID(tid)
-			if tid == "" || progress == nil {
-				return
+	var toolResultSent sync.Map // toolCallID -> struct{}；ADK Tool 事件去重（权威正文来自 reduction 处理后的 agent 上下文）
+	tryEmitToolResultProgress := func(toolName, content, toolCallID string, isErr bool, agentName string) {
+		// 仅由 ADK schema.Tool 事件调用；MCP/execute 桥在 reduction 前的 ToolInvokeNotify 不得推送 tool_result，
+		// 否则全量输出会先占位并触发 toolResultSent 去重，导致 UI/监控展示与 agent 实际收到的截断正文不一致。
+		if progress == nil {
+			return
+		}
+		toolName = strings.TrimSpace(toolName)
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		preview := content
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		data := map[string]interface{}{
+			"toolName":       toolName,
+			"success":        !isErr,
+			"isError":        isErr,
+			"result":         content,
+			"resultPreview":  preview,
+			"agentFacing":    true, // 与 reduction 后送入 ChatModel 的正文一致，供前端展示
+			"conversationId": conversationID,
+			"einoAgent":      agentName,
+			"einoRole":       einoRoleTag(agentName),
+			"source":         "eino",
+		}
+		tid := strings.TrimSpace(toolCallID)
+		if tid == "" {
+			if inferred, ok := popNextPendingForAgent(agentName); ok {
+				tid = inferred.ToolCallID
+			} else if inferred, ok := popNextPendingForAgent(orchestratorName); ok {
+				tid = inferred.ToolCallID
+			} else if inferred, ok := popNextPendingForAgent(""); ok {
+				tid = inferred.ToolCallID
+			} else if inferred, ok := popAnyPending(); ok {
+				tid = inferred.ToolCallID
 			}
+		}
+		if tid != "" {
+			removePendingByID(tid)
 			if _, loaded := toolResultSent.LoadOrStore(tid, struct{}{}); loaded {
 				return
 			}
-			isErr := !success || invokeErr != nil
-			body := content
-			if invokeErr != nil {
-				// 保留已流式累计的 stdout（如 execute 超时前的一半输出），避免 tool_result 只剩错误串、模型与 UI 丢失上下文
-				tail := friendlyEinoExecuteInvokeTail(invokeErr)
-				// execute 流式包装可能已把超时句写入 content（供 ADK tool 与流式 delta）；勿重复拼接
-				if tail != "" && strings.Contains(content, tail) {
-					body = content
-				} else if strings.TrimSpace(content) != "" {
-					body = strings.TrimRight(content, "\n") + "\n\n" + tail
-				} else {
-					body = tail
-				}
-				isErr = true
+			data["toolCallId"] = tid
+			toolCallID = tid
+		}
+		recordPendingExecuteStdoutDup(toolName, content, isErr)
+		recordEinoADKFilesystemToolMonitor(args.FilesystemMonitorAgent, args.FilesystemMonitorRecord, args.MCPExecutionBinder, toolName, toolCallID, runAccumulatedMsgs, content, isErr)
+		if args.FilesystemMonitorAgent != nil && args.MCPExecutionBinder != nil {
+			if execID := args.MCPExecutionBinder.ExecutionID(toolCallID); execID != "" {
+				args.FilesystemMonitorAgent.UpdateMCPExecutionDisplayResult(execID, content)
 			}
-			recordPendingExecuteStdoutDup(toolName, body, isErr)
-			preview := body
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
-			}
-			agentTag := strings.TrimSpace(einoAgent)
-			if agentTag == "" {
-				agentTag = orchestratorName
-			}
-			progress("tool_result", fmt.Sprintf("工具结果 (%s)", toolName), map[string]interface{}{
-				"toolName":       toolName,
-				"success":        !isErr,
-				"isError":        isErr,
-				"result":         body,
-				"resultPreview":  preview,
-				"toolCallId":     tid,
-				"conversationId": conversationID,
-				"einoAgent":      agentTag,
-				"einoRole":       einoRoleTag(agentTag),
-				"source":         "eino",
-			})
-		})
+		}
+		progress("tool_result", fmt.Sprintf("工具结果 (%s)", toolName), data)
 	}
 
 	if args.EinoCallbacks != nil {
@@ -372,6 +391,12 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		}
 	}
 	runner := adk.NewRunner(ctx, runnerCfg)
+	startRunnerIter := func(runMsgs []adk.Message) *adk.AsyncIterator[*adk.AgentEvent] {
+		if checkPointID != "" {
+			return runner.Run(ctx, runMsgs, adk.WithCheckPointID(checkPointID))
+		}
+		return runner.Run(ctx, runMsgs)
+	}
 	var iter *adk.AsyncIterator[*adk.AgentEvent]
 	if cpStore != nil && checkPointID != "" {
 		if _, existed, getErr := cpStore.Get(ctx, checkPointID); getErr != nil {
@@ -411,12 +436,9 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		}
 	}
 	if iter == nil {
-		if checkPointID != "" {
-			iter = runner.Run(ctx, msgs, adk.WithCheckPointID(checkPointID))
-		} else {
-			iter = runner.Run(ctx, msgs)
-		}
+		iter = startRunnerIter(msgs)
 	}
+	transientRetrier := newEinoTransientRunRetrier(einoTransientRunRetryPolicyFromArgs(args))
 	handleRunErr := func(runErr error) error {
 		if runErr == nil {
 			return nil
@@ -469,26 +491,67 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		return runErr
 	}
 
-	// maybeRetryTransientRun：不在此层 runner.Run/Resume；由 handler 落库 + loadHistoryFromAgentTrace 分段续跑（同中断并继续）。
-	maybeRetryTransientRun := func(runErr error) (retry bool, fatal error) {
-		if runErr == nil || !isEinoTransientRunError(runErr) {
+	maybeRetryTransientRun := func(runErr error) (restarted bool, fatal error) {
+		if runErr == nil {
+			return false, nil
+		}
+		if !isEinoTransientRunError(runErr) {
 			return false, handleRunErr(runErr)
 		}
+		restarted, restartMsgs, ctxSource, backoff, retErr := transientRetrier.tryRetry(
+			ctx, runErr, args, baseMsgs, runAccumulatedMsgs, baseAccumulatedCount,
+		)
+		if retErr != nil {
+			flushAllPendingAsFailed(runErr)
+			if logger != nil {
+				logger.Warn("eino transient retry exhausted",
+					zap.Error(retErr),
+					zap.String("orchestration", orchMode),
+					zap.Int("maxAttempts", transientRetrier.maxAttempts()))
+			}
+			return false, retErr
+		}
+		if !restarted {
+			return false, nil
+		}
+		attemptNo := transientRetrier.attempt()
+		maxAttempts := transientRetrier.maxAttempts()
 		if logger != nil {
-			logger.Warn("eino transient error, ending run segment for handler resume",
+			logger.Warn("eino transient error, retrying after backoff",
 				zap.Error(runErr),
-				zap.String("orchestration", orchMode))
+				zap.String("orchestration", orchMode),
+				zap.Int("attempt", attemptNo),
+				zap.Int("maxAttempts", maxAttempts),
+				zap.Duration("backoff", backoff))
 		}
 		if progress != nil {
-			progress("eino_run_retry", "遇到临时错误（限流或网络波动），将保存上下文并重试…", map[string]interface{}{
+			progress("eino_run_retry", fmt.Sprintf("遇到临时错误（限流或网络波动），%d 秒后第 %d/%d 次重试…", int(backoff.Seconds()), attemptNo, maxAttempts), map[string]interface{}{
 				"conversationId": conversationID,
 				"source":         "eino",
 				"orchestration":  orchMode,
 				"error":          runErr.Error(),
-				"resumeKind":     "trace_segment",
+				"attempt":        attemptNo,
+				"maxAttempts":    maxAttempts,
+				"backoffSec":     int(backoff.Seconds()),
+			})
+			progress("eino_run_retry", "已恢复上下文，正在重试…", map[string]interface{}{
+				"conversationId": conversationID,
+				"source":         "eino",
+				"orchestration":  orchMode,
+				"attempt":        attemptNo,
+				"contextSource":  string(ctxSource),
 			})
 		}
-		return false, ErrTransientRetryContinue
+		msgs = restartMsgs
+		iter = startRunnerIter(msgs)
+		return true, nil
+	}
+
+	// 仅在退避重试后真正收到数据/完成一步时清零，避免重启后首个无错 ADK 事件误把计数打回 0。
+	confirmTransientRetryRecovery := func() {
+		if transientRetrier.attempt() > 0 {
+			transientRetrier.reset()
+		}
 	}
 
 	takePartial := func(runErr error) (*RunResult, error) {
@@ -503,10 +566,10 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	}
 
 	for {
-		// 检测 context 取消（用户关闭浏览器、请求超时等），flush pending 工具状态避免 UI 卡在 "执行中"。
-		select {
-		case <-ctx.Done():
-			flushAllPendingAsFailed(ctx.Err())
+		// iter.Next 可能长时间阻塞（工具执行、模型推理）；须与 ctx 联动，否则取消/超时无法及时 flush pending。
+		ev, ok, iterCtxErr := nextAgentEventWithContext(ctx, iter)
+		if iterCtxErr != nil {
+			flushAllPendingAsFailed(iterCtxErr)
 			if progress != nil {
 				if isInterruptContinue(ctx) {
 					progress("progress", "已暂停当前输出，正在合并用户补充并继续…", map[string]interface{}{
@@ -515,17 +578,14 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 						"kind":           "interrupt_continue",
 					})
 				} else {
-					progress("error", "Request cancelled / 请求已取消", map[string]interface{}{
+					progress("error", iterCtxErr.Error(), map[string]interface{}{
 						"conversationId": conversationID,
 						"source":         "eino",
 					})
 				}
 			}
-			return takePartial(ctx.Err())
-		default:
+			return takePartial(iterCtxErr)
 		}
-
-		ev, ok := iter.Next()
 		if !ok {
 			// iter 结束并不总是“正常完成”：
 			// 当取消/超时发生在 iter.Next() 阻塞期间时，可能直接返回 !ok。
@@ -572,8 +632,12 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			continue
 		}
 		if ev.Err != nil {
-			if _, retErr := maybeRetryTransientRun(ev.Err); retErr != nil {
+			restarted, retErr := maybeRetryTransientRun(ev.Err)
+			if retErr != nil {
 				return takePartial(retErr)
+			}
+			if restarted {
+				continue
 			}
 		}
 		if ev.AgentName != "" && progress != nil {
@@ -619,18 +683,43 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 					}
 				}
 			}
+			// 仅在代理切换时更新进度标题；同一代理的每个 ADK 事件不再重复刷 progress。
+			if einoLastAgent != ev.AgentName {
+				progress("progress", fmt.Sprintf("[Eino] %s", ev.AgentName), map[string]interface{}{
+					"conversationId": conversationID,
+					"einoAgent":      ev.AgentName,
+					"einoRole":       einoRoleTag(ev.AgentName),
+					"orchestration":  orchMode,
+				})
+			}
 			einoLastAgent = ev.AgentName
-			progress("progress", fmt.Sprintf("[Eino] %s", ev.AgentName), map[string]interface{}{
-				"conversationId": conversationID,
-				"einoAgent":      ev.AgentName,
-				"einoRole":       einoRoleTag(ev.AgentName),
-				"orchestration":  orchMode,
-			})
 		}
 		if ev.Output == nil || ev.Output.MessageOutput == nil {
 			continue
 		}
 		mv := ev.Output.MessageOutput
+
+		if mv.IsStreaming && mv.MessageStream != nil && mv.Role == schema.Tool {
+			toolName := strings.TrimSpace(mv.ToolName)
+			content, streamToolCallID, toolStreamRecvErr := recvSchemaMessageStream(ctx, mv.MessageStream)
+			isErr := einoToolResultIsError(toolName, content)
+			content = einoToolResultBody(content)
+			if streamToolCallID != "" {
+				opts := []schema.ToolMessageOption{schema.WithToolName(toolName)}
+				runAccumulatedMsgs = append(runAccumulatedMsgs, schema.ToolMessage(content, streamToolCallID, opts...))
+			}
+			tryEmitToolResultProgress(toolName, content, streamToolCallID, isErr, ev.AgentName)
+			if toolStreamRecvErr != nil && logger != nil {
+				logger.Warn("eino tool result stream recv error",
+					zap.Error(toolStreamRecvErr),
+					zap.String("agent", ev.AgentName),
+					zap.String("tool", toolName))
+			}
+			if toolStreamRecvErr == nil {
+				confirmTransientRetryRecovery()
+			}
+			continue
+		}
 
 		if mv.IsStreaming && mv.MessageStream != nil {
 			mainStreamID := fmt.Sprintf("eino-main-%s-%d", conversationID, atomic.AddInt64(&mainResponseStreamSeq, 1))
@@ -876,7 +965,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			if merged := mergeStreamingToolCallFragments(toolStreamFragments); len(merged) > 0 {
 				lastToolChunk = mergeMessageToolCalls(&schema.Message{ToolCalls: merged})
 			}
-			tryEmitToolCallsOnce(lastToolChunk, ev.AgentName, orchestratorName, conversationID, orchMode, progress, toolEmitSeen, subAgentToolStep, mainAgentToolStep, markPending)
+			tryEmitToolCallsOnce(lastToolChunk, ev.AgentName, orchestratorName, conversationID, orchMode, progress, toolEmitSeen, subAgentToolStep, mainAgentToolStep, markPendingWithMonitor)
 			// 流式路径此前只把 tool_calls 推给进度 UI，未写入 runAccumulatedMsgs；落库后 loadHistory→RepairOrphan 会删掉全部 tool 结果，表现为「续跑/下轮失忆」。
 			if lastToolChunk != nil && len(lastToolChunk.ToolCalls) > 0 {
 				runAccumulatedMsgs = append(runAccumulatedMsgs, schema.AssistantMessage("", lastToolChunk.ToolCalls))
@@ -893,9 +982,15 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 						"einoRole":       einoRoleTag(ev.AgentName),
 					})
 				}
-				if _, retErr := maybeRetryTransientRun(streamRecvErr); retErr != nil {
+				restarted, retErr := maybeRetryTransientRun(streamRecvErr)
+				if retErr != nil {
 					return takePartial(retErr)
 				}
+				if restarted {
+					continue
+				}
+			} else {
+				confirmTransientRetryRecovery()
 			}
 			continue
 		}
@@ -905,7 +1000,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			continue
 		}
 		runAccumulatedMsgs = append(runAccumulatedMsgs, msg)
-		tryEmitToolCallsOnce(mergeMessageToolCalls(msg), ev.AgentName, orchestratorName, conversationID, orchMode, progress, toolEmitSeen, subAgentToolStep, mainAgentToolStep, markPending)
+		tryEmitToolCallsOnce(mergeMessageToolCalls(msg), ev.AgentName, orchestratorName, conversationID, orchMode, progress, toolEmitSeen, subAgentToolStep, mainAgentToolStep, markPendingWithMonitor)
 
 		if mv.Role == schema.Assistant {
 			if progress != nil && strings.TrimSpace(msg.ReasoningContent) != "" {
@@ -973,60 +1068,20 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			}
 		}
 
-		if mv.Role == schema.Tool && progress != nil {
+		if (mv.Role == schema.Tool || msg.Role == schema.Tool) && progress != nil {
 			toolName := msg.ToolName
 			if toolName == "" {
 				toolName = mv.ToolName
 			}
 
 			content := msg.Content
-			isErr := false
-			if strings.HasPrefix(content, einomcp.ToolErrorPrefix) {
-				isErr = true
-				content = strings.TrimPrefix(content, einomcp.ToolErrorPrefix)
-			}
+			isErr := einoToolResultIsError(toolName, content)
+			content = einoToolResultBody(content)
 
-			preview := content
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
-			}
-			data := map[string]interface{}{
-				"toolName":       toolName,
-				"success":        !isErr,
-				"isError":        isErr,
-				"result":         content,
-				"resultPreview":  preview,
-				"conversationId": conversationID,
-				"einoAgent":      ev.AgentName,
-				"einoRole":       einoRoleTag(ev.AgentName),
-				"source":         "eino",
-			}
 			toolCallID := strings.TrimSpace(msg.ToolCallID)
-			if toolCallID == "" {
-				if inferred, ok := popNextPendingForAgent(ev.AgentName); ok {
-					toolCallID = inferred.ToolCallID
-				} else if inferred, ok := popNextPendingForAgent(orchestratorName); ok {
-					toolCallID = inferred.ToolCallID
-				} else if inferred, ok := popNextPendingForAgent(""); ok {
-					toolCallID = inferred.ToolCallID
-				} else if inferred, ok := popAnyPending(); ok {
-					toolCallID = inferred.ToolCallID
-				}
-			}
-			if toolCallID != "" {
-				removePendingByID(toolCallID)
-				if _, loaded := toolResultSent.LoadOrStore(toolCallID, struct{}{}); loaded {
-					// ToolInvokeNotify 可能已推过 tool_result（如 execute 流式包装里 Fire 仅携带截断后的 stdout），
-					// 此处仍应用 ADK Tool 消息中的完整内容刷新去重基准，避免模型复述全文时与截断串比对失败而重复展示「助手输出」。
-					recordPendingExecuteStdoutDup(toolName, content, isErr)
-					continue
-				}
-				data["toolCallId"] = toolCallID
-			}
-			recordPendingExecuteStdoutDup(toolName, content, isErr)
-			recordEinoADKFilesystemToolMonitor(args.FilesystemMonitorAgent, args.FilesystemMonitorRecord, toolName, toolCallID, runAccumulatedMsgs, content, isErr)
-			progress("tool_result", fmt.Sprintf("工具结果 (%s)", toolName), data)
+			tryEmitToolResultProgress(toolName, content, toolCallID, isErr, ev.AgentName)
 		}
+		confirmTransientRetryRecovery()
 	}
 
 	mcpIDsMu.Lock()
@@ -1037,30 +1092,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
 		lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, false,
 	)
-	if shouldEinoEmptyResponseContinue(out, emptyHint, len(runAccumulatedMsgs), baseAccumulatedCount) {
-		if logger != nil {
-			logger.Info("eino empty response, ending run segment for handler resume",
-				zap.String("conversationId", conversationID),
-				zap.String("orchestration", orchMode),
-				zap.Int("traceMessages", len(runAccumulatedMsgs)))
-		}
-		if progress != nil {
-			progress("eino_empty_response_continue", "会话已结束但未产生助手正文，正在基于轨迹自动续跑…", map[string]interface{}{
-				"conversationId": conversationID,
-				"source":         "eino",
-				"resumeKind":     "trace_segment",
-			})
-		}
-		return out, ErrEmptyResponseContinue
-	}
 	return out, nil
-}
-
-func shouldEinoEmptyResponseContinue(out *RunResult, emptyHint string, accumulatedLen, baseCount int) bool {
-	if out == nil || accumulatedLen <= baseCount {
-		return false
-	}
-	return strings.TrimSpace(out.Response) == strings.TrimSpace(emptyHint)
 }
 
 func persistTraceSource(args *einoADKRunLoopArgs, fallback []adk.Message) []adk.Message {
@@ -1077,15 +1109,117 @@ func einoPartialRunLastOutputHint() string {
 		"[Run ended abnormally; continue from the trace above without repeating completed steps.]"
 }
 
-// friendlyEinoExecuteInvokeTail 将 Eino execute 等非 MCP 路径的结尾错误转成简短提示；其它情况保留原 error 文本。
+// friendlyEinoExecuteInvokeTail 将 Eino execute 超时/中断/流异常转为简短提示。
+// 命令非零退出（ExecuteExitError）已有 exec 对齐的正文，不再追加「执行未正常结束」。
 func friendlyEinoExecuteInvokeTail(invokeErr error) string {
 	if invokeErr == nil {
+		return ""
+	}
+	var exitErr *ExecuteExitError
+	if errors.As(invokeErr, &exitErr) {
 		return ""
 	}
 	if errors.Is(invokeErr, context.DeadlineExceeded) {
 		return einoExecuteTimeoutUserHint()
 	}
+	if errors.Is(invokeErr, context.Canceled) {
+		return ""
+	}
+	if strings.Contains(invokeErr.Error(), "shell inactivity timeout") {
+		return ""
+	}
 	return "[执行未正常结束] " + invokeErr.Error()
+}
+
+// einoToolResultIsError 统一判断 Eino 工具结果是否应标记为错误（与 MCP exec 的 IsError 对齐）。
+func einoToolResultIsError(toolName, content string) bool {
+	if strings.HasPrefix(content, einomcp.ToolErrorPrefix) {
+		return true
+	}
+	if strings.TrimSpace(toolName) == "execute" && security.IsCommandFailureResult(content) {
+		return true
+	}
+	return false
+}
+
+// einoToolResultBody 去掉工具错误前缀，返回展示/持久化正文。
+func einoToolResultBody(content string) string {
+	if strings.HasPrefix(content, einomcp.ToolErrorPrefix) {
+		return strings.TrimPrefix(content, einomcp.ToolErrorPrefix)
+	}
+	return content
+}
+
+// nextAgentEventWithContext 在 ctx 取消时不再无限阻塞于 iter.Next()（工具执行/模型推理期间常见）。
+func nextAgentEventWithContext(ctx context.Context, iter *adk.AsyncIterator[*adk.AgentEvent]) (ev *adk.AgentEvent, ok bool, ctxErr error) {
+	if iter == nil {
+		return nil, false, nil
+	}
+	type nextRes struct {
+		ev *adk.AgentEvent
+		ok bool
+	}
+	ch := make(chan nextRes, 1)
+	go func() {
+		e, o := iter.Next()
+		ch <- nextRes{e, o}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	case res := <-ch:
+		return res.ev, res.ok, nil
+	}
+}
+
+// recvSchemaMessageStream 消费 ADK Tool 流式结果；ctx 取消时立即返回，避免 amass 等无输出时永久阻塞。
+func recvSchemaMessageStream(ctx context.Context, stream *schema.StreamReader[*schema.Message]) (content, toolCallID string, recvErr error) {
+	if stream == nil {
+		return "", "", nil
+	}
+	type streamMsg struct {
+		chunk *schema.Message
+		err   error
+	}
+	recvCh := make(chan streamMsg, 8)
+	go func() {
+		defer close(recvCh)
+		for {
+			ch, rerr := stream.Recv()
+			recvCh <- streamMsg{chunk: ch, err: rerr}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	var buf strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			return buf.String(), toolCallID, ctx.Err()
+		case sm, open := <-recvCh:
+			if !open {
+				return buf.String(), toolCallID, nil
+			}
+			rerr := sm.err
+			if errors.Is(rerr, io.EOF) {
+				return buf.String(), toolCallID, nil
+			}
+			if rerr != nil {
+				return buf.String(), toolCallID, rerr
+			}
+			chunk := sm.chunk
+			if chunk == nil {
+				continue
+			}
+			if chunk.Content != "" {
+				buf.WriteString(chunk.Content)
+			}
+			if tid := strings.TrimSpace(chunk.ToolCallID); tid != "" {
+				toolCallID = tid
+			}
+		}
+	}
 }
 
 func buildEinoRunResultFromAccumulated(

@@ -20,10 +20,9 @@ import (
 )
 
 // TCPReverseListener 监听 TCP 端口，等待目标机反弹连接。
-// 经典模式：纯交互式 raw shell，与 nc / bash -i >& /dev/tcp 兼容。
-// 二进制 Beacon：连接后先发送魔数 CSB1，随后使用与 HTTP Beacon 相同的 AES-GCM JSON 语义（成帧见 tcp_beacon_server.go）。
-// 每个新连接自动生成一个 implant_uuid（基于远端地址 + 启动时间 hash），登记为 c2_session；
-// 任务派发：使用同步 exec 模式 —— 收到 task 时直接 send 命令字节并读取输出（带结束标记）。
+// 默认仅接受加密 TCP Beacon：连接后先发送魔数 CSB1，再经 AES-GCM 解密且校验 ImplantToken 后才登记会话。
+// 可选经典模式（config.allow_legacy_shell=true）：纯交互式 raw shell，与 nc / bash -i >& /dev/tcp 兼容，无鉴权，仅建议内网实验。
+// 任务派发（经典模式）：同步 exec —— 收到 task 时直接 send 命令字节并读取输出（带结束标记）。
 type TCPReverseListener struct {
 	rec     *database.C2Listener
 	cfg     *ListenerConfig
@@ -122,12 +121,14 @@ func (l *TCPReverseListener) acceptLoop() {
 	}
 }
 
-// handleConn 一个连接=一个会话：先识别二进制 TCP Beacon（魔数 CSB1），否则走经典交互式 shell。
+// handleConn 先识别加密 TCP Beacon（魔数 CSB1 + AES-GCM + Token）；未通过则按配置拒绝或走经典 shell。
 func (l *TCPReverseListener) handleConn(conn net.Conn) {
 	br := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
-	prefix, err := br.Peek(4)
-	if err == nil && len(prefix) == 4 && string(prefix) == tcpBeaconMagic {
+	remote := conn.RemoteAddr().String()
+
+	_ = conn.SetReadDeadline(time.Now().Add(tcpBeaconPeekTimeout))
+	prefix, peekErr := br.Peek(4)
+	if peekErr == nil && len(prefix) == 4 && string(prefix) == tcpBeaconMagic {
 		if _, err := br.Discard(4); err != nil {
 			_ = conn.Close()
 			return
@@ -136,14 +137,22 @@ func (l *TCPReverseListener) handleConn(conn net.Conn) {
 		l.handleTCPBeaconSession(conn, br)
 		return
 	}
+
+	if !l.cfg.AllowLegacyShell {
+		l.logger.Debug("tcp_reverse 拒绝未加密连接", zap.String("remote", remote))
+		_ = conn.Close()
+		return
+	}
+
 	_ = conn.SetReadDeadline(time.Time{})
 	l.handleShellConn(conn, br)
 }
 
-// handleShellConn 经典裸 TCP 反弹 shell（与 nc/bash /dev/tcp 兼容）。
+// handleShellConn 经典裸 TCP 反弹 shell（与 nc/bash /dev/tcp 兼容）；需监听器显式开启 allow_legacy_shell。
 func (l *TCPReverseListener) handleShellConn(conn net.Conn, br *bufio.Reader) {
 	remote := conn.RemoteAddr().String()
 	host, _, _ := net.SplitHostPort(remote)
+
 	// 用 listener+remote_ip 生成稳定 implant_uuid，使同一来源的重连复用同一会话
 	uuidSeed := fmt.Sprintf("%s|%s", l.rec.ID, host)
 	hash := sha256.Sum256([]byte(uuidSeed))

@@ -5,13 +5,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"cyberstrike-ai/internal/audit"
+	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/monitor"
 	"cyberstrike-ai/internal/security"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -19,12 +22,20 @@ import (
 
 // MonitorHandler 监控处理器
 type MonitorHandler struct {
-	mcpServer      *mcp.Server
-	externalMCPMgr *mcp.ExternalMCPManager
-	executor       *security.Executor
-	db             *database.DB
-	logger         *zap.Logger
-	audit          *audit.Service
+	mcpServer        *mcp.Server
+	externalMCPMgr   *mcp.ExternalMCPManager
+	taskManager      *AgentTaskManager
+	agentHandler     *AgentHandler
+	executor         *security.Executor
+	db               *database.DB
+	logger           *zap.Logger
+	audit            *audit.Service
+	monitorRetention *monitor.Service
+}
+
+// SetMonitorRetention wires MCP execution retention settings.
+func (h *MonitorHandler) SetMonitorRetention(s *monitor.Service) {
+	h.monitorRetention = s
 }
 
 // SetAudit wires platform audit logging.
@@ -48,15 +59,44 @@ func (h *MonitorHandler) SetExternalMCPManager(mgr *mcp.ExternalMCPManager) {
 	h.externalMCPMgr = mgr
 }
 
+// SetTaskManager 设置 Agent 任务管理器（用于 Eino execute 等按 executionId 终止）。
+func (h *MonitorHandler) SetTaskManager(mgr *AgentTaskManager) {
+	h.taskManager = mgr
+}
+
+// SetAgentHandler 设置 Agent 处理器（MCP 监控终止与对话页「中断并继续」共用逻辑）。
+func (h *MonitorHandler) SetAgentHandler(ah *AgentHandler) {
+	h.agentHandler = ah
+}
+
+const monitorPageTopTools = 6
+
+// MonitorStatsSummary 工具调用汇总
+type MonitorStatsSummary struct {
+	TotalCalls   int        `json:"totalCalls"`
+	SuccessCalls int        `json:"successCalls"`
+	FailedCalls  int        `json:"failedCalls"`
+	LastCallTime *time.Time `json:"lastCallTime,omitempty"`
+	ToolCount    int        `json:"toolCount"`
+}
+
 // MonitorResponse 监控响应
 type MonitorResponse struct {
-	Executions []*mcp.ToolExecution      `json:"executions"`
-	Stats      map[string]*mcp.ToolStats `json:"stats"`
-	Timestamp  time.Time                 `json:"timestamp"`
-	Total      int                       `json:"total,omitempty"`
-	Page       int                       `json:"page,omitempty"`
-	PageSize   int                       `json:"page_size,omitempty"`
-	TotalPages int                       `json:"total_pages,omitempty"`
+	Executions    []*mcp.ToolExecution `json:"executions"`
+	Summary       *MonitorStatsSummary `json:"summary"`
+	TopTools      []*mcp.ToolStats     `json:"topTools"`
+	Timestamp     time.Time            `json:"timestamp"`
+	Total         int                  `json:"total"`
+	Page          int                  `json:"page"`
+	PageSize      int                  `json:"pageSize"`
+	TotalPages    int                  `json:"totalPages"`
+	RetentionDays int                  `json:"retentionDays"`
+}
+
+// StatsResponse 统计信息响应（Dashboard 等）
+type StatsResponse struct {
+	Summary  *MonitorStatsSummary `json:"summary"`
+	TopTools []*mcp.ToolStats     `json:"topTools"`
 }
 
 // Monitor 获取监控信息
@@ -80,8 +120,9 @@ func (h *MonitorHandler) Monitor(c *gin.Context) {
 	// 解析工具筛选参数（兼容 mcp__tool 与内部 mcp::tool）
 	toolName := normalizeToolNameFilter(c.Query("tool"))
 
-	executions, total := h.loadExecutionsWithPagination(page, pageSize, status, toolName)
-	stats := h.loadStats()
+	executions, total := h.loadExecutionListWithPagination(page, pageSize, status, toolName)
+	h.enrichExecutionsConversationID(executions)
+	summary, topTools := h.loadStatsSummary(monitorPageTopTools)
 
 	totalPages := (total + pageSize - 1) / pageSize
 	if totalPages == 0 {
@@ -89,19 +130,134 @@ func (h *MonitorHandler) Monitor(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, MonitorResponse{
-		Executions: executions,
-		Stats:      stats,
-		Timestamp:  time.Now(),
-		Total:      total,
-		Page:       page,
-		PageSize:   pageSize,
-		TotalPages: totalPages,
+		Executions:    executions,
+		Summary:       summary,
+		TopTools:      topTools,
+		Timestamp:     time.Now(),
+		Total:         total,
+		Page:          page,
+		PageSize:      pageSize,
+		TotalPages:    totalPages,
+		RetentionDays: h.monitorRetentionDays(),
 	})
+}
+
+func (h *MonitorHandler) monitorRetentionDays() int {
+	if h.monitorRetention != nil {
+		return h.monitorRetention.RetentionDays()
+	}
+	return config.MonitorConfig{}.RetentionDaysEffective()
 }
 
 func (h *MonitorHandler) loadExecutions() []*mcp.ToolExecution {
 	executions, _ := h.loadExecutionsWithPagination(1, 1000, "", "")
 	return executions
+}
+
+func (h *MonitorHandler) loadExecutionListWithPagination(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
+	if h.db == nil {
+		allExecutions := h.mcpServer.GetAllExecutions()
+		if status != "" || toolName != "" {
+			filtered := make([]*mcp.ToolExecution, 0)
+			for _, exec := range allExecutions {
+				matchStatus := status == "" || exec.Status == status
+				matchTool := toolNameFilterMatches(exec.ToolName, toolName)
+				if matchStatus && matchTool {
+					filtered = append(filtered, exec)
+				}
+			}
+			allExecutions = filtered
+		}
+		total := len(allExecutions)
+		offset := (page - 1) * pageSize
+		end := offset + pageSize
+		if end > total {
+			end = total
+		}
+		if offset >= total {
+			return []*mcp.ToolExecution{}, total
+		}
+		pageSlice := allExecutions[offset:end]
+		out := make([]*mcp.ToolExecution, 0, len(pageSlice))
+		for _, exec := range pageSlice {
+			if exec == nil {
+				continue
+			}
+			out = append(out, slimToolExecution(exec))
+		}
+		return out, total
+	}
+
+	offset := (page - 1) * pageSize
+	executions, err := h.db.LoadToolExecutionListPage(offset, pageSize, status, toolName)
+	if err != nil {
+		h.logger.Warn("从数据库加载执行记录列表失败，回退到内存数据", zap.Error(err))
+		return h.loadExecutionListWithPaginationFromMemory(page, pageSize, status, toolName)
+	}
+
+	total, err := h.db.CountToolExecutions(status, toolName)
+	if err != nil {
+		h.logger.Warn("获取执行记录总数失败", zap.Error(err))
+		total = offset + len(executions)
+		if len(executions) == pageSize {
+			total = offset + len(executions) + 1
+		}
+	}
+
+	return executions, total
+}
+
+func (h *MonitorHandler) loadExecutionListWithPaginationFromMemory(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
+	allExecutions := h.mcpServer.GetAllExecutions()
+	if status != "" || toolName != "" {
+		filtered := make([]*mcp.ToolExecution, 0)
+		for _, exec := range allExecutions {
+			matchStatus := status == "" || exec.Status == status
+			matchTool := toolNameFilterMatches(exec.ToolName, toolName)
+			if matchStatus && matchTool {
+				filtered = append(filtered, exec)
+			}
+		}
+		allExecutions = filtered
+	}
+	total := len(allExecutions)
+	offset := (page - 1) * pageSize
+	end := offset + pageSize
+	if end > total {
+		end = total
+	}
+	if offset >= total {
+		return []*mcp.ToolExecution{}, total
+	}
+	pageSlice := allExecutions[offset:end]
+	out := make([]*mcp.ToolExecution, 0, len(pageSlice))
+	for _, exec := range pageSlice {
+		if exec == nil {
+			continue
+		}
+		out = append(out, slimToolExecution(exec))
+	}
+	return out, total
+}
+
+func slimToolExecution(exec *mcp.ToolExecution) *mcp.ToolExecution {
+	if exec == nil {
+		return nil
+	}
+	slim := &mcp.ToolExecution{
+		ID:        exec.ID,
+		ToolName:  exec.ToolName,
+		Status:    exec.Status,
+		StartTime: exec.StartTime,
+	}
+	if exec.EndTime != nil {
+		end := *exec.EndTime
+		slim.EndTime = &end
+	}
+	if exec.Duration > 0 {
+		slim.Duration = exec.Duration
+	}
+	return slim
 }
 
 func (h *MonitorHandler) loadExecutionsWithPagination(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
@@ -176,7 +332,78 @@ func (h *MonitorHandler) loadExecutionsWithPagination(page, pageSize int, status
 	return executions, total
 }
 
-func (h *MonitorHandler) loadStats() map[string]*mcp.ToolStats {
+func (h *MonitorHandler) loadStatsSummary(topN int) (*MonitorStatsSummary, []*mcp.ToolStats) {
+	if topN <= 0 {
+		topN = monitorPageTopTools
+	}
+
+	if h.db != nil {
+		result, err := h.db.LoadToolStatsSummary(topN)
+		if err == nil {
+			return dbStatsSummaryToMonitor(result), result.TopTools
+		}
+		h.logger.Warn("从数据库加载统计汇总失败，回退到内存数据", zap.Error(err))
+	}
+
+	stats := h.loadStatsMap()
+	return summarizeToolStats(stats, topN)
+}
+
+func dbStatsSummaryToMonitor(result *database.ToolStatsSummaryResult) *MonitorStatsSummary {
+	if result == nil {
+		return &MonitorStatsSummary{}
+	}
+	summary := &MonitorStatsSummary{
+		TotalCalls:   result.Summary.TotalCalls,
+		SuccessCalls: result.Summary.SuccessCalls,
+		FailedCalls:  result.Summary.FailedCalls,
+		ToolCount:    result.Summary.ToolCount,
+	}
+	if result.Summary.LastCallTime != nil {
+		t := *result.Summary.LastCallTime
+		summary.LastCallTime = &t
+	}
+	return summary
+}
+
+func summarizeToolStats(stats map[string]*mcp.ToolStats, topN int) (*MonitorStatsSummary, []*mcp.ToolStats) {
+	summary := &MonitorStatsSummary{}
+	if len(stats) == 0 {
+		return summary, nil
+	}
+
+	all := make([]*mcp.ToolStats, 0, len(stats))
+	for _, stat := range stats {
+		if stat == nil {
+			continue
+		}
+		summary.ToolCount++
+		summary.TotalCalls += stat.TotalCalls
+		summary.SuccessCalls += stat.SuccessCalls
+		summary.FailedCalls += stat.FailedCalls
+		if stat.LastCallTime != nil && (summary.LastCallTime == nil || stat.LastCallTime.After(*summary.LastCallTime)) {
+			t := *stat.LastCallTime
+			summary.LastCallTime = &t
+		}
+		if stat.TotalCalls > 0 {
+			statCopy := *stat
+			all = append(all, &statCopy)
+		}
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].TotalCalls == all[j].TotalCalls {
+			return all[i].ToolName < all[j].ToolName
+		}
+		return all[i].TotalCalls > all[j].TotalCalls
+	})
+	if len(all) > topN {
+		all = all[:topN]
+	}
+	return summary, all
+}
+
+func (h *MonitorHandler) loadStatsMap() map[string]*mcp.ToolStats {
 	// 合并内部MCP服务器和外部MCP管理器的统计信息
 	stats := make(map[string]*mcp.ToolStats)
 
@@ -230,6 +457,7 @@ func (h *MonitorHandler) GetExecution(c *gin.Context) {
 	// 先从内部MCP服务器查找
 	exec, exists := h.mcpServer.GetExecution(id)
 	if exists {
+		h.enrichExecutionsConversationID([]*mcp.ToolExecution{exec})
 		c.JSON(http.StatusOK, exec)
 		return
 	}
@@ -238,6 +466,7 @@ func (h *MonitorHandler) GetExecution(c *gin.Context) {
 	if h.externalMCPMgr != nil {
 		exec, exists = h.externalMCPMgr.GetExecution(id)
 		if exists {
+			h.enrichExecutionsConversationID([]*mcp.ToolExecution{exec})
 			c.JSON(http.StatusOK, exec)
 			return
 		}
@@ -247,6 +476,7 @@ func (h *MonitorHandler) GetExecution(c *gin.Context) {
 	if h.db != nil {
 		exec, err := h.db.GetToolExecution(id)
 		if err == nil && exec != nil {
+			h.enrichExecutionsConversationID([]*mcp.ToolExecution{exec})
 			c.JSON(http.StatusOK, exec)
 			return
 		}
@@ -273,6 +503,19 @@ func (h *MonitorHandler) CancelExecution(c *gin.Context) {
 		return
 	}
 	note = strings.TrimSpace(body.Note)
+
+	convID := h.conversationIDForRunningExecution(id)
+	if convID != "" && h.agentHandler != nil {
+		if ok, payload := h.agentHandler.cancelToolContinueAfter(convID, id, note); ok {
+			h.logger.Info("MCP 监控页终止工具（与对话中断并继续一致）",
+				zap.String("executionId", id),
+				zap.String("conversationId", convID),
+				zap.Bool("hasNote", note != ""),
+			)
+			c.JSON(http.StatusOK, payload)
+			return
+		}
+	}
 	if h.mcpServer.CancelToolExecutionWithNote(id, note) {
 		h.logger.Info("已请求取消 MCP 工具执行", zap.String("executionId", id), zap.String("source", "internal"), zap.Bool("hasNote", note != ""))
 		c.JSON(http.StatusOK, gin.H{"message": "已发送终止信号", "executionId": id})
@@ -284,6 +527,52 @@ func (h *MonitorHandler) CancelExecution(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "未找到进行中的工具执行，或该任务已结束"})
+}
+
+func (h *MonitorHandler) enrichExecutionsConversationID(executions []*mcp.ToolExecution) {
+	for _, exec := range executions {
+		if exec == nil || exec.Status != "running" {
+			continue
+		}
+		exec.ConversationID = h.conversationIDForRunningExecution(exec.ID)
+	}
+}
+
+func (h *MonitorHandler) conversationIDForRunningExecution(executionID string) string {
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" || h.taskManager == nil {
+		return ""
+	}
+	if conv := h.taskManager.ConversationIDForActiveMCPExecution(executionID); conv != "" {
+		return conv
+	}
+	exec := h.lookupExecution(executionID)
+	if exec == nil || exec.Status != "running" {
+		return ""
+	}
+	if strings.TrimSpace(exec.ToolName) == "execute" {
+		if onlyConv, ok := h.taskManager.ConversationIDForActiveEinoExecute(); ok {
+			return onlyConv
+		}
+	}
+	return ""
+}
+
+func (h *MonitorHandler) lookupExecution(id string) *mcp.ToolExecution {
+	if exec, ok := h.mcpServer.GetExecution(id); ok {
+		return exec
+	}
+	if h.externalMCPMgr != nil {
+		if exec, ok := h.externalMCPMgr.GetExecution(id); ok {
+			return exec
+		}
+	}
+	if h.db != nil {
+		if exec, err := h.db.GetToolExecution(id); err == nil && exec != nil {
+			return exec
+		}
+	}
+	return nil
 }
 
 // BatchGetToolNames 批量获取工具执行的工具名称（消除前端 N+1 请求）
@@ -323,8 +612,17 @@ func (h *MonitorHandler) BatchGetToolNames(c *gin.Context) {
 
 // GetStats 获取统计信息
 func (h *MonitorHandler) GetStats(c *gin.Context) {
-	stats := h.loadStats()
-	c.JSON(http.StatusOK, stats)
+	topN := 30
+	if topStr := c.Query("top"); topStr != "" {
+		if t, err := strconv.Atoi(topStr); err == nil && t > 0 && t <= 100 {
+			topN = t
+		}
+	}
+	summary, topTools := h.loadStatsSummary(topN)
+	c.JSON(http.StatusOK, StatsResponse{
+		Summary:  summary,
+		TopTools: topTools,
+	})
 }
 
 // CallsTimelinePoint 调用趋势数据点

@@ -6,6 +6,8 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 
+	"cyberstrike-ai/internal/project"
+
 	"github.com/bytedance/sonic"
 )
 
@@ -18,9 +20,15 @@ const (
 	transcriptStaticSystemOmitNote = "[static system prompt omitted — unchanged in live context after compaction]"
 	transcriptToolIndexStartMarker   = "以下是当前会话绑定的工具名称索引"
 	transcriptPersonaStartMarker     = "你是CyberStrikeAI"
-	transcriptSkillsSystemMarker     = "# Skills System"
-	transcriptProjectBlackboardMarker  = "## 项目黑板索引"
+	// ADK LanguageChinese injects skill middleware prompt with this header (see eino adk/middlewares/skill/prompt.go).
+	transcriptSkillsSystemMarker        = "# Skill 系统"
+	transcriptSkillsSystemMarkerEnglish = "# Skills System"
 )
+
+type transcriptToolCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
 
 // formatSummarizationTranscript renders pre-compaction messages for transcript.txt.
 // Best practice: keep full user/assistant/tool turns; slim system to dynamic blocks only.
@@ -80,19 +88,35 @@ func stripToolNamesIndexFromSystem(s string) string {
 }
 
 func stripSkillsSystemBoilerplate(s string) string {
-	idx := strings.Index(s, transcriptSkillsSystemMarker)
+	idx := indexFirstSubstring(s, transcriptSkillsSystemMarker, transcriptSkillsSystemMarkerEnglish)
 	if idx < 0 {
 		return strings.TrimSpace(s)
 	}
 	return strings.TrimSpace(s[:idx])
 }
 
+func indexFirstSubstring(s string, markers ...string) int {
+	first := -1
+	for _, m := range markers {
+		if i := strings.Index(s, m); i >= 0 && (first < 0 || i < first) {
+			first = i
+		}
+	}
+	return first
+}
+
 func extractProjectBlackboardSection(s string) string {
-	idx := strings.Index(s, transcriptProjectBlackboardMarker)
-	if idx < 0 {
+	start := strings.Index(s, project.FactIndexSectionStartMarker)
+	if start < 0 {
 		return ""
 	}
-	return strings.TrimSpace(s[idx:])
+	section := s[start:]
+	end := strings.Index(section, project.FactIndexSectionEndMarker)
+	if end < 0 {
+		return ""
+	}
+	section = section[:end+len(project.FactIndexSectionEndMarker)]
+	return strings.TrimSpace(section)
 }
 
 func appendTranscriptSection(sb *strings.Builder, role schema.RoleType, body string) {
@@ -131,15 +155,21 @@ func appendTranscriptMessage(sb *strings.Builder, msg adk.Message) {
 		}
 	}
 	if len(msg.ToolCalls) > 0 {
-		if b, err := sonic.Marshal(msg.ToolCalls); err == nil {
+		if b, err := sonic.Marshal(formatTranscriptToolCalls(msg.ToolCalls)); err == nil {
 			sb.WriteString("tool_calls: ")
 			sb.Write(b)
 			sb.WriteByte('\n')
 		}
 	}
-	if msg.ToolCallID != "" {
-		sb.WriteString("tool_call_id: ")
-		sb.WriteString(msg.ToolCallID)
-		sb.WriteByte('\n')
+}
+
+func formatTranscriptToolCalls(calls []schema.ToolCall) []transcriptToolCall {
+	out := make([]transcriptToolCall, 0, len(calls))
+	for _, tc := range calls {
+		out = append(out, transcriptToolCall{
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments,
+		})
 	}
+	return out
 }

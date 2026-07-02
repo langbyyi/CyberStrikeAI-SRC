@@ -27,13 +27,13 @@ parameters:
     type: "string"
     description: "数据源（wayback,commoncrawl,otx,urlscan）"
     required: false
-    flag: "-providers"
+    flag: "--providers"
     format: "flag"
   - name: "include_subs"
     type: "bool"
     description: "包含子域名"
     required: false
-    flag: "-subs"
+    flag: "--subs"
     format: "flag"
     default: true
   - name: "additional_args"
@@ -42,9 +42,9 @@ parameters:
       额外的Gau参数。用于传递未在参数列表中定义的Gau选项。
 
       **示例值：**
-      - "-o output.txt": 输出到文件
-      - "-t": 线程数
-      - "-b": 黑名单扩展
+      - "--o output.txt": 输出到文件
+      - "--threads 4": 线程数
+      - "--blacklist ttf,woff,svg,png": 黑名单扩展
 
       **注意事项：**
       - 多个参数用空格分隔

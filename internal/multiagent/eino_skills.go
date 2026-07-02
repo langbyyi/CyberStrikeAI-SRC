@@ -9,6 +9,7 @@ import (
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/einomcp"
+	"cyberstrike-ai/internal/security"
 
 	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
 	"github.com/cloudwego/eino/adk"
@@ -81,8 +82,10 @@ func subAgentFilesystemMiddleware(
 	loc *localbk.Local,
 	invokeNotify *einomcp.ToolInvokeNotifyHolder,
 	einoAgentName string,
-	recordMonitor func(command, stdout string, success bool, invokeErr error),
+	beginMonitor func(toolCallID, command string) string,
+	finishMonitor func(executionID, toolCallID, command, stdout string, success bool, invokeErr error),
 	toolTimeoutMinutes int,
+	shellNoOutputTimeoutSec int,
 	outputChunk func(toolName, toolCallID, chunk string),
 ) (adk.ChatModelAgentMiddleware, error) {
 	if loc == nil {
@@ -91,12 +94,14 @@ func subAgentFilesystemMiddleware(
 	return filesystem.New(ctx, &filesystem.MiddlewareConfig{
 		Backend: loc,
 		StreamingShell: &einoStreamingShellWrap{
-			inner:              loc,
-			invokeNotify:       invokeNotify,
-			einoAgentName:      strings.TrimSpace(einoAgentName),
-			outputChunk:        outputChunk,
-			recordMonitor:      recordMonitor,
-			toolTimeoutMinutes: toolTimeoutMinutes,
+			inner:                   security.NewEinoStreamingShell(),
+			invokeNotify:            invokeNotify,
+			einoAgentName:           strings.TrimSpace(einoAgentName),
+			outputChunk:             outputChunk,
+			beginMonitor:            beginMonitor,
+			finishMonitor:           finishMonitor,
+			toolTimeoutMinutes:      toolTimeoutMinutes,
+			shellNoOutputTimeoutSec: shellNoOutputTimeoutSec,
 		},
 	})
 }
@@ -107,4 +112,19 @@ func agentToolTimeoutMinutes(cfg *config.Config) int {
 		return 0
 	}
 	return cfg.Agent.ToolTimeoutMinutes
+}
+
+// agentShellNoOutputTimeoutSeconds：0=默认 300s（5 分钟）；-1=关闭；>0=自定义秒数。
+func agentShellNoOutputTimeoutSeconds(cfg *config.Config) int {
+	if cfg == nil {
+		return 300
+	}
+	v := cfg.Agent.ShellNoOutputTimeoutSeconds
+	if v < 0 {
+		return 0
+	}
+	if v == 0 {
+		return 300
+	}
+	return v
 }

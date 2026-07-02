@@ -15,10 +15,12 @@ import (
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/agents"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/reasoning"
+	"cyberstrike-ai/internal/security"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
@@ -56,8 +58,10 @@ func RunDeepAgent(
 	appCfg *config.Config,
 	ma *config.MultiAgentConfig,
 	ag *agent.Agent,
+	db *database.DB,
 	logger *zap.Logger,
 	conversationID string,
+	projectID string,
 	userMessage string,
 	history []agent.ChatMessage,
 	roleTools []string,
@@ -107,15 +111,17 @@ func RunDeepAgent(
 
 	var mcpIDsMu sync.Mutex
 	var mcpIDs []string
-	recorder := func(id string) {
+	mcpExecBinder := NewMCPExecutionBinder()
+	recorder := func(id, toolCallID string) {
 		if id == "" {
 			return
 		}
+		mcpExecBinder.Bind(toolCallID, id)
 		mcpIDsMu.Lock()
 		mcpIDs = append(mcpIDs, id)
 		mcpIDsMu.Unlock()
 	}
-	einoExecMonitor := newEinoExecuteMonitorCallback(ag, recorder)
+	einoExecBegin, einoExecFinish := newEinoExecuteMonitorCallbacks(ag, recorder)
 
 	// 与单代理流式一致：在 response_start / response_delta 的 data 中带当前 mcpExecutionIds，供主聊天绑定复制与展示。
 	snapshotMCPIDs := func() []string {
@@ -128,21 +134,6 @@ func RunDeepAgent(
 
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
 	mainDefs := ag.ToolsForRole(roleTools)
-	toolOutputChunk := func(toolName, toolCallID, chunk string) {
-		// When toolCallId is missing, frontend ignores tool_result_delta.
-		if progress == nil || toolCallID == "" {
-			return
-		}
-		progress("tool_result_delta", chunk, map[string]interface{}{
-			"toolName":   toolName,
-			"toolCallId": toolCallID,
-			// index/total/iteration are optional for UI; we don't know them in this bridge.
-			"index":     0,
-			"total":     0,
-			"iteration": 0,
-			"source":    "eino",
-		})
-	}
 
 	httpClient := &http.Client{
 		Timeout: 30 * time.Minute,
@@ -210,19 +201,19 @@ func RunDeepAgent(
 			}
 
 			subDefs := ag.ToolsForRole(roleTools)
-			subTools, err := einomcp.ToolsFromDefinitions(ag, holder, subDefs, recorder, toolOutputChunk, toolInvokeNotify, id)
+			subTools, err := einomcp.ToolsFromDefinitions(ag, holder, subDefs, recorder, nil, toolInvokeNotify, id)
 			if err != nil {
 				return nil, fmt.Errorf("子代理 %q 工具: %w", id, err)
 			}
 
-			subToolsForCfg, subPre, subToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWSub, subTools, einoLoc, skillsRoot, conversationID, logger)
+			subToolsForCfg, subPre, subToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWSub, subTools, einoLoc, skillsRoot, conversationID, projectID, logger)
 			if err != nil {
 				return nil, fmt.Errorf("子代理 %q eino 中间件: %w", id, err)
 			}
 
 			subMax := resolveMaxIterations(appCfg, sub.MaxIterations)
 
-			subSumMw, err := newEinoSummarizationMiddleware(ctx, subModel, appCfg, &ma.EinoMiddleware, conversationID, logger)
+			subSumMw, err := newEinoSummarizationMiddleware(ctx, subModel, appCfg, &ma.EinoMiddleware, conversationID, db, projectID, logger)
 			if err != nil {
 				return nil, fmt.Errorf("子代理 %q summarization 中间件: %w", id, err)
 			}
@@ -233,7 +224,7 @@ func RunDeepAgent(
 			}
 			if einoSkillMW != nil {
 				if einoFSTools && einoLoc != nil {
-					subFs, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, id, einoExecMonitor, agentToolTimeoutMinutes(appCfg), toolOutputChunk)
+					subFs, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, id, einoExecBegin, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 					if fsErr != nil {
 						return nil, fmt.Errorf("子代理 %q filesystem 中间件: %w", id, fsErr)
 					}
@@ -241,13 +232,13 @@ func RunDeepAgent(
 				}
 				subHandlers = append(subHandlers, einoSkillMW)
 			}
-			subHandlers = append(subHandlers, subSumMw)
-			// 孤儿 tool 消息兜底：放在 summarization 之后，telemetry 之前，
-			// 以便 telemetry 记录的 token 数与 LLM 实际入参一致。
-			subHandlers = append(subHandlers, newOrphanToolPrunerMiddleware(logger, "sub_agent:"+id))
-			if teleMw := newEinoModelInputTelemetryMiddleware(logger, appCfg.OpenAI.Model, conversationID, "sub_agent"); teleMw != nil {
-				subHandlers = append(subHandlers, teleMw)
-			}
+			subHandlers = appendEinoChatModelTailMiddlewares(subHandlers, einoChatModelTailConfig{
+				logger:         logger,
+				phase:          "sub_agent:" + id,
+				summarization:  subSumMw,
+				modelName:      appCfg.OpenAI.Model,
+				conversationID: conversationID,
+			})
 
 			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready())
 			subInstrFinal = injectToolNamesOnlyInstruction(ctx, subInstrFinal, subTools, subToolSearchActive)
@@ -263,10 +254,11 @@ func RunDeepAgent(
 				)
 			}
 			sa, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-				Name:        id,
-				Description: desc,
-				Instruction: subInstrFinal,
-				Model:       subModel,
+				Name:          id,
+				Description:   desc,
+				Instruction:   subInstrFinal,
+				GenModelInput: literalInstructionGenModelInput,
+				Model:         subModel,
 				ToolsConfig: adk.ToolsConfig{
 					ToolsNodeConfig: compose.ToolsNodeConfig{
 						Tools:               subToolsForCfg,
@@ -293,7 +285,7 @@ func RunDeepAgent(
 		return nil, fmt.Errorf("多代理主模型: %w", err)
 	}
 
-	mainSumMw, err := newEinoSummarizationMiddleware(ctx, mainModel, appCfg, &ma.EinoMiddleware, conversationID, logger)
+	mainSumMw, err := newEinoSummarizationMiddleware(ctx, mainModel, appCfg, &ma.EinoMiddleware, conversationID, db, projectID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("多代理主 summarization 中间件: %w", err)
 	}
@@ -320,11 +312,11 @@ func RunDeepAgent(
 		}
 	}
 
-	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, toolOutputChunk, toolInvokeNotify, orchestratorName)
+	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, nil, toolInvokeNotify, orchestratorName)
 	if err != nil {
 		return nil, err
 	}
-	mainToolsForCfg, mainOrchestratorPre, mainToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWMain, mainTools, einoLoc, skillsRoot, conversationID, logger)
+	mainToolsForCfg, mainOrchestratorPre, mainToolSearchActive, err := prependEinoMiddlewares(ctx, &ma.EinoMiddleware, einoMWMain, mainTools, einoLoc, skillsRoot, conversationID, projectID, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -368,19 +360,28 @@ func RunDeepAgent(
 	if einoLoc != nil && einoFSTools {
 		deepBackend = einoLoc
 		deepShell = &einoStreamingShellWrap{
-			inner:              einoLoc,
-			invokeNotify:       toolInvokeNotify,
-			einoAgentName:      orchestratorName,
-			outputChunk:        toolOutputChunk,
-			recordMonitor:      einoExecMonitor,
-			toolTimeoutMinutes: agentToolTimeoutMinutes(appCfg),
+			inner:                   security.NewEinoStreamingShell(),
+			invokeNotify:            toolInvokeNotify,
+			einoAgentName:           orchestratorName,
+			outputChunk:             nil,
+			beginMonitor:            einoExecBegin,
+			finishMonitor:           einoExecFinish,
+			toolTimeoutMinutes:      agentToolTimeoutMinutes(appCfg),
+			shellNoOutputTimeoutSec: agentShellNoOutputTimeoutSeconds(appCfg),
 		}
 	}
 
 	// noNestedTaskMiddleware 必须在最外层（最先拦截），防止 skill 或其他中间件内部触发 task 调用绕过检测。
 	deepHandlers := []adk.ChatModelAgentMiddleware{newNoNestedTaskMiddleware()}
-	taskEnrichExtra := systemPromptExtra
-	if mw := newTaskContextEnrichMiddleware(userMessage, history, ma.SubAgentUserContextMaxRunes, taskEnrichExtra); mw != nil {
+	var taskBlackboardSupplement string
+	if appCfg.Project.Enabled && db != nil {
+		if pid := strings.TrimSpace(projectID); pid != "" {
+			if block, err := project.BuildFactIndexBlock(db, pid, appCfg.Project); err == nil {
+				taskBlackboardSupplement = strings.TrimSpace(block)
+			}
+		}
+	}
+	if mw := newTaskContextEnrichMiddleware(userMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement); mw != nil {
 		deepHandlers = append(deepHandlers, mw)
 	}
 	if len(mainOrchestratorPre) > 0 {
@@ -389,14 +390,14 @@ func RunDeepAgent(
 	if einoSkillMW != nil {
 		deepHandlers = append(deepHandlers, einoSkillMW)
 	}
-	deepHandlers = append(deepHandlers, mainSumMw)
-	deepHandlers = append(deepHandlers, newOrphanToolPrunerMiddleware(logger, "deep_orchestrator"))
-	if teleMw := newEinoModelInputTelemetryMiddleware(logger, appCfg.OpenAI.Model, conversationID, "deep_orchestrator"); teleMw != nil {
-		deepHandlers = append(deepHandlers, teleMw)
-	}
-	if capMw := newModelFacingTraceMiddleware(modelFacingTrace); capMw != nil {
-		deepHandlers = append(deepHandlers, capMw)
-	}
+	deepHandlers = appendEinoChatModelTailMiddlewares(deepHandlers, einoChatModelTailConfig{
+		logger:         logger,
+		phase:          "deep_orchestrator",
+		summarization:  mainSumMw,
+		modelName:      appCfg.OpenAI.Model,
+		conversationID: conversationID,
+		trace:          modelFacingTrace,
+	})
 
 	supHandlers := []adk.ChatModelAgentMiddleware{}
 	if len(mainOrchestratorPre) > 0 {
@@ -405,14 +406,14 @@ func RunDeepAgent(
 	if einoSkillMW != nil {
 		supHandlers = append(supHandlers, einoSkillMW)
 	}
-	supHandlers = append(supHandlers, mainSumMw)
-	supHandlers = append(supHandlers, newOrphanToolPrunerMiddleware(logger, "supervisor_orchestrator"))
-	if teleMw := newEinoModelInputTelemetryMiddleware(logger, appCfg.OpenAI.Model, conversationID, "supervisor_orchestrator"); teleMw != nil {
-		supHandlers = append(supHandlers, teleMw)
-	}
-	if capMw := newModelFacingTraceMiddleware(modelFacingTrace); capMw != nil {
-		supHandlers = append(supHandlers, capMw)
-	}
+	supHandlers = appendEinoChatModelTailMiddlewares(supHandlers, einoChatModelTailConfig{
+		logger:         logger,
+		phase:          "supervisor_orchestrator",
+		summarization:  mainSumMw,
+		modelName:      appCfg.OpenAI.Model,
+		conversationID: conversationID,
+		trace:          modelFacingTrace,
+	})
 
 	mainToolsCfg := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -426,11 +427,27 @@ func RunDeepAgent(
 		EmitInternalEvents: true,
 	}
 
-	deepOutKey, modelRetry, taskGen := deepExtrasFromConfig(ma)
+	deepOutKey, taskGen := deepExtrasFromConfig(ma)
 
 	var da adk.Agent
 	switch orchMode {
 	case "plan_execute":
+		plannerModelCfg := &einoopenai.ChatModelConfig{
+			APIKey:     appCfg.OpenAI.APIKey,
+			BaseURL:    strings.TrimSuffix(appCfg.OpenAI.BaseURL, "/"),
+			Model:      appCfg.OpenAI.Model,
+			HTTPClient: httpClient,
+		}
+		reasoning.ApplyPlanExecutePlannerModelConfig(plannerModelCfg, &appCfg.OpenAI)
+		peMainModel, perr := einoopenai.NewChatModel(ctx, plannerModelCfg)
+		if perr != nil {
+			return nil, fmt.Errorf("plan_execute 规划模型: %w", perr)
+		}
+		if logger != nil {
+			logger.Info("plan_execute: planner/replanner 使用无 reasoning 的独立 ChatModel（ToolChoiceForced 兼容）",
+				zap.String("model", appCfg.OpenAI.Model),
+			)
+		}
 		execModel, perr := einoopenai.NewChatModel(ctx, baseModelCfg)
 		if perr != nil {
 			return nil, fmt.Errorf("plan_execute 执行器模型: %w", perr)
@@ -438,13 +455,13 @@ func RunDeepAgent(
 		// 构建 filesystem 中间件（与 Deep sub-agent 一致）
 		var peFsMw adk.ChatModelAgentMiddleware
 		if einoSkillMW != nil && einoFSTools && einoLoc != nil {
-			peFsMw, err = subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, "executor", einoExecMonitor, agentToolTimeoutMinutes(appCfg), toolOutputChunk)
+			peFsMw, err = subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, "executor", einoExecBegin, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 			if err != nil {
 				return nil, fmt.Errorf("plan_execute filesystem 中间件: %w", err)
 			}
 		}
 		peRoot, perr := NewPlanExecuteRoot(ctx, &PlanExecuteRootArgs{
-			MainToolCallingModel: mainModel,
+			MainToolCallingModel: peMainModel,
 			ExecModel:            execModel,
 			OrchInstruction:      orchInstruction,
 			ToolsCfg:             mainToolsCfg,
@@ -453,18 +470,22 @@ func RunDeepAgent(
 			AppCfg:               appCfg,
 			MwCfg:                &ma.EinoMiddleware,
 			ConversationID:       conversationID,
+			DB:                   db,
+			ProjectID:            projectID,
 			Logger:               logger,
 			ModelName:            appCfg.OpenAI.Model,
 			ExecPreMiddlewares:   mainOrchestratorPre,
 			SkillMiddleware:      einoSkillMW,
 			FilesystemMiddleware: peFsMw,
 			ModelFacingTrace:     modelFacingTrace,
-			PlannerReplannerRewriteHandlers: []adk.ChatModelAgentMiddleware{
-				mainSumMw,
-				// 孤儿 tool 消息兜底：必须挂在 summarization 之后、telemetry 之前。
-				newOrphanToolPrunerMiddleware(logger, "plan_execute_planner_replanner"),
-				newEinoModelInputTelemetryMiddleware(logger, appCfg.OpenAI.Model, conversationID, "plan_execute_planner_replanner_rewrite"),
-			},
+			PlannerReplannerRewriteHandlers: appendEinoChatModelTailMiddlewares(nil, einoChatModelTailConfig{
+				logger:         logger,
+				phase:          "plan_execute_planner_replanner",
+				summarization:  mainSumMw,
+				modelName:      appCfg.OpenAI.Model,
+				conversationID: conversationID,
+				skipTrace:      true,
+			}),
 		})
 		if perr != nil {
 			return nil, perr
@@ -475,14 +496,12 @@ func RunDeepAgent(
 			Name:          orchestratorName,
 			Description:   orchDescription,
 			Instruction:   supInstr,
+			GenModelInput: literalInstructionGenModelInput,
 			Model:         mainModel,
 			ToolsConfig:   mainToolsCfg,
 			MaxIterations: deepMaxIter,
 			Handlers:      supHandlers,
 			Exit:          &adk.ExitTool{},
-		}
-		if modelRetry != nil {
-			supCfg.ModelRetryConfig = modelRetry
 		}
 		if deepOutKey != "" {
 			supCfg.OutputKey = deepOutKey
@@ -516,9 +535,6 @@ func RunDeepAgent(
 		}
 		if deepOutKey != "" {
 			dcfg.OutputKey = deepOutKey
-		}
-		if modelRetry != nil {
-			dcfg.ModelRetryConfig = modelRetry
 		}
 		if taskGen != nil {
 			dcfg.TaskToolDescriptionGenerator = taskGen
@@ -565,6 +581,7 @@ func RunDeepAgent(
 		McpIDs:                  &mcpIDs,
 		FilesystemMonitorAgent:  ag,
 		FilesystemMonitorRecord: recorder,
+		MCPExecutionBinder:      mcpExecBinder,
 		ToolInvokeNotify:        toolInvokeNotify,
 		DA:                      da,
 		ModelFacingTrace:        modelFacingTrace,

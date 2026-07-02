@@ -27,6 +27,7 @@ type Config struct {
 	Database    DatabaseConfig        `yaml:"database"`
 	Auth        AuthConfig            `yaml:"auth"`
 	Audit       AuditConfig           `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Monitor     MonitorConfig         `yaml:"monitor,omitempty" json:"monitor,omitempty"`
 	ExternalMCP ExternalMCPConfig     `yaml:"external_mcp,omitempty"`
 	Knowledge   KnowledgeConfig       `yaml:"knowledge,omitempty"`
 	C2          C2Config              `yaml:"c2,omitempty" json:"c2,omitempty"` // 内置 C2 总开关；未配置时默认启用
@@ -45,6 +46,7 @@ type ProjectConfig struct {
 	Enabled                 bool   `yaml:"enabled" json:"enabled"`
 	DefaultProjectID        string `yaml:"default_project_id,omitempty" json:"default_project_id,omitempty"` // 机器人/批量等无显式项目时绑定的默认项目
 	FactIndexMaxRunes       int    `yaml:"fact_index_max_runes,omitempty" json:"fact_index_max_runes,omitempty"`
+	FactIndexPathMaxRunes   int    `yaml:"fact_index_path_max_runes,omitempty" json:"fact_index_path_max_runes,omitempty"`
 	FactSummaryMaxRunes     int    `yaml:"fact_summary_max_runes,omitempty" json:"fact_summary_max_runes,omitempty"`
 	DefaultInjectDeprecated bool   `yaml:"default_inject_deprecated,omitempty" json:"default_inject_deprecated,omitempty"`
 }
@@ -55,6 +57,14 @@ func (c ProjectConfig) FactIndexMaxRunesEffective() int {
 		return 3500
 	}
 	return c.FactIndexMaxRunes
+}
+
+// FactIndexPathMaxRunesEffective 攻击路径速览段的最大 rune 数（从 fact_index_max_runes 预算中预留）。
+func (c ProjectConfig) FactIndexPathMaxRunesEffective() int {
+	if c.FactIndexPathMaxRunes <= 0 {
+		return 1000
+	}
+	return c.FactIndexPathMaxRunes
 }
 
 // FactSummaryMaxRunesEffective upsert 时 summary 最大 rune 数（索引一行，宜含验证要点）。
@@ -86,8 +96,8 @@ type MultiAgentConfig struct {
 	// OrchestratorInstructionSupervisor supervisor 主代理系统提示（transfer/exit 说明仍由运行追加）；非空且 agents/orchestrator-supervisor.md 正文为空或未存在时生效。
 	OrchestratorInstructionSupervisor string                `yaml:"orchestrator_instruction_supervisor,omitempty" json:"orchestrator_instruction_supervisor,omitempty"`
 	SubAgents                         []MultiAgentSubConfig `yaml:"sub_agents" json:"sub_agents"`
-	// SubAgentUserContextMaxRunes caps the user-context supplement appended to task descriptions for sub-agents.
-	// 0 (default) uses the built-in default of 2000 runes; negative value disables injection entirely.
+	// SubAgentUserContextMaxRunes caps user-context supplement for sub-agent task descriptions.
+	// 0 (default) preserves all user turns verbatim; >0 caps total runes; negative disables injection.
 	SubAgentUserContextMaxRunes int `yaml:"sub_agent_user_context_max_runes,omitempty" json:"sub_agent_user_context_max_runes,omitempty"`
 	// EinoSkills configures CloudWeGo Eino ADK skill middleware + optional local filesystem/execute on DeepAgent.
 	EinoSkills MultiAgentEinoSkillsConfig `yaml:"eino_skills,omitempty" json:"eino_skills,omitempty"`
@@ -95,6 +105,11 @@ type MultiAgentConfig struct {
 	EinoMiddleware MultiAgentEinoMiddlewareConfig `yaml:"eino_middleware,omitempty" json:"eino_middleware,omitempty"`
 	// EinoCallbacks attaches CloudWeGo eino callbacks.InitCallbacks on ADK Runner context (structured logs + optional SSE trace).
 	EinoCallbacks MultiAgentEinoCallbacksConfig `yaml:"eino_callbacks,omitempty" json:"eino_callbacks,omitempty"`
+}
+
+// SubAgentUserContextMaxRunesEffective returns max runes for sub-agent task supplement; 0 = unlimited; negative = disabled.
+func (c MultiAgentConfig) SubAgentUserContextMaxRunesEffective() int {
+	return c.SubAgentUserContextMaxRunes
 }
 
 // MultiAgentEinoCallbacksConfig enables Eino unified callbacks on each ADK agent run (deep / plan_execute / supervisor / eino_single).
@@ -231,7 +246,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	PlantaskRelDir string `yaml:"plantask_rel_dir,omitempty" json:"plantask_rel_dir,omitempty"`
 	// Reduction truncates/offloads large tool outputs (requires eino local backend for Write).
 	ReductionEnable       bool     `yaml:"reduction_enable,omitempty" json:"reduction_enable,omitempty"`
-	ReductionRootDir      string   `yaml:"reduction_root_dir,omitempty" json:"reduction_root_dir,omitempty"` // default: os temp + conversation id
+	ReductionRootDir      string   `yaml:"reduction_root_dir,omitempty" json:"reduction_root_dir,omitempty"` // 非空：落盘根目录（默认 tmp/reduction）；其下按 projects/{id} 或 conversations/{id} 隔离
 	ReductionMaxLengthForTrunc int `yaml:"reduction_max_length_for_trunc,omitempty" json:"reduction_max_length_for_trunc,omitempty"` // default 12000
 	ReductionMaxTokensForClear int `yaml:"reduction_max_tokens_for_clear,omitempty" json:"reduction_max_tokens_for_clear,omitempty"` // default 50000
 	ReductionClearExclude []string `yaml:"reduction_clear_exclude,omitempty" json:"reduction_clear_exclude,omitempty"`
@@ -240,7 +255,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	SummarizationTriggerRatio float64 `yaml:"summarization_trigger_ratio,omitempty" json:"summarization_trigger_ratio,omitempty"`
 	// SummarizationEmitInternalEvents controls middleware internal event emission (default true).
 	SummarizationEmitInternalEvents *bool `yaml:"summarization_emit_internal_events,omitempty" json:"summarization_emit_internal_events,omitempty"`
-	// SummarizationRetryMaxAttempts is extra retries after the first summarization Generate attempt; 0 = default 3.
+	// SummarizationRetryMaxAttempts 已废弃：summarization 与 run loop 共用 run_retry_max_attempts 及 isEinoTransientRunError。
 	SummarizationRetryMaxAttempts int `yaml:"summarization_retry_max_attempts,omitempty" json:"summarization_retry_max_attempts,omitempty"`
 	// PlanExecuteUserInputBudgetRatio caps planner/replanner/executor userInput prompt budget ratio (default 0.35).
 	PlanExecuteUserInputBudgetRatio float64 `yaml:"plan_execute_user_input_budget_ratio,omitempty" json:"plan_execute_user_input_budget_ratio,omitempty"`
@@ -254,12 +269,14 @@ type MultiAgentEinoMiddlewareConfig struct {
 	CheckpointDir string `yaml:"checkpoint_dir,omitempty" json:"checkpoint_dir,omitempty"`
 	// DeepOutputKey passed to deep.Config OutputKey (session final text); empty = off.
 	DeepOutputKey string `yaml:"deep_output_key,omitempty" json:"deep_output_key,omitempty"`
-	// DeepModelRetryMaxRetries > 0 enables deep.Config ModelRetryConfig (framework-level chat model retries).
+	// DeepModelRetryMaxRetries 已废弃：临时错误统一由 run loop 内 isEinoTransientRunError + run_retry_max_attempts 处理。
 	DeepModelRetryMaxRetries int `yaml:"deep_model_retry_max_retries,omitempty" json:"deep_model_retry_max_retries,omitempty"`
-	// RunRetryMaxAttempts > 0：429/5xx/网络抖动时 handler 分段续跑次数；0=默认 10。
+	// RunRetryMaxAttempts > 0：429/5xx/网络抖动时可退避重试次数（run loop 与 summarization 共用）；0=默认 10。
 	RunRetryMaxAttempts int `yaml:"run_retry_max_attempts,omitempty" json:"run_retry_max_attempts,omitempty"`
 	// RunRetryMaxBackoffSec 单次退避上限秒数；0=默认 30。
 	RunRetryMaxBackoffSec int `yaml:"run_retry_max_backoff_sec,omitempty" json:"run_retry_max_backoff_sec,omitempty"`
+	// EmptyResponseContinueMaxAttempts Run 成功但未捕获助手正文时 Handler 层退避续跑次数；0=默认 5。
+	EmptyResponseContinueMaxAttempts int `yaml:"empty_response_continue_max_attempts,omitempty" json:"empty_response_continue_max_attempts,omitempty"`
 	// TaskToolDescriptionPrefix when non-empty sets deep.Config TaskToolDescriptionGenerator (sub-agent names appended).
 	TaskToolDescriptionPrefix string `yaml:"task_tool_description_prefix,omitempty" json:"task_tool_description_prefix,omitempty"`
 }
@@ -480,6 +497,17 @@ type RobotWecomConfig struct {
 	AgentID        int64  `yaml:"agent_id" json:"agent_id"`                 // 应用 AgentId
 }
 
+// ValidateWecomConfig 校验企业微信机器人配置；启用时必须配置 token，否则回调无法防伪造。
+func ValidateWecomConfig(w RobotWecomConfig) error {
+	if !w.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(w.Token) == "" {
+		return fmt.Errorf("robots.wecom.enabled 为 true 时必须配置 robots.wecom.token")
+	}
+	return nil
+}
+
 // RobotDingtalkConfig 钉钉机器人配置
 type RobotDingtalkConfig struct {
 	Enabled                    bool   `yaml:"enabled" json:"enabled"`
@@ -593,19 +621,111 @@ type DatabaseConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations        int    `yaml:"max_iterations" json:"max_iterations"`
-	LargeResultThreshold int    `yaml:"large_result_threshold" json:"large_result_threshold"` // 大结果阈值（字节），默认50KB
-	ResultStorageDir     string `yaml:"result_storage_dir" json:"result_storage_dir"`         // 结果存储目录，默认tmp
-	ToolTimeoutMinutes   int    `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"`     // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
+	MaxIterations      int    `yaml:"max_iterations" json:"max_iterations"`
+	ToolTimeoutMinutes int    `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"` // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
+	// ShellNoOutputTimeoutSeconds execute/exec 无任何 stdout/stderr 时的空闲终止秒数（通用防挂死，不维护命令黑名单）；0=默认 300（5 分钟）；-1=关闭。
+	ShellNoOutputTimeoutSeconds int `yaml:"shell_no_output_timeout_seconds" json:"shell_no_output_timeout_seconds"`
+	// WorkspaceRootDir 会话工作目录根路径（curl/wget 下载、read_file/glob/grep 本地分析）；空=tmp/workspace，其下按 projects/{id} 或 conversations/{id} 隔离。
+	WorkspaceRootDir string `yaml:"workspace_root_dir,omitempty" json:"workspace_root_dir,omitempty"`
 	// SystemPromptPath 单代理系统提示 Markdown/文本文件路径（相对 config.yaml 所在目录，或可写绝对路径）。非空且可读时替换内置单代理提示；留空用内置。
 	SystemPromptPath string `yaml:"system_prompt_path,omitempty" json:"system_prompt_path,omitempty"`
 }
 
 // HitlConfig 人机协同全局选项；与会话侧栏/API 中的白名单合并为并集后参与判定。
-// tool_whitelist 可在侧栏「应用」时合并写入 config.yaml 并立即生效；其他字段若仅改文件仍需重启。
+// tool_whitelist 可在侧栏「应用」时合并写入 config.yaml 并立即生效。
+// audit_agent_prompt / audit_agent_prompt_review_edit 可在人机协同页编辑并立即生效；空则使用内置默认。
 type HitlConfig struct {
-	// ToolWhitelist 全局免审批工具名（与每条会话配置的 sensitiveTools 语义相同：白名单内工具不触发 HITL）。
+	// ToolWhitelist 全局免审批工具名（与白名单内工具不触发 HITL 审批）。
 	ToolWhitelist []string `yaml:"tool_whitelist,omitempty" json:"tool_whitelist,omitempty"`
+	// AuditAgentPrompt 审批模式（approval）下审计 Agent 系统提示词。
+	AuditAgentPrompt string `yaml:"audit_agent_prompt,omitempty" json:"audit_agent_prompt,omitempty"`
+	// AuditAgentPromptReviewEdit 审查编辑模式（review_edit）下审计 Agent 系统提示词。
+	AuditAgentPromptReviewEdit string `yaml:"audit_agent_prompt_review_edit,omitempty" json:"audit_agent_prompt_review_edit,omitempty"`
+	// RetentionDays 已决策审计日志（hitl_interrupts 非 pending）保留天数；省略时默认 90；0 表示不自动清理。
+	RetentionDays *int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+}
+
+// RetentionDaysEffective returns retention; 0 means keep forever; omitted defaults to 90.
+func (h HitlConfig) RetentionDaysEffective() int {
+	if h.RetentionDays == nil {
+		return 90
+	}
+	if *h.RetentionDays < 0 {
+		return 0
+	}
+	return *h.RetentionDays
+}
+
+const hitlAuditAgentPromptBase = `你是 CyberStrikeAI 人机协同审计 Agent。审查 Agent 即将执行的工具调用是否会对系统造成实质性损害。
+
+你会收到 JSON，包含 hitlMode、toolName、arguments/argumentsObj、userMessage、thinking、reasoningChain、planning 等字段。
+
+裁决基调（默认放行）：
+- 常规、低风险的渗透测试操作 → approve（如信息收集、端口/服务扫描、目录枚举、只读查询、无害探测命令）
+- 与用户授权、当前任务目标一致，且未见明确高危迹象 → approve
+- 仅在「可能对系统造成实质影响」时 → reject
+
+必须 reject 的高危情形（示例，非穷举）：
+- 删库、清表、批量删除数据、格式化磁盘、不可逆破坏
+- 修改/重置密码、创建或篡改管理员账号、持久化后门、开机自启
+- 向生产环境写入恶意载荷、勒索加密、停止关键服务、修改系统核心配置
+- 明显越权：与任务/授权目标无关的破坏性操作
+
+不应单独作为 reject 理由的情形：
+- 常规 nmap/curl/grep/读文件/枚举类命令本身
+- 参数略显宽泛但无明确破坏意图（审查编辑模式可收窄参数后 approve）
+- 仅因「信息不足」——若无上述高危迹象，应 approve 并可在 comment 中提示注意点`
+
+const hitlAuditAgentPromptApprovalOutput = `
+仅输出一行 JSON，不要 markdown 代码块：
+{"decision":"approve"|"reject","comment":"简要理由"}`
+
+const hitlAuditAgentPromptReviewEditOutput = `
+仅输出一行 JSON，不要 markdown 代码块：
+{"decision":"approve"|"reject","comment":"简要理由","editedArguments":{...}}
+
+editedArguments 规则（仅 approve 且需要改参时填写，否则省略该字段）：
+- 提供完整替换后的工具参数对象，键名与 argumentsObj 一致
+- 只做最小必要修改以收窄范围、消除风险（如限制 path、去掉危险 flag）
+- 禁止扩大攻击面：不得扩大目标范围、提升权限或引入破坏性参数
+- 无法安全改参时应 reject，不要勉强 approve`
+
+// DefaultHitlAuditAgentPrompt 内置审批模式审计 Agent 提示词。
+func DefaultHitlAuditAgentPrompt() string {
+	return hitlAuditAgentPromptBase + hitlAuditAgentPromptApprovalOutput
+}
+
+// DefaultHitlAuditAgentPromptReviewEdit 内置审查编辑模式审计 Agent 提示词。
+func DefaultHitlAuditAgentPromptReviewEdit() string {
+	return hitlAuditAgentPromptBase + hitlAuditAgentPromptReviewEditOutput
+}
+
+// EffectiveAuditAgentPrompt 返回审批模式生效的审计 Agent 提示词。
+func (c HitlConfig) EffectiveAuditAgentPrompt() string {
+	return c.EffectiveAuditAgentPromptForMode("approval")
+}
+
+// EffectiveAuditAgentPromptForMode 按 HITL 模式返回生效的审计 Agent 提示词。
+func (c HitlConfig) EffectiveAuditAgentPromptForMode(mode string) string {
+	if normalizeHitlModeForPrompt(mode) == "review_edit" {
+		if s := strings.TrimSpace(c.AuditAgentPromptReviewEdit); s != "" {
+			return s
+		}
+		return DefaultHitlAuditAgentPromptReviewEdit()
+	}
+	if s := strings.TrimSpace(c.AuditAgentPrompt); s != "" {
+		return s
+	}
+	return DefaultHitlAuditAgentPrompt()
+}
+
+func normalizeHitlModeForPrompt(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "review_edit":
+		return "review_edit"
+	default:
+		return "approval"
+	}
 }
 
 type AuthConfig struct {
@@ -614,6 +734,23 @@ type AuthConfig struct {
 	GeneratedPassword           string `yaml:"-" json:"-"`
 	GeneratedPasswordPersisted  bool   `yaml:"-" json:"-"`
 	GeneratedPasswordPersistErr string `yaml:"-" json:"-"`
+}
+
+// MonitorConfig MCP 状态监控（tool_executions）保留策略。
+type MonitorConfig struct {
+	// RetentionDays 执行记录保留天数；省略时默认 90；0 表示不自动清理。
+	RetentionDays *int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+}
+
+// RetentionDaysEffective returns retention; 0 means keep forever; omitted defaults to 90.
+func (m MonitorConfig) RetentionDaysEffective() int {
+	if m.RetentionDays == nil {
+		return 90
+	}
+	if *m.RetentionDays < 0 {
+		return 0
+	}
+	return *m.RetentionDays
 }
 
 // AuditConfig platform operation audit log settings (not chat/tool execution bodies).
@@ -775,33 +912,13 @@ func Load(path string) (*Config, error) {
 
 	// 如果配置了工具目录，从目录加载工具配置
 	if cfg.Security.ToolsDir != "" {
-		configDir := filepath.Dir(path)
-		toolsDir := cfg.Security.ToolsDir
-
-		// 如果是相对路径，相对于配置文件所在目录
-		if !filepath.IsAbs(toolsDir) {
-			toolsDir = filepath.Join(configDir, toolsDir)
-		}
-
-		tools, err := LoadToolsFromDir(toolsDir)
+		inlineTools := append([]ToolConfig(nil), cfg.Security.Tools...)
+		toolsDir := ResolveToolsDir(cfg.Security.ToolsDir, path)
+		merged, err := MergeToolsFromDir(toolsDir, inlineTools)
 		if err != nil {
 			return nil, fmt.Errorf("从工具目录加载工具配置失败: %w", err)
 		}
-
-		// 合并工具配置：目录中的工具优先，主配置中的工具作为补充
-		existingTools := make(map[string]bool)
-		for _, tool := range tools {
-			existingTools[tool.Name] = true
-		}
-
-		// 添加主配置中不存在于目录中的工具（向后兼容）
-		for _, tool := range cfg.Security.Tools {
-			if !existingTools[tool.Name] {
-				tools = append(tools, tool)
-			}
-		}
-
-		cfg.Security.Tools = tools
+		cfg.Security.Tools = merged
 	}
 
 	// 外部 MCP：迁移 + 环境变量展开
@@ -843,6 +960,10 @@ func Load(path string) (*Config, error) {
 		if cfg.Roles == nil {
 			cfg.Roles = make(map[string]RoleConfig)
 		}
+	}
+
+	if err := ValidateWecomConfig(cfg.Robots.Wecom); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil
@@ -1069,6 +1190,75 @@ func PrintMCPConfigJSON(mcp MCPConfig) {
 	fmt.Println("----------------------------------------------------------------")
 }
 
+// ResolveToolsDir 将 tools_dir 解析为绝对路径（相对路径相对于 configPath 所在目录）。
+func ResolveToolsDir(toolsDir, configPath string) string {
+	toolsDir = strings.TrimSpace(toolsDir)
+	if toolsDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(toolsDir) {
+		return toolsDir
+	}
+	return filepath.Join(filepath.Dir(configPath), toolsDir)
+}
+
+// MergeToolsFromDir 从目录加载工具并与 inline 列表合并：目录中的工具优先，主配置中的工具作为补充。
+func MergeToolsFromDir(toolsDir string, inlineTools []ToolConfig) ([]ToolConfig, error) {
+	dirTools, err := LoadToolsFromDir(toolsDir)
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]bool, len(dirTools))
+	for _, tool := range dirTools {
+		existing[tool.Name] = true
+	}
+	merged := append([]ToolConfig(nil), dirTools...)
+	for _, tool := range inlineTools {
+		if !existing[tool.Name] {
+			merged = append(merged, tool)
+		}
+	}
+	return merged, nil
+}
+
+// loadInlineSecurityToolsFromYAML 读取 config.yaml 中 security.tools（不含 tools_dir 扫描结果）。
+func loadInlineSecurityToolsFromYAML(configPath string) ([]ToolConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	var partial struct {
+		Security struct {
+			Tools []ToolConfig `yaml:"tools"`
+		} `yaml:"security"`
+	}
+	if err := yaml.Unmarshal(data, &partial); err != nil {
+		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	if partial.Security.Tools == nil {
+		return []ToolConfig{}, nil
+	}
+	return partial.Security.Tools, nil
+}
+
+// ReloadSecurityToolsFromDir 从 tools_dir 重新加载工具并更新 cfg.Security.Tools（ApplyConfig 热重载用）。
+func ReloadSecurityToolsFromDir(cfg *Config, configPath string) error {
+	if cfg == nil || strings.TrimSpace(cfg.Security.ToolsDir) == "" {
+		return nil
+	}
+	inlineTools, err := loadInlineSecurityToolsFromYAML(configPath)
+	if err != nil {
+		return err
+	}
+	toolsDir := ResolveToolsDir(cfg.Security.ToolsDir, configPath)
+	merged, err := MergeToolsFromDir(toolsDir, inlineTools)
+	if err != nil {
+		return fmt.Errorf("从工具目录加载工具配置失败: %w", err)
+	}
+	cfg.Security.Tools = merged
+	return nil
+}
+
 // LoadToolsFromDir 从目录加载所有工具配置文件
 func LoadToolsFromDir(dir string) ([]ToolConfig, error) {
 	var tools []ToolConfig
@@ -1245,8 +1435,9 @@ func Default() *Config {
 			MaxTotalTokens: 120000,
 		},
 		Agent: AgentConfig{
-			MaxIterations:      30, // 默认最大迭代次数
-			ToolTimeoutMinutes: 10, // 单次工具执行默认最多 10 分钟，避免异常长时间占用
+			MaxIterations:               30,  // 默认最大迭代次数
+			ToolTimeoutMinutes:            10,  // 单次工具执行默认最多 10 分钟，避免异常长时间占用
+			ShellNoOutputTimeoutSeconds:   300, // execute/exec 无新输出空闲终止（秒）；-1 关闭
 		},
 		Security: SecurityConfig{
 			Tools:    []ToolConfig{}, // 工具配置应该从 config.yaml 或 tools/ 目录加载
@@ -1266,6 +1457,10 @@ func Default() *Config {
 				MaxDetailBytes: 8192,
 				Enabled:        &on,
 			}
+		}(),
+		Monitor: func() MonitorConfig {
+			days := 90
+			return MonitorConfig{RetentionDays: &days}
 		}(),
 		Robots: RobotsConfig{
 			Session: RobotSessionConfig{

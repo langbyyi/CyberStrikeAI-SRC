@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -181,6 +182,10 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 					"type":        "string",
 					"description": "队列内子对话绑定的项目 ID（可选，未指定时使用 config.project.default_project_id）",
 				},
+				"concurrency": map[string]interface{}{
+					"type":        "integer",
+					"description": "同时执行的子任务数，默认 1（串行），最大 8。含扫描类工具时建议 1-2。",
+				},
 			},
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
@@ -210,7 +215,8 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 			executeNow = false
 		}
 		projectID := strings.TrimSpace(mcpArgString(args, "project_id"))
-		queue, createErr := h.batchTaskManager.CreateBatchQueue(title, role, agentMode, scheduleMode, cronExpr, projectID, nextRunAt, tasks)
+		concurrency := int(mcpArgFloat(args, "concurrency"))
+		queue, createErr := h.batchTaskManager.CreateBatchQueue(title, role, agentMode, scheduleMode, cronExpr, projectID, nextRunAt, concurrency, tasks)
 		if createErr != nil {
 			return batchMCPTextResult("创建队列失败: "+createErr.Error(), true), nil
 		}
@@ -365,8 +371,17 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 		if qid == "" {
 			return batchMCPTextResult("queue_id 不能为空", true), nil
 		}
-		if !h.batchTaskManager.DeleteQueue(qid) {
-			return batchMCPTextResult("删除失败：队列不存在", true), nil
+		if err := h.batchTaskManager.DeleteQueue(qid); err != nil {
+			switch {
+			case errors.Is(err, ErrBatchQueueNotFound):
+				return batchMCPTextResult("删除失败：队列不存在", true), nil
+			case errors.Is(err, ErrBatchQueueExecutorActive):
+				return batchMCPTextResult("删除失败：队列执行器仍在运行，请稍后再试", true), nil
+			case errors.Is(err, ErrBatchQueueStillRunning):
+				return batchMCPTextResult("删除失败：队列正在运行中", true), nil
+			default:
+				return batchMCPTextResult("删除失败："+err.Error(), true), nil
+			}
 		}
 		logger.Info("MCP batch_task_delete", zap.String("queueId", qid))
 		return batchMCPTextResult("队列已删除。", false), nil
@@ -397,6 +412,10 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 					"description": "代理模式：eino_single、deep、plan_execute、supervisor",
 					"enum":        []string{"eino_single", "deep", "plan_execute", "supervisor"},
 				},
+				"concurrency": map[string]interface{}{
+					"type":        "integer",
+					"description": "同时执行的子任务数，默认 1，最大 8",
+				},
 			},
 			"required": []string{"queue_id"},
 		},
@@ -408,7 +427,12 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 		title := mcpArgString(args, "title")
 		role := mcpArgString(args, "role")
 		agentMode := mcpArgString(args, "agent_mode")
-		if err := h.batchTaskManager.UpdateQueueMetadata(qid, title, role, agentMode); err != nil {
+		var concurrency *int
+		if raw, ok := args["concurrency"]; ok && raw != nil {
+			v := int(mcpArgFloat(args, "concurrency"))
+			concurrency = &v
+		}
+		if err := h.batchTaskManager.UpdateQueueMetadata(qid, title, role, agentMode, concurrency); err != nil {
 			return batchMCPTextResult(err.Error(), true), nil
 		}
 		updated, _ := h.batchTaskManager.GetBatchQueue(qid)
@@ -652,6 +676,7 @@ type batchTaskQueueMCPListItem struct {
 	StartedAt             *time.Time                `json:"startedAt,omitempty"`
 	CompletedAt           *time.Time                `json:"completedAt,omitempty"`
 	CurrentIndex          int                       `json:"currentIndex"`
+	Concurrency           int                       `json:"concurrency"`
 	TaskTotal             int                       `json:"task_total"`
 	TaskCounts            map[string]int            `json:"task_counts"`
 	Tasks                 []batchTaskMCPListSummary `json:"tasks"`
@@ -715,6 +740,7 @@ func toBatchTaskQueueMCPListItem(q *BatchTaskQueue) batchTaskQueueMCPListItem {
 		StartedAt:             q.StartedAt,
 		CompletedAt:           q.CompletedAt,
 		CurrentIndex:          q.CurrentIndex,
+		Concurrency:           q.Concurrency,
 		TaskTotal:             len(tasks),
 		TaskCounts:            counts,
 		Tasks:                 tasks,

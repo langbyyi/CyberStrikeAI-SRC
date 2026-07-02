@@ -18,7 +18,6 @@ import (
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
-	"cyberstrike-ai/internal/storage"
 
 	"go.uber.org/zap"
 )
@@ -32,25 +31,11 @@ type Agent struct {
 	externalMCPMgr        *mcp.ExternalMCPManager // 外部MCP管理器
 	logger                *zap.Logger
 	maxIterations         int
-	resultStorage         ResultStorage     // 结果存储
-	largeResultThreshold  int               // 大结果阈值（字节）
 	mu                    sync.RWMutex      // 添加互斥锁以支持并发更新
 	toolNameMapping       map[string]string // 工具名称映射：OpenAI格式 -> 原始格式（用于外部MCP工具）
 	currentConversationID string            // 当前对话ID（用于自动传递给工具）
 	promptBaseDir         string            // 解析 system_prompt_path 时相对路径的基准目录（通常为 config.yaml 所在目录）
 	toolDescriptionMode   string            // 工具描述模式: "short" | "full"，默认 short
-}
-
-// ResultStorage 结果存储接口（直接使用 storage 包的类型）
-type ResultStorage interface {
-	SaveResult(executionID string, toolName string, result string) error
-	GetResult(executionID string) (string, error)
-	GetResultPage(executionID string, page int, limit int) (*storage.ResultPage, error)
-	SearchResult(executionID string, keyword string, useRegex bool) ([]string, error)
-	FilterResult(executionID string, filter string, useRegex bool) ([]string, error)
-	GetResultMetadata(executionID string) (*storage.ResultMetadata, error)
-	GetResultPath(executionID string) string
-	DeleteResult(executionID string) error
 }
 
 type agentConversationIDKey struct{}
@@ -83,26 +68,6 @@ func NewAgent(cfg *config.OpenAIConfig, agentCfg *config.AgentConfig, mcpServer 
 		maxIterations = 30
 	}
 
-	// 设置大结果阈值，默认50KB
-	largeResultThreshold := 50 * 1024
-	if agentCfg != nil && agentCfg.LargeResultThreshold > 0 {
-		largeResultThreshold = agentCfg.LargeResultThreshold
-	}
-
-	// 设置结果存储目录，默认tmp
-	resultStorageDir := "tmp"
-	if agentCfg != nil && agentCfg.ResultStorageDir != "" {
-		resultStorageDir = agentCfg.ResultStorageDir
-	}
-
-	// 初始化结果存储
-	var resultStorage ResultStorage
-	if resultStorageDir != "" {
-		// 导入storage包（避免循环依赖，使用接口）
-		// 这里需要在实际使用时初始化
-		// 暂时设为nil，在需要时初始化
-	}
-
 	// 配置HTTP Transport，优化连接管理和超时设置
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -133,18 +98,9 @@ func NewAgent(cfg *config.OpenAIConfig, agentCfg *config.AgentConfig, mcpServer 
 		externalMCPMgr:       externalMCPMgr,
 		logger:               logger,
 		maxIterations:        maxIterations,
-		resultStorage:        resultStorage,
-		largeResultThreshold: largeResultThreshold,
 		toolNameMapping:      make(map[string]string), // 初始化工具名称映射
 		toolDescriptionMode:  "short",
 	}
-}
-
-// SetResultStorage 设置结果存储（用于避免循环依赖）
-func (a *Agent) SetResultStorage(storage ResultStorage) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.resultStorage = storage
 }
 
 // SetPromptBaseDir 设置单代理 system_prompt_path 相对路径的基准目录（一般为 config.yaml 所在目录）。
@@ -663,103 +619,12 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 
 	resultStr := resultText.String()
-	resultSize := len(resultStr)
-
-	// 检测大结果并保存
-	a.mu.RLock()
-	threshold := a.largeResultThreshold
-	storage := a.resultStorage
-	a.mu.RUnlock()
-
-	if resultSize > threshold && storage != nil {
-		// 异步保存大结果
-		go func() {
-			if err := storage.SaveResult(executionID, toolName, resultStr); err != nil {
-				a.logger.Warn("保存大结果失败",
-					zap.String("executionID", executionID),
-					zap.String("toolName", toolName),
-					zap.Error(err),
-				)
-			} else {
-				a.logger.Info("大结果已保存",
-					zap.String("executionID", executionID),
-					zap.String("toolName", toolName),
-					zap.Int("size", resultSize),
-				)
-			}
-		}()
-
-		// 返回最小化通知
-		lines := strings.Split(resultStr, "\n")
-		filePath := ""
-		if storage != nil {
-			filePath = storage.GetResultPath(executionID)
-		}
-		notification := a.formatMinimalNotification(executionID, toolName, resultSize, len(lines), filePath)
-
-		return &ToolExecutionResult{
-			Result:      notification,
-			ExecutionID: executionID,
-			IsError:     result != nil && result.IsError,
-		}, nil
-	}
 
 	return &ToolExecutionResult{
 		Result:      resultStr,
 		ExecutionID: executionID,
 		IsError:     result != nil && result.IsError,
 	}, nil
-}
-
-// formatMinimalNotification 格式化最小化通知
-func (a *Agent) formatMinimalNotification(executionID string, toolName string, size int, lineCount int, filePath string) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("工具执行完成。结果已保存（ID: %s）。\n\n", executionID))
-	sb.WriteString("结果信息：\n")
-	sb.WriteString(fmt.Sprintf("  - 工具: %s\n", toolName))
-	sb.WriteString(fmt.Sprintf("  - 大小: %d 字节 (%.2f KB)\n", size, float64(size)/1024))
-	sb.WriteString(fmt.Sprintf("  - 行数: %d 行\n", lineCount))
-	if filePath != "" {
-		sb.WriteString(fmt.Sprintf("  - 文件路径: %s\n", filePath))
-	}
-	sb.WriteString("\n")
-	sb.WriteString("推荐使用 query_execution_result 工具查询完整结果：\n")
-	sb.WriteString(fmt.Sprintf("  - 查询第一页: query_execution_result(execution_id=\"%s\", page=1, limit=100)\n", executionID))
-	sb.WriteString(fmt.Sprintf("  - 搜索关键词: query_execution_result(execution_id=\"%s\", search=\"关键词\")\n", executionID))
-	sb.WriteString(fmt.Sprintf("  - 过滤条件: query_execution_result(execution_id=\"%s\", filter=\"error\")\n", executionID))
-	sb.WriteString(fmt.Sprintf("  - 正则匹配: query_execution_result(execution_id=\"%s\", search=\"\\\\d+\\\\.\\\\d+\\\\.\\\\d+\\\\.\\\\d+\", use_regex=true)\n", executionID))
-	sb.WriteString("\n")
-	if filePath != "" {
-		sb.WriteString("如果 query_execution_result 工具不满足需求，也可以使用其他工具处理文件：\n")
-		sb.WriteString("\n")
-		sb.WriteString("**分段读取示例：**\n")
-		sb.WriteString(fmt.Sprintf("  - 查看前100行: exec(command=\"head\", args=[\"-n\", \"100\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 查看后100行: exec(command=\"tail\", args=[\"-n\", \"100\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 查看第50-150行: exec(command=\"sed\", args=[\"-n\", \"50,150p\", \"%s\"])\n", filePath))
-		sb.WriteString("\n")
-		sb.WriteString("**搜索和正则匹配示例：**\n")
-		sb.WriteString(fmt.Sprintf("  - 搜索关键词: exec(command=\"grep\", args=[\"关键词\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 正则匹配IP地址: exec(command=\"grep\", args=[\"-E\", \"\\\\d+\\\\.\\\\d+\\\\.\\\\d+\\\\.\\\\d+\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 不区分大小写搜索: exec(command=\"grep\", args=[\"-i\", \"关键词\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 显示匹配行号: exec(command=\"grep\", args=[\"-n\", \"关键词\", \"%s\"])\n", filePath))
-		sb.WriteString("\n")
-		sb.WriteString("**过滤和统计示例：**\n")
-		sb.WriteString(fmt.Sprintf("  - 统计总行数: exec(command=\"wc\", args=[\"-l\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 过滤包含error的行: exec(command=\"grep\", args=[\"error\", \"%s\"])\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 排除空行: exec(command=\"grep\", args=[\"-v\", \"^$\", \"%s\"])\n", filePath))
-		sb.WriteString("\n")
-		sb.WriteString("**完整读取（不推荐大文件）：**\n")
-		sb.WriteString(fmt.Sprintf("  - 使用 cat 工具: cat(file=\"%s\")\n", filePath))
-		sb.WriteString(fmt.Sprintf("  - 使用 exec 工具: exec(command=\"cat\", args=[\"%s\"])\n", filePath))
-		sb.WriteString("\n")
-		sb.WriteString("**注意：**\n")
-		sb.WriteString("  - 直接读取大文件可能会再次触发大结果保存机制\n")
-		sb.WriteString("  - 建议优先使用分段读取和搜索功能，避免一次性加载整个文件\n")
-		sb.WriteString("  - 正则表达式语法遵循标准 POSIX 正则表达式规范\n")
-	}
-
-	return sb.String()
 }
 
 // UpdateConfig 更新OpenAI配置
@@ -914,13 +779,43 @@ func (a *Agent) ExecuteMCPToolForConversation(ctx context.Context, conversationI
 	return a.executeToolViaMCP(ctx, toolName, args)
 }
 
-// RecordLocalToolExecution 将非 CallTool 路径完成的工具调用写入 MCP 监控库（与 CallTool 落库一致），返回 executionId。
-// 用于 Eino filesystem execute 等场景，使助手气泡「渗透测试详情」与常规 MCP 一致可点进监控。
-func (a *Agent) RecordLocalToolExecution(toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+// BeginLocalToolExecution 在非 CallTool 路径工具开始时写入 running 状态，供 MCP 监控页展示「执行中」。
+func (a *Agent) BeginLocalToolExecution(toolName string, args map[string]interface{}) string {
 	if a == nil || a.mcpServer == nil {
 		return ""
 	}
-	return a.mcpServer.RecordCompletedToolInvocation(toolName, args, resultText, invokeErr)
+	return a.mcpServer.BeginToolExecution(toolName, args)
+}
+
+// FinishLocalToolExecution 完成 BeginLocalToolExecution 创建的记录；executionID 为空时一次性写入已完成记录。
+func (a *Agent) FinishLocalToolExecution(executionID, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+	if a == nil || a.mcpServer == nil {
+		return ""
+	}
+	return a.mcpServer.FinishToolExecution(executionID, toolName, args, resultText, invokeErr)
+}
+
+// RecordLocalToolExecution 将非 CallTool 路径完成的工具调用写入 MCP 监控库（与 CallTool 落库一致），返回 executionId。
+// 用于 Eino filesystem execute 等场景，使助手气泡「渗透测试详情」与常规 MCP 一致可点进监控。
+func (a *Agent) RecordLocalToolExecution(toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+	return a.FinishLocalToolExecution("", toolName, args, resultText, invokeErr)
+}
+
+// UpdateMCPExecutionDisplayResult 将监控库中的工具结果更新为送入模型的展示正文（reduction 后）。
+func (a *Agent) UpdateMCPExecutionDisplayResult(executionID, resultText string) {
+	if a == nil || strings.TrimSpace(executionID) == "" {
+		return
+	}
+	text := resultText
+	if strings.TrimSpace(text) == "" {
+		text = "（无输出）"
+	}
+	tr := &mcp.ToolResult{
+		Content: []mcp.Content{{Type: "text", Text: text}},
+	}
+	if a.mcpServer != nil {
+		_ = a.mcpServer.UpdateToolExecutionResult(executionID, tr)
+	}
 }
 
 // CancelMCPToolExecutionWithNote 取消一次进行中的 MCP 工具（先内部后外部），与监控页「终止工具」一致；note 非空时合并进返回给模型的文本。

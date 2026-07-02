@@ -26,6 +26,7 @@ func shouldPersistEinoAgentTraceAfterRunError(baseCtx context.Context) bool {
 // AgentTask 描述正在运行的Agent任务
 type AgentTask struct {
 	ConversationID string    `json:"conversationId"`
+	Title          string    `json:"title,omitempty"`
 	Message        string    `json:"message,omitempty"`
 	StartedAt      time.Time `json:"startedAt"`
 	Status         string    `json:"status"`
@@ -36,6 +37,14 @@ type AgentTask struct {
 
 	// InterruptContinueNote 无 MCP 时「中断并继续」由用户在弹窗中填写的补充说明（Cancel 前写入，续跑轮次读取后清空）
 	InterruptContinueNote string `json:"-"`
+
+	// activeEinoExecuteCancel 当前进行中的 Eino filesystem execute 取消函数（与 MCP 工具并行，供中断并继续）
+	activeEinoExecuteCancel context.CancelFunc
+	// activeEinoExecuteAbortNote AbortActiveEinoExecute 写入的用户说明，由 execute 收尾时合并进工具结果
+	activeEinoExecuteAbortNote string
+
+	// hitlCognition 本轮运行中供 HITL/审计 Agent 读取的上下文（用户原话 + 思考，不含会话历史）
+	hitlCognition *hitlCognitionState
 
 	cancel func(error)
 }
@@ -68,6 +77,103 @@ func (m *AgentTaskManager) UnregisterRunningTool(conversationID, executionID str
 			t.ActiveMCPExecutionID = ""
 		}
 	}
+}
+
+// RegisterActiveEinoExecute 登记进行中的 Eino filesystem execute（每会话同时仅一条）。
+func (m *AgentTaskManager) RegisterActiveEinoExecute(conversationID string, cancel context.CancelFunc) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || cancel == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tasks[conversationID]; ok && t != nil {
+		t.activeEinoExecuteCancel = cancel
+		t.activeEinoExecuteAbortNote = ""
+	}
+}
+
+// UnregisterActiveEinoExecute execute 正常结束或已取消后清除登记。
+func (m *AgentTaskManager) UnregisterActiveEinoExecute(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tasks[conversationID]; ok && t != nil {
+		t.activeEinoExecuteCancel = nil
+		t.activeEinoExecuteAbortNote = ""
+	}
+}
+
+// ConversationIDForActiveMCPExecution 根据当前登记的工具 executionId 反查会话 ID（供 MCP 监控页按 executionId 终止）。
+func (m *AgentTaskManager) ConversationIDForActiveMCPExecution(executionID string) string {
+	executionID = strings.TrimSpace(executionID)
+	if executionID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for convID, t := range m.tasks {
+		if t != nil && t.ActiveMCPExecutionID == executionID {
+			return convID
+		}
+	}
+	return ""
+}
+
+// ConversationIDForActiveEinoExecute 返回当前唯一进行 Eino execute 的会话 ID；多会话并行时返回空。
+func (m *AgentTaskManager) ConversationIDForActiveEinoExecute() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found string
+	count := 0
+	for convID, t := range m.tasks {
+		if t != nil && t.activeEinoExecuteCancel != nil {
+			found = convID
+			count++
+		}
+	}
+	if count == 1 {
+		return found, true
+	}
+	return "", false
+}
+
+// AbortActiveEinoExecute 终止当前 Eino execute 并暂存用户说明（与 MCP 工具终止一致）。
+func (m *AgentTaskManager) AbortActiveEinoExecute(conversationID, note string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	m.mu.Lock()
+	t, ok := m.tasks[conversationID]
+	if !ok || t == nil || t.activeEinoExecuteCancel == nil {
+		m.mu.Unlock()
+		return false
+	}
+	t.activeEinoExecuteAbortNote = strings.TrimSpace(note)
+	cancel := t.activeEinoExecuteCancel
+	m.mu.Unlock()
+	cancel()
+	return true
+}
+
+// TakeEinoExecuteAbortNote 读取并清空 execute 终止说明（execute 收尾时调用一次）。
+func (m *AgentTaskManager) TakeEinoExecuteAbortNote(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.tasks[conversationID]; ok && t != nil {
+		n := t.activeEinoExecuteAbortNote
+		t.activeEinoExecuteAbortNote = ""
+		return n
+	}
+	return ""
 }
 
 // SetInterruptContinueNote 在发起 ErrInterruptContinue 取消前写入用户补充说明（仅内存）。
@@ -131,6 +237,7 @@ func (m *AgentTaskManager) ActiveMCPExecutionID(conversationID string) string {
 // CompletedTask 已完成的任务（用于历史记录）
 type CompletedTask struct {
 	ConversationID string    `json:"conversationId"`
+	Title          string    `json:"title,omitempty"`
 	Message        string    `json:"message,omitempty"`
 	StartedAt      time.Time `json:"startedAt"`
 	CompletedAt    time.Time `json:"completedAt"`
@@ -145,6 +252,8 @@ type AgentTaskManager struct {
 	maxHistorySize   int              // 最大历史记录数
 	historyRetention time.Duration    // 历史记录保留时间
 	eventBus         *TaskEventBus    // 可选：任务结束时关闭镜像 SSE 订阅
+	// toolCanceler 在用户整轮停止任务时终止当前 MCP 工具（非「中断并继续」）。
+	toolCanceler func(conversationID string)
 }
 
 const (
@@ -173,6 +282,13 @@ func (m *AgentTaskManager) SetTaskEventBus(b *TaskEventBus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventBus = b
+}
+
+// SetToolCanceler 设置整轮停止任务时终止当前 MCP 工具的回调（由 AgentHandler 注入）。
+func (m *AgentTaskManager) SetToolCanceler(fn func(conversationID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolCanceler = fn
 }
 
 // GetTask 返回运行中任务（无则 nil）。
@@ -241,6 +357,7 @@ func (m *AgentTaskManager) StartTask(conversationID, message string, cancel cont
 	}
 
 	m.tasks[conversationID] = task
+	task.hitlCognition = &hitlCognitionState{UserMessage: strings.TrimSpace(message)}
 	return task, nil
 }
 
@@ -270,13 +387,20 @@ func (m *AgentTaskManager) CancelTask(conversationID string, cause error) (bool,
 		task.InterruptContinueNote = ""
 	}
 	cancel := task.cancel
-	m.mu.Unlock()
-
 	if cause == nil {
 		cause = ErrTaskCancelled
 	}
+	var toolCanceler func(string)
+	if errors.Is(cause, ErrTaskCancelled) {
+		toolCanceler = m.toolCanceler
+	}
+	m.mu.Unlock()
+
 	if cancel != nil {
 		cancel(cause)
+	}
+	if toolCanceler != nil {
+		toolCanceler(conversationID)
 	}
 	return true, nil
 }

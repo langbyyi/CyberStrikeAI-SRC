@@ -21,6 +21,7 @@
         profiles: [],
         selectedSessionId: null,
         selectedListenerId: null,
+        sessionFilter: { status: '', listener_id: '', search: '', suspicious: false },
         eventSource: null,
         // xterm 相关
         terminalInstance: null,
@@ -144,6 +145,94 @@
         const s = String(cmd);
         if (!maxLen || s.length <= maxLen) return s;
         return s.substring(0, maxLen - 1) + '\u2026';
+    }
+
+    function taskTypeCategory(type) {
+        const t = String(type || '').toLowerCase();
+        if (t === 'shell' || t === 'exec') return 'shell';
+        if (t === 'ls' || t === 'cd' || t === 'pwd' || t === 'download' || t === 'upload') return 'fs';
+        if (t === 'sleep' || t === 'exit' || t === 'kill_proc') return 'control';
+        return 'default';
+    }
+
+    function formatRelativeTime(value) {
+        const ms = value ? new Date(value).getTime() : 0;
+        if (!Number.isFinite(ms) || ms <= 0) return '';
+        const diff = Date.now() - ms;
+        if (diff < 60000) return c2t('c2.common.justNow');
+        if (diff < 3600000) return c2t('c2.common.minutesAgo', { n: Math.floor(diff / 60000) });
+        if (diff < 86400000) return c2t('c2.common.hoursAgo', { n: Math.floor(diff / 3600000) });
+        return formatTime(value);
+    }
+
+    function sessionOsKey(os) {
+        const o = String(os || '').toLowerCase();
+        if (o.includes('darwin') || o === 'macos' || o === 'mac') return 'darwin';
+        if (o.includes('win')) return 'windows';
+        if (o.includes('linux') || o.includes('unix')) return 'linux';
+        return 'default';
+    }
+
+    function sessionOsAvatarLabel(os) {
+        const k = sessionOsKey(os);
+        if (k === 'darwin') return 'mac';
+        if (k === 'windows') return 'win';
+        if (k === 'linux') return 'nix';
+        return String(os || '?').substring(0, 3).toLowerCase();
+    }
+
+    function sessionInfoRow(label, value, opts) {
+        const valueClasses = ['c2-session-info-dl__value'];
+        if (opts && opts.mono) valueClasses.push('is-mono');
+        if (opts && opts.accent) valueClasses.push('is-accent');
+        if (opts && opts.warn) valueClasses.push('is-warn');
+        const rowCls = opts && opts.full ? ' c2-session-info-dl__row--full' : '';
+        return `
+            <div class="c2-session-info-dl__row${rowCls}">
+                <dt class="c2-session-info-dl__label">${escapeHtml(label)}</dt>
+                <dd class="${valueClasses.join(' ')}">${escapeHtml(value == null || value === '' ? '-' : String(value))}</dd>
+            </div>`;
+    }
+
+    function renderSessionInfoPanel(s, adminVal, sleepLine) {
+        const lastCheckin = formatTime(s.lastCheckIn);
+        const lastRel = formatRelativeTime(s.lastCheckIn);
+        const checkinDisplay = lastRel ? `${lastCheckin} (${lastRel})` : lastCheckin;
+        return `
+            <div class="c2-session-info-panel">
+                <section class="c2-session-info-block">
+                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionIdentity'))}</div>
+                    <dl class="c2-session-info-dl">
+                        ${sessionInfoRow(c2t('c2.sessions.infoSessionId'), s.id, { mono: true, accent: true, full: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoImplantUuid'), s.implantUuid, { mono: true, full: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoHostname'), s.hostname)}
+                        ${sessionInfoRow(c2t('c2.sessions.infoUsername'), s.username)}
+                    </dl>
+                </section>
+                <section class="c2-session-info-block">
+                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionSystem'))}</div>
+                    <dl class="c2-session-info-dl">
+                        ${sessionInfoRow(c2t('c2.sessions.infoOs'), s.os)}
+                        ${sessionInfoRow(c2t('c2.sessions.infoArch'), s.arch, { mono: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoPid'), s.pid, { mono: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoProcess'), s.processName || '-', { mono: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoAdmin'), adminVal, { warn: s.isAdmin, full: true })}
+                    </dl>
+                </section>
+                <section class="c2-session-info-block">
+                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionNetwork'))}</div>
+                    <dl class="c2-session-info-dl">
+                        ${sessionInfoRow(c2t('c2.sessions.infoInternalIp'), s.internalIp || '-', { mono: true, accent: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoSleep'), sleepLine)}
+                        ${sessionInfoRow(c2t('c2.sessions.infoFirstSeen'), formatTime(s.firstSeenAt), { mono: true })}
+                        ${sessionInfoRow(c2t('c2.sessions.infoLastCheckin'), checkinDisplay, { mono: true, accent: true })}
+                    </dl>
+                </section>
+                <section class="c2-session-info-block c2-session-info-block--note">
+                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionNote'))}</div>
+                    <div class="c2-session-info-note">${escapeHtml(s.note || c2t('c2.sessions.infoNoteEmpty'))}</div>
+                </section>
+            </div>`;
     }
 
     // ============================================================================
@@ -325,8 +414,11 @@
                 C2.loadListeners();
                 break;
             case 'c2-sessions':
-                C2.loadSessions();
-                C2.ensureListenersLoaded();
+                C2.renderSessionToolbar();
+                C2.ensureListenersLoaded().then(function() {
+                    C2.renderSessionToolbar();
+                    C2.loadSessions();
+                });
                 break;
             case 'c2-tasks':
                 C2.loadTasks();
@@ -473,6 +565,16 @@
         }
     };
 
+    C2.getListenerConfig = function(l) {
+        if (!l) return {};
+        try {
+            var raw = l.configJson != null ? l.configJson : '{}';
+            return typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw || {});
+        } catch (e) {
+            return {};
+        }
+    };
+
     C2.showCreateListenerModal = function() {
         const modal = document.getElementById('c2-modal');
         const content = document.getElementById('c2-modal-content');
@@ -541,6 +643,13 @@
                     <label>${escapeHtml(c2t('c2.listeners.remark'))}</label>
                     <input type="text" id="c2-listener-remark" class="form-control" placeholder="${escapeHtml(c2t('c2.listeners.placeholderRemarkLong'))}">
                 </div>
+                <div class="c2-form-group" id="c2-listener-legacy-shell-group" style="display:none;">
+                    <label class="c2-checkbox-label">
+                        <input type="checkbox" id="c2-listener-legacy-shell">
+                        ${escapeHtml(c2t('c2.listeners.allowLegacyShell'))}
+                    </label>
+                    <div class="form-hint" style="color:#b45309;">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
+                </div>
             </div>
             <div class="c2-modal-footer">
                 <button class="btn-secondary" onclick="C2.closeModal()">${escapeHtml(c2t('common.cancel'))}</button>
@@ -554,17 +663,23 @@
         });
     };
 
-    /** 非 HTTP/HTTPS Beacon 时隐藏 Profile 行（避免误以为 TCP 等也会用） */
+    /** 非 HTTP/HTTPS Beacon 时隐藏 Profile 行；tcp_reverse 时显示经典 shell 开关 */
     C2.syncListenerProfileRowForType = function() {
         const typeEl = document.getElementById('c2-listener-type');
         const row = document.getElementById('c2-listener-profile-group');
-        if (!typeEl || !row) return;
+        const legacyRow = document.getElementById('c2-listener-legacy-shell-group');
+        if (!typeEl) return;
         const t = String(typeEl.value || '').toLowerCase();
-        const show = t === 'http_beacon' || t === 'https_beacon';
-        row.style.display = show ? '' : 'none';
-        if (!show) {
-            const sel = document.getElementById('c2-listener-profile-id');
-            if (sel) sel.value = '';
+        if (row) {
+            const show = t === 'http_beacon' || t === 'https_beacon';
+            row.style.display = show ? '' : 'none';
+            if (!show) {
+                const sel = document.getElementById('c2-listener-profile-id');
+                if (sel) sel.value = '';
+            }
+        }
+        if (legacyRow) {
+            legacyRow.style.display = t === 'tcp_reverse' ? '' : 'none';
         }
     };
 
@@ -582,12 +697,17 @@
         }
 
         const profileId = (document.getElementById('c2-listener-profile-id')?.value || '').trim();
-
-        apiRequest('POST', `${API_BASE}/listeners`, {
+        const legacyShell = document.getElementById('c2-listener-legacy-shell')?.checked === true;
+        const body = {
             name, type, bind_host: bindHost, bind_port: bindPort, remark,
             callback_host: callbackHost,
             profile_id: profileId
-        }).then(data => {
+        };
+        if (type === 'tcp_reverse' && legacyShell) {
+            body.config = { allow_legacy_shell: true };
+        }
+
+        apiRequest('POST', `${API_BASE}/listeners`, body).then(data => {
             if (data.error) {
                 showToast(data.error, 'error');
             } else {
@@ -631,6 +751,8 @@
         if (!l) return;
 
         const cbHost = C2.getListenerCallbackHost(l);
+        const cfg = C2.getListenerConfig(l);
+        const legacyShell = !!cfg.allow_legacy_shell;
         const modal = document.getElementById('c2-modal');
         const content = document.getElementById('c2-modal-content');
         if (!content || !modal) return;
@@ -691,6 +813,14 @@
                     <label>${escapeHtml(c2t('c2.listeners.remark'))}</label>
                     <input type="text" id="c2-listener-remark" class="form-control" value="${escapeHtml(l.remark || '')}">
                 </div>
+                ${lt === 'tcp_reverse' ? `
+                <div class="c2-form-group" id="c2-listener-legacy-shell-group">
+                    <label class="c2-checkbox-label">
+                        <input type="checkbox" id="c2-listener-legacy-shell"${legacyShell ? ' checked' : ''}>
+                        ${escapeHtml(c2t('c2.listeners.allowLegacyShell'))}
+                    </label>
+                    <div class="form-hint" style="color:#b45309;">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
+                </div>` : ''}
             </div>
             <div class="c2-modal-footer">
                 <button class="btn-secondary" onclick="C2.closeModal()">${escapeHtml(c2t('common.cancel'))}</button>
@@ -711,12 +841,21 @@
         const remark = document.getElementById('c2-listener-remark')?.value;
         const profileEl = document.getElementById('c2-listener-profile-id');
         const profileId = profileEl ? String(profileEl.value || '').trim() : '';
-
-        apiRequest('PUT', `${API_BASE}/listeners/${id}`, {
+        const legacyEl = document.getElementById('c2-listener-legacy-shell');
+        const body = {
             name, bind_host: bindHost, bind_port: bindPort, remark,
             callback_host: callbackHost,
             profile_id: profileId
-        }).then(data => {
+        };
+        if (legacyEl) {
+            const existing = C2.listeners.find(x => x.id === id);
+            const merged = Object.assign({}, C2.getListenerConfig(existing), {
+                allow_legacy_shell: legacyEl.checked === true
+            });
+            body.config = merged;
+        }
+
+        apiRequest('PUT', `${API_BASE}/listeners/${id}`, body).then(data => {
             if (data.error) showToast(data.error, 'error');
             else {
                 showToast(c2t('c2.listeners.toastUpdated'), 'success');
@@ -731,10 +870,142 @@
     // ============================================================================
 
     C2.loadSessions = function() {
-        return apiRequest('GET', `${API_BASE}/sessions`).then(data => {
+        const f = C2.sessionFilter || {};
+        const params = new URLSearchParams();
+        if (f.status) params.set('status', f.status);
+        if (f.listener_id) params.set('listener_id', f.listener_id);
+        if (f.search) params.set('search', f.search);
+        if (f.suspicious) params.set('suspicious', '1');
+        const qs = params.toString();
+        const url = `${API_BASE}/sessions` + (qs ? `?${qs}` : '');
+        return apiRequest('GET', url).then(data => {
             C2.sessions = data.sessions || [];
+            C2.renderSessionToolbar();
             C2.renderSessions();
         });
+    };
+
+    C2.renderSessionToolbar = function() {
+        const toolbar = document.getElementById('c2-session-toolbar');
+        if (!toolbar) return;
+        const f = C2.sessionFilter || {};
+        const listeners = C2.listeners || [];
+        const listenerOpts = ['<option value="">' + escapeHtml(c2t('c2.sessions.filterAllListeners')) + '</option>']
+            .concat(listeners.map(l => {
+                const sel = f.listener_id === l.id ? ' selected' : '';
+                return `<option value="${escapeHtml(l.id)}"${sel}>${escapeHtml(l.name)}</option>`;
+            })).join('');
+        toolbar.innerHTML = `
+            <div class="c2-sessions-filter-row">
+                <select id="c2-session-filter-status" class="form-control c2-native-select" title="${escapeHtml(c2t('c2.sessions.status'))}" onchange="C2.applySessionFilter()">
+                    <option value="">${escapeHtml(c2t('c2.sessions.filterAllStatus'))}</option>
+                    <option value="active"${f.status === 'active' ? ' selected' : ''}>${escapeHtml(c2t('c2.sessions.active'))}</option>
+                    <option value="sleeping"${f.status === 'sleeping' ? ' selected' : ''}>${escapeHtml(c2t('c2.sessions.sleeping'))}</option>
+                    <option value="dead"${f.status === 'dead' ? ' selected' : ''}>${escapeHtml(c2t('c2.sessions.dead'))}</option>
+                </select>
+                <select id="c2-session-filter-listener" class="form-control c2-native-select" onchange="C2.applySessionFilter()">${listenerOpts}</select>
+            </div>
+            <input type="text" id="c2-session-filter-search" class="form-control" placeholder="${escapeHtml(c2t('c2.sessions.filterSearchPlaceholder'))}" value="${escapeHtml(f.search || '')}" onkeydown="if(event.key==='Enter'){C2.applySessionFilter();}">
+            <div class="c2-sessions-toolbar-meta">
+                <label class="c2-sessions-select-all-label">
+                    <input type="checkbox" id="c2-sessions-select-all" onchange="C2.onSessionsSelectAll(this.checked)">
+                    <span>${escapeHtml(c2t('c2.sessions.selectAll'))}</span>
+                </label>
+                <div class="c2-sessions-quick-links">
+                    <button type="button" onclick="C2.resetSessionFilter()">${escapeHtml(c2t('c2.sessions.filterReset'))}</button>
+                    <button type="button" onclick="C2.applySuspiciousFilter()">${escapeHtml(c2t('c2.sessions.filterSuspicious'))}</button>
+                </div>
+                <span class="c2-sessions-count" id="c2-sessions-count"></span>
+            </div>
+        `;
+        C2.syncSessionsToolbar();
+    };
+
+    C2.readSessionFilterFromDom = function() {
+        return {
+            status: document.getElementById('c2-session-filter-status')?.value || '',
+            listener_id: document.getElementById('c2-session-filter-listener')?.value || '',
+            search: (document.getElementById('c2-session-filter-search')?.value || '').trim(),
+            suspicious: !!(C2.sessionFilter && C2.sessionFilter.suspicious),
+        };
+    };
+
+    C2.applySessionFilter = function() {
+        const next = C2.readSessionFilterFromDom();
+        next.suspicious = false;
+        C2.sessionFilter = next;
+        C2.loadSessions();
+    };
+
+    C2.resetSessionFilter = function() {
+        C2.sessionFilter = { status: '', listener_id: '', search: '', suspicious: false };
+        C2.loadSessions();
+    };
+
+    C2.applySuspiciousFilter = function() {
+        C2.sessionFilter = { status: 'dead', listener_id: '', search: '', suspicious: true };
+        C2.loadSessions();
+    };
+
+    C2.collectCheckedSessionIds = function() {
+        return Array.from(document.querySelectorAll('.c2-session-row-check:checked')).map(cb => cb.getAttribute('data-id')).filter(Boolean);
+    };
+
+    C2.syncSessionsToolbar = function() {
+        const batchBtn = document.getElementById('c2-sessions-batch-delete');
+        const filteredBtn = document.getElementById('c2-sessions-delete-filtered');
+        const ids = C2.collectCheckedSessionIds();
+        if (batchBtn) batchBtn.disabled = ids.length === 0;
+        const total = (C2.sessions || []).length;
+        if (filteredBtn) filteredBtn.disabled = total === 0;
+        const countEl = document.getElementById('c2-sessions-count');
+        if (countEl) {
+            countEl.textContent = c2t('c2.sessions.filterCount', { n: total, selected: ids.length });
+        }
+        const all = document.querySelectorAll('.c2-session-row-check');
+        const selAll = document.getElementById('c2-sessions-select-all');
+        if (selAll && all.length) {
+            const nChecked = document.querySelectorAll('.c2-session-row-check:checked').length;
+            selAll.checked = nChecked === all.length;
+            selAll.indeterminate = nChecked > 0 && nChecked < all.length;
+        } else if (selAll) {
+            selAll.checked = false;
+            selAll.indeterminate = false;
+        }
+    };
+
+    C2.onSessionsSelectAll = function(checked) {
+        document.querySelectorAll('.c2-session-row-check').forEach(cb => { cb.checked = checked; });
+        C2.syncSessionsToolbar();
+    };
+
+    C2.deleteSessionsByIds = function(ids, confirmKey, confirmOpts) {
+        if (!ids || !ids.length) {
+            showToast(c2t('c2.sessions.toastSelectFirst'), 'warn');
+            return Promise.resolve();
+        }
+        if (!confirm(c2t(confirmKey, confirmOpts || { n: ids.length }))) return Promise.resolve();
+        return apiRequest('DELETE', `${API_BASE}/sessions`, { ids }).then(data => {
+            if (data.error) {
+                showToast(String(data.error), 'error');
+                return;
+            }
+            const deleted = data.deleted != null ? data.deleted : ids.length;
+            showToast(c2t('c2.sessions.toastBatchDeleted', { n: deleted }), 'success');
+            if (C2.selectedSessionId && ids.indexOf(C2.selectedSessionId) >= 0) {
+                C2.selectedSessionId = null;
+            }
+            C2.loadSessions();
+        }).catch(err => showToast(err.message || String(err), 'error'));
+    };
+
+    C2.deleteSelectedSessions = function() {
+        C2.deleteSessionsByIds(C2.collectCheckedSessionIds(), 'c2.sessions.confirmBatchDelete');
+    };
+
+    C2.deleteFilteredSessions = function() {
+        const ids = (C2.sessions || []).map(s => s.id).filter(Boolean);
+        C2.deleteSessionsByIds(ids, 'c2.sessions.confirmDeleteFiltered', { n: ids.length });
     };
 
     C2.renderSessions = function() {
@@ -743,37 +1014,46 @@
         if (!list) return;
 
         if (C2.sessions.length === 0) {
-            list.innerHTML = `
-                <div class="c2-empty" style="padding:40px 20px;">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.2" style="margin-bottom:16px;opacity:0.5;">
-                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                        <line x1="8" y1="21" x2="16" y2="21"></line>
-                        <line x1="12" y1="17" x2="12" y2="21"></line>
-                    </svg>
-                    <h3 style="font-size:16px;font-weight:700;margin-bottom:6px;">${escapeHtml(c2t('c2.sessions.emptyTitle'))}</h3>
-                    <p style="font-size:13px;">${escapeHtml(c2t('c2.sessions.emptyHint'))}</p>
-                </div>`;
-            if (main) main.innerHTML = '';
+            list.innerHTML = `<div class="c2-session-list-empty">${escapeHtml(c2t(C2.sessionFilter && (C2.sessionFilter.status || C2.sessionFilter.search || C2.sessionFilter.listener_id || C2.sessionFilter.suspicious) ? 'c2.sessions.emptyFilter' : 'c2.sessions.listEmpty'))}</div>`;
+            if (main) {
+                main.innerHTML = `
+                    <div class="c2-session-main-empty">
+                        <div class="c2-session-main-empty__icon" aria-hidden="true"></div>
+                        <h3>${escapeHtml(c2t('c2.sessions.emptyTitle'))}</h3>
+                        <p>${escapeHtml(c2t('c2.sessions.emptyHint'))}</p>
+                    </div>`;
+            }
+            C2.syncSessionsToolbar();
             return;
         }
 
         list.innerHTML = C2.sessions.map(s => `
             <div class="c2-session-item ${s.id === C2.selectedSessionId ? 'active' : ''}" 
+                 data-status="${escapeHtml(s.status || '')}"
                  onclick="C2.selectSession('${s.id}')">
-                <div class="c2-session-header">
-                    <span class="c2-session-host">${escapeHtml(s.hostname || c2t('c2.sessions.unknownHost'))}</span>
-                    <span class="c2-session-status ${s.status}">${escapeHtml(sessionStatusLabel(s.status))}</span>
-                </div>
-                <div class="c2-session-meta">
-                    ${escapeHtml(s.username)} · ${s.os}/${s.arch}
-                    ${s.isAdmin ? '<span style="color:#f59e0b;font-weight:700;margin-left:4px;">' + escapeHtml(c2t('c2.sessions.rootBadge')) + '</span>' : ''}
-                </div>
-                <div class="c2-session-meta" style="font-size:11px;margin-top:2px;">
-                    ${s.internalIp || '-'} · PID ${s.pid}
-                </div>
-                <div class="c2-session-item-footer">
-                    <span class="c2-session-meta c2-session-item-time">${formatTime(s.lastCheckIn)}</span>
-                    <button type="button" class="c2-session-card-delete" onclick="event.stopPropagation(); C2.deleteSessionRecord('${s.id}');">${escapeHtml(c2t('c2.sessions.cardDeleteSession'))}</button>
+                <input type="checkbox" class="c2-session-item-check c2-session-row-check" data-id="${escapeHtml(s.id)}"
+                    onclick="event.stopPropagation();" onchange="C2.syncSessionsToolbar()">
+                <div class="c2-session-item-body">
+                    <div class="c2-session-header">
+                        <div class="c2-session-host-row">
+                            <span class="c2-session-live-dot ${escapeHtml(s.status || '')}" aria-hidden="true"></span>
+                            <span class="c2-session-host">${escapeHtml(s.hostname || c2t('c2.sessions.unknownHost'))}</span>
+                        </div>
+                        <span class="c2-session-status ${s.status}">${escapeHtml(sessionStatusLabel(s.status))}</span>
+                    </div>
+                    <div class="c2-session-chips">
+                        <span class="c2-session-chip">${escapeHtml(s.username)}</span>
+                        <span class="c2-session-chip c2-session-chip--mono">${escapeHtml(s.os)}/${escapeHtml(s.arch)}</span>
+                        ${s.isAdmin ? '<span class="c2-session-chip c2-session-chip--warn">' + escapeHtml(c2t('c2.sessions.rootBadge')) + '</span>' : ''}
+                    </div>
+                    <div class="c2-session-chips c2-session-chips--sub">
+                        <span class="c2-session-chip c2-session-chip--dim">${escapeHtml(s.internalIp || '-')}</span>
+                        <span class="c2-session-chip c2-session-chip--dim">PID ${s.pid}</span>
+                    </div>
+                    <div class="c2-session-item-footer">
+                        <span class="c2-session-meta c2-session-item-time" title="${escapeHtml(formatTime(s.lastCheckIn))}">${escapeHtml(formatRelativeTime(s.lastCheckIn) || formatTime(s.lastCheckIn))}</span>
+                        <button type="button" class="c2-session-card-delete" onclick="event.stopPropagation(); C2.deleteSessionRecord('${s.id}');">${escapeHtml(c2t('c2.sessions.cardDeleteSession'))}</button>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -784,6 +1064,7 @@
         if (!C2.selectedSessionId && C2.sessions.length > 0) {
             C2.selectSession(C2.sessions[0].id);
         }
+        C2.syncSessionsToolbar();
     };
 
     C2.selectSession = function(id) {
@@ -803,28 +1084,57 @@
 
         const adminVal = s.isAdmin ? c2t('c2.sessions.adminYes') : c2t('c2.sessions.adminNo');
         const sleepLine = c2t('c2.sessions.infoSleepLine', { sec: s.sleepSeconds, jitter: s.jitterPercent });
+        const osKey = sessionOsKey(s.os);
+        const activeTab = C2.activeSessionTab || 'terminal';
+        const tabCls = function (tab) { return activeTab === tab ? ' active' : ''; };
+        const panelCls = function (tab) { return activeTab === tab ? ' active' : ''; };
+        const panelDisplay = function (tab) {
+            if (activeTab !== tab) return 'display:none';
+            return tab === 'terminal' ? 'display:flex' : (tab === 'tasks' ? 'display:flex' : 'display:block');
+        };
+        const heartbeatRel = formatRelativeTime(s.lastCheckIn) || formatTime(s.lastCheckIn);
+
         container.innerHTML = `
             <div class="c2-session-detail">
-                <div class="c2-session-header-bar">
-                    <div class="c2-session-title">
-                        <h3>${escapeHtml(s.hostname)} <span class="c2-session-badge ${s.status}">${escapeHtml(sessionStatusLabel(s.status))}</span></h3>
-                        <div class="c2-session-subtitle">${s.id} | ${escapeHtml(s.username)}@${s.os}/${s.arch}</div>
+                <div class="c2-session-hero">
+                    <div class="c2-session-hero__main">
+                        <div class="c2-session-avatar c2-session-avatar--${escapeHtml(osKey)}">${escapeHtml(sessionOsAvatarLabel(s.os))}</div>
+                        <div class="c2-session-hero__text">
+                            <div class="c2-session-hero__title-row">
+                                <h3 class="c2-session-hero__title">${escapeHtml(s.hostname)}</h3>
+                                <span class="c2-session-badge ${escapeHtml(s.status || '')}">${escapeHtml(sessionStatusLabel(s.status))}</span>
+                                ${s.isAdmin ? '<span class="c2-session-hero-root">' + escapeHtml(c2t('c2.sessions.rootBadge')) + '</span>' : ''}
+                            </div>
+                            <div class="c2-session-hero__sub">${escapeHtml(s.username)}@${escapeHtml(s.os)}/${escapeHtml(s.arch)}</div>
+                            <div class="c2-session-hero__chips">
+                                <span class="c2-session-hero-chip is-mono" title="${escapeHtml(c2t('c2.sessions.infoSessionId'))}">${escapeHtml(s.id)}</span>
+                                <span class="c2-session-hero-chip">${escapeHtml(s.internalIp || '-')}</span>
+                                <span class="c2-session-hero-chip">PID ${s.pid}</span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="c2-session-actions">
-                        <button class="btn-secondary btn-sm" onclick="C2.setSessionSleep('${s.id}')">${escapeHtml(c2t('c2.sessions.btnSleep'))}</button>
-                        <button class="btn-danger btn-sm" onclick="C2.killSession('${s.id}')">${escapeHtml(c2t('c2.sessions.kill'))}</button>
+                    <div class="c2-session-hero__side">
+                        <div class="c2-session-hero__heartbeat">
+                            <span class="c2-session-live-dot ${escapeHtml(s.status || '')}" aria-hidden="true"></span>
+                            <span class="c2-session-hero__heartbeat-label">${escapeHtml(c2t('c2.sessions.infoLastCheckin'))}</span>
+                            <span class="c2-session-hero__heartbeat-value">${escapeHtml(heartbeatRel)}</span>
+                        </div>
+                        <div class="c2-session-actions">
+                            <button class="btn-secondary btn-sm" onclick="C2.setSessionSleep('${s.id}')">${escapeHtml(c2t('c2.sessions.btnSleep'))}</button>
+                            <button class="btn-danger btn-sm" onclick="C2.killSession('${s.id}')">${escapeHtml(c2t('c2.sessions.kill'))}</button>
+                        </div>
                     </div>
                 </div>
                 
-                <div class="c2-session-tabs">
-                    <div class="c2-session-tab active" data-tab="terminal" onclick="C2.switchTab('terminal')">${escapeHtml(c2t('c2.sessions.terminal'))}</div>
-                    <div class="c2-session-tab" data-tab="files" onclick="C2.switchTab('files')">${escapeHtml(c2t('c2.sessions.files'))}</div>
-                    <div class="c2-session-tab" data-tab="tasks" onclick="C2.switchTab('tasks')">${escapeHtml(c2t('c2.sessions.tasks'))}</div>
-                    <div class="c2-session-tab" data-tab="info" onclick="C2.switchTab('info')">${escapeHtml(c2t('c2.sessions.info'))}</div>
+                <div class="c2-session-tabs c2-session-tabs--pills">
+                    <button type="button" class="c2-session-tab${tabCls('terminal')}" data-tab="terminal" onclick="C2.switchTab('terminal')">${escapeHtml(c2t('c2.sessions.terminal'))}</button>
+                    <button type="button" class="c2-session-tab${tabCls('files')}" data-tab="files" onclick="C2.switchTab('files')">${escapeHtml(c2t('c2.sessions.files'))}</button>
+                    <button type="button" class="c2-session-tab${tabCls('tasks')}" data-tab="tasks" onclick="C2.switchTab('tasks')">${escapeHtml(c2t('c2.sessions.tasks'))}</button>
+                    <button type="button" class="c2-session-tab${tabCls('info')}" data-tab="info" onclick="C2.switchTab('info')">${escapeHtml(c2t('c2.sessions.info'))}</button>
                 </div>
                 
                 <div class="c2-session-tab-content">
-                    <div id="c2-tab-terminal" class="c2-tab-panel active">
+                    <div id="c2-tab-terminal" class="c2-tab-panel${panelCls('terminal')}" style="${panelDisplay('terminal')}">
                         <div id="c2-terminal-container" class="c2-terminal-container"></div>
                         <div class="c2-terminal-toolbar">
                             <button class="btn-ghost btn-sm" onclick="C2.clearTerminal()">${escapeHtml(c2t('c2.sessions.clearTerminal'))}</button>
@@ -832,41 +1142,28 @@
                             <span class="c2-terminal-status" id="c2-terminal-status">${escapeHtml(c2t('c2.sessions.termStatusReady'))}</span>
                         </div>
                     </div>
-                    <div id="c2-tab-files" class="c2-tab-panel" style="display:none;">
-                        <div class="c2-file-toolbar">
-                            <button class="btn-ghost btn-sm" onclick="C2.goToParentDirectory()">⬆ ${escapeHtml(c2t('c2.files.parent'))}</button>
-                            <button class="btn-ghost btn-sm" onclick="C2.refreshFiles()">${escapeHtml(c2t('c2.files.refresh'))}</button>
-                            <button type="button" class="btn-ghost btn-sm" id="c2-file-upload-btn" onclick="C2.openFileUploadPicker()" title="${escapeHtml(c2t('c2.files.upload'))}">📤 ${escapeHtml(c2t('c2.files.upload'))}</button>
-                            <input type="file" id="c2-file-upload-input" style="display:none" onchange="C2.onC2FileUploadPick(event)" />
-                            <span id="c2-current-path" class="c2-path-breadcrumb">/</span>
+                    <div id="c2-tab-files" class="c2-tab-panel c2-tab-panel--card${panelCls('files')}" style="${panelDisplay('files')}">
+                        <div class="c2-file-panel">
+                            <div class="c2-file-toolbar">
+                                <button class="btn-ghost btn-sm" onclick="C2.goToParentDirectory()">${escapeHtml(c2t('c2.files.parent'))}</button>
+                                <button class="btn-ghost btn-sm" onclick="C2.refreshFiles()">${escapeHtml(c2t('c2.files.refresh'))}</button>
+                                <button type="button" class="btn-ghost btn-sm" id="c2-file-upload-btn" onclick="C2.openFileUploadPicker()" title="${escapeHtml(c2t('c2.files.upload'))}">${escapeHtml(c2t('c2.files.upload'))}</button>
+                                <input type="file" id="c2-file-upload-input" style="display:none" onchange="C2.onC2FileUploadPick(event)" />
+                                <span id="c2-current-path" class="c2-path-breadcrumb">/</span>
+                            </div>
+                            <div id="c2-file-upload-hint" class="c2-file-upload-hint" hidden role="status"></div>
+                            <div id="c2-file-upload-progress" class="c2-file-upload-progress" hidden role="status" aria-live="polite">
+                                <div class="c2-file-upload-progress-track" aria-hidden="true"><div class="c2-file-upload-progress-fill" id="c2-file-upload-progress-fill"></div></div>
+                                <span class="c2-file-upload-progress-label" id="c2-file-upload-progress-label"></span>
+                            </div>
+                            <div id="c2-file-list" class="c2-file-list"></div>
                         </div>
-                        <div id="c2-file-upload-hint" class="c2-file-upload-hint" hidden role="status"></div>
-                        <div id="c2-file-upload-progress" class="c2-file-upload-progress" hidden role="status" aria-live="polite">
-                            <div class="c2-file-upload-progress-track" aria-hidden="true"><div class="c2-file-upload-progress-fill" id="c2-file-upload-progress-fill"></div></div>
-                            <span class="c2-file-upload-progress-label" id="c2-file-upload-progress-label"></span>
-                        </div>
-                        <div id="c2-file-list" class="c2-file-list"></div>
                     </div>
-                    <div id="c2-tab-tasks" class="c2-tab-panel" style="display:none;">
-                        <div id="c2-session-tasks-list" class="c2-task-list-compact"></div>
+                    <div id="c2-tab-tasks" class="c2-tab-panel${panelCls('tasks')}" style="${panelDisplay('tasks')}">
+                        <div id="c2-session-tasks-list"></div>
                     </div>
-                    <div id="c2-tab-info" class="c2-tab-panel" style="display:none;">
-                        <div class="c2-info-grid">
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoSessionId'))}:</strong> ${s.id}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoImplantUuid'))}:</strong> ${s.implantUuid}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoHostname'))}:</strong> ${escapeHtml(s.hostname)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoUsername'))}:</strong> ${escapeHtml(s.username)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoOs'))}:</strong> ${s.os}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoArch'))}:</strong> ${s.arch}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoPid'))}:</strong> ${s.pid}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoProcess'))}:</strong> ${escapeHtml(s.processName || '-')}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoAdmin'))}:</strong> ${escapeHtml(adminVal)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoInternalIp'))}:</strong> ${s.internalIp || '-'}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoSleep'))}:</strong> ${escapeHtml(sleepLine)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoFirstSeen'))}:</strong> ${formatTime(s.firstSeenAt)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoLastCheckin'))}:</strong> ${formatTime(s.lastCheckIn)}</div>
-                            <div><strong>${escapeHtml(c2t('c2.sessions.infoNote'))}:</strong> ${escapeHtml(s.note || '-')}</div>
-                        </div>
+                    <div id="c2-tab-info" class="c2-tab-panel c2-tab-panel--card${panelCls('info')}" style="${panelDisplay('info')}">
+                        ${renderSessionInfoPanel(s, adminVal, sleepLine)}
                     </div>
                 </div>
             </div>
@@ -892,38 +1189,249 @@
             C2.ensureListenersLoaded().then(function() {
                 C2.updateFileUploadButton(s);
             });
-        }, 50);
+            requestAnimationFrame(function () { C2.fitTerminal(); });
+        }, 0);
     };
 
     C2.switchTab = function(tab) {
+        C2.activeSessionTab = tab;
         document.querySelectorAll('.c2-session-tab').forEach(el => el.classList.remove('active'));
-        document.querySelectorAll('.c2-tab-panel').forEach(el => el.style.display = 'none');
-        
+        document.querySelectorAll('.c2-tab-panel').forEach(el => {
+            el.classList.remove('active');
+            el.style.display = 'none';
+        });
+
         const tabEl = document.querySelector(`.c2-session-tab[data-tab="${tab}"]`);
         if (tabEl) tabEl.classList.add('active');
-        
+
         const panel = document.getElementById(`c2-tab-${tab}`);
-        if (panel) panel.style.display = 'block';
+        if (panel) {
+            panel.classList.add('active');
+            if (tab === 'terminal' || tab === 'tasks') {
+                panel.style.display = 'flex';
+            } else {
+                panel.style.display = 'block';
+            }
+        }
 
         if (tab === 'terminal') {
-            setTimeout(function () {
+            requestAnimationFrame(function () {
                 C2.fitTerminal();
                 if (C2.terminalInstance) C2.terminalInstance.focus();
-            }, 50);
+            });
+        } else if (tab === 'tasks' && C2.selectedSessionId) {
+            C2.loadSessionTasks(C2.selectedSessionId);
+        }
+
+        if (tabEl && typeof tabEl.blur === 'function') {
+            tabEl.blur();
         }
     };
 
     C2.setSessionSleep = function(id) {
-        const sleep = prompt(c2t('c2.sessions.promptSleepSeconds'), '5');
-        if (!sleep) return;
-        const jitter = prompt(c2t('c2.sessions.promptJitterPercent'), '0') || '0';
-        
+        if (!id) return;
+        const modal = document.getElementById('c2-modal');
+        const content = document.getElementById('c2-modal-content');
+        const modalBox = modal && modal.querySelector('.c2-modal');
+        if (!content || !modal) return;
+
+        if (typeof isAppModalOpen === 'function' && isAppModalOpen(modal) && C2._sleepModalSessionId === id) {
+            return;
+        }
+
+        const s = (C2.sessions || []).find(x => x.id === id);
+        const defaultSleep = s && s.sleepSeconds != null ? s.sleepSeconds : 5;
+        const defaultJitter = s && s.jitterPercent != null ? s.jitterPercent : 0;
+        const hostLabel = s ? (s.hostname || s.id) : id;
+        const currentLine = c2t('c2.sessions.sleepModalCurrent', { sec: defaultSleep, jitter: defaultJitter });
+        const presets = [5, 10, 30, 60, 120, 300];
+        const presetHtml = presets.map(function (p) {
+            const active = p === defaultSleep ? ' is-active' : '';
+            return `<button type="button" class="c2-sleep-preset${active}" data-c2-sleep-preset="${p}">${p}s</button>`;
+        }).join('');
+
+        C2._sleepModalSessionId = id;
+        if (modalBox) {
+            modalBox.classList.add('c2-modal--sleep');
+            modalBox.classList.remove('c2-modal--wide');
+        }
+
+        openAppModal(modal, { focus: false });
+        const render = function () {
+            content.innerHTML = `
+                <div class="c2-sleep-modal">
+                    <div class="c2-sleep-modal__header">
+                        <div class="c2-sleep-modal__title-wrap">
+                            <div class="c2-sleep-modal__icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/>
+                                    <path d="M12 7.5V12l3 2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="c2-sleep-modal__title">${escapeHtml(c2t('c2.sessions.sleepModalTitle'))}</h3>
+                                <p class="c2-sleep-modal__host">${escapeHtml(hostLabel)}</p>
+                            </div>
+                        </div>
+                        <button type="button" class="c2-modal-close" onclick="C2.closeModal()" aria-label="${escapeHtml(c2t('common.close'))}">&times;</button>
+                    </div>
+                    <div class="c2-sleep-modal__current">${escapeHtml(currentLine)}</div>
+                    <div class="c2-sleep-modal__body">
+                        <div class="c2-sleep-field">
+                            <div class="c2-sleep-field__head">
+                                <label for="c2-sleep-seconds">${escapeHtml(c2t('c2.sessions.promptSleepSeconds'))}</label>
+                                <span class="c2-sleep-field__value"><span id="c2-sleep-seconds-display">${defaultSleep}</span>s</span>
+                            </div>
+                            <div class="c2-sleep-field__control">
+                                <input type="range" id="c2-sleep-seconds-range" class="c2-sleep-range" min="1" max="300" step="1" value="${defaultSleep}">
+                                <input type="number" id="c2-sleep-seconds" class="c2-sleep-number" min="1" max="3600" value="${defaultSleep}">
+                            </div>
+                            <div class="c2-sleep-presets">
+                                <span class="c2-sleep-presets__label">${escapeHtml(c2t('c2.sessions.sleepModalPresets'))}</span>
+                                ${presetHtml}
+                            </div>
+                        </div>
+                        <div class="c2-sleep-field">
+                            <div class="c2-sleep-field__head">
+                                <label for="c2-sleep-jitter">${escapeHtml(c2t('c2.sessions.promptJitterPercent'))}</label>
+                                <span class="c2-sleep-field__value"><span id="c2-sleep-jitter-display">${defaultJitter}</span>%</span>
+                            </div>
+                            <div class="c2-sleep-field__control">
+                                <input type="range" id="c2-sleep-jitter-range" class="c2-sleep-range" min="0" max="100" step="1" value="${defaultJitter}">
+                                <input type="number" id="c2-sleep-jitter" class="c2-sleep-number" min="0" max="100" value="${defaultJitter}">
+                            </div>
+                        </div>
+                        <div class="c2-sleep-modal__preview" id="c2-sleep-preview" role="status"></div>
+                        <p class="c2-sleep-modal__hint">${escapeHtml(c2t('c2.sessions.sleepModalHint'))}</p>
+                    </div>
+                    <div class="c2-sleep-modal__footer">
+                        <button type="button" class="btn-secondary" onclick="C2.closeModal()">${escapeHtml(c2t('common.cancel'))}</button>
+                        <button type="button" class="btn-primary" id="c2-sleep-submit-btn">${escapeHtml(c2t('common.save'))}</button>
+                    </div>
+                </div>`;
+            C2.bindSleepModalControls();
+            const submitBtn = document.getElementById('c2-sleep-submit-btn');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', function () { C2.submitSessionSleep(); });
+            }
+            const secInput = document.getElementById('c2-sleep-seconds');
+            if (secInput) secInput.focus();
+        };
+        if (typeof deferModalContent === 'function') {
+            deferModalContent(render);
+        } else {
+            render();
+        }
+    };
+
+    C2.bindSleepModalControls = function() {
+        const secRange = document.getElementById('c2-sleep-seconds-range');
+        const secInput = document.getElementById('c2-sleep-seconds');
+        const jitRange = document.getElementById('c2-sleep-jitter-range');
+        const jitInput = document.getElementById('c2-sleep-jitter');
+        if (!secRange || !secInput || !jitRange || !jitInput) return;
+
+        const clamp = function (v, min, max) {
+            if (!Number.isFinite(v)) return min;
+            return Math.max(min, Math.min(max, v));
+        };
+
+        const syncPair = function (range, input, min, max, displayId) {
+            const display = displayId ? document.getElementById(displayId) : null;
+            const apply = function (value) {
+                const v = clamp(value, min, max);
+                range.value = String(Math.min(v, parseInt(range.max, 10) || max));
+                input.value = String(v);
+                if (display) display.textContent = String(v);
+                C2.updateSleepModalPreview();
+                document.querySelectorAll('[data-c2-sleep-preset]').forEach(function (btn) {
+                    const p = parseInt(btn.getAttribute('data-c2-sleep-preset'), 10);
+                    btn.classList.toggle('is-active', p === v && input === secInput);
+                });
+            };
+            range.addEventListener('input', function () { apply(parseInt(range.value, 10)); });
+            input.addEventListener('input', function () { apply(parseInt(input.value, 10)); });
+            input.addEventListener('change', function () { apply(parseInt(input.value, 10)); });
+        };
+
+        syncPair(secRange, secInput, 1, 3600, 'c2-sleep-seconds-display');
+        syncPair(jitRange, jitInput, 0, 100, 'c2-sleep-jitter-display');
+
+        document.querySelectorAll('[data-c2-sleep-preset]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const v = parseInt(btn.getAttribute('data-c2-sleep-preset'), 10);
+                if (!Number.isFinite(v)) return;
+                secInput.value = String(v);
+                secRange.value = String(Math.min(v, 300));
+                const display = document.getElementById('c2-sleep-seconds-display');
+                if (display) display.textContent = String(v);
+                document.querySelectorAll('[data-c2-sleep-preset]').forEach(function (b) {
+                    b.classList.toggle('is-active', b === btn);
+                });
+                C2.updateSleepModalPreview();
+            });
+        });
+
+        C2.updateSleepModalPreview();
+    };
+
+    C2.updateSleepModalPreview = function() {
+        const preview = document.getElementById('c2-sleep-preview');
+        const secInput = document.getElementById('c2-sleep-seconds');
+        const jitInput = document.getElementById('c2-sleep-jitter');
+        if (!preview || !secInput || !jitInput) return;
+        const sleep = parseInt(secInput.value, 10);
+        const jitter = parseInt(jitInput.value, 10);
+        if (!Number.isFinite(sleep) || sleep < 1) {
+            preview.textContent = '';
+            return;
+        }
+        const j = Number.isFinite(jitter) ? Math.max(0, Math.min(100, jitter)) : 0;
+        const minSec = Math.max(1, Math.round(sleep * (1 - j / 100)));
+        const maxSec = Math.max(minSec, Math.round(sleep * (1 + j / 100)));
+        preview.textContent = c2t('c2.sessions.sleepModalPreview', { min: minSec, max: maxSec });
+    };
+
+    C2.submitSessionSleep = function() {
+        const id = C2._sleepModalSessionId;
+        if (!id) return;
+        const sleepEl = document.getElementById('c2-sleep-seconds');
+        const jitterEl = document.getElementById('c2-sleep-jitter');
+        const submitBtn = document.getElementById('c2-sleep-submit-btn');
+        const sleep = parseInt(sleepEl && sleepEl.value, 10);
+        const jitter = parseInt(jitterEl && jitterEl.value, 10);
+        if (!Number.isFinite(sleep) || sleep < 1) {
+            showToast(c2t('c2.sessions.toastSleepInvalid'), 'warn');
+            return;
+        }
+        const jitterVal = Number.isFinite(jitter) ? Math.max(0, Math.min(100, jitter)) : 0;
+        if (submitBtn) submitBtn.disabled = true;
+
         apiRequest('PUT', `${API_BASE}/sessions/${id}/sleep`, {
-            sleep_seconds: parseInt(sleep),
-            jitter_percent: parseInt(jitter)
+            sleep_seconds: sleep,
+            jitter_percent: jitterVal
         }).then(data => {
-            if (data.error) showToast(data.error, 'error');
-            else showToast(c2t('c2.sessions.toastSleepUpdated'), 'success');
+            if (submitBtn) submitBtn.disabled = false;
+            if (data.error) {
+                showToast(data.error, 'error');
+                return;
+            }
+            C2._sleepModalSessionId = null;
+            C2.closeModal();
+            showToast(c2t('c2.sessions.toastSleepUpdated'), 'success');
+            const refresh = C2.loadSessions();
+            const after = function () {
+                if (C2.selectedSessionId === id) {
+                    C2.renderSessionDetail(id);
+                }
+            };
+            if (refresh && typeof refresh.then === 'function') {
+                refresh.then(after).catch(after);
+            } else {
+                after();
+            }
+        }).catch(function () {
+            if (submitBtn) submitBtn.disabled = false;
         });
     };
 
@@ -959,10 +1467,13 @@
         if (!term || !term.buffer || !term.buffer.active) return '';
         const buf = term.buffer.active;
         const lines = [];
-        for (let i = 0; i < buf.length; i++) {
+        const viewportEnd = buf.baseY + term.rows;
+        const start = Math.max(0, viewportEnd - 300);
+        for (let i = start; i < viewportEnd; i++) {
             const line = buf.getLine(i);
             if (line) lines.push(line.translateToString(true));
         }
+        while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
         return lines.join('\n');
     };
 
@@ -1110,10 +1621,9 @@
             term.loadAddon(C2.terminalFitAddon);
         }
 
+        container.innerHTML = '';
         term.open(container);
-        try {
-            if (C2.terminalFitAddon) C2.terminalFitAddon.fit();
-        } catch (e) {}
+        C2.fitTerminal();
 
         let lineBuffer = '';
         let cursorIndex = 0;
@@ -1228,13 +1738,15 @@
 
         const savedLog = C2.terminalLogs[sessionId];
         if (savedLog) {
-            term.write(String(savedLog).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\r\n'));
-            if (!savedLog.endsWith('\n')) term.write('\r\n');
+            const normalized = String(savedLog).replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd();
+            if (normalized) {
+                term.write(normalized.replace(/\n/g, '\r\n') + '\r\n');
+            }
         } else {
             term.writeln('\x1b[36m' + c2t('c2.sessions.terminalWelcome') + '\x1b[0m');
-            term.writeln('');
         }
         term.write(prompt);
+        term.scrollToBottom();
 
         term.onData(function (e) {
             if (e === '\x0c') {
@@ -1404,20 +1916,23 @@
         });
         C2.terminalResizeObserver.observe(container);
 
-        setTimeout(function () {
-            try {
-                if (C2.terminalFitAddon) C2.terminalFitAddon.fit();
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                C2.fitTerminal();
                 term.focus();
-            } catch (e) {}
-        }, 100);
+            });
+        });
     };
 
     C2.fitTerminal = function() {
-        if (C2.terminalFitAddon && C2.terminalInstance) {
-            try {
-                C2.terminalFitAddon.fit();
-            } catch (e) {}
-        }
+        const container = document.getElementById('c2-terminal-container');
+        if (!container || !C2.terminalFitAddon || !C2.terminalInstance) return;
+        const rect = container.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 20) return;
+        try {
+            C2.terminalFitAddon.fit();
+            C2.terminalInstance.scrollToBottom();
+        } catch (e) {}
     };
 
     C2.clearTerminal = function() {
@@ -1425,6 +1940,7 @@
             C2.terminalInstance.clear();
             C2.terminalInstance.writeln('\x1b[36m' + c2t('c2.sessions.termCleared') + '\x1b[0m');
             C2.terminalInstance.write('$ ');
+            C2.terminalInstance.scrollToBottom();
             if (C2.terminalSessionId) {
                 C2.terminalLogs[C2.terminalSessionId] = C2.serializeTerminalBuffer(C2.terminalInstance);
             }
@@ -2184,25 +2700,67 @@
             }
             
             if (!container) return;
+
+            const refreshBtn = escapeHtml(c2t('c2.tasks.refresh'));
+            const countLabel = escapeHtml(c2t('c2.tasks.sessionTaskCount', { n: tasks.length }));
+
             if (tasks.length === 0) {
-                container.innerHTML = '<div class="c2-empty">' + escapeHtml(c2t('c2.tasks.emptySession')) + '</div>';
+                container.innerHTML = `
+                    <div class="c2-session-tasks-panel">
+                        <div class="c2-session-tasks-toolbar">
+                            <div class="c2-session-tasks-toolbar-title">
+                                <span class="c2-session-tasks-heading">${escapeHtml(c2t('c2.tasks.sessionTaskHistory'))}</span>
+                                <span class="c2-session-tasks-count">0</span>
+                            </div>
+                            <button type="button" class="btn-ghost btn-sm c2-session-tasks-refresh" onclick="C2.loadSessionTasks('${escapeHtml(sessionId)}')">${refreshBtn}</button>
+                        </div>
+                        <div class="c2-empty-inline">
+                            <div class="c2-empty-inline__icon" aria-hidden="true"></div>
+                            <div class="c2-empty-inline__text">${escapeHtml(c2t('c2.tasks.emptySession'))}</div>
+                        </div>
+                    </div>`;
                 return;
             }
             
-            container.innerHTML = tasks.map(t => {
-                const rawId = t.id || '';
-                const cmd = formatTaskCommand(t);
-                const cmdShort = truncateCommand(cmd, 40);
-                return `
-                <div class="c2-task-item-compact">
-                    <span class="c2-task-status-dot ${escapeHtml(t.status || '')}"></span>
-                    <span class="c2-task-type">${escapeHtml(t.taskType || '')}</span>
-                    ${cmdShort ? `<span class="c2-task-command" title="${escapeHtml(cmd)}">${escapeHtml(cmdShort)}</span>` : ''}
-                    <span class="c2-task-meta">${escapeHtml(taskStatusLabel(t.status))} | ${formatDuration(t.durationMs)}</span>
-                    <button type="button" class="btn-secondary btn-small" data-c2-task-action="view" data-task-id="${escapeHtml(rawId)}">${escapeHtml(c2t('c2.tasks.view'))}</button>
-                </div>
-            `;
-            }).join('');
+            container.innerHTML = `
+                <div class="c2-session-tasks-panel">
+                    <div class="c2-session-tasks-toolbar">
+                        <div class="c2-session-tasks-toolbar-title">
+                            <span class="c2-session-tasks-heading">${escapeHtml(c2t('c2.tasks.sessionTaskHistory'))}</span>
+                            <span class="c2-session-tasks-count">${countLabel}</span>
+                        </div>
+                        <button type="button" class="btn-ghost btn-sm c2-session-tasks-refresh" onclick="C2.loadSessionTasks('${escapeHtml(sessionId)}')">${refreshBtn}</button>
+                    </div>
+                    <div class="c2-session-tasks-rows">
+                        ${tasks.map(t => {
+                            const rawId = t.id || '';
+                            const cmd = formatTaskCommand(t);
+                            const cmdShort = truncateCommand(cmd, 64);
+                            const typeCat = taskTypeCategory(t.taskType);
+                            const status = String(t.status || '');
+                            const isPending = status === 'queued' || status === 'sent' || status === 'running';
+                            const timeStr = formatTime(t.completedAt || t.createdAt);
+                            return `
+                            <div class="c2-session-task-row ${isPending ? 'is-pending' : ''}" data-status="${escapeHtml(status)}">
+                                <div class="c2-session-task-row__main">
+                                    <span class="c2-task-status-dot ${escapeHtml(status)}" title="${escapeHtml(taskStatusLabel(status))}"></span>
+                                    <span class="c2-task-type-badge c2-task-type-badge--${typeCat}">${escapeHtml(t.taskType || '-')}</span>
+                                    <div class="c2-session-task-row__cmd" title="${escapeHtml(cmd || '')}">
+                                        ${cmdShort
+                                            ? `<code class="c2-session-task-command">${escapeHtml(cmdShort)}</code>`
+                                            : `<span class="c2-session-task-command c2-session-task-command--muted">—</span>`}
+                                    </div>
+                                </div>
+                                <div class="c2-session-task-row__meta">
+                                    <span class="c2-status-badge ${escapeHtml(status)}">${escapeHtml(taskStatusLabel(status))}</span>
+                                    <span class="c2-session-task-duration">${formatDuration(t.durationMs)}</span>
+                                    <span class="c2-session-task-time" title="${escapeHtml(timeStr)}">${escapeHtml(formatRelativeTime(t.completedAt || t.createdAt) || timeStr)}</span>
+                                    <button type="button" class="btn-secondary btn-small c2-session-task-view" data-c2-task-action="view" data-task-id="${escapeHtml(rawId)}">${escapeHtml(c2t('c2.tasks.view'))}</button>
+                                </div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>`;
         });
     };
 
@@ -2824,18 +3382,61 @@
     };
 
     C2.onEvent = function(event) {
+        if (!event) return;
+
         if (window.currentPageId === 'c2-events' && (C2.eventsPage || 1) === 1) {
             C2.loadEvents(1);
         }
 
-        const msg = event.message || '';
-        const sessionOnline = event.category === 'session' && (
+        const msg = String(event.message || '');
+        const sid = event.sessionId || (event.data && event.data.session_id) || '';
+        const sessionOnline = event.category === 'session' && event.level === 'critical' && (
             msg.includes('上线') || msg.includes('新会话') || /new session/i.test(msg)
         );
-        if (event.level === 'critical' || sessionOnline) {
-            showToast(`[${event.category}] ${event.message}`, event.level === 'critical' ? 'error' : 'info');
+        const sessionOffline = event.category === 'session' && (
+            msg.includes('离线') || /offline/i.test(msg)
+        );
+
+        if (sessionOnline || sessionOffline) {
+            const prevCount = (C2.sessions || []).length;
+            const prevSelected = C2.selectedSessionId;
+            const refresh = C2.loadSessions();
+            const afterRefresh = function () {
+                if (sessionOnline && sid && window.currentPageId === 'c2-sessions') {
+                    if (prevCount === 0 || !prevSelected) {
+                        C2.selectSession(sid);
+                    }
+                }
+            };
+            if (refresh && typeof refresh.then === 'function') {
+                refresh.then(afterRefresh).catch(function () {});
+            } else {
+                afterRefresh();
+            }
+            if (typeof refreshDashboard === 'function') {
+                try { refreshDashboard(); } catch (e) {}
+            }
         }
 
+        if (sessionOnline) {
+            showToast(`[${event.category}] ${msg}`, 'info');
+        } else if (event.level === 'critical') {
+            showToast(`[${event.category}] ${msg}`, 'error');
+        }
+
+        if (event.category === 'task') {
+            const taskSid = sid;
+            if (window.currentPageId === 'c2-tasks') {
+                const page = msg.includes('入队') ? 1 : (C2.tasksPage || 1);
+                C2.loadTasks(page);
+            }
+            if (window.currentPageId === 'c2-sessions' && taskSid && C2.selectedSessionId === taskSid) {
+                C2.loadSessionTasks(taskSid);
+            }
+            if (typeof refreshDashboard === 'function') {
+                try { refreshDashboard(); } catch (e) {}
+            }
+        }
     };
 
     // ============================================================================
@@ -2982,8 +3583,12 @@
         const modal = document.getElementById('c2-modal');
         if (modal) {
             const modalBox = modal.querySelector('.c2-modal');
-            if (modalBox) modalBox.classList.remove('c2-modal--wide');
+            if (modalBox) {
+                modalBox.classList.remove('c2-modal--wide');
+                modalBox.classList.remove('c2-modal--sleep');
+            }
         }
+        C2._sleepModalSessionId = null;
         closeAppModal('c2-modal');
     };
 

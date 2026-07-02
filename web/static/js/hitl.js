@@ -1,3 +1,79 @@
+function hitlReviewerNormalize(v) {
+    const x = String(v || '').trim().toLowerCase();
+    if (x === 'audit_agent' || x === 'agent' || x === 'ai') return 'audit_agent';
+    return 'human';
+}
+
+function hitlParsePayloadObject(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try {
+        const o = JSON.parse(String(raw));
+        return o && typeof o === 'object' ? o : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function hitlRenderContextBlocks(payloadObj) {
+    if (!payloadObj || typeof payloadObj !== 'object') return '';
+    const blocks = [];
+    function addBlock(label, value) {
+        const s = String(value || '').trim();
+        if (!s) return;
+        blocks.push(
+            '<div class="hitl-context-block">' +
+            '<div class="hitl-context-label">' + escapeHtml(label) + '</div>' +
+            '<pre class="hitl-context-text">' + escapeHtml(s) + '</pre>' +
+            '</div>'
+        );
+    }
+    addBlock(hitlT('fieldUserMessage', 'User message'), payloadObj.userMessage);
+    addBlock(hitlT('fieldThinking', 'Thinking'), payloadObj.thinking);
+    addBlock(hitlT('fieldReasoning', 'Reasoning'), payloadObj.reasoningChain);
+    addBlock(hitlT('fieldPlanning', 'Planning'), payloadObj.planning);
+    return blocks.join('');
+}
+
+function hitlRenderExecutionResultBlock(payloadObj) {
+    if (!payloadObj || typeof payloadObj !== 'object') return '';
+    const exec = payloadObj.executionResult;
+    if (!exec || typeof exec !== 'object') return '';
+    const ok = exec.success === true;
+    const label = hitlT('fieldExecutionResult', 'Execution result') + (ok ? ' (' + hitlT('executionSuccess', 'success') + ')' : ' (' + hitlT('executionFailed', 'failed') + ')');
+    const text = String(exec.result || '').trim();
+    if (!text) return '';
+    return (
+        '<div class="hitl-context-block hitl-context-block--execution">' +
+        '<div class="hitl-context-label">' + escapeHtml(label) + '</div>' +
+        '<pre class="hitl-context-text">' + escapeHtml(text) + '</pre>' +
+        '</div>'
+    );
+}
+
+function hitlFillLogModalReadonlySections(payloadObj) {
+    const ctxEl = document.getElementById('hitl-log-context-readonly');
+    const execEl = document.getElementById('hitl-log-execution-readonly');
+    const ctxHtml = hitlRenderContextBlocks(payloadObj);
+    const execHtml = hitlRenderExecutionResultBlock(payloadObj);
+    if (ctxEl) {
+        ctxEl.innerHTML = ctxHtml;
+        ctxEl.hidden = !ctxHtml;
+    }
+    if (execEl) {
+        execEl.innerHTML = execHtml;
+        execEl.hidden = !execHtml;
+    }
+}
+
+function hitlPayloadSummary(payloadObj) {
+    const parts = [];
+    if (payloadObj && payloadObj.userMessage) parts.push(hitlT('fieldUserMessage', 'User'));
+    if (payloadObj && payloadObj.thinking) parts.push(hitlT('fieldThinking', 'Thinking'));
+    if (payloadObj && payloadObj.executionResult) parts.push(hitlT('fieldExecutionResult', 'Result'));
+    return parts.length ? parts.join(' · ') : '—';
+}
+
 function hitlModeNormalize(m) {
     let v = String(m || '').trim().toLowerCase().replace(/-/g, '_');
     if (v === 'feedback' || v === 'followup') {
@@ -18,6 +94,81 @@ function hitlT(key, fallback, params) {
         }
     } catch (e) {}
     return fallback;
+}
+
+const HITL_LOGS_PAGE_SIZE_KEY = 'cyberstrike_hitl_logs_page_size';
+const HITL_PENDING_PAGE_SIZE_KEY = 'cyberstrike_hitl_pending_page_size';
+const HITL_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+function hitlPaginationT(key, opts, fallback) {
+    if (typeof window.t === 'function') {
+        const keys = (key === 'paginationInfo' || key === 'perPageLabel')
+            ? ['mcpMonitor.' + key, 'mcp.' + key]
+            : ['mcp.' + key];
+        for (let i = 0; i < keys.length; i++) {
+            const v = window.t(keys[i], opts || {});
+            if (typeof v === 'string' && v && v !== keys[i]) return v;
+        }
+    }
+    return fallback != null ? fallback : key;
+}
+
+function hitlLocale() {
+    if (typeof window.__locale === 'string' && window.__locale.length) {
+        return window.__locale.startsWith('zh') ? 'zh-CN' : 'en-US';
+    }
+    return (typeof navigator !== 'undefined' && navigator.language) ? navigator.language : 'en-US';
+}
+
+function initHitlPageSizeFromStorage(storageKey, fallbackSize, assignFn) {
+    try {
+        const saved = parseInt(localStorage.getItem(storageKey), 10);
+        if (HITL_PAGE_SIZE_OPTIONS.indexOf(saved) >= 0) {
+            assignFn(saved);
+            return;
+        }
+    } catch (e) { /* ignore */ }
+    assignFn(fallbackSize);
+}
+
+function renderHitlPagination(containerId, state, goPageFnName, pageSizeChangeFnName, pageSizeSelectId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const esc = typeof escapeHtml === 'function' ? escapeHtml : function (s) { return String(s || ''); };
+    const total = state.total || 0;
+    const currentPage = state.page || 1;
+    const pageSize = state.pageSize || 20;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+    const end = total === 0 ? 0 : Math.min(currentPage * pageSize, total);
+    const infoText = hitlPaginationT('paginationInfo', { start: start, end: end, total: total },
+        '显示 ' + start + '-' + end + ' / 共 ' + total + ' 条记录');
+    const perPageLabel = hitlPaginationT('perPageLabel', null, '每页显示');
+    const firstPageLabel = hitlPaginationT('firstPage', null, '首页');
+    const prevPageLabel = hitlPaginationT('prevPage', null, '上一页');
+    const pageInfoText = hitlPaginationT('pageInfo', { page: currentPage, total: totalPages },
+        '第 ' + currentPage + ' / ' + totalPages + ' 页');
+    const nextPageLabel = hitlPaginationT('nextPage', null, '下一页');
+    const lastPageLabel = hitlPaginationT('lastPage', null, '末页');
+    const disabledFirst = currentPage === 1 || total === 0;
+    const disabledLast = currentPage >= totalPages || total === 0;
+    let html = '<div class="monitor-pagination">';
+    html += '<div class="pagination-info">';
+    html += '<span>' + esc(infoText) + '</span>';
+    html += '<label class="pagination-page-size">' + esc(perPageLabel);
+    html += '<select id="' + esc(pageSizeSelectId) + '" onchange="' + esc(pageSizeChangeFnName) + '()">';
+    HITL_PAGE_SIZE_OPTIONS.forEach(function (n) {
+        html += '<option value="' + n + '"' + (pageSize === n ? ' selected' : '') + '>' + n + '</option>';
+    });
+    html += '</select></label></div>';
+    html += '<div class="pagination-controls">';
+    html += '<button type="button" class="btn-secondary" onclick="' + esc(goPageFnName) + '(1)"' + (disabledFirst ? ' disabled' : '') + '>' + esc(firstPageLabel) + '</button>';
+    html += '<button type="button" class="btn-secondary" onclick="' + esc(goPageFnName) + '(' + (currentPage - 1) + ')"' + (disabledFirst ? ' disabled' : '') + '>' + esc(prevPageLabel) + '</button>';
+    html += '<span class="pagination-page">' + esc(pageInfoText) + '</span>';
+    html += '<button type="button" class="btn-secondary" onclick="' + esc(goPageFnName) + '(' + (currentPage + 1) + ')"' + (disabledLast ? ' disabled' : '') + '>' + esc(nextPageLabel) + '</button>';
+    html += '<button type="button" class="btn-secondary" onclick="' + esc(goPageFnName) + '(' + totalPages + ')"' + (disabledLast ? ' disabled' : '') + '>' + esc(lastPageLabel) + '</button>';
+    html += '</div></div>';
+    container.innerHTML = html;
 }
 
 function hitlEffectiveEnabled(cfg) {
@@ -104,12 +255,189 @@ async function mergeHitlGlobalToolWhitelist(sensitiveTools) {
     return [];
 }
 
+function hitlPageToolsSplit(s) {
+    if (typeof window.hitlToolsSplitToArray === 'function') {
+        return window.hitlToolsSplitToArray(s);
+    }
+    return String(s || '').split(/[,\n\r]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+}
+
+function hitlPageToolsMergeDisplay(globalArr, sessionToolsArr) {
+    if (typeof window.hitlMergeToolsForDisplay === 'function') {
+        return window.hitlMergeToolsForDisplay(globalArr, sessionToolsArr);
+    }
+    const out = [];
+    const seen = Object.create(null);
+    function addOne(t) {
+        const n = String(t || '').trim();
+        if (!n) return;
+        const k = n.toLowerCase();
+        if (seen[k]) return;
+        seen[k] = true;
+        out.push(n);
+    }
+    if (Array.isArray(globalArr)) globalArr.forEach(addOne);
+    if (Array.isArray(sessionToolsArr)) sessionToolsArr.forEach(addOne);
+    return out.join(', ');
+}
+
+function showHitlPageWhitelistFeedback(text, isError) {
+    const el = document.getElementById('hitl-page-whitelist-feedback');
+    if (!el) return;
+    const msg = String(text || '').trim();
+    if (!msg) {
+        el.hidden = true;
+        el.textContent = '';
+        el.className = 'hitl-apply-feedback';
+        return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+    el.className = 'hitl-apply-feedback' + (isError ? ' hitl-apply-feedback--error' : '');
+}
+
+function syncHitlSidebarWhitelistDisplay(toolsStr) {
+    const sidebarEl = document.getElementById('hitl-sensitive-tools');
+    if (sidebarEl) sidebarEl.value = toolsStr;
+}
+
+async function fetchHitlGlobalToolWhitelist() {
+    const resp = await hitlApiFetch('/api/hitl/tool-whitelist', { credentials: 'same-origin' });
+    if (!resp.ok) {
+        throw new Error(await readHitlApiError(resp));
+    }
+    const data = await resp.json();
+    const list = Array.isArray(data.toolWhitelist) ? data.toolWhitelist : (
+        Array.isArray(data.hitlGlobalToolWhitelist) ? data.hitlGlobalToolWhitelist : []
+    );
+    if (typeof window !== 'undefined') {
+        window.csaiHitlGlobalToolWhitelist = list;
+    }
+    return list;
+}
+
+async function resolveHitlGlobalToolWhitelist() {
+    try {
+        return await fetchHitlGlobalToolWhitelist();
+    } catch (e) {
+        if (typeof window !== 'undefined' && Array.isArray(window.csaiHitlGlobalToolWhitelist)) {
+            return window.csaiHitlGlobalToolWhitelist.slice();
+        }
+        try {
+            const resp = await hitlApiFetch('/api/config', { credentials: 'same-origin' });
+            if (resp.ok) {
+                const cfg = await resp.json();
+                const tw = cfg.hitl && cfg.hitl.tool_whitelist;
+                if (Array.isArray(tw)) {
+                    if (typeof window !== 'undefined') {
+                        window.csaiHitlGlobalToolWhitelist = tw.slice();
+                    }
+                    return tw.slice();
+                }
+            }
+        } catch (e2) {
+            console.warn('resolveHitlGlobalToolWhitelist fallback', e2);
+        }
+        throw e;
+    }
+}
+
+function hitlPageWhitelistDisplayValue(globalArr, sessionArr) {
+    return hitlPageToolsMergeDisplay(globalArr, sessionArr);
+}
+
+async function refreshHitlPageWhitelist() {
+    const ta = document.getElementById('hitl-page-sensitive-tools');
+    if (!ta) return;
+    const cached = typeof window !== 'undefined' && Array.isArray(window.csaiHitlGlobalToolWhitelist)
+        ? window.csaiHitlGlobalToolWhitelist
+        : [];
+    if (cached.length > 0) {
+        ta.value = hitlPageWhitelistDisplayValue(cached, []);
+    }
+    try {
+        const globalArr = await resolveHitlGlobalToolWhitelist();
+        const cid = getCurrentConversationIdForHitl();
+        let sessionArr = [];
+        if (cid) {
+            const cfg = typeof window.getHitlConfigForConversation === 'function'
+                ? window.getHitlConfigForConversation(cid)
+                : null;
+            sessionArr = hitlSensitiveToolsToArray(cfg || {});
+        }
+        ta.value = hitlPageWhitelistDisplayValue(globalArr, sessionArr);
+        syncHitlSidebarWhitelistDisplay(ta.value);
+    } catch (e) {
+        console.warn('refreshHitlPageWhitelist', e);
+        if (!ta.value.trim() && cached.length > 0) {
+            ta.value = hitlPageWhitelistDisplayValue(cached, []);
+        }
+    }
+}
+
+async function putHitlGlobalToolWhitelist(toolWhitelist) {
+    const list = Array.isArray(toolWhitelist) ? toolWhitelist : [];
+    const resp = await hitlApiFetch('/api/hitl/tool-whitelist', {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolWhitelist: list })
+    });
+    if (!resp.ok) {
+        throw new Error(await readHitlApiError(resp));
+    }
+    const data = await resp.json();
+    const out = Array.isArray(data.toolWhitelist) ? data.toolWhitelist : (
+        Array.isArray(data.hitlGlobalToolWhitelist) ? data.hitlGlobalToolWhitelist : list
+    );
+    if (typeof window !== 'undefined') {
+        window.csaiHitlGlobalToolWhitelist = out;
+    }
+    return out;
+}
+
+async function saveHitlPageWhitelist() {
+    const ta = document.getElementById('hitl-page-sensitive-tools');
+    const btn = document.getElementById('hitl-page-whitelist-save-btn');
+    if (!ta) return;
+    showHitlPageWhitelistFeedback('', false);
+    if (btn) btn.disabled = true;
+    try {
+        const desired = hitlPageToolsSplit(ta.value);
+        const globalArr = await putHitlGlobalToolWhitelist(desired);
+        const displayStr = hitlPageToolsMergeDisplay(globalArr, []);
+        ta.value = displayStr;
+        syncHitlSidebarWhitelistDisplay(displayStr);
+
+        const cid = getCurrentConversationIdForHitl();
+        if (cid) {
+            const cfg = typeof window.getHitlConfigForConversation === 'function'
+                ? window.getHitlConfigForConversation(cid)
+                : { mode: 'off', reviewer: 'human', sensitiveTools: '', timeoutSeconds: 0 };
+            const nextCfg = Object.assign({}, cfg, { sensitiveTools: '' });
+            if (typeof window.saveHitlConfigForConversation === 'function') {
+                window.saveHitlConfigForConversation(cid, nextCfg);
+            }
+            if (typeof saveHitlConversationConfig === 'function') {
+                await saveHitlConversationConfig(cid, nextCfg);
+            }
+        }
+
+        showHitlPageWhitelistFeedback(hitlT('whitelistSaved', 'Whitelist saved.'), false);
+    } catch (e) {
+        showHitlPageWhitelistFeedback(hitlT('whitelistSaveFailed', 'Failed to save whitelist') + ': ' + (e.message || e), true);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 async function saveHitlConversationConfig(conversationId, config) {
     if (!conversationId || !config) return false;
     const mode = hitlModeNormalize(config.mode || 'off');
     const enabled = typeof config.enabled === 'boolean' ? config.enabled : (mode !== 'off');
     const sensitiveTools = hitlSensitiveToolsToArray(config);
     const timeoutSeconds = normalizeHitlTimeoutSeconds(config.timeoutSeconds, 0);
+    const reviewer = hitlReviewerNormalize(config.reviewer || 'human');
     const resp = await hitlApiFetch('/api/hitl/config', {
         method: 'PUT',
         credentials: 'same-origin',
@@ -118,6 +446,7 @@ async function saveHitlConversationConfig(conversationId, config) {
             conversationId: conversationId,
             enabled: enabled,
             mode: mode,
+            reviewer: reviewer,
             sensitiveTools: sensitiveTools,
             timeoutSeconds: timeoutSeconds
         })
@@ -192,6 +521,7 @@ async function syncHitlConfigFromServer(conversationId) {
     const sessionOnlyStr = strip(globalWL, rawArr.join(', '));
     const normalizedCfg = Object.assign({}, merged, {
         mode: uiMode,
+        reviewer: hitlReviewerNormalize(merged.reviewer || cfg.reviewer || 'human'),
         sensitiveTools: sessionOnlyStr
     });
     if (typeof window.saveHitlConfigForConversation === 'function') {
@@ -288,24 +618,18 @@ async function followAgentRunAfterHitlDecision(conversationId) {
     }
 }
 
-async function refreshHitlPending() {
+function renderHitlPendingList(items) {
     const container = document.getElementById('hitl-pending-list');
     if (!container) return;
-    container.innerHTML = '<div class="loading-spinner">' + escapeHtml(hitlT('loading', 'Loading...')) + '</div>';
-    try {
-        const resp = await hitlApiFetch('/api/hitl/pending', { credentials: 'same-origin' });
-        if (!resp.ok) {
-            throw new Error('request failed');
-        }
-        const data = await resp.json();
-        const items = Array.isArray(data.items) ? data.items : [];
-        if (!items.length) {
-            container.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('emptyState', 'No pending approvals')) + '</div>';
-            return;
-        }
-        container.innerHTML = items.map(function (item) {
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) {
+        container.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('emptyState', 'No pending approvals')) + '</div>';
+        return;
+    }
+    container.innerHTML = list.map(function (item) {
+            const payloadObj = hitlParsePayloadObject(item.payload || '');
             const payload = String(item.payload || '');
-            const preview = payload.length > 280 ? (payload.slice(0, 280) + '...') : payload;
+            const contextHtml = hitlRenderContextBlocks(payloadObj);
             const mode = String(item.mode || '').trim().toLowerCase();
             const allowEdit = mode === 'review_edit';
             var escId = escapeHtml(String(item.id || ''));
@@ -321,7 +645,9 @@ async function refreshHitlPending() {
                 '<button class="hitl-dismiss-btn" title="' + escapeHtml(hitlT('dismiss', 'Dismiss')) + '" onclick="dismissHitlItem(' + qId + ')">&times;</button>' +
                 '</div>' +
                 '<div class="hitl-pending-meta">' + escapeHtml(hitlT('conversationLabel', 'Conversation:')) + ' ' + escapeHtml(item.conversationId || '-') + '</div>' +
-                '<pre class="hitl-pending-payload">' + escapeHtml(preview) + '</pre>' +
+                contextHtml +
+                hitlRenderExecutionResultBlock(payloadObj) +
+                '<pre class="hitl-pending-payload">' + escapeHtml(payload) + '</pre>' +
                 (allowEdit
                     ? ('<div class="hitl-input-help">' + escapeHtml(hitlT('reviewEditHelp', 'Review & edit mode: provide a JSON object to override tool arguments. Example: {"command":"ls -la"}')) + '</div>' +
                        '<textarea id="hitl-edit-' + escId + '" class="hitl-edit-args" placeholder=\'{"command":"ls -la"}\'></textarea>')
@@ -335,9 +661,51 @@ async function refreshHitlPending() {
                 '</div>'
             );
         }).join('');
+}
+
+async function refreshHitlPending() {
+    const container = document.getElementById('hitl-pending-list');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-spinner">' + escapeHtml(hitlT('loading', 'Loading...')) + '</div>';
+    try {
+        const q = document.getElementById('hitl-pending-search');
+        const params = new URLSearchParams({
+            page: String(hitlPendingPage),
+            pageSize: String(hitlPendingPageSize)
+        });
+        if (q && q.value.trim()) params.set('q', q.value.trim());
+        const resp = await hitlApiFetch('/api/hitl/pending?' + params.toString(), { credentials: 'same-origin' });
+        if (!resp.ok) {
+            throw new Error('request failed');
+        }
+        const data = await resp.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        hitlPendingTotal = typeof data.total === 'number' ? data.total : items.length;
+        const maxPage = Math.max(1, Math.ceil(hitlPendingTotal / hitlPendingPageSize));
+        if (hitlPendingPage > maxPage) {
+            hitlPendingPage = maxPage;
+            await refreshHitlPending();
+            return;
+        }
+        const badge = document.getElementById('hitl-pending-count');
+        if (badge) {
+            badge.textContent = String(hitlPendingTotal);
+            badge.hidden = hitlPendingTotal <= 0;
+        }
+        hitlPendingCache = items;
+        hitlPendingLoaded = true;
+        renderHitlPendingList(items);
+        renderHitlPendingPagination();
     } catch (e) {
+        hitlPendingLoaded = false;
         container.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('loadFailed', 'Failed to load')) + '</div>';
+        renderHitlPendingPagination();
     }
+}
+
+function filterHitlPending() {
+    hitlPendingPage = 1;
+    refreshHitlPending();
 }
 
 async function submitHitlDecision(interruptId, decision, conversationIdOpt) {
@@ -412,7 +780,666 @@ async function dismissHitlItem(interruptId, silent) {
     refreshHitlPending();
 }
 
+let hitlActiveTab = 'pending';
+let hitlLogsPage = 1;
+let hitlLogsPageSize = 20;
+let hitlLogsTotal = 0;
+let hitlLogsCache = [];
+let hitlLogsLoaded = false;
+let hitlLogsRetentionDays = 0;
+const hitlSelectedLogs = new Set();
+let hitlPendingPage = 1;
+let hitlPendingPageSize = 20;
+let hitlPendingTotal = 0;
+let hitlPendingCache = [];
+let hitlPendingLoaded = false;
+
+function switchHitlPageTab(tab) {
+    const tabs = ['pending', 'logs', 'strategy', 'whitelist'];
+    hitlActiveTab = tabs.indexOf(tab) >= 0 ? tab : 'pending';
+    const pendingTab = document.getElementById('hitl-tab-pending');
+    const logsTab = document.getElementById('hitl-tab-logs');
+    const strategyTab = document.getElementById('hitl-tab-strategy');
+    const whitelistTab = document.getElementById('hitl-tab-whitelist');
+    const pendingPanel = document.getElementById('hitl-panel-pending');
+    const logsPanel = document.getElementById('hitl-panel-logs');
+    const strategyPanel = document.getElementById('hitl-panel-strategy');
+    const whitelistPanel = document.getElementById('hitl-panel-whitelist');
+    if (pendingTab) {
+        pendingTab.classList.toggle('hitl-page-tab--active', hitlActiveTab === 'pending');
+        pendingTab.setAttribute('aria-selected', hitlActiveTab === 'pending' ? 'true' : 'false');
+    }
+    if (logsTab) {
+        logsTab.classList.toggle('hitl-page-tab--active', hitlActiveTab === 'logs');
+        logsTab.setAttribute('aria-selected', hitlActiveTab === 'logs' ? 'true' : 'false');
+    }
+    if (strategyTab) {
+        strategyTab.classList.toggle('hitl-page-tab--active', hitlActiveTab === 'strategy');
+        strategyTab.setAttribute('aria-selected', hitlActiveTab === 'strategy' ? 'true' : 'false');
+    }
+    if (whitelistTab) {
+        whitelistTab.classList.toggle('hitl-page-tab--active', hitlActiveTab === 'whitelist');
+        whitelistTab.setAttribute('aria-selected', hitlActiveTab === 'whitelist' ? 'true' : 'false');
+    }
+    if (pendingPanel) pendingPanel.hidden = hitlActiveTab !== 'pending';
+    if (logsPanel) logsPanel.hidden = hitlActiveTab !== 'logs';
+    if (strategyPanel) strategyPanel.hidden = hitlActiveTab !== 'strategy';
+    if (whitelistPanel) whitelistPanel.hidden = hitlActiveTab !== 'whitelist';
+    refreshHitlActivePanel();
+}
+
+function refreshHitlPageReviewerBar() {
+    const cid = getCurrentConversationIdForHitl();
+    const cfg = typeof window.getHitlConfigForConversation === 'function'
+        ? window.getHitlConfigForConversation(cid)
+        : null;
+    if (cfg && typeof window.setHitlReviewerUI === 'function') {
+        window.setHitlReviewerUI(cfg.reviewer);
+    }
+    if (typeof window.bindHitlReviewerToggleListeners === 'function') {
+        window.bindHitlReviewerToggleListeners();
+    }
+}
+
+let hitlDefaultAuditPrompt = '';
+let hitlDefaultAuditPromptReviewEdit = '';
+let hitlStrategyMode = 'approval';
+
+function switchHitlStrategyMode(mode) {
+    hitlStrategyMode = mode === 'review_edit' ? 'review_edit' : 'approval';
+    const approvalTab = document.getElementById('hitl-strategy-tab-approval');
+    const reviewTab = document.getElementById('hitl-strategy-tab-review-edit');
+    const approvalTa = document.getElementById('hitl-audit-agent-prompt');
+    const reviewTa = document.getElementById('hitl-audit-agent-prompt-review-edit');
+    const hintApproval = document.getElementById('hitl-strategy-hint-approval');
+    const hintReview = document.getElementById('hitl-strategy-hint-review-edit');
+    if (approvalTab) {
+        approvalTab.classList.toggle('hitl-strategy-subtab--active', hitlStrategyMode === 'approval');
+        approvalTab.setAttribute('aria-selected', hitlStrategyMode === 'approval' ? 'true' : 'false');
+    }
+    if (reviewTab) {
+        reviewTab.classList.toggle('hitl-strategy-subtab--active', hitlStrategyMode === 'review_edit');
+        reviewTab.setAttribute('aria-selected', hitlStrategyMode === 'review_edit' ? 'true' : 'false');
+    }
+    if (approvalTa) approvalTa.hidden = hitlStrategyMode !== 'approval';
+    if (reviewTa) reviewTa.hidden = hitlStrategyMode !== 'review_edit';
+    if (hintApproval) hintApproval.hidden = hitlStrategyMode !== 'approval';
+    if (hintReview) hintReview.hidden = hitlStrategyMode !== 'review_edit';
+}
+
+function showHitlStrategyFeedback(text, isError) {
+    const el = document.getElementById('hitl-strategy-feedback');
+    if (!el) return;
+    const msg = String(text || '').trim();
+    if (!msg) {
+        el.hidden = true;
+        el.textContent = '';
+        el.className = 'hitl-apply-feedback';
+        return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+    el.className = 'hitl-apply-feedback' + (isError ? ' hitl-apply-feedback--error' : '');
+}
+
+async function refreshHitlAuditStrategy() {
+    const approvalTa = document.getElementById('hitl-audit-agent-prompt');
+    const reviewTa = document.getElementById('hitl-audit-agent-prompt-review-edit');
+    if (!approvalTa) return;
+    try {
+        const resp = await hitlApiFetch('/api/hitl/audit-strategy', { credentials: 'same-origin' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        hitlDefaultAuditPrompt = typeof data.defaultAuditAgentPrompt === 'string' ? data.defaultAuditAgentPrompt : '';
+        hitlDefaultAuditPromptReviewEdit = typeof data.defaultAuditAgentPromptReviewEdit === 'string' ? data.defaultAuditAgentPromptReviewEdit : '';
+        approvalTa.value = typeof data.auditAgentPrompt === 'string' ? data.auditAgentPrompt : hitlDefaultAuditPrompt;
+        if (reviewTa) {
+            reviewTa.value = typeof data.auditAgentPromptReviewEdit === 'string' ? data.auditAgentPromptReviewEdit : hitlDefaultAuditPromptReviewEdit;
+        }
+        switchHitlStrategyMode(hitlStrategyMode);
+    } catch (e) {
+        console.warn('refreshHitlAuditStrategy', e);
+    }
+}
+
+async function saveHitlAuditStrategy() {
+    const approvalTa = document.getElementById('hitl-audit-agent-prompt');
+    const reviewTa = document.getElementById('hitl-audit-agent-prompt-review-edit');
+    const btn = document.getElementById('hitl-strategy-save-btn');
+    if (!approvalTa) return;
+    showHitlStrategyFeedback('', false);
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await hitlApiFetch('/api/hitl/audit-strategy', {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                auditAgentPrompt: String(approvalTa.value || ''),
+                auditAgentPromptReviewEdit: reviewTa ? String(reviewTa.value || '') : ''
+            })
+        });
+        if (!resp.ok) throw new Error(await readHitlApiError(resp));
+        const data = await resp.json();
+        if (typeof data.auditAgentPrompt === 'string') approvalTa.value = data.auditAgentPrompt;
+        if (reviewTa && typeof data.auditAgentPromptReviewEdit === 'string') reviewTa.value = data.auditAgentPromptReviewEdit;
+        showHitlStrategyFeedback(hitlT('strategySaved', 'Audit strategy saved.'), false);
+    } catch (e) {
+        showHitlStrategyFeedback(hitlT('strategySaveFailed', 'Failed to save') + ': ' + (e.message || e), true);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+function resetHitlAuditStrategy() {
+    const approvalTa = document.getElementById('hitl-audit-agent-prompt');
+    const reviewTa = document.getElementById('hitl-audit-agent-prompt-review-edit');
+    if (hitlStrategyMode === 'review_edit' && reviewTa) {
+        reviewTa.value = hitlDefaultAuditPromptReviewEdit || reviewTa.value;
+    } else if (approvalTa) {
+        approvalTa.value = hitlDefaultAuditPrompt || approvalTa.value;
+    }
+    showHitlStrategyFeedback('', false);
+}
+
+function refreshHitlActivePanel() {
+    refreshHitlPageReviewerBar();
+    if (hitlActiveTab === 'logs') {
+        refreshHitlLogs();
+    } else if (hitlActiveTab === 'strategy') {
+        refreshHitlAuditStrategy();
+    } else if (hitlActiveTab === 'whitelist') {
+        refreshHitlPageWhitelist();
+    } else {
+        refreshHitlPending();
+    }
+}
+
+function hitlDecidedByLabel(v) {
+    const key = 'reviewer' + String(v || 'human').replace(/_([a-z])/g, function (_, c) { return c.toUpperCase(); }).replace(/^./, function (c) { return c.toUpperCase(); });
+    const map = {
+        human: hitlT('reviewerHuman', 'Human'),
+        audit_agent: hitlT('reviewerAgent', 'Audit Agent'),
+        system: hitlT('reviewerSystem', 'System'),
+        manual: hitlT('reviewerManual', 'Manual')
+    };
+    return map[v] || v || '-';
+}
+
+function hitlFormatTime(v) {
+    if (!v) return '-';
+    try {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return String(v);
+        return d.toLocaleString(hitlLocale(), {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
+    } catch (e) {
+        return String(v);
+    }
+}
+
+function hitlLogsHasActiveFilters() {
+    const qEl = document.getElementById('hitl-logs-search');
+    const decEl = document.getElementById('hitl-logs-decision-filter');
+    const byEl = document.getElementById('hitl-logs-decidedby-filter');
+    return Boolean(
+        (qEl && qEl.value.trim()) ||
+        (decEl && decEl.value && decEl.value !== 'all') ||
+        (byEl && byEl.value && byEl.value !== 'all')
+    );
+}
+
+function hitlLogsFilterParams() {
+    const params = new URLSearchParams();
+    const qEl = document.getElementById('hitl-logs-search');
+    const decEl = document.getElementById('hitl-logs-decision-filter');
+    const byEl = document.getElementById('hitl-logs-decidedby-filter');
+    if (qEl && qEl.value.trim()) params.set('q', qEl.value.trim());
+    if (decEl && decEl.value && decEl.value !== 'all') params.set('decision', decEl.value);
+    if (byEl && byEl.value && byEl.value !== 'all') params.set('decidedBy', byEl.value);
+    return params;
+}
+
+function updateHitlLogsRetentionHint() {
+    const el = document.getElementById('hitl-logs-retention-hint');
+    if (!el) return;
+    if (typeof hitlLogsRetentionDays === 'number' && hitlLogsRetentionDays > 0) {
+        el.textContent = hitlT('retentionHint', 'Audit logs are kept for {{days}} days, then purged automatically.', { days: hitlLogsRetentionDays });
+        el.hidden = false;
+    } else {
+        el.textContent = '';
+        el.hidden = true;
+    }
+}
+
+function updateHitlLogsBatchActionsState() {
+    const selectedCount = hitlSelectedLogs.size;
+    const batchActions = document.getElementById('hitl-logs-batch-actions');
+    const selectedCountSpan = document.getElementById('hitl-logs-selected-count');
+    if (batchActions) {
+        batchActions.style.display = selectedCount > 0 ? 'flex' : 'none';
+    }
+    if (selectedCountSpan) {
+        selectedCountSpan.textContent = hitlT('selectedCount', '{{count}} selected', { count: selectedCount });
+    }
+    const selectAllCheckbox = document.getElementById('hitl-logs-select-all');
+    if (selectAllCheckbox) {
+        const allCheckboxes = document.querySelectorAll('.hitl-log-checkbox');
+        if (allCheckboxes.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        } else {
+            const checkedOnPage = Array.from(allCheckboxes).filter(function (cb) {
+                return hitlSelectedLogs.has(cb.value);
+            }).length;
+            selectAllCheckbox.checked = checkedOnPage === allCheckboxes.length;
+            selectAllCheckbox.indeterminate = checkedOnPage > 0 && checkedOnPage < allCheckboxes.length;
+        }
+    }
+}
+
+function toggleHitlLogSelection(id, checked) {
+    if (!id) return;
+    if (checked) {
+        hitlSelectedLogs.add(id);
+    } else {
+        hitlSelectedLogs.delete(id);
+    }
+    updateHitlLogsBatchActionsState();
+}
+
+function toggleHitlLogsSelectAll(checkbox) {
+    const checkboxes = document.querySelectorAll('.hitl-log-checkbox');
+    checkboxes.forEach(function (cb) {
+        cb.checked = checkbox.checked;
+        if (checkbox.checked) {
+            hitlSelectedLogs.add(cb.value);
+        } else {
+            hitlSelectedLogs.delete(cb.value);
+        }
+    });
+    updateHitlLogsBatchActionsState();
+}
+
+function selectAllHitlLogs() {
+    const checkboxes = document.querySelectorAll('.hitl-log-checkbox');
+    checkboxes.forEach(function (cb) {
+        cb.checked = true;
+        hitlSelectedLogs.add(cb.value);
+    });
+    const selectAllCheckbox = document.getElementById('hitl-logs-select-all');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+    }
+    updateHitlLogsBatchActionsState();
+}
+
+function deselectAllHitlLogs() {
+    const checkboxes = document.querySelectorAll('.hitl-log-checkbox');
+    checkboxes.forEach(function (cb) {
+        cb.checked = false;
+    });
+    hitlSelectedLogs.clear();
+    const selectAllCheckbox = document.getElementById('hitl-logs-select-all');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    }
+    updateHitlLogsBatchActionsState();
+}
+
+async function batchDeleteHitlLogs() {
+    const ids = Array.from(hitlSelectedLogs);
+    if (!ids.length) {
+        alert(hitlT('selectLogsFirst', 'Select audit logs to delete first'));
+        return;
+    }
+    const count = ids.length;
+    if (!confirm(hitlT('batchDeleteConfirm', 'Delete the selected {{count}} audit log(s)? This cannot be undone.', { count: count }))) {
+        return;
+    }
+    try {
+        const resp = await hitlApiFetch('/api/hitl/logs', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ ids: ids })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(function () { return {}; });
+            throw new Error(err.error || hitlT('batchDeleteFailed', 'Batch delete failed'));
+        }
+        const result = await resp.json().catch(function () { return {}; });
+        const deletedCount = typeof result.deleted === 'number' ? result.deleted : count;
+        ids.forEach(function (id) { hitlSelectedLogs.delete(id); });
+        await refreshHitlLogs();
+        alert(hitlT('batchDeleteSuccess', 'Successfully deleted {{count}} audit log(s)', { count: deletedCount }));
+    } catch (e) {
+        console.error('batchDeleteHitlLogs', e);
+        alert(hitlT('batchDeleteFailed', 'Batch delete failed') + ': ' + (e && e.message ? e.message : String(e)));
+    }
+}
+
+async function clearHitlLogs() {
+    const count = hitlLogsTotal || 0;
+    if (count <= 0) {
+        return;
+    }
+    const confirmKey = hitlLogsHasActiveFilters() ? 'clearAllConfirm' : 'clearAllConfirmNoFilter';
+    if (!confirm(hitlT(confirmKey, 'Clear all {{count}} audit log(s)? This cannot be undone.', { count: count }))) {
+        return;
+    }
+    try {
+        const params = hitlLogsFilterParams();
+        const resp = await hitlApiFetch('/api/hitl/logs' + (params.toString() ? '?' + params.toString() : ''), {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ all: true })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(function () { return {}; });
+            throw new Error(err.error || hitlT('clearAllFailed', 'Clear failed'));
+        }
+        const result = await resp.json().catch(function () { return {}; });
+        const deletedCount = typeof result.deleted === 'number' ? result.deleted : count;
+        hitlSelectedLogs.clear();
+        hitlLogsPage = 1;
+        await refreshHitlLogs();
+        alert(hitlT('clearAllSuccess', 'Cleared {{count}} audit log(s)', { count: deletedCount }));
+    } catch (e) {
+        console.error('clearHitlLogs', e);
+        alert(hitlT('clearAllFailed', 'Clear failed') + ': ' + (e && e.message ? e.message : String(e)));
+    }
+}
+
+function renderHitlLogsTable(items) {
+    const wrap = document.getElementById('hitl-logs-table-wrap');
+    if (!wrap) return;
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) {
+        wrap.innerHTML =
+            '<div class="empty-state">' +
+            '<p>' + escapeHtml(hitlT('logsEmpty', 'No audit logs')) + '</p>' +
+            '<p class="hitl-logs-empty-hint">' + escapeHtml(hitlT('logsEmptyHint', 'Records appear here after HITL decisions.')) + '</p>' +
+            '</div>';
+        const batchActions = document.getElementById('hitl-logs-batch-actions');
+        if (batchActions) batchActions.style.display = 'none';
+        renderHitlLogsPagination();
+        return;
+    }
+    const rows = list.map(function (item) {
+            const rawId = String(item.id || '');
+            const id = escapeHtml(rawId);
+            const jsId = rawId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            const qId = JSON.stringify(rawId).replace(/"/g, '&quot;');
+            const isSelected = hitlSelectedLogs.has(rawId);
+            const payloadObj = hitlParsePayloadObject(item.payload || '');
+            const decision = String(item.decision || '-');
+            const decisionCls = decision === 'approve' ? 'hitl-decision--approve' : (decision === 'reject' ? 'hitl-decision--reject' : '');
+            const summary = hitlPayloadSummary(payloadObj);
+            return (
+                '<tr>' +
+                '<td><input type="checkbox" class="hitl-log-checkbox" value="' + id + '" ' + (isSelected ? 'checked' : '') + ' onchange="toggleHitlLogSelection(\'' + jsId + '\', this.checked)" /></td>' +
+                '<td class="hitl-logs-cell-mono">' + id + '</td>' +
+                '<td>' + escapeHtml(String(item.toolName || '-')) + '</td>' +
+                '<td class="hitl-logs-cell-mono">' + escapeHtml(String(item.conversationId || '-')) + '</td>' +
+                '<td><span class="hitl-decision-tag ' + decisionCls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span></td>' +
+                '<td>' + escapeHtml(hitlDecidedByLabel(item.decidedBy)) + '</td>' +
+                '<td class="hitl-logs-summary">' + escapeHtml(summary) + '</td>' +
+                '<td>' + escapeHtml(hitlFormatTime(item.decidedAt || item.createdAt)) + '</td>' +
+                '<td class="hitl-logs-actions">' +
+                '<button type="button" class="btn-link" onclick="openHitlLogModal(' + qId + ')">' + escapeHtml(hitlT('viewDetail', 'Detail')) + '</button>' +
+                '</td>' +
+                '</tr>'
+            );
+        }).join('');
+    wrap.innerHTML =
+        '<table class="hitl-logs-table">' +
+        '<thead><tr>' +
+        '<th><input type="checkbox" id="hitl-logs-select-all" onchange="toggleHitlLogsSelectAll(this)" aria-label="select all" /></th>' +
+        '<th>' + escapeHtml(hitlT('colId', 'ID')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colTool', 'Tool')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colConversation', 'Conversation')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colDecision', 'Decision')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colDecidedBy', 'Reviewer')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colContext', 'Context')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colTime', 'Time')) + '</th>' +
+        '<th>' + escapeHtml(hitlT('colActions', 'Actions')) + '</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+    updateHitlLogsBatchActionsState();
+    renderHitlLogsPagination();
+}
+
+async function refreshHitlLogs() {
+    const wrap = document.getElementById('hitl-logs-table-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = '<div class="loading-spinner">' + escapeHtml(hitlT('loading', 'Loading...')) + '</div>';
+    try {
+        const params = new URLSearchParams({
+            page: String(hitlLogsPage),
+            pageSize: String(hitlLogsPageSize)
+        });
+        const filterParams = hitlLogsFilterParams();
+        filterParams.forEach(function (value, key) { params.set(key, value); });
+        const resp = await hitlApiFetch('/api/hitl/logs?' + params.toString(), { credentials: 'same-origin' });
+        if (!resp.ok) throw new Error('request failed');
+        const data = await resp.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        hitlLogsTotal = typeof data.total === 'number' ? data.total : items.length;
+        hitlLogsRetentionDays = typeof data.retentionDays === 'number' ? data.retentionDays : 0;
+        updateHitlLogsRetentionHint();
+        const maxPage = Math.max(1, Math.ceil(hitlLogsTotal / hitlLogsPageSize));
+        if (hitlLogsPage > maxPage) {
+            hitlLogsPage = maxPage;
+            await refreshHitlLogs();
+            return;
+        }
+        hitlLogsCache = items;
+        hitlLogsLoaded = true;
+        renderHitlLogsTable(items);
+    } catch (e) {
+        hitlLogsLoaded = false;
+        wrap.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('loadFailed', 'Failed to load')) + '</div>';
+        renderHitlLogsPagination();
+    }
+}
+
+function filterHitlLogs() {
+    hitlLogsPage = 1;
+    refreshHitlLogs();
+}
+
+function refreshHitlLogsI18n() {
+    if (!document.getElementById('hitl-logs-table-wrap') || !hitlLogsLoaded) return;
+    updateHitlLogsRetentionHint();
+    renderHitlLogsTable(hitlLogsCache);
+}
+
+function refreshHitlPendingI18n() {
+    if (!document.getElementById('hitl-pending-list') || !hitlPendingLoaded) return;
+    renderHitlPendingList(hitlPendingCache);
+}
+
+function refreshHitlI18n() {
+    refreshHitlLogsI18n();
+    refreshHitlPendingI18n();
+    renderHitlLogsPagination();
+    renderHitlPendingPagination();
+}
+
+function renderHitlLogsPagination() {
+    renderHitlPagination('hitl-logs-pagination', {
+        total: hitlLogsTotal,
+        page: hitlLogsPage,
+        pageSize: hitlLogsPageSize
+    }, 'hitlLogsGoPage', 'onHitlLogsPageSizeChange', 'hitl-logs-page-size');
+}
+
+function renderHitlPendingPagination() {
+    renderHitlPagination('hitl-pending-pagination', {
+        total: hitlPendingTotal,
+        page: hitlPendingPage,
+        pageSize: hitlPendingPageSize
+    }, 'hitlPendingGoPage', 'onHitlPendingPageSizeChange', 'hitl-pending-page-size');
+}
+
+function onHitlLogsPageSizeChange() {
+    const sel = document.getElementById('hitl-logs-page-size');
+    if (!sel) return;
+    const n = parseInt(sel.value, 10);
+    if (HITL_PAGE_SIZE_OPTIONS.indexOf(n) < 0) return;
+    hitlLogsPageSize = n;
+    try {
+        localStorage.setItem(HITL_LOGS_PAGE_SIZE_KEY, String(n));
+    } catch (e) { /* ignore */ }
+    hitlLogsPage = 1;
+    refreshHitlLogs();
+}
+
+function onHitlPendingPageSizeChange() {
+    const sel = document.getElementById('hitl-pending-page-size');
+    if (!sel) return;
+    const n = parseInt(sel.value, 10);
+    if (HITL_PAGE_SIZE_OPTIONS.indexOf(n) < 0) return;
+    hitlPendingPageSize = n;
+    try {
+        localStorage.setItem(HITL_PENDING_PAGE_SIZE_KEY, String(n));
+    } catch (e) { /* ignore */ }
+    hitlPendingPage = 1;
+    refreshHitlPending();
+}
+
+function hitlLogsGoPage(page) {
+    const totalPages = Math.max(1, Math.ceil((hitlLogsTotal || 0) / (hitlLogsPageSize || 20)));
+    if (page < 1 || page > totalPages) return;
+    hitlLogsPage = page;
+    refreshHitlLogs();
+}
+
+function hitlPendingGoPage(page) {
+    const totalPages = Math.max(1, Math.ceil((hitlPendingTotal || 0) / (hitlPendingPageSize || 20)));
+    if (page < 1 || page > totalPages) return;
+    hitlPendingPage = page;
+    refreshHitlPending();
+}
+
+function hitlDecisionLabel(decision) {
+    const d = String(decision || '').toLowerCase();
+    if (d === 'approve') return hitlT('decisionApprove', 'Approve');
+    if (d === 'reject') return hitlT('decisionReject', 'Reject');
+    return decision || '—';
+}
+
+function hitlFormatPayloadForDisplay(raw) {
+    if (!raw) return '';
+    if (typeof raw === 'object') {
+        try {
+            return JSON.stringify(raw, null, 2);
+        } catch (e) {
+            return String(raw);
+        }
+    }
+    const s = String(raw).trim();
+    if (!s) return '';
+    try {
+        return JSON.stringify(JSON.parse(s), null, 2);
+    } catch (e) {
+        return s;
+    }
+}
+
+async function openHitlLogModal(idOpt) {
+    const modal = document.getElementById('hitl-log-modal');
+    if (!modal || !idOpt) return;
+    const resp = await hitlApiFetch('/api/hitl/logs/' + encodeURIComponent(idOpt), { credentials: 'same-origin' });
+    if (!resp.ok) {
+        alert(hitlT('loadFailed', 'Failed to load'));
+        return;
+    }
+    const item = await resp.json();
+    const payloadObj = hitlParsePayloadObject(item.payload || '');
+    const idEl = document.getElementById('hitl-log-detail-id');
+    const toolEl = document.getElementById('hitl-log-detail-tool');
+    const convEl = document.getElementById('hitl-log-detail-conversation');
+    const decisionEl = document.getElementById('hitl-log-detail-decision');
+    const decidedByEl = document.getElementById('hitl-log-detail-decided-by');
+    const timeEl = document.getElementById('hitl-log-detail-time');
+    const commentRow = document.getElementById('hitl-log-detail-comment-row');
+    const commentEl = document.getElementById('hitl-log-detail-comment');
+    const payloadWrap = document.getElementById('hitl-log-detail-payload-wrap');
+    const payloadEl = document.getElementById('hitl-log-detail-payload');
+    if (idEl) idEl.textContent = item.id || '—';
+    if (toolEl) toolEl.textContent = item.toolName || '—';
+    if (convEl) convEl.textContent = item.conversationId || '—';
+    if (decisionEl) {
+        const decision = String(item.decision || '');
+        const cls = decision === 'approve' ? 'hitl-decision--approve' : (decision === 'reject' ? 'hitl-decision--reject' : '');
+        decisionEl.innerHTML = '<span class="hitl-decision-tag ' + cls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span>';
+    }
+    if (decidedByEl) decidedByEl.textContent = hitlDecidedByLabel(item.decidedBy);
+    if (timeEl) timeEl.textContent = hitlFormatTime(item.decidedAt || item.createdAt);
+    const comment = String(item.comment || '').trim();
+    if (commentRow && commentEl) {
+        if (comment) {
+            commentEl.textContent = comment;
+            commentRow.hidden = false;
+        } else {
+            commentEl.textContent = '';
+            commentRow.hidden = true;
+        }
+    }
+    hitlFillLogModalReadonlySections(payloadObj);
+    const payloadText = hitlFormatPayloadForDisplay(item.payload || '');
+    if (payloadWrap && payloadEl) {
+        if (payloadText) {
+            payloadEl.textContent = payloadText;
+            payloadWrap.hidden = false;
+        } else {
+            payloadEl.textContent = '';
+            payloadWrap.hidden = true;
+        }
+    }
+    modal.style.display = 'flex';
+}
+
+function closeHitlLogModal() {
+    const modal = document.getElementById('hitl-log-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+window.saveHitlPageWhitelist = saveHitlPageWhitelist;
+window.refreshHitlPageWhitelist = refreshHitlPageWhitelist;
 window.refreshHitlPending = refreshHitlPending;
+window.refreshHitlLogs = refreshHitlLogs;
+window.refreshHitlActivePanel = refreshHitlActivePanel;
+window.switchHitlPageTab = switchHitlPageTab;
+window.switchHitlStrategyMode = switchHitlStrategyMode;
+window.resetHitlAuditStrategy = resetHitlAuditStrategy;
+window.saveHitlAuditStrategy = saveHitlAuditStrategy;
+window.refreshHitlAuditStrategy = refreshHitlAuditStrategy;
+window.openHitlLogModal = openHitlLogModal;
+window.closeHitlLogModal = closeHitlLogModal;
+window.hitlLogsGoPage = hitlLogsGoPage;
+window.hitlPendingGoPage = hitlPendingGoPage;
+window.filterHitlLogs = filterHitlLogs;
+window.batchDeleteHitlLogs = batchDeleteHitlLogs;
+window.clearHitlLogs = clearHitlLogs;
+window.selectAllHitlLogs = selectAllHitlLogs;
+window.deselectAllHitlLogs = deselectAllHitlLogs;
+window.toggleHitlLogSelection = toggleHitlLogSelection;
+window.toggleHitlLogsSelectAll = toggleHitlLogsSelectAll;
+window.filterHitlPending = filterHitlPending;
+window.onHitlLogsPageSizeChange = onHitlLogsPageSizeChange;
+window.onHitlPendingPageSizeChange = onHitlPendingPageSizeChange;
 window.submitHitlDecision = submitHitlDecision;
 window.submitHitlDecisionWithPayload = submitHitlDecisionWithPayload;
 window.dismissHitlItem = dismissHitlItem;
@@ -420,7 +1447,7 @@ window.followAgentRunAfterHitlDecision = followAgentRunAfterHitlDecision;
 
 window.addEventListener('hitl-interrupt', function () {
     if (typeof window.currentPage === 'function' && window.currentPage() === 'hitl') {
-        refreshHitlPending();
+        refreshHitlActivePanel();
     }
 });
 
@@ -428,7 +1455,20 @@ window.addEventListener('pageshow', function () {
     setTimeout(reconcileHitlUiState, 0);
 });
 document.addEventListener('DOMContentLoaded', function () {
+    initHitlPageSizeFromStorage(HITL_LOGS_PAGE_SIZE_KEY, 20, function (n) { hitlLogsPageSize = n; });
+    initHitlPageSizeFromStorage(HITL_PENDING_PAGE_SIZE_KEY, 20, function (n) { hitlPendingPageSize = n; });
+    if (typeof window.bindHitlReviewerToggleListeners === 'function') {
+        window.bindHitlReviewerToggleListeners();
+    }
     setTimeout(reconcileHitlUiState, 0);
+});
+
+document.addEventListener('languagechange', function () {
+    try {
+        refreshHitlI18n();
+    } catch (e) {
+        console.warn('languagechange hitl refresh failed', e);
+    }
 });
 
 // 由 applyHitlSidebarConfig 调用，将侧栏配置同步到后端

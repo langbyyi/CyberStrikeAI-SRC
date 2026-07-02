@@ -73,6 +73,39 @@ func TestConvertOpenAIToClaude_AssistantReasoningReplay(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToClaude_OutputConfigEffort(t *testing.T) {
+	payload := map[string]interface{}{
+		"model": "claude-opus-4-8",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"thinking": map[string]interface{}{
+			"type":    "adaptive",
+			"display": "summarized",
+		},
+		"output_config": map[string]interface{}{
+			"effort": "high",
+		},
+	}
+	req, err := convertOpenAIToClaude(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Thinking) == 0 {
+		t.Fatal("expected thinking")
+	}
+	if len(req.OutputConfig) == 0 {
+		t.Fatal("expected output_config")
+	}
+	var oc map[string]interface{}
+	if err := json.Unmarshal(req.OutputConfig, &oc); err != nil {
+		t.Fatal(err)
+	}
+	if oc["effort"] != "high" {
+		t.Fatalf("effort=%v", oc["effort"])
+	}
+}
+
 func TestClaudeToOpenAIResponseJSON_Thinking(t *testing.T) {
 	claudeBody := []byte(`{
 		"id":"msg_1","type":"message","role":"assistant","model":"x","stop_reason":"end_turn",

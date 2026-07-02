@@ -1,9 +1,12 @@
 package c2
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
+
+	"cyberstrike-ai/internal/database"
 )
 
 // OnelinerKind 单行 payload 的语言/形式
@@ -77,6 +80,23 @@ type OnelinerInput struct {
 	Port         int    // 监听端口
 	HTTPBaseURL  string // HTTPS Beacon 时使用，如 https://x.com
 	ImplantToken string // HTTP Beacon 鉴权 token
+}
+
+// ValidateOnelinerForListener 校验 oneliner 与监听器配置是否匹配（如 tcp_reverse 默认要求加密 Beacon）。
+func ValidateOnelinerForListener(listener *database.C2Listener, kind OnelinerKind) error {
+	if listener == nil {
+		return fmt.Errorf("listener is nil")
+	}
+	if ListenerType(listener.Type) == ListenerTypeTCPReverse && tcpOnelinerKinds[kind] {
+		cfg := &ListenerConfig{}
+		if strings.TrimSpace(listener.ConfigJSON) != "" {
+			_ = json.Unmarshal([]byte(listener.ConfigJSON), cfg)
+		}
+		if !cfg.AllowLegacyShell {
+			return fmt.Errorf("监听器未开启 allow_legacy_shell：tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + Token）；请用 build 生成 beacon，或显式开启 allow_legacy_shell（公网不推荐）")
+		}
+	}
+	return nil
 }
 
 // GenerateOneliner 生成单行 payload。

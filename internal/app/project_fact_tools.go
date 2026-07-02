@@ -89,6 +89,28 @@ func registerProjectFactTools(mcpServer *mcp.Server, db *database.DB, cfg *confi
 					"type":        "string",
 					"description": "可选：关联的漏洞记录 ID",
 				},
+				"links": map[string]interface{}{
+					"type": "array",
+					"description": "可选：关系边（from → 当前 fact）。finding 至少 1 条 {from:target/*, type:discovered_on}；finding 上记录 exploit 用 {from:exploit/*, type:exploits}。省略保留已有边；传 [] 清空全部关系边。",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"from": map[string]interface{}{
+								"type":        "string",
+								"description": "来源 fact_key：存储为 from → 当前 fact",
+							},
+							"type": map[string]interface{}{
+								"type":        "string",
+								"description": "depends_on | leads_to | enables | exploits | discovered_on | contains | part_of | supports",
+							},
+							"confidence": map[string]interface{}{
+								"type":        "string",
+								"description": "confirmed | tentative | deprecated",
+							},
+						},
+						"required": []string{"from", "type"},
+					},
+				},
 			},
 			"required": []string{"fact_key", "summary"},
 		},
@@ -124,7 +146,26 @@ func registerProjectFactTools(mcpServer *mcp.Server, db *database.DB, cfg *confi
 		if err != nil {
 			return textResult("错误: "+err.Error(), true), nil
 		}
+		if _, hasLinks := args["links"]; hasLinks {
+			linkInputs, err := project.ParseFactLinkInputs(args["links"])
+			if err != nil {
+				return textResult("错误: "+err.Error(), true), nil
+			}
+			convID := agent.ConversationIDFromContext(ctx)
+			if err := project.PersistFactLinksFromParsed(db, projectID, created.FactKey, convID, linkInputs, true); err != nil {
+				return textResult("错误: 保存关系边失败: "+err.Error(), true), nil
+			}
+			created, _ = db.GetProjectFactByKey(projectID, created.FactKey)
+		} else if parsed := project.ParseLinksFromBody(created.Body); len(parsed) > 0 {
+			if err := project.PersistFactIncomingLinks(db, projectID, created.FactKey, parsed, true); err != nil {
+				return textResult("错误: 从 body 解析边失败: "+err.Error(), true), nil
+			}
+			created, _ = db.GetProjectFactByKey(projectID, created.FactKey)
+		}
 		msg := fmt.Sprintf("事实已保存。\nfact_key: %s\nid: %s\nconfidence: %s", created.FactKey, created.ID, created.Confidence)
+		if in, _ := db.ListIncomingProjectFactEdges(projectID, created.FactKey); len(in) > 0 {
+			msg += "\n关系边: " + project.FormatFactLinksText(in)
+		}
 		if warn := project.SparseBodyWarningIfNeeded(f.Category, f.FactKey, f.Body); warn != "" {
 			msg += warn
 		}
@@ -163,6 +204,18 @@ func registerProjectFactTools(mcpServer *mcp.Server, db *database.DB, cfg *confi
 		}
 		if f.SourceConversationID != "" {
 			msg += fmt.Sprintf("\nsource_conversation_id: %s", f.SourceConversationID)
+		}
+		if in, _ := db.ListIncomingProjectFactEdges(projectID, f.FactKey); len(in) > 0 {
+			msg += "\n关系边（from → 本 fact）:\n"
+			for _, e := range in {
+				msg += fmt.Sprintf("- %s ← %s (%s)\n", e.EdgeType, e.SourceFactKey, e.Confidence)
+			}
+		}
+		if out, _ := db.ListOutgoingProjectFactEdges(projectID, f.FactKey); len(out) > 0 {
+			msg += "指向其他事实:\n"
+			for _, e := range out {
+				msg += fmt.Sprintf("- %s → %s (%s)\n", e.EdgeType, e.TargetFactKey, e.Confidence)
+			}
 		}
 		msg += "\n\n--- body ---\n" + f.Body
 		if warn := project.SparseBodyWarningIfNeeded(f.Category, f.FactKey, f.Body); warn != "" {

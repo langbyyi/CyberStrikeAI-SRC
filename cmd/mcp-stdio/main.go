@@ -5,7 +5,6 @@ import (
 	"cyberstrike-ai/internal/logger"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/security"
-	"cyberstrike-ai/internal/storage"
 	"flag"
 	"fmt"
 	"os"
@@ -33,23 +32,6 @@ func main() {
 	// 创建安全工具执行器
 	executor := security.NewExecutor(&cfg.Security, mcpServer, log.Logger)
 
-	// 初始化结果存储（与 internal/app/app.go 同样的逻辑）。
-	// stdio 模式下原本不初始化，导致 'exec' 等查询型工具报"结果存储未初始化"。
-	resultStorageDir := "tmp"
-	if cfg.Agent.ResultStorageDir != "" {
-		resultStorageDir = cfg.Agent.ResultStorageDir
-	}
-	if err := os.MkdirAll(resultStorageDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "创建结果存储目录失败: %v\n", err)
-		os.Exit(1)
-	}
-	resultStorage, err := storage.NewFileResultStorage(resultStorageDir, log.Logger)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "初始化结果存储失败: %v\n", err)
-		os.Exit(1)
-	}
-	executor.SetResultStorage(resultStorage)
-
 	// 注册工具
 	executor.RegisterTools(mcpServer)
 
@@ -61,4 +43,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-

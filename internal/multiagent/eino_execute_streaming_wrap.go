@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"cyberstrike-ai/internal/einomcp"
+	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/security"
 
 	"github.com/cloudwego/eino/adk/filesystem"
@@ -34,13 +36,22 @@ func einoExecuteTimeoutUserHint() string {
 	return "已超时终止 · Timed out"
 }
 
+// einoExecuteRecvErrIsToolTimeout 判断 Recv 错误是否由 agent.tool_timeout_minutes 触发。
+// WithTimeout 到期后 local 侧常报 canceled / exit -1，但 execCtx.Err() 仍为 DeadlineExceeded。
+func einoExecuteRecvErrIsToolTimeout(rerr error, tctx context.Context) bool {
+	if tctx != nil && errors.Is(tctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	return errors.Is(rerr, context.DeadlineExceeded)
+}
+
 // einoStreamingShellWrap 包装 Eino filesystem 使用的 StreamingShell（cloudwego eino-ext local.Local）。
 // 官方 execute 工具默认走 ExecuteStreaming 且不设 RunInBackendGround；末尾带 & 时子进程仍与管道相连，
 // streamStdout 按行读取会在无换行输出时长时间阻塞（与 MCP 工具 exec 的独立实现不同）。
 // 对「完全后台」命令自动开启 RunInBackendGround，与 local.runCmdInBackground 行为对齐。
 //
 // 使用 Pipe 将内层流转发给调用方：在 inner EOF 后、关闭 Pipe 前同步调用 ToolInvokeNotify.Fire，
-// 保证 run loop 在模型开始下一轮输出前已记录 execute 结果（用于 UI 与「重复助手复述」去重）。
+// run loop 收到 Fire 后立即推送 tool_result（toolResultSent 去重），避免 ADK Tool 事件迟到时 UI 卡在「执行中」。
 //
 // 若 inner 在校验阶段直接返回 error（未建立 reader），不会进入下方 goroutine，也必须 Fire；
 // 否则 pending tool_call 要等整轮 run 结束才被 force-close，与已展示的助手/工具软错误文案不同步。
@@ -52,8 +63,11 @@ type einoStreamingShellWrap struct {
 	outputChunk func(toolName, toolCallID, chunk string)
 	// toolTimeoutMinutes 与 agent.tool_timeout_minutes 对齐；>0 时对单次 execute 套用 context 超时（与 MCP 工具经 executeToolViaMCP 行为一致）。0 表示仅依赖上层 ctx（如整任务 10h 上限）。
 	toolTimeoutMinutes int
-	// recordMonitor 在 execute 流结束后写入 tool_executions 并 recorder(executionId)，使「渗透测试详情」与常规 MCP 一致。
-	recordMonitor func(command, stdout string, success bool, invokeErr error)
+	// shellNoOutputTimeoutSec：无任何输出时的空闲秒数；0=关闭。
+	shellNoOutputTimeoutSec int
+	// beginMonitor 在 execute 开始时写入 running 状态；finishMonitor 在流结束后更新为 completed/failed。
+	beginMonitor func(toolCallID, command string) string
+	finishMonitor func(executionID, toolCallID, command, stdout string, success bool, invokeErr error)
 }
 
 func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *filesystem.ExecuteRequest) (*schema.StreamReader[*filesystem.ExecuteResponse], error) {
@@ -65,33 +79,65 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 	}
 	req := *input
 	userCmd := strings.TrimSpace(req.Command)
+	tid := strings.TrimSpace(compose.GetToolCallID(ctx))
+	agentTag := strings.TrimSpace(w.einoAgentName)
 	if security.IsBackgroundShellCommand(req.Command) && !req.RunInBackendGround {
 		req.RunInBackendGround = true
 	}
 	req.Command = prependPythonUnbufferedEnv(req.Command)
-	tid := strings.TrimSpace(compose.GetToolCallID(ctx))
-	agentTag := strings.TrimSpace(w.einoAgentName)
+	convID := mcp.MCPConversationIDFromContext(ctx)
+	execReg := mcp.EinoExecuteRunRegistryFromContext(ctx)
 
-	execCtx := ctx
-	var execCancel context.CancelFunc
+	var monitorExecID string
+	if w.beginMonitor != nil {
+		monitorExecID = w.beginMonitor(tid, userCmd)
+	}
+	if monitorExecID != "" && convID != "" {
+		if toolReg := mcp.ToolRunRegistryFromContext(ctx); toolReg != nil {
+			toolReg.RegisterRunningTool(convID, monitorExecID)
+		}
+	}
+	toolRunReg := mcp.ToolRunRegistryFromContext(ctx)
+
+	execCtx, execCancel := context.WithCancel(ctx)
+	var timeoutCancel context.CancelFunc
 	if w.toolTimeoutMinutes > 0 {
-		execCtx, execCancel = context.WithTimeout(ctx, time.Duration(w.toolTimeoutMinutes)*time.Minute)
+		execCtx, timeoutCancel = context.WithTimeout(execCtx, time.Duration(w.toolTimeoutMinutes)*time.Minute)
+	}
+	if execReg != nil && convID != "" {
+		execReg.RegisterActiveEinoExecute(convID, execCancel)
 	}
 
 	sr, err := w.inner.ExecuteStreaming(execCtx, &req)
 	if err != nil {
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
 		if execCancel != nil {
 			execCancel()
 		}
-		if w.recordMonitor != nil {
-			w.recordMonitor(userCmd, "", false, err)
+		if einoExecuteRecvErrIsToolTimeout(err, execCtx) {
+			hint := "\n\n" + einoExecuteTimeoutUserHint() + "\n"
+			if w.finishMonitor != nil {
+				w.finishMonitor(monitorExecID, tid, userCmd, hint, false, context.DeadlineExceeded)
+			}
+			if w.invokeNotify != nil && tid != "" {
+				w.invokeNotify.Fire(tid, "execute", agentTag, false, hint, context.DeadlineExceeded)
+			}
+			return schema.StreamReaderFromArray([]*filesystem.ExecuteResponse{{Output: hint}}), nil
+		}
+		if w.finishMonitor != nil {
+			w.finishMonitor(monitorExecID, tid, userCmd, "", false, err)
 		}
 		if w.invokeNotify != nil && tid != "" {
 			w.invokeNotify.Fire(tid, "execute", agentTag, false, "", err)
 		}
 		return nil, err
 	}
-	if sr == nil || w.invokeNotify == nil || tid == "" {
+	if sr == nil {
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
 		if execCancel != nil {
 			execCancel()
 		}
@@ -100,65 +146,160 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 
 	outR, outW := schema.Pipe[*filesystem.ExecuteResponse](32)
 
-	go func(inner *schema.StreamReader[*filesystem.ExecuteResponse], command string, cancel context.CancelFunc, tctx context.Context) {
-		defer inner.Close()
+	go func(inner *schema.StreamReader[*filesystem.ExecuteResponse], command string, cancel context.CancelFunc, timeoutCleanup context.CancelFunc, tctx context.Context, conversationID string, reg mcp.EinoExecuteRunRegistry, toolReg mcp.ToolRunRegistry, execID string, toolCallID string, noOutputSec int) {
+		var innerCloseOnce sync.Once
+		closeInner := func() {
+			innerCloseOnce.Do(func() { inner.Close() })
+		}
+		defer closeInner()
+		if timeoutCleanup != nil {
+			defer timeoutCleanup()
+		}
 		if cancel != nil {
 			defer cancel()
 		}
+		if reg != nil && conversationID != "" {
+			defer reg.UnregisterActiveEinoExecute(conversationID)
+		}
+		if toolReg != nil && conversationID != "" && execID != "" {
+			defer toolReg.UnregisterRunningTool(conversationID, execID)
+		}
+
+		// ctx 取消时关闭内层流，避免 amass 等长时间无换行输出时 Recv 永久阻塞。
+		stopWatch := make(chan struct{})
+		go func() {
+			select {
+			case <-tctx.Done():
+				closeInner()
+			case <-stopWatch:
+			}
+		}()
+		defer close(stopWatch)
 
 		var sb strings.Builder
-		const maxCapture = 16 * 1024
 		success := true
 		var invokeErr error
 		exitCode := 0
 		hasExitCode := false
 
+		idleWatch := security.NewShellInactivityWatch(noOutputSec)
+		if idleWatch != nil {
+			defer idleWatch.Stop()
+		}
+
+		type execRecvMsg struct {
+			resp *filesystem.ExecuteResponse
+			err  error
+		}
+		recvCh := make(chan execRecvMsg, 1)
+		go func() {
+			for {
+				resp, rerr := inner.Recv()
+				recvCh <- execRecvMsg{resp: resp, err: rerr}
+				if rerr != nil {
+					return
+				}
+			}
+		}()
+
+		fireInactivityTimeout := func() {
+			success = false
+			invokeErr = fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
+			msg := security.ShellNoOutputTimeoutMessage(idleWatch.Sec)
+			_ = outW.Send(&filesystem.ExecuteResponse{Output: msg}, nil)
+			sb.WriteString(msg)
+			if w.outputChunk != nil && toolCallID != "" {
+				w.outputChunk("execute", toolCallID, msg)
+			}
+			if cancel != nil {
+				cancel()
+			}
+			closeInner()
+		}
+
+	recvLoop:
 		for {
-			resp, rerr := inner.Recv()
-			if errors.Is(rerr, io.EOF) {
-				break
+			var idleCh <-chan struct{}
+			if idleWatch != nil {
+				idleCh = idleWatch.Expired
 			}
-			if rerr != nil {
-				success = false
-				invokeErr = rerr
-				_ = outW.Send(nil, rerr)
-				break
-			}
-			if resp != nil {
-				if resp.ExitCode != nil {
-					hasExitCode = true
-					exitCode = *resp.ExitCode
+			select {
+			case <-idleCh:
+				fireInactivityTimeout()
+				break recvLoop
+			case msg := <-recvCh:
+				rerr := msg.err
+				resp := msg.resp
+				if errors.Is(rerr, io.EOF) {
+					break recvLoop
 				}
-				var appended string
-				if remain := maxCapture - sb.Len(); remain > 0 {
-					out := resp.Output
-					if len(out) > remain {
-						out = out[:remain]
-					}
-					sb.WriteString(out)
-					appended = out
-				}
-				// 仅推送写入 sb 的片段，与末尾 Fire/recordMonitor 的截断累计一致，避免最终 tool_result 短于已展示增量。
-				if w.outputChunk != nil && strings.TrimSpace(appended) != "" {
-					w.outputChunk("execute", tid, appended)
-				}
-				if outW.Send(resp, nil) {
+				if rerr != nil {
 					success = false
-					invokeErr = fmt.Errorf("execute stream closed by consumer")
-					break
+					invokeErr = rerr
+					if einoExecuteRecvErrIsToolTimeout(rerr, tctx) {
+						invokeErr = context.DeadlineExceeded
+						break recvLoop
+					}
+					if errors.Is(rerr, context.Canceled) || (tctx != nil && errors.Is(tctx.Err(), context.Canceled)) {
+						invokeErr = context.Canceled
+						break recvLoop
+					}
+					_ = outW.Send(nil, rerr)
+					break recvLoop
+				}
+				if resp != nil {
+					if resp.ExitCode != nil {
+						hasExitCode = true
+						exitCode = *resp.ExitCode
+						continue
+					}
+					var appended string
+					if resp.Output != "" {
+						if security.IsLegacyShellExitNoise(resp.Output) {
+							continue
+						}
+						if idleWatch != nil {
+							idleWatch.Bump()
+						}
+						sb.WriteString(resp.Output)
+						appended = resp.Output
+					}
+					if w.outputChunk != nil && strings.TrimSpace(appended) != "" {
+						w.outputChunk("execute", toolCallID, appended)
+					}
+					if outW.Send(resp, nil) {
+						success = false
+						invokeErr = fmt.Errorf("execute stream closed by consumer")
+						break recvLoop
+					}
 				}
 			}
 		}
 
 		if success && hasExitCode && exitCode != 0 {
 			success = false
-			invokeErr = fmt.Errorf("execute exited with code %d", exitCode)
+			invokeErr = &ExecuteExitError{Code: exitCode}
 		}
 		// WithTimeout 触发后，子进程常被信号结束，local 侧多报 exit -1 / canceled，错误链里不一定带 DeadlineExceeded。
 		// 用执行所用 ctx 归一化，便于 UI 展示「超时」而非含糊的 -1。
 		if tctx != nil && errors.Is(tctx.Err(), context.DeadlineExceeded) {
 			success = false
 			invokeErr = context.DeadlineExceeded
+		}
+		// 用户「中断并继续」终止 execute：合并说明进工具结果（与 MCP CancelToolExecutionWithNote 一致）。
+		partialStreamed := sb.String()
+		var abortNote string
+		if reg != nil && conversationID != "" && (invokeErr != nil || errors.Is(tctx.Err(), context.Canceled)) {
+			if note := reg.TakeEinoExecuteAbortNote(conversationID); note != "" {
+				abortNote = note
+				merged := mcp.MergePartialToolOutputAndAbortNote(partialStreamed, note)
+				sb.Reset()
+				sb.WriteString(merged)
+				if invokeErr == nil {
+					success = false
+					invokeErr = context.Canceled
+				}
+			}
 		}
 		// ADK 从本 Pipe 拼出 tool 消息正文；仅 Notify 尾标不会进入模型上下文。超时句写入流，与 UI 一致。
 		if invokeErr != nil && errors.Is(invokeErr, context.DeadlineExceeded) {
@@ -167,20 +308,34 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 			if w.outputChunk != nil && tid != "" {
 				w.outputChunk("execute", tid, hint)
 			}
-			if remain := maxCapture - sb.Len(); remain > 0 {
-				h := hint
-				if len(h) > remain {
-					h = h[:remain]
-				}
-				sb.WriteString(h)
+			sb.WriteString(hint)
+		}
+		// 中断时循环内已逐行写入 stdout；此处只追加 USER INTERRUPT NOTE，避免整段输出重复。
+		if invokeErr != nil && errors.Is(invokeErr, context.Canceled) && abortNote != "" {
+			if partialStreamed != "" {
+				_ = outW.Send(&filesystem.ExecuteResponse{Output: "\n\n" + mcp.AbortNoteBannerForModel + "\n" + abortNote}, nil)
+			} else if text := strings.TrimSpace(sb.String()); text != "" {
+				_ = outW.Send(&filesystem.ExecuteResponse{Output: text + "\n"}, nil)
 			}
 		}
-		if w.recordMonitor != nil {
-			w.recordMonitor(command, sb.String(), success, invokeErr)
+		rawOutput := sb.String()
+		fireBody := rawOutput
+		if !success && hasExitCode && exitCode != 0 {
+			statusLine := security.ExecuteFailureStatusLine(exitCode)
+			if !strings.Contains(rawOutput, "命令执行失败:") {
+				_ = outW.Send(&filesystem.ExecuteResponse{Output: statusLine}, nil)
+				sb.WriteString(statusLine)
+			}
+			fireBody = einomcp.ToolErrorPrefix + security.FormatCommandFailureResult(exitCode, rawOutput)
 		}
-		w.invokeNotify.Fire(tid, "execute", agentTag, success, sb.String(), invokeErr)
+		if w.finishMonitor != nil {
+			w.finishMonitor(execID, toolCallID, command, sb.String(), success, invokeErr)
+		}
+		if w.invokeNotify != nil {
+			w.invokeNotify.Fire(toolCallID, "execute", agentTag, success, fireBody, invokeErr)
+		}
 		outW.Close()
-	}(sr, userCmd, execCancel, execCtx)
+	}(sr, userCmd, execCancel, timeoutCancel, execCtx, convID, execReg, toolRunReg, monitorExecID, tid, w.shellNoOutputTimeoutSec)
 
 	return outR, nil
 }

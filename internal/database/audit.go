@@ -69,12 +69,12 @@ func buildAuditLogsWhere(filter ListAuditLogsFilter) (string, []interface{}) {
 		args = append(args, filter.ResourceID)
 	}
 	if filter.Since != nil {
-		conditions = append(conditions, "created_at >= ?")
-		args = append(args, *filter.Since)
+		conditions = append(conditions, sqliteEpochGE("created_at", ">="))
+		args = append(args, formatSQLiteUTC(*filter.Since))
 	}
 	if filter.Until != nil {
-		conditions = append(conditions, "created_at <= ?")
-		args = append(args, *filter.Until)
+		conditions = append(conditions, sqliteEpochGE("created_at", "<="))
+		args = append(args, formatSQLiteUTC(*filter.Until))
 	}
 	if q := strings.TrimSpace(filter.Query); q != "" {
 		like := "%" + q + "%"
@@ -93,7 +93,9 @@ func (db *DB) AppendAuditLog(row *AuditLog) error {
 		return errors.New("audit id is required")
 	}
 	if row.CreatedAt.IsZero() {
-		row.CreatedAt = time.Now()
+		row.CreatedAt = time.Now().UTC()
+	} else {
+		row.CreatedAt = row.CreatedAt.UTC()
 	}
 	if strings.TrimSpace(row.Level) == "" {
 		row.Level = "info"
@@ -111,7 +113,7 @@ func (db *DB) AppendAuditLog(row *AuditLog) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := db.Exec(query,
-		row.ID, row.CreatedAt, row.Level, row.Category, row.Action, row.Result,
+		row.ID, formatSQLiteUTC(row.CreatedAt), row.Level, row.Category, row.Action, row.Result,
 		row.Actor, row.SessionHint, row.ClientIP, row.UserAgent,
 		row.ResourceType, row.ResourceID, row.Message, detailJSON,
 	)
@@ -202,7 +204,7 @@ func (db *DB) ListAuditLogs(filter ListAuditLogsFilter) ([]*AuditLog, error) {
 
 // DeleteAuditLogsBefore removes rows older than cutoff.
 func (db *DB) DeleteAuditLogsBefore(cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM audit_logs WHERE created_at < ?`, cutoff)
+	res, err := db.Exec(`DELETE FROM audit_logs WHERE `+sqliteEpochGE("created_at", "<"), formatSQLiteUTC(cutoff))
 	if err != nil {
 		return 0, err
 	}

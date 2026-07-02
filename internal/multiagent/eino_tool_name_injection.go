@@ -46,6 +46,10 @@ func injectToolNamesOnlyInstruction(ctx context.Context, instruction string, too
 		sb.WriteString("2) 调用具体工具前，请先确认该工具的参数要求（以当前请求中的工具定义为准）；不确定时先澄清再调用。\n")
 		sb.WriteString("3) 不要臆造不存在的工具名。\n\n")
 	}
+	if s := strings.TrimSpace(injectShellToolGuidance("", names)); s != "" {
+		sb.WriteString(s)
+		sb.WriteString("\n\n")
+	}
 	if s := strings.TrimSpace(instruction); s != "" {
 		sb.WriteString(s)
 	}

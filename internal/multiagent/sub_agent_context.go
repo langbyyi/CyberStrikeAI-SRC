@@ -3,6 +3,7 @@ package multiagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"cyberstrike-ai/internal/agent"
@@ -11,7 +12,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 )
 
-const defaultSubAgentUserContextMaxRunes = 2000
+const userContextSupplementHeader = "\n\n## 用户历史输入（原文，子代理必读）\n"
 
 // taskContextEnrichMiddleware intercepts "task" tool calls on the orchestrator
 // and appends the user's original conversation messages to the task description.
@@ -30,13 +31,14 @@ type taskContextEnrichMiddleware struct {
 // newTaskContextEnrichMiddleware returns a middleware that enriches task
 // descriptions with user conversation context. Returns nil if disabled
 // (maxRunes < 0) or no user messages exist.
+// projectBlackboard 仅传项目黑板索引块（BuildFactIndexBlock）；勿传完整 systemPromptExtra。
 func newTaskContextEnrichMiddleware(userMessage string, history []agent.ChatMessage, maxRunes int, projectBlackboard string) adk.ChatModelAgentMiddleware {
 	supplement := buildUserContextSupplement(userMessage, history, maxRunes)
 	if bb := strings.TrimSpace(projectBlackboard); bb != "" {
 		if supplement != "" {
-			supplement += "\n\n## 项目黑板索引\n" + bb
+			supplement += "\n\n" + bb
 		} else {
-			supplement = "\n\n## 项目黑板索引\n" + bb
+			supplement = "\n\n" + bb
 		}
 	}
 	if supplement == "" {
@@ -86,9 +88,6 @@ func buildUserContextSupplement(userMessage string, history []agent.ChatMessage,
 	if maxRunes < 0 {
 		return ""
 	}
-	if maxRunes == 0 {
-		maxRunes = defaultSubAgentUserContextMaxRunes
-	}
 
 	var userMsgs []string
 	for _, h := range history {
@@ -107,12 +106,16 @@ func buildUserContextSupplement(userMessage string, history []agent.ChatMessage,
 		return ""
 	}
 
-	joined := strings.Join(userMsgs, "\n---\n")
-	if len([]rune(joined)) > maxRunes {
+	lines := make([]string, 0, len(userMsgs))
+	for i, msg := range userMsgs {
+		lines = append(lines, fmt.Sprintf("[第%d轮] %s", i+1, msg))
+	}
+	joined := strings.Join(lines, "\n")
+	if maxRunes > 0 && len([]rune(joined)) > maxRunes {
 		joined = truncateKeepFirstLast(userMsgs, maxRunes)
 	}
 
-	return "\n\n## 会话上下文（自动补充，确保你了解用户完整意图）\n" + joined
+	return userContextSupplementHeader + joined
 }
 
 // truncateKeepFirstLast keeps the first and last user messages, giving each

@@ -16,7 +16,8 @@ import (
 )
 
 // ExecutionRecorder 可选，在 MCP 工具成功返回且带有 execution id 时回调（用于汇总 mcpExecutionIds）。
-type ExecutionRecorder func(executionID string)
+// toolCallID 来自 Eino compose.GetToolCallID，用于与 reduction 后的展示结果关联。
+type ExecutionRecorder func(executionID, toolCallID string)
 
 // ToolErrorPrefix 用于把内部 MCP 执行结果中的 IsError 标记传递到多代理上层。
 // Eino 工具通道目前只支持返回字符串，因此通过前缀标识，随后在多代理 runner 中解析为 success/isError。
@@ -178,7 +179,7 @@ func runMCPToolInvocation(
 		return "", nil
 	}
 	if res.ExecutionID != "" && record != nil {
-		record(res.ExecutionID)
+		record(res.ExecutionID, compose.GetToolCallID(ctx))
 	}
 	if res.IsError {
 		return ToolErrorPrefix + res.Result, nil

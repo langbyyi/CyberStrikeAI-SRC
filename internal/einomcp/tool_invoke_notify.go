@@ -2,8 +2,8 @@ package einomcp
 
 import "sync"
 
-// ToolInvokeNotifyHolder 由 Eino run loop 在迭代开始前 Set 回调；MCP 桥在每次 InvokableRun 结束时 Fire，
-// 用于在 ADK 未透出 schema.Tool 事件时仍推送 tool_result、清 pending，避免 UI 卡在「执行中」或迭代末 force-close。
+// ToolInvokeNotifyHolder 由 Eino run loop 与 MCP/execute 桥共享；Fire 在工具原始返回时触发。
+// UI 的 tool_result 须等 ADK schema.Tool 事件（reduction 后正文），不在此 holder 的回调里推送。
 type ToolInvokeNotifyHolder struct {
 	mu sync.RWMutex
 	fn func(toolCallID, toolName, einoAgent string, success bool, content string, invokeErr error)

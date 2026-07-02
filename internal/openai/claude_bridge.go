@@ -10,7 +10,7 @@ package openai
 //   Auth:     Bearer → x-api-key
 //   Tools:    OpenAI tools[] → Claude tools[] (input_schema)
 //
-// Extended thinking: 顶层 `thinking` 从 OpenAI 请求体透传；响应中 `thinking` block 映射为
+// Extended thinking: 顶层 `thinking` / `output_config` 从 OpenAI 请求体透传；响应中 `thinking` block 映射为
 // `reasoning_content`（可读前缀 + 内部 JSON 尾缀以保留 signature，供多轮工具续跑；UI 用 openai.DisplayReasoningContent 剥离）。
 
 import (
@@ -40,8 +40,9 @@ type claudeRequest struct {
 	System    string          `json:"system,omitempty"`
 	Messages  []claudeMessage `json:"messages"`
 	Tools     []claudeTool    `json:"tools,omitempty"`
-	Stream    bool            `json:"stream,omitempty"`
-	Thinking  json.RawMessage `json:"thinking,omitempty"`
+	Stream       bool            `json:"stream,omitempty"`
+	Thinking     json.RawMessage `json:"thinking,omitempty"`
+	OutputConfig json.RawMessage `json:"output_config,omitempty"`
 }
 
 type claudeMessage struct {
@@ -304,10 +305,15 @@ func convertOpenAIToClaude(payload interface{}) (*claudeRequest, error) {
 		}
 	}
 
-	// Extended thinking (Anthropic top-level); merged from Eino ExtraFields / admin extras.
+	// Extended thinking + effort (Anthropic top-level); merged from Eino ExtraFields / admin extras.
 	if th, ok := oai["thinking"]; ok && th != nil {
 		if raw, err := json.Marshal(th); err == nil && len(raw) > 0 && string(raw) != "null" {
 			req.Thinking = json.RawMessage(raw)
+		}
+	}
+	if oc, ok := oai["output_config"]; ok && oc != nil {
+		if raw, err := json.Marshal(oc); err == nil && len(raw) > 0 && string(raw) != "null" {
+			req.OutputConfig = json.RawMessage(raw)
 		}
 	}
 
@@ -800,10 +806,12 @@ func isClaudeProvider(cfg *config.OpenAIConfig) bool {
 // Eino HTTP Client Bridge
 // ============================================================
 
-// NewEinoHTTPClient 为 einoopenai.ChatModelConfig 返回一个 http.Client，包含两层 transport 包装：
-//  1. 当 cfg.Provider 为 claude 时，最内层套 claudeRoundTripper，把 OpenAI /chat/completions 透明
+// NewEinoHTTPClient 为 einoopenai.ChatModelConfig 返回一个 http.Client，包含多层 transport 包装：
+//  1. 当 cfg.Provider 为 claude 时，套 claudeRoundTripper，把 OpenAI /chat/completions 透明
 //     桥接为 Anthropic /v1/messages（并把 Claude SSE 翻译回 OpenAI SSE 格式）。
-//  2. 最外层无条件套 einoSSESanitizingRoundTripper，吞掉中转站发的 SSE 心跳/注释/控制行
+//  2. reasoningToolChoiceCompatRoundTripper：tool_choice=required/object 时剥离 thinking 字段，避免
+//     plan_execute replanner 等强制工具调用与推理模式冲突（部分网关返回 400）。
+//  3. 最外层无条件套 einoSSESanitizingRoundTripper，吞掉中转站发的 SSE 心跳/注释/控制行
 //     (": keepalive" / "event: ping" / "retry: 3000" 等)，避免 Eino 用的 meguminnnnnnnnn/go-openai
 //     SDK 在累计超过 300 个非 "data:" 行后抛 "stream has sent too many empty messages"。
 //
@@ -819,6 +827,7 @@ func NewEinoHTTPClient(cfg *config.OpenAIConfig, base *http.Client) *http.Client
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
+	transport = &reasoningToolChoiceCompatRoundTripper{base: transport}
 	if isClaudeProvider(cfg) {
 		transport = &claudeRoundTripper{
 			base:   transport,

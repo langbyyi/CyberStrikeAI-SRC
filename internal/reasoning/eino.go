@@ -26,6 +26,35 @@ const (
 	wireOutputConfig
 )
 
+// ApplyPlanExecutePlannerModelConfig configures the plan_execute planner/replanner
+// ChatModel. Those Eino agents call WithToolChoice(Forced); several gateways reject
+// thinking / reasoning fields on the same request (tool_choice required/object).
+// Executor should keep the normal ApplyToEinoChatModelConfig path.
+func ApplyPlanExecutePlannerModelConfig(cfg *einoopenai.ChatModelConfig, oa *config.OpenAIConfig) {
+	if cfg == nil || oa == nil {
+		return
+	}
+	offOA := *oa
+	offReasoning := oa.Reasoning
+	offReasoning.Mode = "off"
+	offOA.Reasoning = offReasoning
+	ApplyToEinoChatModelConfig(cfg, &offOA, nil)
+	clearReasoningFromChatModelConfig(cfg)
+}
+
+func clearReasoningFromChatModelConfig(cfg *einoopenai.ChatModelConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.ReasoningEffort = ""
+	if cfg.ExtraFields != nil {
+		for _, key := range []string{"thinking", "reasoning_effort", "output_config", "reasoning"} {
+			delete(cfg.ExtraFields, key)
+		}
+	}
+	applyThinkingDisabled(cfg)
+}
+
 // ApplyToEinoChatModelConfig merges reasoning-related options into cfg.
 // Precondition: cfg already has APIKey, BaseURL, Model, HTTPClient set.
 func ApplyToEinoChatModelConfig(cfg *einoopenai.ChatModelConfig, oa *config.OpenAIConfig, client *ClientIntent) {
@@ -84,8 +113,9 @@ func ApplyToEinoChatModelConfig(cfg *einoopenai.ChatModelConfig, oa *config.Open
 	}
 }
 
-// applyClaudeExtendedThinking sets Anthropic Messages API `thinking` when absent from ExtraRequestFields.
-// Uses adaptive + summarized display by default (per Anthropic guidance for Claude 4.x); Sonnet 3.7 uses enabled+budget.
+// applyClaudeExtendedThinking sets Anthropic Messages API fields per official guidance:
+//   - Adaptive models (4.6+): thinking.type=adaptive; output_config.effort only when user sets effort (API default is high).
+//   - Sonnet 3.7: thinking.type=enabled + budget_tokens=10000 (doc example); effort is not mapped — use extra_request_fields for custom budget.
 func applyClaudeExtendedThinking(cfg *einoopenai.ChatModelConfig, mode, effort, model string) {
 	if cfg == nil || mode == "off" {
 		return
@@ -93,31 +123,60 @@ func applyClaudeExtendedThinking(cfg *einoopenai.ChatModelConfig, mode, effort, 
 	if cfg.ExtraFields == nil {
 		cfg.ExtraFields = make(map[string]any)
 	}
-	if _, exists := cfg.ExtraFields["thinking"]; exists {
-		return
-	}
 	m := strings.ToLower(strings.TrimSpace(model))
-	thinking := map[string]any{
-		"type":    "adaptive",
-		"display": "summarized",
+	sonnet37 := isClaudeSonnet37(m)
+
+	if _, exists := cfg.ExtraFields["thinking"]; !exists {
+		cfg.ExtraFields["thinking"] = claudeThinkingForModel(m, sonnet37)
 	}
-	// Sonnet 3.7: manual extended thinking is the documented path.
-	if strings.Contains(m, "claude-3-7-sonnet") || strings.Contains(m, "3-7-sonnet") || strings.Contains(m, "sonnet-3.7") {
-		thinking = map[string]any{
+
+	applyClaudeOutputConfigEffort(cfg, effort, sonnet37)
+}
+
+// claudeSonnet37DefaultBudgetTokens matches Anthropic extended-thinking documentation examples (budget_tokens with max_tokens 16000).
+const claudeSonnet37DefaultBudgetTokens = 10000
+
+func isClaudeSonnet37(m string) bool {
+	return strings.Contains(m, "claude-3-7-sonnet") ||
+		strings.Contains(m, "3-7-sonnet") ||
+		strings.Contains(m, "sonnet-3.7")
+}
+
+func claudeThinkingForModel(m string, sonnet37 bool) map[string]any {
+	if sonnet37 {
+		return map[string]any{
 			"type":          "enabled",
-			"budget_tokens": 10000,
+			"budget_tokens": claudeSonnet37DefaultBudgetTokens,
 			"display":       "summarized",
 		}
 	}
-	// Opus 4.7+: manual enabled+budget rejected — keep adaptive only.
+	// Opus 4.7+: manual enabled+budget rejected — adaptive only.
 	if strings.Contains(m, "opus-4-7") || strings.Contains(m, "opus-4.7") {
-		thinking = map[string]any{
+		return map[string]any{
 			"type":    "adaptive",
 			"display": "summarized",
 		}
 	}
-	_ = effort // reserved: map to Anthropic effort / output_config when API stabilizes in one place
-	cfg.ExtraFields["thinking"] = thinking
+	return map[string]any{
+		"type":    "adaptive",
+		"display": "summarized",
+	}
+}
+
+// applyClaudeOutputConfigEffort sets top-level output_config.effort only when effort is explicitly configured.
+// Omitted effort uses the API default (high); do not inject effort on mode:on alone.
+func applyClaudeOutputConfigEffort(cfg *einoopenai.ChatModelConfig, effort string, sonnet37 bool) {
+	if cfg == nil || sonnet37 {
+		return
+	}
+	if _, exists := cfg.ExtraFields["output_config"]; exists {
+		return
+	}
+	e := effortStringForAPI(effort)
+	if e == "" {
+		return
+	}
+	cfg.ExtraFields["output_config"] = map[string]any{"effort": e}
 }
 
 func effectiveMode(sr *config.OpenAIReasoningConfig, client *ClientIntent, allowClient bool) string {

@@ -27,6 +27,7 @@ func TestIsEinoTransientRunError(t *testing.T) {
 		{"429", errors.New("HTTP 429 Too Many Requests"), true},
 		{"rate limit", errors.New(`{"error":"rate limit exceeded"}`), true},
 		{"connection reset", errors.New("read tcp: connection reset by peer"), true},
+		{"http2 goaway", errors.New("failed to receive stream chunk: error, http2: server sent GOAWAY and closed the connection; LastStreamID=791, ErrCode=NO_ERROR"), true},
 		{"unexpected eof", errors.New("unexpected EOF"), true},
 		{"503", errors.New("upstream returned 503"), true},
 		{"iteration limit", errors.New("max iteration reached"), false},
@@ -90,6 +91,46 @@ func TestEinoRunRetryMaxAttemptsFromArgs(t *testing.T) {
 	}
 }
 
+func TestEinoTransientRunRetrierReset(t *testing.T) {
+	t.Parallel()
+	r := newEinoTransientRunRetrier(einoTransientRunRetryPolicy{maxAttempts: 10, maxBackoff: 30 * time.Second})
+	r.attempts = 3
+	r.reset()
+	if r.attempt() != 0 {
+		t.Fatalf("after reset: attempt=%d, want 0", r.attempt())
+	}
+	// 重置后下一次退避应从 2s 起算（attempt index 0）。
+	if got := einoTransientRetryBackoff(r.attempt(), r.policy.maxBackoff); got != 2*time.Second {
+		t.Fatalf("backoff after reset: got %v, want 2s", got)
+	}
+}
+
+func TestEinoTransientRunRetrierConsecutiveFailures(t *testing.T) {
+	t.Parallel()
+	r := newEinoTransientRunRetrier(einoTransientRunRetryPolicy{maxAttempts: 10, maxBackoff: 30 * time.Second})
+	ctx := context.Background()
+	runErr := errors.New("internal server error")
+	args := &einoADKRunLoopArgs{}
+	base := []adk.Message{schema.UserMessage("hi")}
+
+	for want := 1; want <= 3; want++ {
+		restarted, _, _, _, err := r.tryRetry(ctx, runErr, args, base, nil, len(base))
+		if err != nil {
+			t.Fatalf("tryRetry attempt %d: %v", want, err)
+		}
+		if !restarted {
+			t.Fatalf("tryRetry attempt %d: want restarted", want)
+		}
+		if got := r.attempt(); got != want {
+			t.Fatalf("after failure %d: attempt=%d, want %d", want, got, want)
+		}
+	}
+	r.reset()
+	if r.attempt() != 0 {
+		t.Fatalf("after successful recovery reset: attempt=%d, want 0", r.attempt())
+	}
+}
+
 func TestAppendUserMessageIfNeeded(t *testing.T) {
 	t.Parallel()
 	msgs := []adk.Message{schema.UserMessage("old task")}
@@ -103,9 +144,17 @@ func TestAppendUserMessageIfNeeded(t *testing.T) {
 	}
 }
 
-func TestErrTransientRetryContinue(t *testing.T) {
+func TestAppendUserMessageIfNeeded_repeatPromptAfterAssistant(t *testing.T) {
 	t.Parallel()
-	if !errors.Is(ErrTransientRetryContinue, ErrTransientRetryContinue) {
-		t.Fatal("sentinel should match")
+	msgs := []adk.Message{
+		schema.UserMessage("扫描 example.com"),
+		schema.AssistantMessage("开始扫描...", nil),
+	}
+	out := appendUserMessageIfNeeded(msgs, "扫描 example.com")
+	if len(out) != 3 {
+		t.Fatalf("should append new user turn after assistant reply: len=%d", len(out))
+	}
+	if out[2].Role != schema.User || out[2].Content != "扫描 example.com" {
+		t.Fatalf("tail should be repeated user prompt, got role=%s content=%q", out[2].Role, out[2].Content)
 	}
 }

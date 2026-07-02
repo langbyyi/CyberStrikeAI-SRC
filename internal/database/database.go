@@ -51,6 +51,8 @@ type DB struct {
 	conversationArtifactsDir string
 	einoPlantaskBaseDir      string // skills_dir + plantask_rel_dir (per-conversation subdirs)
 	einoCheckpointBaseDir    string // checkpoint_dir root (per-conversation subdirs)
+	einoReductionRootDir     string // reduction_root_dir or default tmp/reduction (conversations/<id> subdirs)
+	einoWorkspaceRootDir     string // workspace_root_dir or default tmp/workspace (projects|conversations/<id> subdirs)
 	checkpointLoopName       string
 	checkpointStop           chan struct{}
 	checkpointDone           chan struct{}
@@ -159,12 +161,16 @@ func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
 
 // SetEinoConversationDirs configures best-effort filesystem cleanup on DeleteConversation.
 // plantaskBase is skills_root/plantask_rel (no conversation id); checkpointBase is checkpoint_dir root.
-func (db *DB) SetEinoConversationDirs(plantaskBase, checkpointBase string) {
+// reductionRoot is reduction_root_dir from config; empty uses tmp/reduction (conversation-scoped subdirs only).
+// workspaceRoot is agent.workspace_root_dir from config; empty uses tmp/workspace.
+func (db *DB) SetEinoConversationDirs(plantaskBase, checkpointBase, reductionRoot, workspaceRoot string) {
 	if db == nil {
 		return
 	}
 	db.einoPlantaskBaseDir = strings.TrimSpace(plantaskBase)
 	db.einoCheckpointBaseDir = strings.TrimSpace(checkpointBase)
+	db.einoReductionRootDir = strings.TrimSpace(reductionRoot)
+	db.einoWorkspaceRootDir = strings.TrimSpace(workspaceRoot)
 }
 
 // initTables 初始化数据库表
@@ -354,6 +360,22 @@ func (db *DB) initTables() error {
 		UNIQUE(project_id, fact_key)
 	);`
 
+	// 项目事实关系边（黑板 DAG）
+	createProjectFactEdgesTable := `
+	CREATE TABLE IF NOT EXISTS project_fact_edges (
+		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL,
+		source_fact_key TEXT NOT NULL,
+		target_fact_key TEXT NOT NULL,
+		edge_type TEXT NOT NULL,
+		confidence TEXT NOT NULL DEFAULT 'tentative',
+		source_conversation_id TEXT,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+		UNIQUE(project_id, source_fact_key, target_fact_key, edge_type)
+	);`
+
 	// 创建漏洞表
 	createVulnerabilitiesTable := `
 	CREATE TABLE IF NOT EXISTS vulnerabilities (
@@ -370,13 +392,6 @@ func (db *DB) initTables() error {
 		proof TEXT,
 		impact TEXT,
 		recommendation TEXT,
-		category TEXT,
-		network_segment TEXT,
-		auth_required TEXT,
-		vuln_urls TEXT,
-		developer TEXT,
-		test_account TEXT,
-		test_password TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -397,6 +412,8 @@ func (db *DB) initTables() error {
 		last_schedule_trigger_at DATETIME,
 		last_schedule_error TEXT,
 		last_run_error TEXT,
+		project_id TEXT,
+		concurrency INTEGER NOT NULL DEFAULT 1,
 		status TEXT NOT NULL,
 		created_at DATETIME NOT NULL,
 		started_at DATETIME,
@@ -599,6 +616,9 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_project_facts_project_id ON project_facts(project_id);
 	CREATE INDEX IF NOT EXISTS idx_project_facts_confidence ON project_facts(confidence);
 	CREATE INDEX IF NOT EXISTS idx_project_facts_related_vuln ON project_facts(related_vulnerability_id);
+	CREATE INDEX IF NOT EXISTS idx_project_fact_edges_project ON project_fact_edges(project_id);
+	CREATE INDEX IF NOT EXISTS idx_project_fact_edges_source ON project_fact_edges(project_id, source_fact_key);
+	CREATE INDEX IF NOT EXISTS idx_project_fact_edges_target ON project_fact_edges(project_id, target_fact_key);
 	CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id);
 	CREATE INDEX IF NOT EXISTS idx_vulnerabilities_project_id ON vulnerabilities(project_id);
 	CREATE INDEX IF NOT EXISTS idx_batch_tasks_queue_id ON batch_tasks(queue_id);
@@ -678,6 +698,10 @@ func (db *DB) initTables() error {
 
 	if _, err := db.Exec(createProjectFactsTable); err != nil {
 		return fmt.Errorf("创建project_facts表失败: %w", err)
+	}
+
+	if _, err := db.Exec(createProjectFactEdgesTable); err != nil {
+		return fmt.Errorf("创建project_fact_edges表失败: %w", err)
 	}
 
 	if _, err := db.Exec(createVulnerabilitiesTable); err != nil {
@@ -1119,6 +1143,21 @@ func (db *DB) migrateBatchTaskQueuesTable() error {
 		}
 	}
 
+	var concurrencyCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('batch_task_queues') WHERE name='concurrency'").Scan(&concurrencyCount)
+	if err != nil {
+		if _, addErr := db.Exec("ALTER TABLE batch_task_queues ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1"); addErr != nil {
+			errMsg := strings.ToLower(addErr.Error())
+			if !strings.Contains(errMsg, "duplicate column") && !strings.Contains(errMsg, "already exists") {
+				db.logger.Warn("添加batch_task_queues.concurrency字段失败", zap.Error(addErr))
+			}
+		}
+	} else if concurrencyCount == 0 {
+		if _, err := db.Exec("ALTER TABLE batch_task_queues ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1"); err != nil {
+			db.logger.Warn("添加batch_task_queues.concurrency字段失败", zap.Error(err))
+		}
+	}
+
 	return nil
 }
 
@@ -1190,13 +1229,6 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 		proof TEXT,
 		impact TEXT,
 		recommendation TEXT,
-		category TEXT,
-		network_segment TEXT,
-		auth_required TEXT,
-		vuln_urls TEXT,
-		developer TEXT,
-		test_account TEXT,
-		test_password TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -1210,13 +1242,11 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 	INSERT INTO vulnerabilities_new (
 		id, conversation_id, conversation_tag, task_tag, title, description,
 		severity, status, vulnerability_type, target, proof, impact, recommendation,
-		category, network_segment, auth_required, vuln_urls, developer, test_account, test_password,
 		created_at, updated_at, project_id
 	)
 	SELECT
 		id, conversation_id, conversation_tag, task_tag, title, description,
 		severity, status, vulnerability_type, target, proof, impact, recommendation,
-		COALESCE(category,''), COALESCE(network_segment,''), COALESCE(auth_required,''), COALESCE(vuln_urls,''), COALESCE(developer,''), COALESCE(test_account,''), COALESCE(test_password,''),
 		created_at, updated_at, project_id
 	FROM vulnerabilities;`
 	if _, err := tx.Exec(copyRows); err != nil {
@@ -1287,13 +1317,6 @@ func (db *DB) migrateVulnerabilitiesTable() error {
 		{name: "conversation_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN conversation_tag TEXT"},
 		{name: "task_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN task_tag TEXT"},
 		{name: "project_id", stmt: "ALTER TABLE vulnerabilities ADD COLUMN project_id TEXT"},
-		{name: "category", stmt: "ALTER TABLE vulnerabilities ADD COLUMN category TEXT"},
-		{name: "network_segment", stmt: "ALTER TABLE vulnerabilities ADD COLUMN network_segment TEXT"},
-		{name: "auth_required", stmt: "ALTER TABLE vulnerabilities ADD COLUMN auth_required TEXT"},
-		{name: "vuln_urls", stmt: "ALTER TABLE vulnerabilities ADD COLUMN vuln_urls TEXT"},
-		{name: "developer", stmt: "ALTER TABLE vulnerabilities ADD COLUMN developer TEXT"},
-		{name: "test_account", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_account TEXT"},
-		{name: "test_password", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_password TEXT"},
 	}
 
 	for _, col := range columns {

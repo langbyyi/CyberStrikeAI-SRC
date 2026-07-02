@@ -16,7 +16,6 @@ import (
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/storage"
 
 	"github.com/creack/pty"
 	"go.uber.org/zap"
@@ -33,42 +32,29 @@ var ToolOutputCallbackCtxKey = toolOutputCallbackCtxKey{}
 
 // Executor 安全工具执行器
 type Executor struct {
-	config        *config.SecurityConfig
-	toolIndex     map[string]*config.ToolConfig // 工具索引，用于 O(1) 查找
-	mcpServer     *mcp.Server
-	logger        *zap.Logger
-	resultStorage ResultStorage // 结果存储（用于查询工具）
-}
-
-// ResultStorage 结果存储接口（直接使用 storage 包的类型）
-type ResultStorage interface {
-	SaveResult(executionID string, toolName string, result string) error
-	GetResult(executionID string) (string, error)
-	GetResultPage(executionID string, page int, limit int) (*storage.ResultPage, error)
-	SearchResult(executionID string, keyword string, useRegex bool) ([]string, error)
-	FilterResult(executionID string, filter string, useRegex bool) ([]string, error)
-	GetResultMetadata(executionID string) (*storage.ResultMetadata, error)
-	GetResultPath(executionID string) string
-	DeleteResult(executionID string) error
+	config                  *config.SecurityConfig
+	toolIndex               map[string]*config.ToolConfig // 工具索引，用于 O(1) 查找
+	mcpServer               *mcp.Server
+	logger                  *zap.Logger
+	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
 }
 
 // NewExecutor 创建新的执行器
 func NewExecutor(cfg *config.SecurityConfig, mcpServer *mcp.Server, logger *zap.Logger) *Executor {
 	executor := &Executor{
-		config:        cfg,
-		toolIndex:     make(map[string]*config.ToolConfig),
-		mcpServer:     mcpServer,
-		logger:        logger,
-		resultStorage: nil, // 稍后通过 SetResultStorage 设置
+		config:    cfg,
+		toolIndex: make(map[string]*config.ToolConfig),
+		mcpServer: mcpServer,
+		logger:    logger,
 	}
 	// 构建工具索引
 	executor.buildToolIndex()
 	return executor
 }
 
-// SetResultStorage 设置结果存储
-func (e *Executor) SetResultStorage(storage ResultStorage) {
-	e.resultStorage = storage
+// SetShellNoOutputTimeoutSeconds 配置 exec 工具无输出空闲终止（与 agent.shell_no_output_timeout_seconds 一致）。
+func (e *Executor) SetShellNoOutputTimeoutSeconds(sec int) {
+	e.shellNoOutputTimeoutSec = sec
 }
 
 // buildToolIndex 构建工具索引，将 O(n) 查找优化为 O(1)
@@ -96,31 +82,6 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	if toolName == "exec" {
 		e.logger.Info("执行exec工具")
 		return e.executeSystemCommand(ctx, args)
-	}
-
-	// 敏感接口拦截：execute-python-script 中的脚本可能发送 HTTP 请求到敏感端点
-	if toolName == "execute-python-script" {
-		if script, ok := args["script"].(string); ok && isSensitiveHTTPCommand(script) {
-			confirmedURL, _ := args["confirmed"].(string)
-			if confirmedURL == "" || !strings.Contains(strings.ToLower(script), strings.ToLower(confirmedURL)) {
-				e.logger.Warn("拦截 Python 脚本中的敏感接口请求，需要用户确认",
-					zap.String("toolName", toolName),
-				)
-				return &mcp.ToolResult{
-					Content: []mcp.Content{
-						{
-							Type: "text",
-							Text: "⚠️ 敏感接口检测：该 Python 脚本包含对敏感端点的写操作，可能导致不可逆影响。\n\n请先向用户报告：接口路径、HTTP 方法、推测功能、潜在风险。用户同意后，将 confirmed 参数设为用户同意的具体 URL（如 http://192.168.1.1/api/delete），系统会校验 URL 匹配。不同接口/目标需要分别授权。",
-						},
-					},
-					IsError: true,
-				}, nil
-			}
-			e.logger.Warn("用户已确认该接口，执行 Python 脚本中的敏感请求",
-				zap.String("toolName", toolName),
-				zap.String("confirmedURL", confirmedURL),
-			)
-		}
 	}
 
 	// 使用索引查找工具配置（O(1) 查找）
@@ -178,6 +139,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	// 执行命令
 	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
+	attachNonInteractiveStdin(cmd)
 	_ = prepareShellCmdSession(cmd)
 
 	e.logger.Info("执行安全工具",
@@ -189,7 +151,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	var err error
 	// 如果上层提供了 stdout/stderr 增量回调，则边执行边读取并回调。
 	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
-		output, err = streamCommandOutput(ctx, cmd, cb)
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
@@ -200,9 +162,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			output, err = runCommandWithPTY(ctx, cmd2, cb)
 		}
 	} else {
-		outputBytes, err2 := cmd.CombinedOutput()
-		output = string(outputBytes)
-		err = err2
+		// 非流式：内存缓冲 + ctx 取消杀进程组；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
+		output, err = combinedOutputCancellable(ctx, cmd)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
@@ -727,144 +688,24 @@ func (e *Executor) formatParamValue(param config.ParameterConfig, value interfac
 	}
 }
 
-// isSensitiveHTTPCommand 检查命令中是否包含对敏感端点的破坏性请求
-func isSensitiveHTTPCommand(command string) bool {
-	lower := strings.ToLower(command)
-
-	// 只检查包含 HTTP 请求特征的命令
-	httpIndicators := []string{
-		"curl ", "wget ", "requests.", "httpx ",
-		"python", "python3",
-		"fetch(", "urllib", "http.client",
-		"aiohttp", "requests_lib", "http.request",
-		"urllib3", "httpx.",
-	}
-	hasHTTP := false
-	for _, ind := range httpIndicators {
-		if strings.Contains(lower, ind) {
-			hasHTTP = true
-			break
-		}
-	}
-	if !hasHTTP {
-		return false
-	}
-
-	// 如果明确是 GET/HEAD 请求（只读探测），不拦截
-	readMethods := []string{
-		"curl -x get", "curl --request get", "curl -g",
-		"method=get",
-		"requests.get(", "httpx.get(", "fetch(",
-	}
-	for _, m := range readMethods {
-		if strings.Contains(lower, m) {
-			return false
-		}
-	}
-
-	// 如果 curl 没有指定 -X POST/PUT/DELETE/PATCH，默认是 GET，不拦截
-	if strings.Contains(lower, "curl ") && !strings.Contains(lower, "-x post") && !strings.Contains(lower, "-x put") && !strings.Contains(lower, "-x delete") && !strings.Contains(lower, "-x patch") && !strings.Contains(lower, "--request post") && !strings.Contains(lower, "--request put") && !strings.Contains(lower, "--request delete") && !strings.Contains(lower, "--data") && !strings.Contains(lower, "-d ") && !strings.Contains(lower, "-t ") && !strings.Contains(lower, "content-type") {
-		return false
-	}
-
-	// 敏感关键词（出现在 URL 路径中）
-	sensitiveKeywords := []string{
-		"delete", "remove", "drop", "truncate", "unlink", "rmdir", "purge", "destroy",
-		"shutdown", "restart", "reset", "reboot", "poweroff", "halt", "terminate",
-		"disable", "stop", "kill", "clear", "format",
-		"drop_table", "drop_database",
-		"changepassword", "changepwd", "resetpassword", "resetpwd",
-		"lockuser", "unlockuser", "disableuser", "deleteuser",
-	}
-
-	for _, kw := range sensitiveKeywords {
-		if strings.Contains(lower, "/"+kw) {
-			return true
-		}
-	}
-	return false
-}
-
 // IsBackgroundShellCommand 检测命令是否为完全后台命令（末尾有独立 &，且不在引号内）。
 // command1 & command2 不算完全后台（command2 仍在前台执行）。
 func IsBackgroundShellCommand(command string) bool {
-	// 移除首尾空格
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return false
 	}
-
-	// 检查命令中所有不在引号内的 & 符号
-	// 找到最后一个 & 符号，检查它是否在命令末尾
-	inSingleQuote := false
-	inDoubleQuote := false
-	escaped := false
-	lastAmpersandPos := -1
-
-	for i, r := range command {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if r == '\'' && !inDoubleQuote {
-			inSingleQuote = !inSingleQuote
-			continue
-		}
-		if r == '"' && !inSingleQuote {
-			inDoubleQuote = !inDoubleQuote
-			continue
-		}
-		if r == '&' && !inSingleQuote && !inDoubleQuote {
-			// 检查 & 前后是否有空格或换行（确保是独立的 &，而不是变量名的一部分）
-			isStandalone := false
-
-			// 检查前面：空格、制表符、换行符，或者是命令开头
-			if i == 0 {
-				isStandalone = true
-			} else {
-				prev := command[i-1]
-				if prev == ' ' || prev == '\t' || prev == '\n' || prev == '\r' {
-					isStandalone = true
-				}
-			}
-
-			// 检查后面：空格、制表符、换行符，或者是命令末尾
-			if isStandalone {
-				if i == len(command)-1 {
-					// 在末尾，肯定是独立的 &
-					lastAmpersandPos = i
-				} else {
-					next := command[i+1]
-					if next == ' ' || next == '\t' || next == '\n' || next == '\r' {
-						// 后面有空格，是独立的 &
-						lastAmpersandPos = i
-					}
-				}
-			}
-		}
-	}
-
-	// 如果没有找到 & 符号，不是后台命令
-	if lastAmpersandPos == -1 {
+	positions := findStandaloneAmpersandPositions(command)
+	if len(positions) == 0 {
 		return false
 	}
-
-	// 检查最后一个 & 后面是否还有非空内容
-	afterAmpersand := strings.TrimSpace(command[lastAmpersandPos+1:])
-	if afterAmpersand == "" {
-		// & 在末尾或后面只有空白字符，这是完全后台命令
-		// 检查 & 前面是否有内容
-		beforeAmpersand := strings.TrimSpace(command[:lastAmpersandPos])
-		return beforeAmpersand != ""
+	last := positions[len(positions)-1]
+	afterAmpersand := strings.TrimSpace(command[last+1:])
+	if afterAmpersand != "" {
+		return false
 	}
-
-	// 如果 & 后面还有非空内容，说明是 command1 & command2 的情况
-	// 这种情况下，command2会在前台执行，所以不算完全后台命令
-	return false
+	beforeAmpersand := strings.TrimSpace(command[:last])
+	return beforeAmpersand != ""
 }
 
 // executeSystemCommand 执行系统命令
@@ -895,34 +736,12 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		}, nil
 	}
 
-	// 敏感接口拦截：检查命令中是否包含对敏感端点的 HTTP 请求
-	if isSensitiveHTTPCommand(command) {
-		confirmedURL, _ := args["confirmed"].(string)
-		if confirmedURL == "" || !strings.Contains(strings.ToLower(command), strings.ToLower(confirmedURL)) {
-			e.logger.Warn("拦截敏感接口请求，需要用户确认",
-				zap.String("command", command),
-				zap.String("confirmedURL", confirmedURL),
-			)
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: "⚠️ 敏感接口检测：该请求包含对敏感端点的写操作，可能导致不可逆影响。\n\n请先向用户报告：接口路径、HTTP 方法、推测功能、潜在风险。用户同意后，将 confirmed 参数设为用户同意的具体 URL（如 http://192.168.1.1/api/delete），系统会校验 URL 匹配。不同接口/目标需要分别授权。",
-					},
-				},
-				IsError: true,
-			}, nil
-		}
-		e.logger.Warn("用户已确认该接口，执行敏感请求",
-			zap.String("command", command),
-			zap.String("confirmedURL", confirmedURL),
-		)
-	}
-
 	// 安全检查：记录执行的命令
 	e.logger.Warn("执行系统命令",
 		zap.String("command", command),
 	)
+
+	command = PrepareShellCommandForExecute(command)
 
 	// 获取shell类型（可选，默认为sh）
 	shell := "sh"
@@ -947,8 +766,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	} else {
 		cmd = exec.CommandContext(ctx, shell, "-c", command)
 	}
-	applyDefaultTerminalEnv(cmd)
-	_ = prepareShellCmdSession(cmd)
+	ConfigureShellCmdForAgentExecute(cmd)
 
 	// 执行命令
 	e.logger.Info("执行系统命令",
@@ -964,10 +782,8 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		commandWithoutAmpersand := strings.TrimSuffix(strings.TrimSpace(command), "&")
 		commandWithoutAmpersand = strings.TrimSpace(commandWithoutAmpersand)
 
-		// 构建新命令：将用户命令置于独立重定向的后台作业，再 echo $pid。
-		// 若子进程与 echo 共享同一 stdout 管道，且长时间不向 stdout 写入换行，
-		// bufio.ReadString('\n') 会永久阻塞（例如 beacon 持续写二进制/单行日志）。
-		pidCommand := fmt.Sprintf("%s </dev/null >/dev/null 2>&1 & pid=$!; echo $pid", commandWithoutAmpersand)
+		// 构建新命令：后台作业重定向标准流后 echo $pid（与 RedirectBackgroundJobStdio 一致）。
+		pidCommand := RedirectBackgroundJobStdio(commandWithoutAmpersand+" &") + " pid=$!; echo $pid"
 
 		// 创建新命令来获取PID
 		var pidCmd *exec.Cmd
@@ -977,8 +793,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		} else {
 			pidCmd = exec.CommandContext(ctx, shell, "-c", pidCommand)
 		}
-		applyDefaultTerminalEnv(pidCmd)
-		_ = prepareShellCmdSession(pidCmd)
+		ConfigureShellCmdForAgentExecute(pidCmd)
 
 		// 获取stdout管道
 		stdout, err := pidCmd.StdoutPipe()
@@ -1090,29 +905,25 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	var err error
 	// 若上层提供工具输出增量回调，则边执行边流式读取。
 	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
-		output, err = streamCommandOutput(ctx, cmd, cb)
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
 			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}
-			applyDefaultTerminalEnv(cmd2)
-			_ = prepareShellCmdSession(cmd2)
+			ConfigureShellCmdForAgentExecute(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, cb)
 		}
 	} else {
-		outputBytes, err2 := cmd.CombinedOutput()
-		output = string(outputBytes)
-		err = err2
+		output, err = combinedOutputCancellable(ctx, cmd)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
 			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}
-			applyDefaultTerminalEnv(cmd2)
-			_ = prepareShellCmdSession(cmd2)
+			ConfigureShellCmdForAgentExecute(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, nil)
 		}
 	}
@@ -1126,7 +937,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 			Content: []mcp.Content{
 				{
 					Type: "text",
-					Text: fmt.Sprintf("命令执行失败: %v\n输出: %s", err, string(output)),
+					Text: FormatCommandFailureFromErr(err, output),
 				},
 			},
 			IsError: true,
@@ -1149,12 +960,58 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	}, nil
 }
 
-// streamCommandOutput 以“边读边回调”的方式读取命令 stdout/stderr。
-// 使用定长块读取，避免按行读取在无换行输出时永久阻塞；ctx 取消时终止进程树。
-func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback) (string, error) {
-	if err := prepareShellCmdSession(cmd); err != nil {
+// combinedOutputCancellable 行为对齐 cmd.CombinedOutput（stdout/stderr 写入内存缓冲），
+// 但在 ctx 取消时 terminateCmdTree 终止整棵进程树。
+// 非流式路径不使用双流管道 fan-in，避免 stderr 撑满管道缓冲区时与 stdout 互相阻塞导致死锁。
+// 无输出空闲检测由上层 agent.tool_timeout_minutes 兜底，不改变原 CombinedOutput 语义。
+func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, error) {
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	session, err := StartShellSession(cmd)
+	if err != nil {
 		return "", err
 	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	stopWatch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			TerminateShellCmdSession(session)
+		case <-stopWatch:
+		}
+	}()
+	defer close(stopWatch)
+
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-ctx.Done():
+		waitErr = <-done
+		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), ctx.Err()
+	}
+	return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), waitErr
+}
+
+func joinCommandOutput(stdout, stderr string) string {
+	if stderr == "" {
+		return stdout
+	}
+	if stdout == "" {
+		return stderr
+	}
+	return stdout + stderr
+}
+
+// streamCommandOutput 以“边读边回调”的方式读取命令 stdout/stderr。
+// 使用定长块读取，避免按行读取在无换行输出时永久阻塞；ctx 取消时终止进程树。
+func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback, noOutputSec int) (string, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -1164,7 +1021,8 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		_ = stdoutPipe.Close()
 		return "", err
 	}
-	if err := cmd.Start(); err != nil {
+	session, err := StartShellSession(cmd)
+	if err != nil {
 		_ = stdoutPipe.Close()
 		_ = stderrPipe.Close()
 		return "", err
@@ -1174,7 +1032,7 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 	go func() {
 		select {
 		case <-ctx.Done():
-			terminateCmdTree(cmd)
+			TerminateShellCmdSession(session)
 		case <-stopWatch:
 		}
 	}()
@@ -1213,23 +1071,61 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		if deltaBuilder.Len() == 0 {
 			return
 		}
-		cb(deltaBuilder.String())
+		if cb != nil {
+			cb(deltaBuilder.String())
+		}
 		deltaBuilder.Reset()
 		lastFlush = time.Now()
 	}
 
-	for chunk := range chunks {
-		outBuilder.WriteString(chunk)
-		deltaBuilder.WriteString(chunk)
-		// 简单节流：buffer 大于 2KB 或 200ms 就刷新一次
-		if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
+	idleWatch := NewShellInactivityWatch(noOutputSec)
+	if idleWatch != nil {
+		defer idleWatch.Stop()
+	}
+
+	fireInactivity := func() {
+		TerminateShellCmdSession(session)
+		msg := ShellNoOutputTimeoutMessage(idleWatch.Sec)
+		outBuilder.WriteString(msg)
+		if cb != nil {
+			cb(msg)
+		}
+		_ = session.Wait()
+	}
+
+chunksLoop:
+	for {
+		var idleCh <-chan struct{}
+		if idleWatch != nil {
+			idleCh = idleWatch.Expired
+		}
+		select {
+		case <-ctx.Done():
+			TerminateShellCmdSession(session)
 			flush()
+			_ = session.Wait()
+			return outBuilder.String(), ctx.Err()
+		case <-idleCh:
+			fireInactivity()
+			return outBuilder.String(), fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
+		case chunk, ok := <-chunks:
+			if !ok {
+				break chunksLoop
+			}
+			if chunk != "" && idleWatch != nil {
+				idleWatch.Bump()
+			}
+			outBuilder.WriteString(chunk)
+			deltaBuilder.WriteString(chunk)
+			if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
+				flush()
+			}
 		}
 	}
 	flush()
 
 	// 等待命令结束，返回最终退出状态
-	waitErr := cmd.Wait()
+	waitErr := session.Wait()
 	return outBuilder.String(), waitErr
 }
 
@@ -1243,6 +1139,7 @@ func applyDefaultTerminalEnv(cmd *exec.Cmd) {
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
+	cmd.Env = ApplyNonInteractivePagerEnv(cmd.Env)
 	// 如果用户已设置 TERM/COLUMNS/LINES，则不覆盖
 	has := func(k string) bool {
 		prefix := k + "="
@@ -1286,7 +1183,7 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	if runtime.GOOS == "windows" {
 		// PTY 方案为类 Unix；Windows 走原逻辑
 		if cb != nil {
-			return streamCommandOutput(ctx, cmd, cb)
+			return streamCommandOutput(ctx, cmd, cb, 0)
 		}
 		_ = prepareShellCmdSession(cmd)
 		out, err := cmd.CombinedOutput()
@@ -1300,13 +1197,18 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	}
 	defer func() { _ = ptmx.Close() }()
 
+	rootPID := 0
+	if cmd.Process != nil {
+		rootPID = cmd.Process.Pid
+	}
+
 	// ctx 取消时尽快终止子进程
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = ptmx.Close() // 触发读退出
-			terminateCmdTree(cmd)
+			terminateProcessGroup(rootPID, cmd)
 		case <-done:
 		}
 	}()
@@ -1352,236 +1254,20 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 
 // executeInternalTool 执行内部工具（不执行外部命令）
 func (e *Executor) executeInternalTool(ctx context.Context, toolName string, command string, args map[string]interface{}) (*mcp.ToolResult, error) {
-	// 提取内部工具类型（去掉 "internal:" 前缀）
 	internalToolType := strings.TrimPrefix(command, "internal:")
-
-	e.logger.Info("执行内部工具",
+	e.logger.Warn("未知的内部工具",
 		zap.String("toolName", toolName),
 		zap.String("internalToolType", internalToolType),
-		zap.Any("args", args),
 	)
-
-	// 根据内部工具类型分发处理
-	switch internalToolType {
-	case "query_execution_result":
-		return e.executeQueryExecutionResult(ctx, args)
-	default:
-		return &mcp.ToolResult{
-			Content: []mcp.Content{
-				{
-					Type: "text",
-					Text: fmt.Sprintf("错误: 未知的内部工具类型: %s", internalToolType),
-				},
-			},
-			IsError: true,
-		}, nil
-	}
-}
-
-// executeQueryExecutionResult 执行查询执行结果工具
-func (e *Executor) executeQueryExecutionResult(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
-	// 获取 execution_id 参数
-	executionID, ok := args["execution_id"].(string)
-	if !ok || executionID == "" {
-		return &mcp.ToolResult{
-			Content: []mcp.Content{
-				{
-					Type: "text",
-					Text: "错误: execution_id 参数必需且不能为空",
-				},
-			},
-			IsError: true,
-		}, nil
-	}
-
-	// 获取可选参数
-	page := 1
-	if p, ok := args["page"].(float64); ok {
-		page = int(p)
-	}
-	if page < 1 {
-		page = 1
-	}
-
-	limit := 100
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-	}
-	if limit < 1 {
-		limit = 100
-	}
-	if limit > 500 {
-		limit = 500 // 限制最大每页行数
-	}
-
-	search := ""
-	if s, ok := args["search"].(string); ok {
-		search = s
-	}
-
-	filter := ""
-	if f, ok := args["filter"].(string); ok {
-		filter = f
-	}
-
-	useRegex := false
-	if r, ok := args["use_regex"].(bool); ok {
-		useRegex = r
-	}
-
-	// 检查结果存储是否可用
-	if e.resultStorage == nil {
-		return &mcp.ToolResult{
-			Content: []mcp.Content{
-				{
-					Type: "text",
-					Text: "错误: 结果存储未初始化",
-				},
-			},
-			IsError: true,
-		}, nil
-	}
-
-	// 执行查询
-	var resultPage *storage.ResultPage
-	var err error
-
-	if search != "" {
-		// 搜索模式
-		matchedLines, err := e.resultStorage.SearchResult(executionID, search, useRegex)
-		if err != nil {
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: fmt.Sprintf("搜索失败: %v", err),
-					},
-				},
-				IsError: true,
-			}, nil
-		}
-		// 对搜索结果进行分页
-		resultPage = paginateLines(matchedLines, page, limit)
-	} else if filter != "" {
-		// 过滤模式
-		filteredLines, err := e.resultStorage.FilterResult(executionID, filter, useRegex)
-		if err != nil {
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: fmt.Sprintf("过滤失败: %v", err),
-					},
-				},
-				IsError: true,
-			}, nil
-		}
-		// 对过滤结果进行分页
-		resultPage = paginateLines(filteredLines, page, limit)
-	} else {
-		// 普通分页查询
-		resultPage, err = e.resultStorage.GetResultPage(executionID, page, limit)
-		if err != nil {
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: fmt.Sprintf("查询失败: %v", err),
-					},
-				},
-				IsError: true,
-			}, nil
-		}
-	}
-
-	// 获取元信息
-	metadata, err := e.resultStorage.GetResultMetadata(executionID)
-	if err != nil {
-		// 元信息获取失败不影响查询结果
-		e.logger.Warn("获取结果元信息失败", zap.Error(err))
-	}
-
-	// 格式化返回结果
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("查询结果 (执行ID: %s)\n", executionID))
-
-	if metadata != nil {
-		sb.WriteString(fmt.Sprintf("工具: %s | 大小: %d 字节 (%.2f KB) | 总行数: %d\n",
-			metadata.ToolName, metadata.TotalSize, float64(metadata.TotalSize)/1024, metadata.TotalLines))
-	}
-
-	sb.WriteString(fmt.Sprintf("第 %d/%d 页，每页 %d 行，共 %d 行\n\n",
-		resultPage.Page, resultPage.TotalPages, resultPage.Limit, resultPage.TotalLines))
-
-	if len(resultPage.Lines) == 0 {
-		sb.WriteString("没有找到匹配的结果。\n")
-	} else {
-		for i, line := range resultPage.Lines {
-			lineNum := (resultPage.Page-1)*resultPage.Limit + i + 1
-			sb.WriteString(fmt.Sprintf("%d: %s\n", lineNum, line))
-		}
-	}
-
-	sb.WriteString("\n")
-	if resultPage.Page < resultPage.TotalPages {
-		sb.WriteString(fmt.Sprintf("提示: 使用 page=%d 查看下一页", resultPage.Page+1))
-		if search != "" {
-			sb.WriteString(fmt.Sprintf("，或使用 search=\"%s\" 继续搜索", search))
-			if useRegex {
-				sb.WriteString(" (正则模式)")
-			}
-		}
-		if filter != "" {
-			sb.WriteString(fmt.Sprintf("，或使用 filter=\"%s\" 继续过滤", filter))
-			if useRegex {
-				sb.WriteString(" (正则模式)")
-			}
-		}
-		sb.WriteString("\n")
-	}
-
 	return &mcp.ToolResult{
 		Content: []mcp.Content{
 			{
 				Type: "text",
-				Text: sb.String(),
+				Text: fmt.Sprintf("错误: 未知的内部工具类型: %s", internalToolType),
 			},
 		},
-		IsError: false,
+		IsError: true,
 	}, nil
-}
-
-// paginateLines 对行列表进行分页
-func paginateLines(lines []string, page int, limit int) *storage.ResultPage {
-	totalLines := len(lines)
-	totalPages := (totalLines + limit - 1) / limit
-	if page < 1 {
-		page = 1
-	}
-	if page > totalPages && totalPages > 0 {
-		page = totalPages
-	}
-
-	start := (page - 1) * limit
-	end := start + limit
-	if end > totalLines {
-		end = totalLines
-	}
-
-	var pageLines []string
-	if start < totalLines {
-		pageLines = lines[start:end]
-	} else {
-		pageLines = []string{}
-	}
-
-	return &storage.ResultPage{
-		Lines:      pageLines,
-		Page:       page,
-		Limit:      limit,
-		TotalLines: totalLines,
-		TotalPages: totalPages,
-	}
 }
 
 // buildInputSchema 构建输入模式

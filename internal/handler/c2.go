@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -277,6 +278,9 @@ func (h *C2Handler) ListSessions(c *gin.Context) {
 			filter.Limit = n
 		}
 	}
+	if c.Query("suspicious") == "1" || strings.EqualFold(c.Query("suspicious"), "true") {
+		filter.Suspicious = true
+	}
 
 	sessions, err := h.mgr().DB().ListC2Sessions(filter)
 	if err != nil {
@@ -324,7 +328,37 @@ func (h *C2Handler) DeleteSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
-// SetSessionSleep 设置会话的 sleep/jitter
+// DeleteSessions 批量删除会话（请求体 JSON: {"ids":["s_xxx",...]}）
+func (h *C2Handler) DeleteSessions(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
+		return
+	}
+	if len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids is required"})
+		return
+	}
+	n, err := h.mgr().DB().DeleteC2SessionsByIDs(req.IDs)
+	if err != nil {
+		if errors.Is(err, database.ErrNoValidC2SessionIDs) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if h.audit != nil {
+		h.audit.RecordOK(c, "c2", "session_delete", "批量删除 C2 会话", "c2_session", "", map[string]interface{}{
+			"count": n, "ids": req.IDs,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": n})
+}
+
+// SetSessionSleep 设置会话的 sleep/jitter，并下发 sleep 任务到植入体
 func (h *C2Handler) SetSessionSleep(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -335,12 +369,33 @@ func (h *C2Handler) SetSessionSleep(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.SleepSeconds < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sleep_seconds must be >= 1"})
+		return
+	}
+	if req.JitterPercent < 0 || req.JitterPercent > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "jitter_percent must be 0-100"})
+		return
+	}
 
-	if err := h.mgr().DB().SetC2SessionSleep(id, req.SleepSeconds, req.JitterPercent); err != nil {
+	task, err := h.mgr().SetSessionSleep(id, req.SleepSeconds, req.JitterPercent)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"updated": true})
+	out := gin.H{
+		"updated":        true,
+		"sleep_seconds":  req.SleepSeconds,
+		"jitter_percent": req.JitterPercent,
+	}
+	if task != nil {
+		out["task_id"] = task.ID
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // ============================================================================
