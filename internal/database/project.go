@@ -84,8 +84,8 @@ func (db *DB) CreateProject(p *Project) (*Project, error) {
 	p.UpdatedAt = now
 
 	_, err := db.Exec(
-		`INSERT INTO projects (id, name, description, scope_json, status, pinned, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO projects (id, name, description, scope_json, status, report_type, pinned, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Description, p.ScopeJSON, p.Status, p.ReportType, boolToInt(p.Pinned), p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {

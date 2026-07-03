@@ -174,7 +174,7 @@ POC 格式（proof 字段）：
 - auth_required: 是 或 否
 - test_account/test_password: 验证所需账号密码（无需登录留空）
 - vuln_urls: 漏洞URL，多个一行一个，禁止空行
-- proof: POC（Burp/curl/脚本/命令行均可，须完整可复现）
+- proof: POC（Burp HTTP 请求+响应 + Python 一键复现脚本，缺一不可，须完整可复现）
 - impact: 实际危害
 - description: 漏洞描述（成因、触发条件）
 
@@ -375,7 +375,7 @@ POC 格式（proof 字段）：
 - auth_required: 是 或 否
 - test_account/test_password: 验证所需账号密码（无需登录留空）
 - vuln_urls: 漏洞URL，多个一行一个，禁止空行
-- proof: POC（Burp/curl/脚本/命令行均可，须完整可复现）
+- proof: POC（Burp HTTP 请求+响应 + Python 一键复现脚本，缺一不可，须完整可复现）
 - impact: 实际危害
 - description: 漏洞描述（成因、触发条件）
 
