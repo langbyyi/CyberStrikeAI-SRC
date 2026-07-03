@@ -392,6 +392,13 @@ func (db *DB) initTables() error {
 		proof TEXT,
 		impact TEXT,
 		recommendation TEXT,
+		category TEXT,
+		network_segment TEXT,
+		auth_required TEXT,
+		vuln_urls TEXT,
+		developer TEXT,
+		test_account TEXT,
+		test_password TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -1308,7 +1315,7 @@ func vulnerabilitiesConversationFKOnDeleteSetNull(db *sql.DB) (bool, error) {
 	return found, nil
 }
 
-// migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签字段
+// migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签与报告字段
 func (db *DB) migrateVulnerabilitiesTable() error {
 	columns := []struct {
 		name string
@@ -1317,6 +1324,13 @@ func (db *DB) migrateVulnerabilitiesTable() error {
 		{name: "conversation_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN conversation_tag TEXT"},
 		{name: "task_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN task_tag TEXT"},
 		{name: "project_id", stmt: "ALTER TABLE vulnerabilities ADD COLUMN project_id TEXT"},
+		{name: "category", stmt: "ALTER TABLE vulnerabilities ADD COLUMN category TEXT"},
+		{name: "network_segment", stmt: "ALTER TABLE vulnerabilities ADD COLUMN network_segment TEXT"},
+		{name: "auth_required", stmt: "ALTER TABLE vulnerabilities ADD COLUMN auth_required TEXT"},
+		{name: "vuln_urls", stmt: "ALTER TABLE vulnerabilities ADD COLUMN vuln_urls TEXT"},
+		{name: "developer", stmt: "ALTER TABLE vulnerabilities ADD COLUMN developer TEXT"},
+		{name: "test_account", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_account TEXT"},
+		{name: "test_password", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_password TEXT"},
 	}
 
 	for _, col := range columns {
