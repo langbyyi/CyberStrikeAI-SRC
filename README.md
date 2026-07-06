@@ -223,8 +223,8 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 **CyberStrikeAI one-click upgrade (recommended):**
 1. (First time) enable the script: `chmod +x upgrade.sh`
-2. Upgrade with: `./upgrade.sh` (optional flags: `--tag vX.Y.Z`, `--no-venv`, `--yes`). Local `tools/`, `roles/`, and `skills/` are always preserved.
-3. The script will back up your `config.yaml` and `data/`, upgrade the code from GitHub Release, update `config.yaml`'s `version`, then restart the server.
+2. Upgrade the default `master` branch with: `./upgrade.sh` (optional flags: `--branch <name>`, `--tag vX.Y.Z`, `--no-venv`, `--yes`). Local `tools/` is always preserved; use `--no-sync-roles-skills` to preserve local `roles/` and `skills/` changes.
+3. The script will back up your `config.yaml` and `data/`, download the selected GitHub source branch or tag, update `config.yaml`'s `version`, then restart the server.
 
 Recommended one-liner:
 `chmod +x upgrade.sh && ./upgrade.sh --yes`
@@ -232,9 +232,8 @@ Recommended one-liner:
 If something goes wrong, you can restore from `.upgrade-backup/` (or manually copy `/data` and `config.yaml` back) and run `./run.sh` again.
 
 Requirements / tips:
-* You need `curl` or `wget` for downloading Release packages.
+* You need `curl` or `wget` for downloading GitHub source archives.
 * `rsync` is recommended/required for the safe code sync.
-* If GitHub API rate-limits you, set `export GITHUB_TOKEN="..."` before running `./upgrade.sh`.
 
 ⚠️ **Note:** This procedure only applies to version updates without compatibility or breaking changes. If a release includes compatibility changes, this method may not apply.
 

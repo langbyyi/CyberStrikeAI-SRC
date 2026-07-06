@@ -221,8 +221,8 @@ go build -o cyberstrike-ai cmd/server/main.go
 ### CyberStrikeAI 版本更新（无兼容性问题）
 
 1. （首次使用）启用脚本：`chmod +x upgrade.sh`
-2. 一键升级：`./upgrade.sh`（可选参数：`--tag vX.Y.Z`、`--no-venv`、`--yes`）。本地的 `tools/`、`roles/`、`skills/` 会始终保留不被覆盖。
-3. 脚本会备份你的 `config.yaml` 和 `data/`，从 GitHub Release 升级代码，更新 `config.yaml` 的 `version` 字段后重启服务。
+2. 一键升级默认 `master` 分支：`./upgrade.sh`（可选参数：`--branch <分支>`、`--tag vX.Y.Z`、`--no-venv`、`--yes`）。本地 `tools/` 始终保留；如需保留本地 `roles/` 和 `skills/` 修改，请使用 `--no-sync-roles-skills`。
+3. 脚本会备份你的 `config.yaml` 和 `data/`，下载指定的 GitHub 源码分支或标签，更新 `config.yaml` 的 `version` 字段后重启服务。
 
 推荐的一键指令：
 `chmod +x upgrade.sh && ./upgrade.sh --yes`
@@ -230,9 +230,8 @@ go build -o cyberstrike-ai cmd/server/main.go
 如果升级失败，可以从 `.upgrade-backup/` 恢复，或按旧方式手动拷贝 `/data` 和 `config.yaml` 后再运行 `./run.sh`。
 
 依赖/提示：
-* 需要 `curl` 或 `wget` 用于下载 GitHub Release 包。
+* 需要 `curl` 或 `wget` 用于下载 GitHub 源码归档。
 * 建议/需要 `rsync` 用于安全同步代码。
-* 如果遇到 GitHub API 限流，运行前设置 `export GITHUB_TOKEN="..."` 再执行 `./upgrade.sh`。
 
 ⚠️ **注意：** 仅适用于无兼容性变更的版本更新。若版本存在兼容性调整，此方法不适用。
 
