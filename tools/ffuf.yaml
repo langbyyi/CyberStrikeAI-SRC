@@ -1,5 +1,8 @@
 name: "ffuf"
 command: "ffuf"
+# 默认护栏：总扫描上限 600s（10min），防止慢站大字典模糊拖死并行批次。
+# 字典路径由 executor 启动时校验（缺失返回结构化错误而非静默失败）。
+args: ["-maxtime", "600"]
 enabled: true
 short_description: "快速Web模糊测试工具，用于目录、参数和内容发现"
 description: |

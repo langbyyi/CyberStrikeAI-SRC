@@ -91,13 +91,13 @@ func registerProjectFactTools(mcpServer *mcp.Server, db *database.DB, cfg *confi
 				},
 				"links": map[string]interface{}{
 					"type": "array",
-					"description": "可选：关系边（from → 当前 fact）。finding 至少 1 条 {from:target/*, type:discovered_on}；finding 上记录 exploit 用 {from:exploit/*, type:exploits}。省略保留已有边；传 [] 清空全部关系边。",
+					"description": "可选：关系边（from → 当前 fact）。finding 至少 1 条 {from:target/*, type:discovered_on}；finding 上记录 exploit 用 {from:exploit/*, type:exploits}。target/auth/infra 等根 fact 无需 discovered_on 边。from 不可等于当前 fact_key（自环会被忽略）。省略保留已有边；传 [] 清空全部关系边。",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
 							"from": map[string]interface{}{
 								"type":        "string",
-								"description": "来源 fact_key：存储为 from → 当前 fact",
+								"description": "来源 fact_key：存储为 from → 当前 fact（不可等于当前 fact_key）",
 							},
 							"type": map[string]interface{}{
 								"type":        "string",

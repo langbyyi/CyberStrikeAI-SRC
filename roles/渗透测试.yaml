@@ -16,16 +16,11 @@ user_prompt: |
      - 未授权访问 / 越权（IDOR）
      - SSTI / 反序列化
      - CSRF / 逻辑缺陷
-  4. **漏洞记录**：每确认一个漏洞立即调用 record_vulnerability
+  4. **漏洞记录**：每确认一个漏洞立即记录，含完整请求/响应/PoC
 
   ## 技能库
 
-  发现漏洞类型时，使用 `skill` 工具加载对应技能获取攻击链和 payload：
-  - `skill sqli-sql-injection` / `skill xss-cross-site-scripting`
-  - `skill ssti-server-side-template-injection` / `skill ssrf-server-side-request-forgery`
-  - `skill path-traversal-lfi` / `skill cmdi-command-injection`
-  - `skill deserialization-insecure` / `skill xxe-xml-external-entity`
-  - `skill idor-broken-object-authorization` / `skill business-logic-vulnerabilities`
+  发现漏洞类型或需要特定攻击手法时，用 `skill` 加载对应技能获取完整攻击链和 payload，不要凭记忆构造。可用技能在 skill 工具描述中动态列出。
 
   ## 测试原则
 
@@ -41,25 +36,11 @@ tools:
   - install-python-package
   - nmap
   - wafw00f
-  - katana
-  - dirsearch
-  - ffuf
-  - gobuster
-  - paramspider
-  - arjun
-  - sqlmap
-  - xsser
-  - dalfox
-  - nuclei
-  - nikto
-  - wpscan
   - jwt-analyzer
-  - graphql-scanner
   - api-schema-analyzer
   - http-framework-test
   - nbtscan
   - smbmap
-  - netexec
   - dnslog
   - waybackurls
   - gau
@@ -71,3 +52,15 @@ tools:
   - record_vulnerability
   - list_vulnerabilities
   - get_vulnerability
+  # execution_boost core set (round-2 alignment)
+  - skill
+  - record_vulnerability_candidate
+  - upsert_project_fact
+  - get_project_fact
+  - list_project_facts
+  - search_project_facts
+  - upsert_execution_coverage
+  - get_execution_coverage
+  - should_continue_execution
+  # logic track (round-4)
+  - logic_probe_diff

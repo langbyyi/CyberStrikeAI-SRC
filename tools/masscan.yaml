@@ -24,11 +24,13 @@ parameters:
     format: "positional"
   - name: "ports"
     type: "string"
-    description: "端口范围（如：1-65535）"
+    description: |
+      端口范围。默认常用端口（快速、避免全端口拖慢同批并行工具）；全端口扫描请显式传 1-65535（极慢，Agent 并行批次会等待最慢工具）。
+      示例：80,443,8080,8443、1-1000、1-65535（全端口，慢）
     required: false
     flag: "-p"
     format: "flag"
-    default: "1-65535"
+    default: "21,22,80,443,445,1433,3306,3389,5432,6379,8080,8443,8000-8100,8888,9200,11211,27017"
   - name: "rate"
     type: "int"
     description: "每秒数据包数"

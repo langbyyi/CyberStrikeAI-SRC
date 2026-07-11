@@ -24,6 +24,7 @@ import (
 
 // einoSummarizeUserInstruction：压缩历史时保留渗透测试与用户约束关键信息。
 // 结构对齐 Eino 最佳实践（禁止工具、<analysis>+<summary>、<all_user_messages>），章节为安全测试领域化。
+// 注意：此为框架摘要策略 instruction，不是 agent 系统人设/作战长文。
 const einoSummarizeUserInstruction = `关键：仅以纯文本响应。禁止调用任何工具（read_file、exec、grep、glob、write、edit 等）。
 上述对话中已包含全部待压缩上下文；不要要求用户粘贴历史，不要输出「请提供待压缩的对话历史」等占位/meta 回复。
 工具调用将被拒绝并浪费唯一一次摘要机会。
@@ -32,6 +33,9 @@ const einoSummarizeUserInstruction = `关键：仅以纯文本响应。禁止调
 
 压缩原则：
 - 必须保留：已确认漏洞与攻击路径、工具输出核心发现、凭证与认证细节、架构与薄弱点、当前进度、失败尝试与死路、策略决策
+- 强制结构化保留字段（无则写「无」，禁止省略章节）：open_hypotheses、almost_signals、dead_ends、auth_coverage
+- 禁止把未完成验证压成「无洞/已完成/无发现」；探索中的候选与差分必须进入 almost_signals 或 open_hypotheses
+- 安全工具输出保留：status、length、time、error_sig、payload、interesting_params；冗长正文可指向落盘路径
 - 保留精确技术细节（URL、路径、参数、Payload、版本号；报错原文可摘要但要点不丢）
 - 冗长扫描输出概括为结论；重复发现合并表述
 - 已枚举资产须保留可继承摘要：主域、关键子域/主机短表（或数量+代表样例）、高价值目标、已识别服务/端口要点
@@ -62,20 +66,70 @@ const einoSummarizeUserInstruction = `关键：仅以纯文本响应。禁止调
 
 ## 5. 工具核心发现与扫描结论
 - 各工具结论（概括核心输出，非冗长日志）
+- 结构化字段：status / length / time / error_sig / payload / interesting_params
 - 重复发现合并表述
 
-## 6. 所有用户消息
+## 6. open_hypotheses（开放假设，未证实勿删除）
+- [假设 → 依据差分/报错 → 下一步验证]
+
+## 7. almost_signals（差一点可确认的信号）
+- [信号 → 已做探测 → 缺口证据]
+
+## 8. dead_ends（死路，避免重跑）
+- [方法/路径 → 现象 → 结论：不可行原因]
+
+## 9. auth_coverage（认证与覆盖要点）
+- 认证态、会话、角色边界、已测/未测入口
+- coverage：P0/P1 未闭环项必须列出，禁止压成「无」
+
+## 10. 所有用户消息
 <all_user_messages>
 - [逐条列出非 tool 结果的用户消息要点；敏感约束与原文措辞尽量保留]
 </all_user_messages>
 
-## 7. 当前进度、策略决策与下一步
+## 11. 当前进度、策略决策与下一步
 - 当前位置（已完成/进行中/卡点）
-- 失败尝试与死路（方法、现象/报错摘要、结论）
+- 失败尝试与死路索引（与 dead_ends 一致）
 - 策略决策与下一步具体操作（须与最近用户请求及未完成任务一致）
+- 若仍有 open_hypotheses / almost_signals / P0-P1 coverage：明确「未完成」，禁止写「无洞收工」
 </summary>
 
 提醒：不要调用任何工具；必须基于上文已有对话直接输出 <analysis> 与 <summary>，勿输出 analysis 以外的正文。`
+
+// loggingSummaryModel 包装摘要用 ChatModel：摘要在第二次主模型 phase:start 之前触发时，
+// 若不打日志会被误判为「工具后未再调 LLM」。摘要 Generate/Stream 走独立路径，不一定有 ChatModel phase:start。
+type loggingSummaryModel struct {
+	inner          model.BaseChatModel
+	logger         *zap.Logger
+	conversationID string
+}
+
+func (m *loggingSummaryModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	if m.logger != nil {
+		m.logger.Info("eino summarization Generate start",
+			zap.String("conversationId", m.conversationID),
+			zap.Int("input_messages", len(input)),
+		)
+	}
+	out, err := m.inner.Generate(ctx, input, opts...)
+	if m.logger != nil {
+		m.logger.Info("eino summarization Generate end",
+			zap.String("conversationId", m.conversationID),
+			zap.Error(err),
+		)
+	}
+	return out, err
+}
+
+func (m *loggingSummaryModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	if m.logger != nil {
+		m.logger.Info("eino summarization Stream start",
+			zap.String("conversationId", m.conversationID),
+			zap.Int("input_messages", len(input)),
+		)
+	}
+	return m.inner.Stream(ctx, input, opts...)
+}
 
 // newEinoSummarizationMiddleware 使用 Eino ADK Summarization 中间件（见 https://www.cloudwego.io/zh/docs/eino/core_modules/eino_adk/eino_adk_chatmodelagentmiddleware/middleware_summarization/）。
 // 触发阈值：估算 token 超过 openai.max_total_tokens * summarization_trigger_ratio（默认 0.8）时摘要。
@@ -92,6 +146,8 @@ func newEinoSummarizationMiddleware(
 	if summaryModel == nil || appCfg == nil {
 		return nil, fmt.Errorf("multiagent: summarization 需要 model 与配置")
 	}
+	// Always wrap so hang-on-summary is visible even without ChatModel phase callbacks.
+	summaryModel = &loggingSummaryModel{inner: summaryModel, logger: logger, conversationID: conversationID}
 	maxTotal := appCfg.OpenAI.MaxTotalTokens
 	if maxTotal <= 0 {
 		maxTotal = 120000
@@ -110,10 +166,8 @@ func newEinoSummarizationMiddleware(
 			trigger = 4096
 		}
 	}
-	preserveMax := trigger / 3
-	if preserveMax < 2048 {
-		preserveMax = 2048
-	}
+	// Note: summarization.Config.PreserveUserMessages was removed in eino v0.9.x;
+	// user-message retention is handled via custom Finalize + DefaultFinalize semantics.
 
 	modelName := strings.TrimSpace(appCfg.OpenAI.Model)
 	if modelName == "" {
@@ -171,10 +225,6 @@ func newEinoSummarizationMiddleware(
 		UserInstruction:    einoSummarizeUserInstruction,
 		EmitInternalEvents: emitInternalEvents,
 		TranscriptFilePath: transcriptPath,
-		PreserveUserMessages: &summarization.PreserveUserMessages{
-			Enabled:   true,
-			MaxTokens: preserveMax,
-		},
 		Retry: &summarization.RetryConfig{
 			MaxRetries: &retryMax,
 			ShouldRetry: func(_ context.Context, _ adk.Message, err error) bool {

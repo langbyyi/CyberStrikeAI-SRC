@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,6 +38,8 @@ type Executor struct {
 	mcpServer               *mcp.Server
 	logger                  *zap.Logger
 	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
+	injectCmdTimeout        bool // 对 curl/wget 在未指定超时时注入 --max-time 兜底（默认 true，见 SetInjectCmdTimeout）
+	maxWallClockSec         int  // exec/execute 单次工具调用 wall-clock 总上限秒数；0=默认 300；-1=关闭（见 SetMaxWallClockSeconds）
 }
 
 // NewExecutor 创建新的执行器
@@ -55,6 +58,46 @@ func NewExecutor(cfg *config.SecurityConfig, mcpServer *mcp.Server, logger *zap.
 // SetShellNoOutputTimeoutSeconds 配置 exec 工具无输出空闲终止（与 agent.shell_no_output_timeout_seconds 一致）。
 func (e *Executor) SetShellNoOutputTimeoutSeconds(sec int) {
 	e.shellNoOutputTimeoutSec = sec
+}
+
+// SetInjectCmdTimeout 配置 exec 命令层超时注入（curl/wget 在未指定超时时注入 --max-time 兜底）。
+func (e *Executor) SetInjectCmdTimeout(enable bool) {
+	e.injectCmdTimeout = enable
+}
+
+// SetMaxWallClockSeconds 配置 exec/execute 单次工具调用的 wall-clock 总上限秒数（0=默认 300，负数=关闭）。
+func (e *Executor) SetMaxWallClockSeconds(sec int) {
+	e.maxWallClockSec = sec
+}
+
+// ResolveWallClockTimeoutSeconds 解析 wall-clock 总上限：-1=关闭（返回 0）；0=默认 300；否则原样返回。
+func ResolveWallClockTimeoutSeconds(sec int) int {
+	if sec < 0 {
+		return 0
+	}
+	if sec == 0 {
+		return 300
+	}
+	return sec
+}
+
+// WallClockTimeoutMessage 构造 wall-clock 超时 soft error（含 P1-a 风格的 error_code/retryable）。
+func WallClockTimeoutMessage(sec int, output string) string {
+	const maxOutput = 800
+	snippet := output
+	if len(snippet) > maxOutput {
+		snippet = snippet[:maxOutput] + "\n... [truncated]"
+	}
+	return fmt.Sprintf(`命令执行超过单次 wall-clock 上限 %ds，已被终止。
+输出截止点：
+%s
+
+可能原因与建议：
+- 脚本串行执行了过多慢请求（如此前的 for+15 个 API）。建议改用并行(xargs -P)或缩短目标列表。
+- 扫描范围过大。建议收窄 scope、severity 或字典。
+- 确需长跑的任务请改后台运行(&)后异步查结果。
+
+[error_code: timeout, retryable: true]`, sec, snippet)
 }
 
 // buildToolIndex 构建工具索引，将 O(n) 查找优化为 O(1)
@@ -136,6 +179,18 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		}, nil
 	}
 
+	// 启动前预检：nuclei 模板 / ffuf 字典缺失则不拉子进程，直接返回结构化 soft error 指引换路。
+	if msg := e.preflightToolPaths(toolName, toolConfig, args); msg != "" {
+		e.logger.Warn("工具启动前预检失败",
+			zap.String("tool", toolName),
+			zap.String("reason", "preflight"),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{{Type: "text", Text: msg}},
+			IsError: true,
+		}, nil
+	}
+
 	// 执行命令
 	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
@@ -162,8 +217,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			output, err = runCommandWithPTY(ctx, cmd2, cb)
 		}
 	} else {
-		// 非流式：内存缓冲 + ctx 取消杀进程组；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
-		output, err = combinedOutputCancellable(ctx, cmd)
+		// 非流式：内存缓冲 + ctx 取消杀进程组 + 无输出空闲兜底；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
+		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
@@ -412,29 +467,32 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 				format = "flag" // 默认格式
 			}
 
+			formattedValue := e.formatParamValue(param, value)
+			// 空字符串值不传递：避免 --flag standalone 把下一个参数误吞掉（如 nmap --script <target>）。
+			if formattedValue == "" && param.Type != "bool" {
+				continue
+			}
+
 			switch format {
 			case "flag":
 				// --flag value 或 -f value
 				if param.Flag != "" {
 					cmdArgs = append(cmdArgs, param.Flag)
 				}
-				formattedValue := e.formatParamValue(param, value)
-				if formattedValue != "" {
-					cmdArgs = append(cmdArgs, formattedValue)
-				}
+				cmdArgs = append(cmdArgs, formattedValue)
 			case "combined":
 				// --flag=value 或 -f=value
 				if param.Flag != "" {
-					cmdArgs = append(cmdArgs, fmt.Sprintf("%s=%s", param.Flag, e.formatParamValue(param, value)))
+					cmdArgs = append(cmdArgs, fmt.Sprintf("%s=%s", param.Flag, formattedValue))
 				} else {
-					cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+					cmdArgs = append(cmdArgs, formattedValue)
 				}
 			case "template":
 				// 使用模板字符串
 				if param.Template != "" {
 					template := param.Template
 					template = strings.ReplaceAll(template, "{flag}", param.Flag)
-					template = strings.ReplaceAll(template, "{value}", e.formatParamValue(param, value))
+					template = strings.ReplaceAll(template, "{value}", formattedValue)
 					template = strings.ReplaceAll(template, "{name}", param.Name)
 					cmdArgs = append(cmdArgs, strings.Fields(template)...)
 				} else {
@@ -442,14 +500,14 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 					if param.Flag != "" {
 						cmdArgs = append(cmdArgs, param.Flag)
 					}
-					cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+					cmdArgs = append(cmdArgs, formattedValue)
 				}
 			case "positional":
 				// 位置参数（已在上面处理）
-				cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+				cmdArgs = append(cmdArgs, formattedValue)
 			default:
 				// 默认：直接添加值
-				cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+				cmdArgs = append(cmdArgs, formattedValue)
 			}
 		}
 
@@ -741,7 +799,25 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		zap.String("command", command),
 	)
 
+	// wall-clock 总上限：针对 exec 单次工具调用的硬兜底，治"持续慢输出但始终不超 inactivity"的长脚本
+	//（如 for 循环串行跑 15 个 API 跑 600s+）。与 inactivity（无输出空闲）互补。
+	wallClockSec := ResolveWallClockTimeoutSeconds(e.maxWallClockSec)
+	if wallClockSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(wallClockSec)*time.Second)
+		defer cancel()
+	}
+
 	command = PrepareShellCommandForExecute(command)
+
+	// 命令层超时兜底：对 curl/wget 在用户未指定超时时注入 --max-time/--connect-timeout，
+	// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。开关默认开，可配关闭。
+	if e.injectCmdTimeout {
+		if injected := maybeInjectCmdTimeout(command); injected != command {
+			e.logger.Info("注入命令层超时（curl/wget 兜底）", zap.String("command", injected))
+			command = injected
+		}
+	}
 
 	// 获取shell类型（可选，默认为sh）
 	shell := "sh"
@@ -916,7 +992,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 			output, err = runCommandWithPTY(ctx, cmd2, cb)
 		}
 	} else {
-		output, err = combinedOutputCancellable(ctx, cmd)
+		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
 			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
@@ -928,6 +1004,15 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		}
 	}
 	if err != nil {
+		text := FormatCommandFailureFromErr(err, output)
+		// wall-clock 超时优先给出结构化提示（error_code=timeout / retryable），便于模型换路。
+		if wallClockSec > 0 && errors.Is(err, context.DeadlineExceeded) {
+			text = WallClockTimeoutMessage(wallClockSec, output)
+			e.logger.Warn("exec wall-clock timeout",
+				zap.String("command", command),
+				zap.Int("max_wall_clock_sec", wallClockSec),
+			)
+		}
 		e.logger.Error("系统命令执行失败",
 			zap.String("command", command),
 			zap.Error(err),
@@ -937,7 +1022,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 			Content: []mcp.Content{
 				{
 					Type: "text",
-					Text: FormatCommandFailureFromErr(err, output),
+					Text: text,
 				},
 			},
 			IsError: true,
@@ -963,14 +1048,24 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 // combinedOutputCancellable 行为对齐 cmd.CombinedOutput（stdout/stderr 写入内存缓冲），
 // 但在 ctx 取消时 terminateCmdTree 终止整棵进程树。
 // 非流式路径不使用双流管道 fan-in，避免 stderr 撑满管道缓冲区时与 stdout 互相阻塞导致死锁。
-// 无输出空闲检测由上层 agent.tool_timeout_minutes 兜底，不改变原 CombinedOutput 语义。
+// noOutputSec<=0 时仅保留原 ctx 取消语义；>0 时叠加无输出空闲兜底（与流式路径一致）。
 func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, error) {
+	return combinedOutputCancellableWithInactivity(ctx, cmd, 0)
+}
+
+// combinedOutputCancellableWithInactivity 在 combinedOutputCancellable 基础上叠加无输出空闲检测：
+// 当 noOutputSec 内 stdout/stderr 均无新写入，则终止进程树并返回软失败提示（与流式路径语义一致）。
+func combinedOutputCancellableWithInactivity(ctx context.Context, cmd *exec.Cmd, noOutputSec int) (string, error) {
 	var stdoutBuf, stderrBuf strings.Builder
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
+	idleWatch := NewShellInactivityWatch(noOutputSec)
+	cmd.Stdout = wrapBumpingWriter(&stdoutBuf, idleWatch)
+	cmd.Stderr = wrapBumpingWriter(&stderrBuf, idleWatch)
 
 	session, err := StartShellSession(cmd)
 	if err != nil {
+		if idleWatch != nil {
+			idleWatch.Stop()
+		}
 		return "", err
 	}
 
@@ -988,6 +1083,14 @@ func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, erro
 		}
 	}()
 	defer close(stopWatch)
+	if idleWatch != nil {
+		defer idleWatch.Stop()
+	}
+
+	var idleCh <-chan struct{}
+	if idleWatch != nil {
+		idleCh = idleWatch.Expired
+	}
 
 	var waitErr error
 	select {
@@ -995,8 +1098,156 @@ func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, erro
 	case <-ctx.Done():
 		waitErr = <-done
 		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), ctx.Err()
+	case <-idleCh:
+		// 无输出空闲超时：杀进程组，等待回收，返回软失败提示（模型可见、可换路）。
+		TerminateShellCmdSession(session)
+		waitErr = <-done
+		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), fmt.Errorf("%s", ShellNoOutputTimeoutMessage(noOutputSec))
 	}
 	return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), waitErr
+}
+
+// bumpingWriter 包装底层 Writer，每次 Write 时 Bump 无输出空闲计时器。
+type bumpingWriter struct {
+	w     io.Writer
+	watch *ShellInactivityWatch
+}
+
+func (bw *bumpingWriter) Write(p []byte) (int, error) {
+	n, err := bw.w.Write(p)
+	if bw.watch != nil {
+		bw.watch.Bump()
+	}
+	return n, err
+}
+
+// wrapBumpingWriter 仅当存在空闲计时器时包装，否则原样返回（零开销）。
+func wrapBumpingWriter(w io.Writer, watch *ShellInactivityWatch) io.Writer {
+	if watch == nil {
+		return w
+	}
+	return &bumpingWriter{w: w, watch: watch}
+}
+
+// maybeInjectCmdTimeout 对 curl/wget 在未显式指定超时时注入兜底超时，
+// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。
+// 保守策略：命令已含 --max-time(curl) 或 --timeout/-T(wget) 时不覆盖；返回值与入参相同时表示未注入。
+func maybeInjectCmdTimeout(command string) string {
+	if command == "" {
+		return command
+	}
+	if strings.Contains(command, "curl") && !strings.Contains(command, "--max-time") {
+		command = strings.ReplaceAll(command, "curl ", "curl --max-time 60 --connect-timeout 10 ")
+	}
+	if strings.Contains(command, "wget") && !strings.Contains(command, "--timeout") && !strings.Contains(command, " -T ") {
+		command = strings.ReplaceAll(command, "wget ", "wget --timeout=60 --tries=2 ")
+	}
+	return command
+}
+
+// preflightToolPaths 对重工具做启动前路径校验（nuclei 模板 / ffuf 字典），
+// 缺失时不拉子进程，返回结构化 soft error 指引模型换路（避免 nuclei 自身 [FTL] 后才失败、白白等超时）。
+// 返回空串表示校验通过。
+func (e *Executor) preflightToolPaths(toolName string, toolConfig *config.ToolConfig, args map[string]interface{}) string {
+	switch toolName {
+	case "nuclei":
+		// 模型显式指定 template 参数（-t）则跳过内置目录校验。
+		if hasNonEmptyArg(args, "template") || hasAdditionalArgSubstring(args, "-t ") || hasAdditionalArgSubstring(args, "-templates ") {
+			return ""
+		}
+		if tp := defaultNucleiTemplatesDir(); tp != "" && !pathExists(tp) {
+			return fmt.Sprintf(`[preflight] nuclei 内置模板目录不存在: %s
+
+命令已中止（未启动子进程），避免空等超时。建议：
+- 安装/更新模板库: nuclei -update-templates
+- 或显式指定模板参数 template（如 -t <路径>）
+- 或改用不依赖模板库的工具（如 http-framework-test）
+
+[preflight] nuclei built-in templates dir missing: %s`, tp, tp)
+		}
+	case "ffuf":
+		wl := resolveFfufWordlist(args, toolConfig)
+		if wl != "" && !pathExists(wl) {
+			return fmt.Sprintf(`[preflight] ffuf 字典路径不存在: %s
+
+命令已中止（未启动子进程），避免空等超时。建议：
+- 提供已存在的 wordlist 路径（或安装 seclists/dirb 等字典包）
+- 或改用其它目录发现方式
+
+[preflight] ffuf wordlist missing: %s`, wl, wl)
+		}
+	}
+	return ""
+}
+
+func hasNonEmptyArg(args map[string]interface{}, key string) bool {
+	v, ok := args[key]
+	if !ok {
+		return false
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) != ""
+	}
+	return v != nil
+}
+
+func hasAdditionalArgSubstring(args map[string]interface{}, sub string) bool {
+	s, _ := args["additional_args"].(string)
+	return strings.Contains(s, sub)
+}
+
+func pathExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	if _, err := os.Stat(p); err == nil {
+		return true
+	}
+	return false
+}
+
+// defaultNucleiTemplatesDir 返回 nuclei 默认模板目录（$HOME/nuclei-templates）；取不到 HOME 时返回空串。
+func defaultNucleiTemplatesDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return home + "/nuclei-templates"
+}
+
+// resolveFfufWordlist 解析 ffuf 实际使用的字典路径：模型显式参数 > additional_args 中的 -w > yaml 默认值。
+func resolveFfufWordlist(args map[string]interface{}, toolConfig *config.ToolConfig) string {
+	if wl, ok := args["wordlist"].(string); ok && strings.TrimSpace(wl) != "" {
+		return wl
+	}
+	if additional, ok := args["additional_args"].(string); ok && additional != "" {
+		if wl := extractFlagValue(additional, "-w", "--wordlist"); wl != "" {
+			return wl
+		}
+	}
+	if toolConfig != nil {
+		for _, p := range toolConfig.Parameters {
+			if p.Name == "wordlist" && p.Default != nil {
+				if s, ok := p.Default.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractFlagValue 从空格分隔的参数串中提取 -x/--xxx 紧随的值；找不到返回空串。
+func extractFlagValue(s string, flags ...string) string {
+	parts := strings.Fields(s)
+	for i := 0; i < len(parts); i++ {
+		for _, f := range flags {
+			if parts[i] == f && i+1 < len(parts) {
+				return parts[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 func joinCommandOutput(stdout, stderr string) string {

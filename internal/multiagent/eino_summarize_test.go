@@ -456,6 +456,10 @@ func TestRefreshFactIndexInMessages(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "summarize-facts.db")
 	db, err := database.NewDB(dbPath, zap.NewNop())
 	if err != nil {
+		// go-sqlite3 requires CGO; skip on CGO_ENABLED=0 / no C compiler (common on Windows CI).
+		if strings.Contains(err.Error(), "CGO_ENABLED=0") || strings.Contains(err.Error(), "requires cgo") {
+			t.Skipf("skip sqlite-backed test without cgo: %v", err)
+		}
 		t.Fatal(err)
 	}
 	defer db.Close()

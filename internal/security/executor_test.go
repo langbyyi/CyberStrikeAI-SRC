@@ -179,3 +179,83 @@ func TestCombinedOutputCancellable_ContextCancelKillsTree(t *testing.T) {
 		t.Fatal("combinedOutputCancellable did not return within 5s after context cancel")
 	}
 }
+
+// TestExecuteSystemCommand_WallClockTimeoutKillsLongScript 验证 wall-clock 总上限能终止长脚本并返回结构化 timeout 错误。
+func TestExecuteSystemCommand_WallClockTimeoutKillsLongScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix process group kill")
+	}
+	executor, _ := setupTestExecutor(t)
+	executor.SetMaxWallClockSeconds(2)
+
+	start := time.Now()
+	res, err := executor.executeSystemCommand(context.Background(), map[string]interface{}{
+		"command": "sleep 10; echo done",
+		"shell":   "sh",
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("executeSystemCommand: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected wall-clock timeout error, got %+v", res)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("wall-clock timeout did not kill command promptly, elapsed=%v", elapsed)
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "wall-clock") {
+		t.Fatalf("expected wall-clock message, got %q", text)
+	}
+	if !strings.Contains(text, "[error_code: timeout, retryable: true]") {
+		t.Fatalf("expected structured error_code/retryable, got %q", text)
+	}
+}
+
+// TestResolveWallClockTimeoutSeconds 验证 wall-clock 秒数解析逻辑。
+func TestResolveWallClockTimeoutSeconds(t *testing.T) {
+	if got := ResolveWallClockTimeoutSeconds(-1); got != 0 {
+		t.Fatalf("negative should disable, got %d", got)
+	}
+	if got := ResolveWallClockTimeoutSeconds(0); got != 300 {
+		t.Fatalf("zero should default to 300, got %d", got)
+	}
+	if got := ResolveWallClockTimeoutSeconds(120); got != 120 {
+		t.Fatalf("explicit value should preserve, got %d", got)
+	}
+}
+
+// TestExecuteSystemCommand_WallClockDisabled 验证关闭 wall-clock 后正常短命令不受影响。
+func TestExecuteSystemCommand_WallClockDisabled(t *testing.T) {
+	executor, _ := setupTestExecutor(t)
+	executor.SetMaxWallClockSeconds(-1)
+
+	res, err := executor.executeSystemCommand(context.Background(), map[string]interface{}{
+		"command": "sleep 0.1; echo ok",
+		"shell":   "sh",
+	})
+	if err != nil {
+		t.Fatalf("executeSystemCommand: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("expected success with wall-clock disabled, got %+v", res)
+	}
+	if !strings.Contains(res.Content[0].Text, "ok") {
+		t.Fatalf("expected output 'ok', got %q", res.Content[0].Text)
+	}
+}
+
+// TestWallClockTimeoutMessageFormat 验证超时文案含 P1-a 风格的 error_code/retryable。
+func TestWallClockTimeoutMessageFormat(t *testing.T) {
+	msg := WallClockTimeoutMessage(300, "partial output")
+	if !strings.Contains(msg, "300") {
+		t.Fatal("missing timeout seconds")
+	}
+	if !strings.Contains(msg, "partial output") {
+		t.Fatal("missing output snippet")
+	}
+	if !strings.Contains(msg, "[error_code: timeout, retryable: true]") {
+		t.Fatalf("missing structured error tags: %s", msg)
+	}
+}

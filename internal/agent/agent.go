@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,26 +66,8 @@ func NewAgent(cfg *config.OpenAIConfig, agentCfg *config.AgentConfig, mcpServer 
 		maxIterations = 30
 	}
 
-	// 配置HTTP Transport，优化连接管理和超时设置
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   300 * time.Second,
-			KeepAlive: 300 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   30 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Minute, // 响应头超时：增加到15分钟，应对大响应
-		DisableKeepAlives:     false,            // 启用连接复用
-	}
-
-	// 增加超时时间到30分钟，以支持长时间运行的AI推理
-	// 特别是当使用流式响应或处理复杂任务时
-	httpClient := &http.Client{
-		Timeout:   30 * time.Minute, // 从5分钟增加到30分钟
-		Transport: transport,
-	}
+	// 与 Eino 路径共用超时策略：拨号/等响应头快速失败，整请求仍允许长流式生成。
+	httpClient := openai.NewLLMHTTPClient()
 	llmClient := openai.NewClient(cfg, httpClient, logger)
 
 	return &Agent{
