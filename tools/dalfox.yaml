@@ -3,6 +3,10 @@ command: "dalfox"
 # dalfox v2+ 使用子命令，单目标模式为 `dalfox url <target>`，不再支持根级的 -u
 args:
   - "url"
+  - "--timeout" # 默认 HTTP 请求超时 30s（防半开连接无限等）
+  - "30"
+  - "--delay"   # 默认请求间隔 100ms 限速（mining 全开时控请求量）
+  - "100"
 enabled: true
 short_description: "高级XSS漏洞扫描器"
 description: |

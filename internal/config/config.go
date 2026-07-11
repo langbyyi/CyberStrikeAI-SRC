@@ -240,6 +240,25 @@ type MultiAgentEinoMiddlewareConfig struct {
 	ToolSearchAlwaysVisible int  `yaml:"tool_search_always_visible,omitempty" json:"tool_search_always_visible,omitempty"` // default 12; first N tools stay always visible
 	// ToolSearchAlwaysVisibleTools keeps specified tool names always visible (never hidden by tool_search).
 	ToolSearchAlwaysVisibleTools []string `yaml:"tool_search_always_visible_tools,omitempty" json:"tool_search_always_visible_tools,omitempty"`
+	// ExecutionBoost enables hunting execution enhancements (core always_visible, skill router, task evidence, reduction defaults).
+	// Nil = enabled (production default). Set false or src_hunter_runtime.enable=false to disable.
+	ExecutionBoost *bool `yaml:"execution_boost,omitempty" json:"execution_boost,omitempty"`
+	// SrcHunterRuntime is an alias group for execution_boost toggles (YAML-friendly ops surface).
+	SrcHunterRuntime MultiAgentSrcHunterRuntimeConfig `yaml:"src_hunter_runtime,omitempty" json:"src_hunter_runtime,omitempty"`
+	// SkillRouterEnable auto-injects Top skill tips into tool results (nil = follow ExecutionBoost).
+	SkillRouterEnable *bool `yaml:"skill_router_enable,omitempty" json:"skill_router_enable,omitempty"`
+	// SkillRouterTopK max skills injected per tool result (default 3).
+	SkillRouterTopK int `yaml:"skill_router_top_k,omitempty" json:"skill_router_top_k,omitempty"`
+	// SkillRouterMaxRunes budget for injected skill tips (default 3500).
+	SkillRouterMaxRunes int `yaml:"skill_router_max_runes,omitempty" json:"skill_router_max_runes,omitempty"`
+	// TaskEvidenceK attaches last K structured tool summaries to task descriptions (default 5; 0=default; negative disables).
+	TaskEvidenceK int `yaml:"task_evidence_k,omitempty" json:"task_evidence_k,omitempty"`
+	// TaskRequireTarget when true (default under ExecutionBoost), reject/backfill task calls missing target/scope.
+	TaskRequireTarget *bool `yaml:"task_require_target,omitempty" json:"task_require_target,omitempty"`
+	// StructuredSummaryMaxRunes budgets the prepended scanner summary block (default 1200; 0=default).
+	StructuredSummaryMaxRunes int `yaml:"structured_summary_max_runes,omitempty" json:"structured_summary_max_runes,omitempty"`
+	// FinalizeGateEnable when non-nil overrides finalize soft→semi-hard gate (default follow ExecutionBoost).
+	FinalizeGateEnable *bool `yaml:"finalize_gate_enable,omitempty" json:"finalize_gate_enable,omitempty"`
 	// Plantask adds TaskCreate/Get/Update/List (file-backed under skills dir); requires eino_skills + local backend.
 	PlantaskEnable bool `yaml:"plantask_enable,omitempty" json:"plantask_enable,omitempty"`
 	// PlantaskRelDir relative to skills_dir for per-conversation task boards (default .eino/plantask).
@@ -279,6 +298,214 @@ type MultiAgentEinoMiddlewareConfig struct {
 	EmptyResponseContinueMaxAttempts int `yaml:"empty_response_continue_max_attempts,omitempty" json:"empty_response_continue_max_attempts,omitempty"`
 	// TaskToolDescriptionPrefix when non-empty sets deep.Config TaskToolDescriptionGenerator (sub-agent names appended).
 	TaskToolDescriptionPrefix string `yaml:"task_tool_description_prefix,omitempty" json:"task_tool_description_prefix,omitempty"`
+	// ToolExecGovernor 工具执行治理（Execution Plane）：并发上限、MCP per-call 超时、命令层超时注入。
+	// 默认开启 + 保守值；enable: false 关闭全部治理，恢复增强前行为。
+	ToolExecGovernor ToolExecGovernorConfig `yaml:"tool_exec_governor,omitempty" json:"tool_exec_governor,omitempty"`
+}
+
+// MultiAgentSrcHunterRuntimeConfig ops surface for hunting execution boost (mirrors execution_boost).
+type MultiAgentSrcHunterRuntimeConfig struct {
+	// Enable when non-nil overrides ExecutionBoost; nil falls back to ExecutionBoost / default true.
+	Enable *bool `yaml:"enable,omitempty" json:"enable,omitempty"`
+	// SkillRouter when non-nil overrides SkillRouterEnable.
+	SkillRouter *bool `yaml:"skill_router,omitempty" json:"skill_router,omitempty"`
+	// TaskEvidenceK when >0 overrides TaskEvidenceK.
+	TaskEvidenceK int `yaml:"task_evidence_k,omitempty" json:"task_evidence_k,omitempty"`
+}
+
+// ToolExecGovernorConfig 工具执行治理（Execution Plane）：并发上限、MCP per-call 超时、命令层超时注入。
+// 沿用 kill_switch 模式：默认开启 + 保守值；enable: false 关闭全部治理，恢复增强前行为。
+type ToolExecGovernorConfig struct {
+	// Enable nil/true=开启治理；false=关闭（恢复：无并发上限、无 MCP per-call 超时、不注入命令超时）。
+	Enable *bool `yaml:"enable,omitempty" json:"enable,omitempty"`
+	// MaxConcurrent 每会话工具并发上限（default 5；负数=不限；钳制上界 32）。
+	MaxConcurrent int `yaml:"max_concurrent,omitempty" json:"max_concurrent,omitempty"`
+	// MCPPerCallTimeoutSec MCP 工具默认 per-call 超时秒数（default 600；负数=不限；钳制 [60,7200]）。
+	MCPPerCallTimeoutSec int `yaml:"mcp_per_call_timeout_sec,omitempty" json:"mcp_per_call_timeout_sec,omitempty"`
+	// InjectCmdTimeout 对 curl/wget 在用户未指定 --max-time 时注入默认超时（default true）。
+	InjectCmdTimeout *bool `yaml:"inject_cmd_timeout,omitempty" json:"inject_cmd_timeout,omitempty"`
+	// MaxWallClockSec exec/execute 单次工具调用的 wall-clock 总上限秒数（default 300；负数=不限；钳制 [60,7200]）。
+	// 与 inactivity（无输出空闲）互补：inactivity 防"卡死无输出"，wall-clock 防"慢但持续有输出"的长脚本拖死整轮。
+	MaxWallClockSec int `yaml:"max_wall_clock_sec,omitempty" json:"max_wall_clock_sec,omitempty"`
+	// PerToolTimeoutSec 按工具名覆盖 per-call 超时秒数（键为工具名小写；0 值忽略，回退默认档位）。
+	PerToolTimeoutSec map[string]int `yaml:"per_tool_timeout_sec,omitempty" json:"per_tool_timeout_sec,omitempty"`
+}
+
+// ExecutionBoostEffective returns whether hunting execution enhancements are on (default true).
+func (c MultiAgentEinoMiddlewareConfig) ExecutionBoostEffective() bool {
+	if c.SrcHunterRuntime.Enable != nil {
+		return *c.SrcHunterRuntime.Enable
+	}
+	if c.ExecutionBoost != nil {
+		return *c.ExecutionBoost
+	}
+	return true
+}
+
+// SkillRouterEffective returns whether SkillRouter middleware should run.
+func (c MultiAgentEinoMiddlewareConfig) SkillRouterEffective() bool {
+	if c.SrcHunterRuntime.SkillRouter != nil {
+		return *c.SrcHunterRuntime.SkillRouter
+	}
+	if c.SkillRouterEnable != nil {
+		return *c.SkillRouterEnable
+	}
+	return c.ExecutionBoostEffective()
+}
+
+// SkillRouterTopKEffective returns Top-K skills to inject (default 3; clamp 1–10).
+func (c MultiAgentEinoMiddlewareConfig) SkillRouterTopKEffective() int {
+	if c.SkillRouterTopK > 0 {
+		if c.SkillRouterTopK > 10 {
+			return 10
+		}
+		return c.SkillRouterTopK
+	}
+	return 3
+}
+
+// SkillRouterMaxRunesEffective returns injection budget (default 3500; clamp upper 20000).
+func (c MultiAgentEinoMiddlewareConfig) SkillRouterMaxRunesEffective() int {
+	if c.SkillRouterMaxRunes > 0 {
+		if c.SkillRouterMaxRunes > 20000 {
+			return 20000
+		}
+		return c.SkillRouterMaxRunes
+	}
+	return 3500
+}
+
+// StructuredSummaryMaxRunesEffective returns scanner summary budget (default 1200).
+// Negative or zero values clamp to default (invalid YAML cannot shrink budget to zero).
+func (c MultiAgentEinoMiddlewareConfig) StructuredSummaryMaxRunesEffective() int {
+	if c.StructuredSummaryMaxRunes > 0 {
+		// soft upper clamp keeps pathological configs from blowing prompts
+		if c.StructuredSummaryMaxRunes > 8000 {
+			return 8000
+		}
+		return c.StructuredSummaryMaxRunes
+	}
+	return 1200
+}
+
+// FinalizeGateEffective returns whether post-response finalize gate should run (default follow boost).
+func (c MultiAgentEinoMiddlewareConfig) FinalizeGateEffective() bool {
+	if c.FinalizeGateEnable != nil {
+		return *c.FinalizeGateEnable
+	}
+	return c.ExecutionBoostEffective()
+}
+
+// TaskEvidenceKEffective returns how many recent tool summaries attach to task (default 5; negative disables).
+func (c MultiAgentEinoMiddlewareConfig) TaskEvidenceKEffective() int {
+	if c.SrcHunterRuntime.TaskEvidenceK > 0 {
+		return c.SrcHunterRuntime.TaskEvidenceK
+	}
+	if c.TaskEvidenceK < 0 {
+		return -1
+	}
+	if c.TaskEvidenceK > 0 {
+		return c.TaskEvidenceK
+	}
+	if c.ExecutionBoostEffective() {
+		return 5
+	}
+	return 0
+}
+
+// TaskRequireTargetEffective returns whether task calls must have target/scope (default true under boost).
+func (c MultiAgentEinoMiddlewareConfig) TaskRequireTargetEffective() bool {
+	if c.TaskRequireTarget != nil {
+		return *c.TaskRequireTarget
+	}
+	return c.ExecutionBoostEffective()
+}
+
+// ToolExecGovernorEffective 治理总开关（nil/默认=true 开）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorEffective() bool {
+	if c.ToolExecGovernor.Enable != nil {
+		return *c.ToolExecGovernor.Enable
+	}
+	return true
+}
+
+// ToolExecGovernorMaxConcurrentEffective 每会话并发上限（治理关→0；default 5；负数=不限；钳制上界 32）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorMaxConcurrentEffective() int {
+	if !c.ToolExecGovernorEffective() {
+		return 0
+	}
+	v := c.ToolExecGovernor.MaxConcurrent
+	if v < 0 {
+		return 0
+	}
+	if v == 0 {
+		return 5
+	}
+	if v > 32 {
+		return 32
+	}
+	return v
+}
+
+// ToolExecGovernorMCPPerCallTimeoutEffective MCP 默认 per-call 超时秒（治理关→0=不限；default 600；负数=不限；钳制 [60,7200]）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorMCPPerCallTimeoutEffective() int {
+	if !c.ToolExecGovernorEffective() {
+		return 0
+	}
+	v := c.ToolExecGovernor.MCPPerCallTimeoutSec
+	if v < 0 {
+		return 0
+	}
+	if v == 0 {
+		return 600
+	}
+	if v < 60 {
+		return 60
+	}
+	if v > 7200 {
+		return 7200
+	}
+	return v
+}
+
+// ToolExecGovernorInjectCmdTimeoutEffective 命令层超时注入开关（治理关→false；default true）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorInjectCmdTimeoutEffective() bool {
+	if !c.ToolExecGovernorEffective() {
+		return false
+	}
+	if c.ToolExecGovernor.InjectCmdTimeout != nil {
+		return *c.ToolExecGovernor.InjectCmdTimeout
+	}
+	return true
+}
+
+// ToolExecGovernorMaxWallClockEffective exec/execute 单次 wall-clock 总上限秒数（治理关→0=不限；default 300；钳制 [60,7200]）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorMaxWallClockEffective() int {
+	if !c.ToolExecGovernorEffective() {
+		return 0
+	}
+	v := c.ToolExecGovernor.MaxWallClockSec
+	if v < 0 {
+		return 0
+	}
+	if v == 0 {
+		return 300
+	}
+	if v < 60 {
+		return 60
+	}
+	if v > 7200 {
+		return 7200
+	}
+	return v
+}
+
+// ToolExecGovernorPerToolTimeoutEffective 返回某工具的 per-call 超时秒数（0=未覆盖，回退默认档位）。
+func (c MultiAgentEinoMiddlewareConfig) ToolExecGovernorPerToolTimeoutEffective(toolName string) int {
+	if len(c.ToolExecGovernor.PerToolTimeoutSec) == 0 {
+		return 0
+	}
+	return c.ToolExecGovernor.PerToolTimeoutSec[strings.ToLower(strings.TrimSpace(toolName))]
 }
 
 func (c MultiAgentEinoMiddlewareConfig) SummarizationTriggerRatioEffective() float64 {
@@ -406,6 +633,11 @@ type MultiAgentPublic struct {
 	PlanExecuteLoopMaxIterations int    `json:"plan_execute_loop_max_iterations"`
 	ToolSearchAlwaysVisibleTools []string `json:"tool_search_always_visible_tools,omitempty"`
 	ToolSearchAlwaysVisibleEffectiveTools []string `json:"tool_search_always_visible_effective_tools,omitempty"`
+	// Execution boost effective surface (round-3 observability; no long prompts).
+	ExecutionBoostEffective       bool `json:"execution_boost_effective"`
+	SkillRouterEffective          bool `json:"skill_router_effective"`
+	FinalizeGateEffective         bool `json:"finalize_gate_effective"`
+	StructuredSummaryMaxRunes     int  `json:"structured_summary_max_runes"`
 }
 
 // NormalizeAgentMode 解析代理模式（eino_single | deep | plan_execute | supervisor）；空值默认 eino_single。

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,6 +18,34 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// NewLLMHTTPClient returns an http.Client for Chat Completions (Eino / legacy OpenAI path).
+//
+// Timeouts are intentionally split:
+//   - Dial: fail fast when the gateway is unreachable (was 300s → felt like a 5‑minute hang).
+//   - ResponseHeaderTimeout: if the peer accepts TCP but never sends headers, abort soon
+//     (was 60m → UI long-poll idle with no events after tool results).
+//   - Client.Timeout: still allows long streaming generations after headers arrive.
+//
+// Note: if the stream sends headers then stalls (only SSE comments / no data), the overall
+// Client.Timeout still applies; idle-body timeout would need a custom reader.
+func NewLLMHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Minute,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 60 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 3 * time.Minute,
+			ForceAttemptHTTP2:     true,
+		},
+	}
+}
 
 // Client 统一封装与OpenAI兼容模型交互的HTTP客户端。
 type Client struct {

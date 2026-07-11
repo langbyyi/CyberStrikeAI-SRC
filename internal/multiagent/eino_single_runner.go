@@ -3,11 +3,8 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
@@ -93,20 +90,9 @@ func RunEinoSingleChatModelAgent(
 		return nil, fmt.Errorf("eino single eino 中间件: %w", err)
 	}
 
-	httpClient := &http.Client{
-		Timeout: 30 * time.Minute,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   300 * time.Second,
-				KeepAlive: 300 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   30 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Minute,
-		},
-	}
+	// LLM client: short dial/header timeouts so a silent StepFun/gateway does not look like a
+	// "stuck after tools" hang for 5–60 minutes (see openai.NewLLMHTTPClient).
+	httpClient := openai.NewLLMHTTPClient()
 	httpClient = openai.NewEinoHTTPClient(&appCfg.OpenAI, httpClient)
 	openai.AttachSummarizationDiagTransport(httpClient, logger)
 
@@ -159,10 +145,12 @@ func RunEinoSingleChatModelAgent(
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-			ToolCallMiddlewares: []compose.ToolMiddleware{
-				hitlToolCallMiddleware(),
-				softRecoveryToolMiddleware(),
-			},
+			ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
+				MW:             &ma.EinoMiddleware,
+				SkillsRoot:     skillsRoot,
+				ConversationID: conversationID,
+				Logger:         logger,
+			}),
 		},
 		EmitInternalEvents: true,
 	}
@@ -232,6 +220,7 @@ func RunEinoSingleChatModelAgent(
 		DA:                      chatAgent,
 		ModelFacingTrace:        modelFacingTrace,
 		EinoCallbacks:           &ma.EinoCallbacks,
+		MwCfg:                   &ma.EinoMiddleware,
 		EmptyResponseMessage: "(Eino ADK single-agent session completed but no assistant text was captured. Check process details or logs.) " +
 			"（Eino ADK 单代理会话已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}, baseMsgs)

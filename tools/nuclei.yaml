@@ -1,5 +1,8 @@
 name: "nuclei"
 command: "nuclei"
+# 默认护栏：单请求超时 + 限速 + 并发上限，防止全量模板库扫描拖死同批并行工具与下一轮 LLM。
+# severity/tags/模板通过下方参数由模型显式控制（不在此强制，避免与 -s 重复冲突）。
+args: ["-timeout", "10m", "-rate-limit", "150", "-c", "25"]
 enabled: true
 short_description: "快速漏洞扫描器，使用YAML模板进行漏洞检测"
 description: |

@@ -121,14 +121,14 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 创建安全工具执行器
 	executor := security.NewExecutor(&cfg.Security, mcpServer, log.Logger)
 	executor.SetShellNoOutputTimeoutSeconds(cfg.Agent.ShellNoOutputTimeoutSeconds)
+	executor.SetInjectCmdTimeout(cfg.MultiAgent.EinoMiddleware.ToolExecGovernorInjectCmdTimeoutEffective())
+	executor.SetMaxWallClockSeconds(cfg.MultiAgent.EinoMiddleware.ToolExecGovernorMaxWallClockEffective())
 
 	// 注册工具
 	executor.RegisterTools(mcpServer)
 
-	// 注册漏洞记录工具
-	registerVulnerabilityTools(mcpServer, db, log.Logger)
-	registerProjectFactTools(mcpServer, db, cfg, log.Logger)
-	registerVisionTools(mcpServer, cfg, log.Logger)
+	// 注册漏洞/覆盖/事实/视觉内置工具（与 ApplyConfig registrar 共用同一路径）
+	registerCoreSessionTools(mcpServer, db, cfg, log.Logger)
 
 	if cfg.Auth.GeneratedPassword != "" {
 		config.PrintGeneratedPasswordWarning(cfg.Auth.GeneratedPassword, cfg.Auth.GeneratedPasswordPersisted, cfg.Auth.GeneratedPasswordPersistErr)
@@ -426,11 +426,9 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 飞书/钉钉长连接（无需公网），启用时在后台启动；后续前端应用配置时会通过 RestartRobotConnections 重启
 	app.startRobotConnections()
 
-	// 设置漏洞工具注册器（内置工具，必须设置）
+	// ApplyConfig ClearTools 后完整重注册（含 coverage 门闩，与 New 启动路径一致）
 	vulnerabilityRegistrar := func() error {
-		registerVulnerabilityTools(mcpServer, db, log.Logger)
-		registerProjectFactTools(mcpServer, db, cfg, log.Logger)
-		registerVisionTools(mcpServer, cfg, log.Logger)
+		registerCoreSessionTools(mcpServer, db, cfg, log.Logger)
 		return nil
 	}
 	configHandler.SetVulnerabilityToolRegistrar(vulnerabilityRegistrar)

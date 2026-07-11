@@ -60,3 +60,7 @@
 | 2026-04-19 | 主聊天「对话模式」：原生 ReAct 与 Deep / Plan-Execute / Supervisor；`POST /api/multi-agent*` 请求体 `orchestration` 与界面一致；`config.yaml` / 设置页不再维护预置编排字段（机器人/批量默认 `deep`）。 |
 | 2026-04-21 | 移除角色 `skills` 与 `/api/roles/skills/list`；`bind_role` 仅继承 tools；Skills 仅通过 Eino `skill` 工具按需加载。 |
 | 2026-06-02 | **移除原生 ReAct**：删除 `/api/agent-loop*` 执行入口与 `AgentLoopWithProgress`；统一 Eino ADK（单代理 `/api/eino-agent*`，多代理 `/api/multi-agent*`）；任务 cancel/tasks API 保留。 |
+
+## 挖洞执行增强
+
+见 [EXECUTION_BOOST.md](./EXECUTION_BOOST.md)：`execution_boost` / `src_hunter_runtime` 在不改系统提示词的前提下增强工具可见性、Skill 触达、task 交接与 coverage 门闩。

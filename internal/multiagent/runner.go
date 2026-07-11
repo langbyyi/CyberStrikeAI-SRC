@@ -5,12 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/agents"
@@ -135,20 +132,8 @@ func RunDeepAgent(
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
 	mainDefs := ag.ToolsForRole(roleTools)
 
-	httpClient := &http.Client{
-		Timeout: 30 * time.Minute,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   300 * time.Second,
-				KeepAlive: 300 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   30 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Minute,
-		},
-	}
+	// LLM client: short dial/header timeouts (see openai.NewLLMHTTPClient).
+	httpClient := openai.NewLLMHTTPClient()
 
 	// 若配置为 Claude provider，注入自动桥接 transport，对 Eino 透明走 Anthropic Messages API
 	httpClient = openai.NewEinoHTTPClient(&appCfg.OpenAI, httpClient)
@@ -263,10 +248,12 @@ func RunDeepAgent(
 					ToolsNodeConfig: compose.ToolsNodeConfig{
 						Tools:               subToolsForCfg,
 						UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-						ToolCallMiddlewares: []compose.ToolMiddleware{
-							hitlToolCallMiddleware(),
-							softRecoveryToolMiddleware(),
-						},
+						ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
+							MW:             &ma.EinoMiddleware,
+							SkillsRoot:     skillsRoot,
+							ConversationID: conversationID,
+							Logger:         logger,
+						}),
 					},
 					EmitInternalEvents: true,
 				},
@@ -374,14 +361,23 @@ func RunDeepAgent(
 	// noNestedTaskMiddleware 必须在最外层（最先拦截），防止 skill 或其他中间件内部触发 task 调用绕过检测。
 	deepHandlers := []adk.ChatModelAgentMiddleware{newNoNestedTaskMiddleware()}
 	var taskBlackboardSupplement string
+	var taskFactBodies string
 	if appCfg.Project.Enabled && db != nil {
 		if pid := strings.TrimSpace(projectID); pid != "" {
 			if block, err := project.BuildFactIndexBlock(db, pid, appCfg.Project); err == nil {
 				taskBlackboardSupplement = strings.TrimSpace(block)
 			}
+			if ma.EinoMiddleware.ExecutionBoostEffective() {
+				taskFactBodies = buildTaskFactBodies(db, pid, 4000)
+			}
 		}
 	}
-	if mw := newTaskContextEnrichMiddleware(userMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement); mw != nil {
+	if mw := newTaskContextEnrichMiddlewareExt(userMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement, taskEnrichOptions{
+		FactBodies:     taskFactBodies,
+		ConversationID: conversationID,
+		MW:             &ma.EinoMiddleware,
+		Logger:         logger,
+	}); mw != nil {
 		deepHandlers = append(deepHandlers, mw)
 	}
 	if len(mainOrchestratorPre) > 0 {
@@ -419,10 +415,12 @@ func RunDeepAgent(
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-			ToolCallMiddlewares: []compose.ToolMiddleware{
-				hitlToolCallMiddleware(),
-				softRecoveryToolMiddleware(),
-			},
+			ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
+				MW:             &ma.EinoMiddleware,
+				SkillsRoot:     skillsRoot,
+				ConversationID: conversationID,
+				Logger:         logger,
+			}),
 		},
 		EmitInternalEvents: true,
 	}
@@ -586,6 +584,7 @@ func RunDeepAgent(
 		DA:                      da,
 		ModelFacingTrace:        modelFacingTrace,
 		EinoCallbacks:           &ma.EinoCallbacks,
+		MwCfg:                   &ma.EinoMiddleware,
 		EmptyResponseMessage: "(Eino multi-agent orchestration completed but no assistant text was captured. Check process details or logs.) " +
 			"（Eino 多代理编排已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}, baseMsgs)

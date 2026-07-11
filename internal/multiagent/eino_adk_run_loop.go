@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"cyberstrike-ai/internal/agent"
@@ -105,6 +106,9 @@ type einoADKRunLoopArgs struct {
 
 	// EinoCallbacks 可选：为 ADK Runner 注入 eino [callbacks] 全链路观测（见 internal/einoobserve）。
 	EinoCallbacks *config.MultiAgentEinoCallbacksConfig
+
+	// MwCfg optional: used for FinalizeGateEffective kill-switch (nil → gate on, matching boost default).
+	MwCfg *config.MultiAgentEinoMiddlewareConfig
 }
 
 func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs []adk.Message) (*RunResult, error) {
@@ -559,15 +563,18 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			return nil, runErr
 		}
 		ids := snapshotMCPIDs()
-		return buildEinoRunResultFromAccumulated(
+		partial := buildEinoRunResultFromAccumulated(
 			orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
 			lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, true,
-		), runErr
+		)
+		return maybeApplyFinalizeGate(partial, conversationID, logger, args.MwCfg), runErr
 	}
 
+	sawToolResult := false
 	for {
 		// iter.Next 可能长时间阻塞（工具执行、模型推理）；须与 ctx 联动，否则取消/超时无法及时 flush pending。
-		ev, ok, iterCtxErr := nextAgentEventWithContext(ctx, iter)
+		// 工具结果之后若长时间无下一事件且无 ChatModel phase:start，常见于：ADK 卡在摘要/下一轮模型前，或 tool 结果流未 EOF。
+		ev, ok, iterCtxErr := nextAgentEventWithContext(ctx, iter, progress, logger, conversationID, sawToolResult, pendingCount)
 		if iterCtxErr != nil {
 			flushAllPendingAsFailed(iterCtxErr)
 			if progress != nil {
@@ -701,6 +708,13 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 
 		if mv.IsStreaming && mv.MessageStream != nil && mv.Role == schema.Tool {
 			toolName := strings.TrimSpace(mv.ToolName)
+			if logger != nil {
+				logger.Info("eino tool result stream begin",
+					zap.String("agent", ev.AgentName),
+					zap.String("tool", toolName),
+					zap.String("conversationId", conversationID),
+				)
+			}
 			content, streamToolCallID, toolStreamRecvErr := recvSchemaMessageStream(ctx, mv.MessageStream)
 			isErr := einoToolResultIsError(toolName, content)
 			content = einoToolResultBody(content)
@@ -709,6 +723,16 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 				runAccumulatedMsgs = append(runAccumulatedMsgs, schema.ToolMessage(content, streamToolCallID, opts...))
 			}
 			tryEmitToolResultProgress(toolName, content, streamToolCallID, isErr, ev.AgentName)
+			sawToolResult = true
+			if logger != nil {
+				logger.Info("eino tool result stream end",
+					zap.String("agent", ev.AgentName),
+					zap.String("tool", toolName),
+					zap.String("conversationId", conversationID),
+					zap.Int("content_len", len(content)),
+					zap.Error(toolStreamRecvErr),
+				)
+			}
 			if toolStreamRecvErr != nil && logger != nil {
 				logger.Warn("eino tool result stream recv error",
 					zap.Error(toolStreamRecvErr),
@@ -1092,7 +1116,20 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
 		lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, false,
 	)
+	out = maybeApplyFinalizeGate(out, conversationID, logger, args.MwCfg)
 	return out, nil
+}
+
+// maybeApplyFinalizeGate runs the semi-hard wrap-up gate unless finalize_gate_enable / boost is off.
+func maybeApplyFinalizeGate(out *RunResult, conversationID string, logger *zap.Logger, mw *config.MultiAgentEinoMiddlewareConfig) *RunResult {
+	var cfg config.MultiAgentEinoMiddlewareConfig
+	if mw != nil {
+		cfg = *mw
+	}
+	if !cfg.FinalizeGateEffective() {
+		return out
+	}
+	return ApplyFinalizeGateToRunResult(out, conversationID, logger)
 }
 
 func persistTraceSource(args *einoADKRunLoopArgs, fallback []adk.Message) []adk.Message {
@@ -1151,7 +1188,16 @@ func einoToolResultBody(content string) string {
 }
 
 // nextAgentEventWithContext 在 ctx 取消时不再无限阻塞于 iter.Next()（工具执行/模型推理期间常见）。
-func nextAgentEventWithContext(ctx context.Context, iter *adk.AsyncIterator[*adk.AgentEvent]) (ev *adk.AgentEvent, ok bool, ctxErr error) {
+// afterTools：已见过 tool 结果时，周期性打 progress/日志，避免「工具已返回但无第二次 ChatModel phase:start」被误判为死进程。
+func nextAgentEventWithContext(
+	ctx context.Context,
+	iter *adk.AsyncIterator[*adk.AgentEvent],
+	progress func(eventType, message string, data interface{}),
+	logger *zap.Logger,
+	conversationID string,
+	afterTools bool,
+	toolsRunning func() int,
+) (ev *adk.AgentEvent, ok bool, ctxErr error) {
 	if iter == nil {
 		return nil, false, nil
 	}
@@ -1164,13 +1210,64 @@ func nextAgentEventWithContext(ctx context.Context, iter *adk.AsyncIterator[*adk
 		e, o := iter.Next()
 		ch <- nextRes{e, o}
 	}()
-	select {
-	case <-ctx.Done():
-		return nil, false, ctx.Err()
-	case res := <-ch:
-		return res.ev, res.ok, nil
+	// Heartbeat: after tools OR tools in flight（补盲区：整批工具都在跑、0 result 时 UI 不再静默）。
+	runningNow := 0
+	if toolsRunning != nil {
+		runningNow = toolsRunning()
+	}
+	var ticker *time.Ticker
+	if afterTools || runningNow > 0 {
+		ticker = time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+	}
+	start := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case res := <-ch:
+			return res.ev, res.ok, nil
+		case <-func() <-chan time.Time {
+			if ticker == nil {
+				return nil
+			}
+			return ticker.C
+		}():
+			waited := int(time.Since(start).Seconds())
+			running := 0
+			if toolsRunning != nil {
+				running = toolsRunning()
+			}
+			kind := "adk_wait_after_tools"
+			msg := fmt.Sprintf("工具已返回，仍在等待 ADK 下一事件（已 %ds）。若无 ChatModel phase:start，可能卡在摘要中间件或 tool 结果流未 EOF / 上游模型无响应。", waited)
+			if running > 0 {
+				kind = "adk_wait_tools_running"
+				msg = fmt.Sprintf("有 %d 个工具调用在途执行中（已 %ds）。整批工具运行期间 ADK 未返回下一事件；若持续无进展，可能是某工具挂起阻塞并行批次。", running, waited)
+			}
+			if logger != nil {
+				logger.Warn("eino adk iter.Next blocked",
+					zap.String("conversationId", conversationID),
+					zap.Int("waited_sec", waited),
+					zap.String("kind", kind),
+					zap.Int("tools_running", running),
+				)
+			}
+			if progress != nil {
+				progress("progress", msg, map[string]interface{}{
+					"conversationId": conversationID,
+					"source":         "eino",
+					"kind":           kind,
+					"waitedSec":      waited,
+					"toolsRunning":   running,
+				})
+			}
+		}
 	}
 }
+
+// toolResultStreamIdleTimeout：tool MessageStream 在收到数据后若长时间无 EOF/新 chunk，则放弃等待，
+// 避免 UI 已展示结果但 run loop 卡在 Recv 上导致永远不发起下一轮 ChatModel。
+const toolResultStreamIdleTimeout = 90 * time.Second
 
 // recvSchemaMessageStream 消费 ADK Tool 流式结果；ctx 取消时立即返回，避免 amass 等无输出时永久阻塞。
 func recvSchemaMessageStream(ctx context.Context, stream *schema.StreamReader[*schema.Message]) (content, toolCallID string, recvErr error) {
@@ -1193,14 +1290,32 @@ func recvSchemaMessageStream(ctx context.Context, stream *schema.StreamReader[*s
 		}
 	}()
 	var buf strings.Builder
+	idle := time.NewTimer(toolResultStreamIdleTimeout)
+	defer idle.Stop()
+	resetIdle := func() {
+		if !idle.Stop() {
+			select {
+			case <-idle.C:
+			default:
+			}
+		}
+		idle.Reset(toolResultStreamIdleTimeout)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return buf.String(), toolCallID, ctx.Err()
+		case <-idle.C:
+			// Content may already be complete; missing EOF would otherwise stall the whole agent loop.
+			if buf.Len() > 0 {
+				return buf.String(), toolCallID, fmt.Errorf("tool result stream idle timeout after %s (partial content kept, %d bytes)", toolResultStreamIdleTimeout, buf.Len())
+			}
+			return buf.String(), toolCallID, fmt.Errorf("tool result stream idle timeout after %s with empty content", toolResultStreamIdleTimeout)
 		case sm, open := <-recvCh:
 			if !open {
 				return buf.String(), toolCallID, nil
 			}
+			resetIdle()
 			rerr := sm.err
 			if errors.Is(rerr, io.EOF) {
 				return buf.String(), toolCallID, nil

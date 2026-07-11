@@ -4,9 +4,18 @@ package builtin
 // 所有代码中使用内置工具名称的地方都应该使用这些常量，而不是硬编码字符串
 const (
 	// 漏洞管理工具
-	ToolRecordVulnerability  = "record_vulnerability"
-	ToolListVulnerabilities  = "list_vulnerabilities"
-	ToolGetVulnerability     = "get_vulnerability"
+	ToolRecordVulnerability          = "record_vulnerability"
+	ToolRecordVulnerabilityCandidate = "record_vulnerability_candidate" // L1 探索候选（宽松门槛）
+	ToolListVulnerabilities          = "list_vulnerabilities"
+	ToolGetVulnerability             = "get_vulnerability"
+
+	// 执行覆盖 / 门闩（会话级，不靠 system prompt 约束结束）
+	ToolUpsertExecutionCoverage  = "upsert_execution_coverage"
+	ToolGetExecutionCoverage     = "get_execution_coverage"
+	ToolShouldContinueExecution  = "should_continue_execution"
+
+	// 业务逻辑轨：差分探针（双身份 / 参数篡改 / 跳步 / 并行）
+	ToolLogicProbeDiff = "logic_probe_diff"
 
 	// 项目黑板（事实）工具
 	ToolUpsertProjectFact    = "upsert_project_fact"
@@ -66,8 +75,13 @@ const (
 func IsBuiltinTool(toolName string) bool {
 	switch toolName {
 	case ToolRecordVulnerability,
+		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
+		ToolUpsertExecutionCoverage,
+		ToolGetExecutionCoverage,
+		ToolShouldContinueExecution,
+		ToolLogicProbeDiff,
 		ToolUpsertProjectFact,
 		ToolGetProjectFact,
 		ToolListProjectFacts,
@@ -118,8 +132,13 @@ func IsBuiltinTool(toolName string) bool {
 func GetAllBuiltinTools() []string {
 	return []string{
 		ToolRecordVulnerability,
+		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
+		ToolUpsertExecutionCoverage,
+		ToolGetExecutionCoverage,
+		ToolShouldContinueExecution,
+		ToolLogicProbeDiff,
 		ToolUpsertProjectFact,
 		ToolGetProjectFact,
 		ToolListProjectFacts,

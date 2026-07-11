@@ -17,6 +17,7 @@ reports/
 tmp/
 venv/
 node_modules/
+skills/.eino/
 *.log
 
 # 数据库（保险起见，即使意外出现在根目录也不跟踪）
@@ -50,6 +51,10 @@ knowledge_base/**/*.idx
 .idea/
 .vscode/
 .DS_Store
+
+# Agent / 本地会话残留（勿入库）
+mcps/
+terminals/
 
 # 测试 / 缓存
 *.test

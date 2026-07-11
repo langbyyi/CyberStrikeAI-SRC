@@ -17,7 +17,7 @@ user_prompt: |
   2. **攻击面映射**：基于技术栈推断可能存在的漏洞类型，逐个手工验证
   3. **漏洞验证**：对每个可疑点构造针对性 payload，用 Burp HTTP 请求包格式记录完整请求和响应
   4. **影响证明**：证明漏洞的实际危害（如注入读系统表、越权访问管理接口、文件读取拿到凭据），不深入利用
-  5. **漏洞记录**：验证通过后立即调用 record_vulnerability，POC 用 Burp HTTP 原始格式
+  5. **漏洞记录**：验证通过后立即记录漏洞，POC 用 Burp HTTP 原始格式
 
   ## 重点漏洞类型（按优先级）
 
@@ -68,17 +68,12 @@ tools:
   - exec
   - execute-python-script
   - install-python-package
-  # Web 漏洞验证（静态分析 + 参数发现）
-  - arjun
-  - paramspider
+  # Web 漏洞验证（手工分析）
   - jwt-analyzer
-  - graphql-scanner
   - api-schema-analyzer
   # 侦察与攻击面发现（定向、低开销）
   - nmap
   - wafw00f
-  - katana
-  - dirsearch
   - waybackurls
   - subfinder
   - dnslog
@@ -96,3 +91,12 @@ tools:
   - batch_task_rerun
   - batch_task_pause
   - batch_task_delete
+  # execution_boost core set (round-2 alignment)
+  - http-framework-test
+  - skill
+  - record_vulnerability_candidate
+  - upsert_execution_coverage
+  - get_execution_coverage
+  - should_continue_execution
+  # logic track (round-4)
+  - logic_probe_diff

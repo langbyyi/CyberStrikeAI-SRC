@@ -1,5 +1,8 @@
 name: "nikto"
 command: "nikto"
+# 默认护栏：请求超时 60s + 总扫描上限 900s（15min），防止 nikto 常规 20-40 分钟慢扫描拖死并行批次。
+# 调优（-Tuning）、绕过等通过 additional_args 显式控制。
+args: ["-timeout", "60", "-maxtime", "900"]
 enabled: true
 # 允许的退出码列表：nikto在找到漏洞时会返回退出码1，这是正常的成功状态
 allowed_exit_codes: [1]

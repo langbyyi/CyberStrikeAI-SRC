@@ -318,6 +318,7 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	if load, err := agents.LoadMarkdownAgentsDir(agentsDir); err == nil {
 		subAgentCount = len(agents.MergeYAMLAndMarkdown(h.config.MultiAgent.SubAgents, load.SubAgents))
 	}
+	mw := h.config.MultiAgent.EinoMiddleware
 	multiPub := config.MultiAgentPublic{
 		Enabled:                      h.config.MultiAgent.Enabled,
 		RobotDefaultAgentMode: config.NormalizeRobotAgentMode(h.config.MultiAgent),
@@ -325,11 +326,25 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		SubAgentCount:                subAgentCount,
 		Orchestration:                config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
 		PlanExecuteLoopMaxIterations: h.config.MultiAgent.PlanExecuteLoopMaxIterations,
-		ToolSearchAlwaysVisibleTools: append([]string(nil), h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools...),
-		ToolSearchAlwaysVisibleEffectiveTools: mergeToolNameLists(
-			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools,
-			builtin.GetAllBuiltinTools(),
-		),
+		ToolSearchAlwaysVisibleTools: append([]string(nil), mw.ToolSearchAlwaysVisibleTools...),
+		ToolSearchAlwaysVisibleEffectiveTools: func() []string {
+			merged := mergeToolNameLists(
+				mw.ToolSearchAlwaysVisibleTools,
+				builtin.GetAllBuiltinTools(),
+			)
+			if mw.ExecutionBoostEffective() {
+				// Keep in sync with multiagent.DefaultHuntingAlwaysVisibleTools.
+				merged = mergeToolNameLists(merged, []string{
+					"sqlmap", "nuclei", "ffuf", "katana", "arjun", "dalfox", "http-framework-test",
+					"exec", "execute", "execute-python-script", "jwt-analyzer", "dnslog", "skill",
+				})
+			}
+			return merged
+		}(),
+		ExecutionBoostEffective:   mw.ExecutionBoostEffective(),
+		SkillRouterEffective:      mw.SkillRouterEffective(),
+		FinalizeGateEffective:     mw.FinalizeGateEffective(),
+		StructuredSummaryMaxRunes: mw.StructuredSummaryMaxRunesEffective(),
 	}
 
 	c.JSON(http.StatusOK, GetConfigResponse{
@@ -1352,6 +1367,11 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 
 	// 重新注册安全工具
 	h.executor.RegisterTools(h.mcpServer)
+
+	// 同步执行器治理配置（热重载生效）：并发上限由中间件层处理，此处只同步 executor 侧设置
+	h.executor.SetInjectCmdTimeout(h.config.MultiAgent.EinoMiddleware.ToolExecGovernorInjectCmdTimeoutEffective())
+	h.executor.SetMaxWallClockSeconds(h.config.MultiAgent.EinoMiddleware.ToolExecGovernorMaxWallClockEffective())
+	h.executor.SetShellNoOutputTimeoutSeconds(h.config.Agent.ShellNoOutputTimeoutSeconds)
 
 	// 重新注册漏洞记录工具（内置工具，必须注册）
 	if h.vulnerabilityToolRegistrar != nil {
