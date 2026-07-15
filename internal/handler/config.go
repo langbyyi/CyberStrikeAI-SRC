@@ -18,7 +18,6 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/knowledge"
 	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
 
@@ -99,10 +98,10 @@ type AttackChainUpdater interface {
 	UpdateConfig(cfg *config.OpenAIConfig)
 }
 
-// AgentUpdater Agent更新接口
+// AgentUpdater MCP 工具网关（internal/agent.Agent）热更新接口；非 Eino 编排实例。
 type AgentUpdater interface {
 	UpdateConfig(cfg *config.OpenAIConfig)
-	UpdateMaxIterations(maxIterations int)
+	UpdateMaxIterations(maxIterations int) // 写入共享 agentConfig.MaxIterations，供 multiagent 读取
 	UpdateToolDescriptionMode(mode string)
 }
 
@@ -327,20 +326,8 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		Orchestration:                config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
 		PlanExecuteLoopMaxIterations: h.config.MultiAgent.PlanExecuteLoopMaxIterations,
 		ToolSearchAlwaysVisibleTools: append([]string(nil), mw.ToolSearchAlwaysVisibleTools...),
-		ToolSearchAlwaysVisibleEffectiveTools: func() []string {
-			merged := mergeToolNameLists(
-				mw.ToolSearchAlwaysVisibleTools,
-				builtin.GetAllBuiltinTools(),
-			)
-			if mw.ExecutionBoostEffective() {
-				// Keep in sync with multiagent.DefaultHuntingAlwaysVisibleTools.
-				merged = mergeToolNameLists(merged, []string{
-					"sqlmap", "nuclei", "ffuf", "katana", "arjun", "dalfox", "http-framework-test",
-					"exec", "execute", "execute-python-script", "jwt-analyzer", "dnslog", "skill",
-				})
-			}
-			return merged
-		}(),
+		// 仅回显用户配置的 always_visible；实际生效时与当轮角色绑定工具求交（见 multiagent.resolveAlwaysVisibleToolNames）
+		ToolSearchAlwaysVisibleEffectiveTools: append([]string(nil), mw.ToolSearchAlwaysVisibleTools...),
 		ExecutionBoostEffective:   mw.ExecutionBoostEffective(),
 		SkillRouterEffective:      mw.SkillRouterEffective(),
 		FinalizeGateEffective:     mw.FinalizeGateEffective(),

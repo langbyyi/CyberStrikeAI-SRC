@@ -15,20 +15,18 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
-	"cyberstrike-ai/internal/openai"
 
 	"go.uber.org/zap"
 )
 
-// Agent AI代理
+// Agent 是 MCP 工具网关（列工具、按会话执行工具、监控落库），不是 Eino ADK 编排循环。
+// 对话/多代理编排在 internal/multiagent，经 einomcp 调用本结构体。
 type Agent struct {
-	openAIClient          *openai.Client
-	config                *config.OpenAIConfig
-	agentConfig           *config.AgentConfig
+	config                *config.OpenAIConfig // 热更新保留；Eino ChatModel 由 multiagent 按 app 配置构建
+	agentConfig           *config.AgentConfig  // 通常为共享的 &config.Agent（工具超时、system_prompt 等）
 	mcpServer             *mcp.Server
 	externalMCPMgr        *mcp.ExternalMCPManager // 外部MCP管理器
 	logger                *zap.Logger
-	maxIterations         int
 	mu                    sync.RWMutex      // 添加互斥锁以支持并发更新
 	toolNameMapping       map[string]string // 工具名称映射：OpenAI格式 -> 原始格式（用于外部MCP工具）
 	currentConversationID string            // 当前对话ID（用于自动传递给工具）
@@ -59,27 +57,20 @@ func ConversationIDFromContext(ctx context.Context) string {
 	return agentConversationIDFromContext(ctx)
 }
 
-// NewAgent 创建新的Agent
+// NewAgent 创建 MCP 工具网关。
+// maxIterations 为历史兼容参数：编排迭代上限以 config.Agent.MaxIterations 为准
+//（multiagent.agentMaxIterations），本结构体不再缓存独立 maxIterations 字段。
 func NewAgent(cfg *config.OpenAIConfig, agentCfg *config.AgentConfig, mcpServer *mcp.Server, externalMCPMgr *mcp.ExternalMCPManager, logger *zap.Logger, maxIterations int) *Agent {
-	// 如果 maxIterations 为 0 或负数，使用默认值 30
-	if maxIterations <= 0 {
-		maxIterations = 30
-	}
-
-	// 与 Eino 路径共用超时策略：拨号/等响应头快速失败，整请求仍允许长流式生成。
-	httpClient := openai.NewLLMHTTPClient()
-	llmClient := openai.NewClient(cfg, httpClient, logger)
+	_ = maxIterations
 
 	return &Agent{
-		openAIClient:         llmClient,
-		config:               cfg,
-		agentConfig:          agentCfg,
-		mcpServer:            mcpServer,
-		externalMCPMgr:       externalMCPMgr,
-		logger:               logger,
-		maxIterations:        maxIterations,
-		toolNameMapping:      make(map[string]string), // 初始化工具名称映射
-		toolDescriptionMode:  "short",
+		config:              cfg,
+		agentConfig:         agentCfg,
+		mcpServer:           mcpServer,
+		externalMCPMgr:      externalMCPMgr,
+		logger:              logger,
+		toolNameMapping:     make(map[string]string), // 初始化工具名称映射
+		toolDescriptionMode: "short",
 	}
 }
 
@@ -500,15 +491,15 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 		zap.Any("args", args),
 	)
 
+	conversationID := agentConversationIDFromContext(ctx)
+	if conversationID == "" {
+		a.mu.RLock()
+		conversationID = a.currentConversationID
+		a.mu.RUnlock()
+	}
+
 	// 如果是record_vulnerability工具，自动添加conversation_id
 	if toolName == builtin.ToolRecordVulnerability {
-		conversationID := agentConversationIDFromContext(ctx)
-		if conversationID == "" {
-			a.mu.RLock()
-			conversationID = a.currentConversationID
-			a.mu.RUnlock()
-		}
-
 		if conversationID != "" {
 			args["conversation_id"] = conversationID
 			a.logger.Debug("自动添加conversation_id到record_vulnerability工具",
@@ -518,6 +509,7 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 			a.logger.Warn("record_vulnerability工具调用时conversation_id为空")
 		}
 	}
+	// exec 是否用未加载扫描器：仅系统/角色提示词约束，不做硬拦截。
 
 	var result *mcp.ToolResult
 	var executionID string
@@ -607,26 +599,38 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}, nil
 }
 
-// UpdateConfig 更新OpenAI配置
+// UpdateConfig 更新 OpenAI 配置指针（Eino 路径每次 Run 从 app 配置建 ChatModel；
+// 此处保留以便与配置热更新接口一致，并供仍读 a.config 的诊断/扩展使用）。
 func (a *Agent) UpdateConfig(cfg *config.OpenAIConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.config = cfg
-
+	if cfg == nil {
+		a.logger.Info("Agent OpenAI 配置已清空")
+		return
+	}
 	a.logger.Info("Agent配置已更新",
 		zap.String("base_url", cfg.BaseURL),
 		zap.String("model", cfg.Model),
 	)
 }
 
-// UpdateMaxIterations 更新最大迭代次数
+// UpdateMaxIterations 将上限写入共享的 agentConfig.MaxIterations。
+// Eino 编排通过 multiagent.agentMaxIterations 读取 config.Agent.MaxIterations；
+// 当 NewAgent 传入 &cfg.Agent 时，本方法与配置热更新对同一字段生效。
 func (a *Agent) UpdateMaxIterations(maxIterations int) {
+	if maxIterations <= 0 {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if maxIterations > 0 {
-		a.maxIterations = maxIterations
-		a.logger.Info("Agent最大迭代次数已更新", zap.Int("max_iterations", maxIterations))
+	if a.agentConfig == nil {
+		a.logger.Warn("UpdateMaxIterations: agentConfig 为空，跳过",
+			zap.Int("max_iterations", maxIterations))
+		return
 	}
+	a.agentConfig.MaxIterations = maxIterations
+	a.logger.Info("Agent最大迭代次数已更新", zap.Int("max_iterations", maxIterations))
 }
 
 // UpdateToolDescriptionMode 更新工具描述模式（short/full）

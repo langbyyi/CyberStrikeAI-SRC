@@ -12,13 +12,13 @@
 | 项 | 说明 |
 |----|------|
 | 依赖与代理 | `go.mod` 直接依赖 `github.com/cloudwego/eino`、`eino-ext/.../openai`；`go.mod` 注释与 `scripts/bootstrap-go.sh` 指导 **GOPROXY**（如 `https://goproxy.cn,direct`）。 |
-| 配置 | `config.yaml` → `agent.max_iterations` 为全局 ReAct 上限（主/子代理统一）；`multi_agent`：`enabled`、`robot_use_multi_agent`、`sub_agents`（含可选 `bind_role`）、`eino_skills`、`eino_middleware` 等；结构体见 `internal/config/config.go`。 |
+| 配置 | `config.yaml` → `agent.max_iterations` 为全局上限（Deep/子代理等）；**`agent.eino_single_execution`** 仅控制 `eino_single`（迭代/run/model 超时，默认 on）；`multi_agent`：`enabled`、`robot_default_agent_mode`、`sub_agents`、`eino_skills`、`eino_middleware` 等；见 `internal/config/config.go`、`config.yaml.example`。 |
 | Markdown 子代理 / 主代理 | 在 `agents_dir` 下放 `*.md`。**子代理**：供 Deep `task` 与 `supervisor` `transfer`。**主代理（按模式分离）**：`orchestrator.md`（或 `kind: orchestrator` 的**单个**其他 .md）→ **Deep**；固定名 `orchestrator-plan-execute.md` → **plan_execute**；固定名 `orchestrator-supervisor.md` → **supervisor**。正文优先于 YAML：`multi_agent.orchestrator_instruction`、`orchestrator_instruction_plan_execute`、`orchestrator_instruction_supervisor`；plan_execute / supervisor **不会**回退到 Deep 的 `orchestrator_instruction`。皆空时 plan_execute / supervisor 使用代码内置默认提示。管理：**Agents → Agent管理**；API：`/api/multi-agent/markdown-agents*`。 |
 | MCP 桥 | `internal/einomcp`：`ToolsFromDefinitions` + 会话 ID 持有者，执行走 `Agent.ExecuteMCPToolForConversation`。 |
 | 编排 | `internal/multiagent/runner.go`：`deep.New` + 子 `ChatModelAgent` + `adk.NewRunner`（`EnableStreaming: true`，可选 `CheckPointStore`），事件映射为现有 SSE `tool_call` / `response_delta` 等。 |
 | HTTP | `POST /api/multi-agent`（非流式）、`POST /api/multi-agent/stream`（SSE）；路由**常注册**，是否可用由运行时 `multi_agent.enabled` 决定（流式未启用时 SSE 内 `error` + `done`）。 |
 | 会话准备 | `internal/handler/multi_agent_prepare.go`：`prepareMultiAgentSession`（含 **WebShell** `CreateConversationWithWebshell`、工具白名单与单代理一致）。 |
-| 单 Agent | `internal/agent` 为 MCP/工具层（`ToolsForRole`、`ExecuteMCPToolForConversation`）；单代理编排走 `RunEinoSingleChatModelAgent`（`/api/eino-agent*`）。 |
+| 单 Agent | `internal/agent` 为 MCP/工具层；编排走 `RunEinoSingleChatModelAgent`（`/api/eino-agent*`）。开启 `eino_single_execution` 时挂载义务/批次中间件与 DecisionController（见 EXECUTION_BOOST 第七节）。 |
 | 前端 | 主聊天 / WebShell：**Eino 单代理**（`/api/eino-agent/stream`）与 **Deep / Plan-Execute / Supervisor**（`/api/multi-agent/stream` + `orchestration`）；`multi_agent.enabled` 控制多代理选项是否展示。 |
 | 流式兼容 | Eino 单/多代理与 Web UI 共用 `handleStreamEvent`：`conversation`、`progress`、`response_start` / `response_delta`、`thinking` / `thinking_stream_*`、`tool_*`、`response`、`done` 等。 |
 | 批量任务 | 队列 `agentMode` 为 `deep` / `plan_execute` / `supervisor` 时子任务带对应 `orchestration` 调用 `RunDeepAgent`；旧值 `multi` 与「`agentMode` 为空且 `batch_use_multi_agent: true`」均按 `deep`。 |
@@ -33,7 +33,10 @@
 | 优先级 | 项 | 说明 |
 |--------|----|------|
 | P3 | **观测与计费** | Eino 事件可进一步打结构化日志 / trace id，便于排障。 |
-| P3 | **测试** | 增加 `internal/multiagent` 与 einomcp 的集成测试（mock model 或录屏回放）。 |
+| done | **eino_single 执行控制** | 义务/批次/超时/摘要；见 EXECUTION_BOOST 第七节；上线后真机会话验收。 |
+| done | **漏洞 Agent CRUD** | `record_*` / `list` / `get` / `update_vulnerability` / `delete_vulnerability`。 |
+| done | **工具网关死字段** | 已移除 `Agent.openAIClient` 与独立 `maxIterations` 缓存；`UpdateMaxIterations` 写入共享 `agentConfig.MaxIterations`。 |
+| done | **任务 API 别名** | 推荐 `/api/agent-tasks/*`；历史 `/api/agent-loop/*` 双挂兼容。 |
 
 ## 关键文件索引
 
@@ -60,7 +63,14 @@
 | 2026-04-19 | 主聊天「对话模式」：原生 ReAct 与 Deep / Plan-Execute / Supervisor；`POST /api/multi-agent*` 请求体 `orchestration` 与界面一致；`config.yaml` / 设置页不再维护预置编排字段（机器人/批量默认 `deep`）。 |
 | 2026-04-21 | 移除角色 `skills` 与 `/api/roles/skills/list`；`bind_role` 仅继承 tools；Skills 仅通过 Eino `skill` 工具按需加载。 |
 | 2026-06-02 | **移除原生 ReAct**：删除 `/api/agent-loop*` 执行入口与 `AgentLoopWithProgress`；统一 Eino ADK（单代理 `/api/eino-agent*`，多代理 `/api/multi-agent*`）；任务 cancel/tasks API 保留。 |
+| 2026-07-15 | **eino_single 执行控制** + 漏洞 `update/delete` 工具；surface 通用 taxonomy；验收改为编译 + 真机会话。 |
 
 ## 挖洞执行增强
 
-见 [EXECUTION_BOOST.md](./EXECUTION_BOOST.md)：`execution_boost` / `src_hunter_runtime` 在不改系统提示词的前提下增强工具可见性、Skill 触达、task 交接与 coverage 门闩。
+见 [EXECUTION_BOOST.md](./EXECUTION_BOOST.md)：
+
+- `execution_boost` / `src_hunter_runtime`：工具可见性、Skill 触达、task 交接、coverage/finalize、工具执行治理  
+- `agent.eino_single_execution`：仅单 ADK 的证据义务、工具批次裁剪、停滞/重试、run/model 超时与 `executionSummary`  
+- 漏洞工具：Agent 侧新建/查询/**更新/删除** 与 HTTP `/api/vulnerabilities*` 互补  
+
+验收：`go build ./cmd/server/` + 真机 `eino_single` 会话；仓库默认不附带完整 `*_test.go` 套件。

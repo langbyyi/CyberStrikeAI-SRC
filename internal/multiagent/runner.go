@@ -130,6 +130,7 @@ func RunDeepAgent(
 	}
 
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
+	SetConversationRoleTools(conversationID, roleTools)
 	mainDefs := ag.ToolsForRole(roleTools)
 
 	// LLM client: short dial/header timeouts (see openai.NewLLMHTTPClient).

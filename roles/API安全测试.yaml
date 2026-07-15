@@ -53,6 +53,8 @@ tools:
   - record_vulnerability
   - list_vulnerabilities
   - get_vulnerability
+  - update_vulnerability
+  - delete_vulnerability
   # execution_boost core set (round-2 alignment)
   - http-framework-test
   - skill
@@ -66,3 +68,4 @@ tools:
   - should_continue_execution
   # logic track (round-4)
   - logic_probe_diff
+  - dalfox

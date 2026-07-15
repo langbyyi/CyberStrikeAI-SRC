@@ -8,6 +8,8 @@ const (
 	ToolRecordVulnerabilityCandidate = "record_vulnerability_candidate" // L1 探索候选（宽松门槛）
 	ToolListVulnerabilities          = "list_vulnerabilities"
 	ToolGetVulnerability             = "get_vulnerability"
+	ToolUpdateVulnerability          = "update_vulnerability" // 按 ID 更新已落库记录
+	ToolDeleteVulnerability          = "delete_vulnerability" // 按 ID 删除已落库记录
 
 	// 执行覆盖 / 门闩（会话级，不靠 system prompt 约束结束）
 	ToolUpsertExecutionCoverage  = "upsert_execution_coverage"
@@ -78,6 +80,8 @@ func IsBuiltinTool(toolName string) bool {
 		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
+		ToolUpdateVulnerability,
+		ToolDeleteVulnerability,
 		ToolUpsertExecutionCoverage,
 		ToolGetExecutionCoverage,
 		ToolShouldContinueExecution,
@@ -135,6 +139,8 @@ func GetAllBuiltinTools() []string {
 		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
+		ToolUpdateVulnerability,
+		ToolDeleteVulnerability,
 		ToolUpsertExecutionCoverage,
 		ToolGetExecutionCoverage,
 		ToolShouldContinueExecution,

@@ -30,7 +30,7 @@ type Config struct {
 	Monitor     MonitorConfig         `yaml:"monitor,omitempty" json:"monitor,omitempty"`
 	ExternalMCP ExternalMCPConfig     `yaml:"external_mcp,omitempty"`
 	Knowledge   KnowledgeConfig       `yaml:"knowledge,omitempty"`
-	C2          C2Config              `yaml:"c2,omitempty" json:"c2,omitempty"` // 内置 C2 总开关；未配置时默认启用
+	C2          C2Config              `yaml:"c2,omitempty" json:"c2,omitempty"`                 // 内置 C2 总开关；未配置时默认启用
 	Robots      RobotsConfig          `yaml:"robots,omitempty" json:"robots,omitempty"`         // 企业微信/钉钉/飞书等机器人配置
 	RolesDir    string                `yaml:"roles_dir,omitempty" json:"roles_dir,omitempty"`   // 角色配置文件目录（新方式）
 	Roles       map[string]RoleConfig `yaml:"roles,omitempty" json:"roles,omitempty"`           // 向后兼容：支持在主配置文件中定义角色
@@ -79,7 +79,7 @@ func (c ProjectConfig) FactSummaryMaxRunesEffective() int {
 type MultiAgentConfig struct {
 	Enabled               bool   `yaml:"enabled" json:"enabled"`
 	RobotDefaultAgentMode string `yaml:"robot_default_agent_mode,omitempty" json:"robot_default_agent_mode,omitempty"` // eino_single | deep | plan_execute | supervisor
-	BatchUseMultiAgent     bool   `yaml:"batch_use_multi_agent" json:"batch_use_multi_agent"` // 为 true 时批量任务队列中每子任务走 Eino 多代理
+	BatchUseMultiAgent    bool   `yaml:"batch_use_multi_agent" json:"batch_use_multi_agent"`                           // 为 true 时批量任务队列中每子任务走 Eino 多代理
 	// Orchestration 已弃用：保留仅兼容旧版 config.yaml；编排由聊天/WebShell 请求体 orchestration 决定，未传时按 deep。
 	Orchestration string `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`
 	// MaxIteration 已废弃：统一使用 agent.max_iterations（YAML 中保留字段仅为兼容旧配置，运行时不读取）。
@@ -87,10 +87,10 @@ type MultiAgentConfig struct {
 	// PlanExecuteLoopMaxIterations plan_execute 模式下 execute↔replan 外层循环上限；0 表示用 Eino 默认 10。
 	PlanExecuteLoopMaxIterations int `yaml:"plan_execute_loop_max_iterations,omitempty" json:"plan_execute_loop_max_iterations,omitempty"`
 	// SubAgentMaxIterations 已废弃：子代理与主代理均使用 agent.max_iterations（Markdown max_iterations>0 可覆盖）。
-	SubAgentMaxIterations int `yaml:"sub_agent_max_iterations,omitempty" json:"sub_agent_max_iterations,omitempty"`
-	WithoutGeneralSubAgent       bool   `yaml:"without_general_sub_agent" json:"without_general_sub_agent"`
-	WithoutWriteTodos            bool   `yaml:"without_write_todos" json:"without_write_todos"`
-	OrchestratorInstruction      string `yaml:"orchestrator_instruction" json:"orchestrator_instruction"`
+	SubAgentMaxIterations   int    `yaml:"sub_agent_max_iterations,omitempty" json:"sub_agent_max_iterations,omitempty"`
+	WithoutGeneralSubAgent  bool   `yaml:"without_general_sub_agent" json:"without_general_sub_agent"`
+	WithoutWriteTodos       bool   `yaml:"without_write_todos" json:"without_write_todos"`
+	OrchestratorInstruction string `yaml:"orchestrator_instruction" json:"orchestrator_instruction"`
 	// OrchestratorInstructionPlanExecute plan_execute 主代理（规划侧）系统提示；非空且 agents/orchestrator-plan-execute.md 正文为空或未存在时生效。不与 Deep 的 orchestrator_instruction 混用。
 	OrchestratorInstructionPlanExecute string `yaml:"orchestrator_instruction_plan_execute,omitempty" json:"orchestrator_instruction_plan_execute,omitempty"`
 	// OrchestratorInstructionSupervisor supervisor 主代理系统提示（transfer/exit 说明仍由运行追加）；非空且 agents/orchestrator-supervisor.md 正文为空或未存在时生效。
@@ -130,11 +130,11 @@ type MultiAgentEinoCallbacksConfig struct {
 
 // MultiAgentEinoCallbacksOtelConfig OpenTelemetry for Eino callback spans (W3C trace in collector / stdout).
 type MultiAgentEinoCallbacksOtelConfig struct {
-	Enabled     bool    `yaml:"enabled" json:"enabled"`
-	ServiceName string  `yaml:"service_name,omitempty" json:"service_name,omitempty"`
-	Exporter    string  `yaml:"exporter,omitempty" json:"exporter,omitempty"`         // none | stdout | otlphttp
-	OTLPEndpoint string `yaml:"otlp_endpoint,omitempty" json:"otlp_endpoint,omitempty"` // host:port, e.g. localhost:4318 (path /v1/traces)
-	SampleRatio float64 `yaml:"sample_ratio,omitempty" json:"sample_ratio,omitempty"`   // 0–1, default 1.0
+	Enabled      bool    `yaml:"enabled" json:"enabled"`
+	ServiceName  string  `yaml:"service_name,omitempty" json:"service_name,omitempty"`
+	Exporter     string  `yaml:"exporter,omitempty" json:"exporter,omitempty"`           // none | stdout | otlphttp
+	OTLPEndpoint string  `yaml:"otlp_endpoint,omitempty" json:"otlp_endpoint,omitempty"` // host:port, e.g. localhost:4318 (path /v1/traces)
+	SampleRatio  float64 `yaml:"sample_ratio,omitempty" json:"sample_ratio,omitempty"`   // 0–1, default 1.0
 }
 
 // EinoCallbacksModeEffective returns off | log_only | sse | full.
@@ -264,12 +264,12 @@ type MultiAgentEinoMiddlewareConfig struct {
 	// PlantaskRelDir relative to skills_dir for per-conversation task boards (default .eino/plantask).
 	PlantaskRelDir string `yaml:"plantask_rel_dir,omitempty" json:"plantask_rel_dir,omitempty"`
 	// Reduction truncates/offloads large tool outputs (requires eino local backend for Write).
-	ReductionEnable       bool     `yaml:"reduction_enable,omitempty" json:"reduction_enable,omitempty"`
-	ReductionRootDir      string   `yaml:"reduction_root_dir,omitempty" json:"reduction_root_dir,omitempty"` // 非空：落盘根目录（默认 tmp/reduction）；其下按 projects/{id} 或 conversations/{id} 隔离
-	ReductionMaxLengthForTrunc int `yaml:"reduction_max_length_for_trunc,omitempty" json:"reduction_max_length_for_trunc,omitempty"` // default 12000
-	ReductionMaxTokensForClear int `yaml:"reduction_max_tokens_for_clear,omitempty" json:"reduction_max_tokens_for_clear,omitempty"` // default 50000
-	ReductionClearExclude []string `yaml:"reduction_clear_exclude,omitempty" json:"reduction_clear_exclude,omitempty"`
-	ReductionSubAgents    bool     `yaml:"reduction_sub_agents,omitempty" json:"reduction_sub_agents,omitempty"` // also attach to sub-agents
+	ReductionEnable            bool     `yaml:"reduction_enable,omitempty" json:"reduction_enable,omitempty"`
+	ReductionRootDir           string   `yaml:"reduction_root_dir,omitempty" json:"reduction_root_dir,omitempty"`                         // 非空：落盘根目录（默认 tmp/reduction）；其下按 projects/{id} 或 conversations/{id} 隔离
+	ReductionMaxLengthForTrunc int      `yaml:"reduction_max_length_for_trunc,omitempty" json:"reduction_max_length_for_trunc,omitempty"` // default 12000
+	ReductionMaxTokensForClear int      `yaml:"reduction_max_tokens_for_clear,omitempty" json:"reduction_max_tokens_for_clear,omitempty"` // default 50000
+	ReductionClearExclude      []string `yaml:"reduction_clear_exclude,omitempty" json:"reduction_clear_exclude,omitempty"`
+	ReductionSubAgents         bool     `yaml:"reduction_sub_agents,omitempty" json:"reduction_sub_agents,omitempty"` // also attach to sub-agents
 	// SummarizationTriggerRatio controls summarization trigger threshold as max_total_tokens * ratio (default 0.8).
 	SummarizationTriggerRatio float64 `yaml:"summarization_trigger_ratio,omitempty" json:"summarization_trigger_ratio,omitempty"`
 	// SummarizationEmitInternalEvents controls middleware internal event emission (default true).
@@ -625,19 +625,19 @@ type MultiAgentSubConfig struct {
 
 // MultiAgentPublic 返回给前端的精简信息（不含子代理指令全文）。
 type MultiAgentPublic struct {
-	Enabled               bool   `json:"enabled"`
-	RobotDefaultAgentMode string `json:"robot_default_agent_mode,omitempty"`
-	BatchUseMultiAgent    bool   `json:"batch_use_multi_agent"`
-	SubAgentCount                int    `json:"sub_agent_count"`
-	Orchestration                string `json:"orchestration,omitempty"`
-	PlanExecuteLoopMaxIterations int    `json:"plan_execute_loop_max_iterations"`
-	ToolSearchAlwaysVisibleTools []string `json:"tool_search_always_visible_tools,omitempty"`
+	Enabled                               bool     `json:"enabled"`
+	RobotDefaultAgentMode                 string   `json:"robot_default_agent_mode,omitempty"`
+	BatchUseMultiAgent                    bool     `json:"batch_use_multi_agent"`
+	SubAgentCount                         int      `json:"sub_agent_count"`
+	Orchestration                         string   `json:"orchestration,omitempty"`
+	PlanExecuteLoopMaxIterations          int      `json:"plan_execute_loop_max_iterations"`
+	ToolSearchAlwaysVisibleTools          []string `json:"tool_search_always_visible_tools,omitempty"`
 	ToolSearchAlwaysVisibleEffectiveTools []string `json:"tool_search_always_visible_effective_tools,omitempty"`
 	// Execution boost effective surface (round-3 observability; no long prompts).
-	ExecutionBoostEffective       bool `json:"execution_boost_effective"`
-	SkillRouterEffective          bool `json:"skill_router_effective"`
-	FinalizeGateEffective         bool `json:"finalize_gate_effective"`
-	StructuredSummaryMaxRunes     int  `json:"structured_summary_max_runes"`
+	ExecutionBoostEffective   bool `json:"execution_boost_effective"`
+	SkillRouterEffective      bool `json:"skill_router_effective"`
+	FinalizeGateEffective     bool `json:"finalize_gate_effective"`
+	StructuredSummaryMaxRunes int  `json:"structured_summary_max_runes"`
 }
 
 // NormalizeAgentMode 解析代理模式（eino_single | deep | plan_execute | supervisor）；空值默认 eino_single。
@@ -677,10 +677,10 @@ func NormalizeMultiAgentOrchestration(s string) string {
 
 // MultiAgentAPIUpdate 设置页/API 仅更新多代理标量字段；写入 YAML 时不覆盖 sub_agents 等块。
 type MultiAgentAPIUpdate struct {
-	Enabled               bool   `json:"enabled"`
-	RobotDefaultAgentMode string `json:"robot_default_agent_mode,omitempty"`
-	BatchUseMultiAgent    bool   `json:"batch_use_multi_agent"`
-	PlanExecuteLoopMaxIterations *int `json:"plan_execute_loop_max_iterations,omitempty"`
+	Enabled                      bool   `json:"enabled"`
+	RobotDefaultAgentMode        string `json:"robot_default_agent_mode,omitempty"`
+	BatchUseMultiAgent           bool   `json:"batch_use_multi_agent"`
+	PlanExecuteLoopMaxIterations *int   `json:"plan_execute_loop_max_iterations,omitempty"`
 	// 指针区分「JSON 未传该字段」与「传空数组要清空」；省略时不应覆盖 YAML 中的常驻工具白名单。
 	ToolSearchAlwaysVisibleTools *[]string `json:"tool_search_always_visible_tools,omitempty"`
 }
@@ -696,14 +696,14 @@ type RobotsConfig struct {
 
 // RobotWechatConfig 微信 iLink 机器人配置（个人微信 ClawBot / iLink 协议）
 type RobotWechatConfig struct {
-	Enabled        bool   `yaml:"enabled" json:"enabled"`
-	BotToken       string `yaml:"bot_token,omitempty" json:"bot_token,omitempty"`
-	ILinkBotID     string `yaml:"ilink_bot_id,omitempty" json:"ilink_bot_id,omitempty"`
-	ILinkUserID    string `yaml:"ilink_user_id,omitempty" json:"ilink_user_id,omitempty"`
-	BaseURL        string `yaml:"base_url,omitempty" json:"base_url,omitempty"`               // 默认 https://ilinkai.weixin.qq.com
-	BotType        string `yaml:"bot_type,omitempty" json:"bot_type,omitempty"`               // get_bot_qrcode 参数，默认 3
-	BotAgent       string `yaml:"bot_agent,omitempty" json:"bot_agent,omitempty"`             // base_info.bot_agent
-	GetUpdatesBuf  string `yaml:"get_updates_buf,omitempty" json:"get_updates_buf,omitempty"` // 长轮询游标（运行时）
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	BotToken      string `yaml:"bot_token,omitempty" json:"bot_token,omitempty"`
+	ILinkBotID    string `yaml:"ilink_bot_id,omitempty" json:"ilink_bot_id,omitempty"`
+	ILinkUserID   string `yaml:"ilink_user_id,omitempty" json:"ilink_user_id,omitempty"`
+	BaseURL       string `yaml:"base_url,omitempty" json:"base_url,omitempty"`               // 默认 https://ilinkai.weixin.qq.com
+	BotType       string `yaml:"bot_type,omitempty" json:"bot_type,omitempty"`               // get_bot_qrcode 参数，默认 3
+	BotAgent      string `yaml:"bot_agent,omitempty" json:"bot_agent,omitempty"`             // base_info.bot_agent
+	GetUpdatesBuf string `yaml:"get_updates_buf,omitempty" json:"get_updates_buf,omitempty"` // 长轮询游标（运行时）
 }
 
 // RobotSessionConfig 机器人会话隔离策略
@@ -742,19 +742,19 @@ func ValidateWecomConfig(w RobotWecomConfig) error {
 
 // RobotDingtalkConfig 钉钉机器人配置
 type RobotDingtalkConfig struct {
-	Enabled                    bool   `yaml:"enabled" json:"enabled"`
-	ClientID                   string `yaml:"client_id" json:"client_id"`                                       // 应用 Key (AppKey)
-	ClientSecret               string `yaml:"client_secret" json:"client_secret"`                               // 应用 Secret
+	Enabled                     bool   `yaml:"enabled" json:"enabled"`
+	ClientID                    string `yaml:"client_id" json:"client_id"`                                           // 应用 Key (AppKey)
+	ClientSecret                string `yaml:"client_secret" json:"client_secret"`                                   // 应用 Secret
 	AllowConversationIDFallback bool   `yaml:"allow_conversation_id_fallback" json:"allow_conversation_id_fallback"` // sender_id 缺失时是否允许回退到会话 ID
 }
 
 // RobotLarkConfig 飞书机器人配置
 type RobotLarkConfig struct {
-	Enabled                 bool   `yaml:"enabled" json:"enabled"`
-	AppID                   string `yaml:"app_id" json:"app_id"`                                 // 应用 App ID
-	AppSecret               string `yaml:"app_secret" json:"app_secret"`                         // 应用 App Secret
-	VerifyToken             string `yaml:"verify_token" json:"verify_token"`                     // 事件订阅 Verification Token（可选）
-	AllowChatIDFallback     bool   `yaml:"allow_chat_id_fallback" json:"allow_chat_id_fallback"` // 用户 ID 缺失时是否允许回退到 chat_id
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	AppID               string `yaml:"app_id" json:"app_id"`                                 // 应用 App ID
+	AppSecret           string `yaml:"app_secret" json:"app_secret"`                         // 应用 App Secret
+	VerifyToken         string `yaml:"verify_token" json:"verify_token"`                     // 事件订阅 Verification Token（可选）
+	AllowChatIDFallback bool   `yaml:"allow_chat_id_fallback" json:"allow_chat_id_fallback"` // 用户 ID 缺失时是否允许回退到 chat_id
 }
 
 type ServerConfig struct {
@@ -853,14 +853,57 @@ type DatabaseConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations      int    `yaml:"max_iterations" json:"max_iterations"`
-	ToolTimeoutMinutes int    `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"` // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
+	MaxIterations      int `yaml:"max_iterations" json:"max_iterations"`
+	ToolTimeoutMinutes int `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"` // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
 	// ShellNoOutputTimeoutSeconds execute/exec 无任何 stdout/stderr 时的空闲终止秒数（通用防挂死，不维护命令黑名单）；0=默认 300（5 分钟）；-1=关闭。
 	ShellNoOutputTimeoutSeconds int `yaml:"shell_no_output_timeout_seconds" json:"shell_no_output_timeout_seconds"`
 	// WorkspaceRootDir 会话工作目录根路径（curl/wget 下载、read_file/glob/grep 本地分析）；空=tmp/workspace，其下按 projects/{id} 或 conversations/{id} 隔离。
 	WorkspaceRootDir string `yaml:"workspace_root_dir,omitempty" json:"workspace_root_dir,omitempty"`
 	// SystemPromptPath 单代理系统提示 Markdown/文本文件路径（相对 config.yaml 所在目录，或可写绝对路径）。非空且可读时替换内置单代理提示；留空用内置。
 	SystemPromptPath string `yaml:"system_prompt_path,omitempty" json:"system_prompt_path,omitempty"`
+	// EinoSingleExecution only controls the eino_single ADK execution loop.
+	EinoSingleExecution EinoSingleExecutionConfig `yaml:"eino_single_execution,omitempty" json:"eino_single_execution,omitempty"`
+}
+
+// EinoSingleExecutionConfig contains limits that must not affect other orchestration modes.
+type EinoSingleExecutionConfig struct {
+	Enabled                       *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	MaxIterations                 int   `yaml:"max_iterations,omitempty" json:"max_iterations,omitempty"`
+	RunTimeoutMinutes             int   `yaml:"run_timeout_minutes,omitempty" json:"run_timeout_minutes,omitempty"`
+	ModelCallTimeoutSeconds       int   `yaml:"model_call_timeout_seconds,omitempty" json:"model_call_timeout_seconds,omitempty"`
+	ModelStreamIdleTimeoutSeconds int   `yaml:"model_stream_idle_timeout_seconds,omitempty" json:"model_stream_idle_timeout_seconds,omitempty"`
+}
+
+func (c EinoSingleExecutionConfig) EnabledEffective() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c EinoSingleExecutionConfig) MaxIterationsEffective() int {
+	if c.MaxIterations > 0 {
+		return c.MaxIterations
+	}
+	return 200
+}
+
+func (c EinoSingleExecutionConfig) RunTimeoutMinutesEffective() int {
+	if c.RunTimeoutMinutes > 0 {
+		return c.RunTimeoutMinutes
+	}
+	return 120
+}
+
+func (c EinoSingleExecutionConfig) ModelCallTimeoutSecondsEffective() int {
+	if c.ModelCallTimeoutSeconds > 0 {
+		return c.ModelCallTimeoutSeconds
+	}
+	return 300
+}
+
+func (c EinoSingleExecutionConfig) ModelStreamIdleTimeoutSecondsEffective() int {
+	if c.ModelStreamIdleTimeoutSeconds > 0 {
+		return c.ModelStreamIdleTimeoutSeconds
+	}
+	return 120
 }
 
 // HitlConfig 人机协同全局选项；与会话侧栏/API 中的白名单合并为并集后参与判定。
@@ -988,9 +1031,9 @@ func (m MonitorConfig) RetentionDaysEffective() int {
 // AuditConfig platform operation audit log settings (not chat/tool execution bodies).
 type AuditConfig struct {
 	// Enabled nil or true enables persistence; explicit false disables.
-	Enabled             *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	RetentionDays  int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
-	MaxDetailBytes int `yaml:"max_detail_bytes,omitempty" json:"max_detail_bytes,omitempty"`
+	Enabled        *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	RetentionDays  int   `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+	MaxDetailBytes int   `yaml:"max_detail_bytes,omitempty" json:"max_detail_bytes,omitempty"`
 	// AuthFailureCooldownSeconds: per-IP cooldown for auth login/change_password failure audit rows; -1 disables; 0 uses default 60.
 	AuthFailureCooldownSeconds int `yaml:"auth_failure_cooldown_seconds,omitempty" json:"auth_failure_cooldown_seconds,omitempty"`
 }
@@ -1668,8 +1711,8 @@ func Default() *Config {
 		},
 		Agent: AgentConfig{
 			MaxIterations:               30,  // 默认最大迭代次数
-			ToolTimeoutMinutes:            10,  // 单次工具执行默认最多 10 分钟，避免异常长时间占用
-			ShellNoOutputTimeoutSeconds:   300, // execute/exec 无新输出空闲终止（秒）；-1 关闭
+			ToolTimeoutMinutes:          10,  // 单次工具执行默认最多 10 分钟，避免异常长时间占用
+			ShellNoOutputTimeoutSeconds: 300, // execute/exec 无新输出空闲终止（秒）；-1 关闭
 		},
 		Security: SecurityConfig{
 			Tools:    []ToolConfig{}, // 工具配置应该从 config.yaml 或 tools/ 目录加载

@@ -52,3 +52,5 @@ tools:
   - record_vulnerability
   - list_vulnerabilities
   - get_vulnerability
+  - update_vulnerability
+  - delete_vulnerability

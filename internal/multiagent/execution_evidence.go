@@ -13,13 +13,13 @@ import (
 
 // ToolEvidenceEntry is a compact structured summary of a tool call for task handoff.
 type ToolEvidenceEntry struct {
-	ToolName          string `json:"tool_name"`
-	StatusHint        string `json:"status_hint,omitempty"`
-	Length            int    `json:"length"`
-	ErrorSig          string `json:"error_sig,omitempty"`
-	PayloadHint       string `json:"payload_hint,omitempty"`
-	InterestingParams string `json:"interesting_params,omitempty"`
-	Summary           string `json:"summary"`
+	ToolName          string    `json:"tool_name"`
+	StatusHint        string    `json:"status_hint,omitempty"`
+	Length            int       `json:"length"`
+	ErrorSig          string    `json:"error_sig,omitempty"`
+	PayloadHint       string    `json:"payload_hint,omitempty"`
+	InterestingParams string    `json:"interesting_params,omitempty"`
+	Summary           string    `json:"summary"`
 	At                time.Time `json:"at"`
 	// SkipBreaker, when true, prevents this tool call from counting toward the
 	// upsert circuit breaker. Used for terminal-status upserts (done/blocked)
@@ -29,10 +29,10 @@ type ToolEvidenceEntry struct {
 
 // CoverageItem tracks whether a hunting path was exercised / closed.
 type CoverageItem struct {
-	Path      string `json:"path"`       // e.g. auth.login, sqli.param:id
-	Status    string `json:"status"`     // open | in_progress | done | blocked
-	Priority  string `json:"priority"`   // P0 | P1 | P2
-	Note      string `json:"note,omitempty"`
+	Path      string    `json:"path"`     // e.g. auth.login, sqli.param:id
+	Status    string    `json:"status"`   // open | in_progress | done | blocked
+	Priority  string    `json:"priority"` // P0 | P1 | P2
+	Note      string    `json:"note,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -44,13 +44,13 @@ type ConversationExecutionState struct {
 	Coverage       map[string]CoverageItem
 	InjectedSkills map[string]struct{}
 	// Dual-auth probe tracking (Logic Track E): set when logic_probe_diff sees both auth_a and auth_b.
-	dualAuthProbe  bool
-	authASeen      bool
-	authBSeen      bool
+	dualAuthProbe bool
+	authASeen     bool
+	authBSeen     bool
 	// Recent upsert tracking: sliding window of recent tool names and the count of
 	// upsert_execution_coverage calls within that window. This prevents LLM from
 	// bypassing the breaker by interleaving upserts with management tools.
-	recentToolNames []string
+	recentToolNames   []string
 	recentUpsertCount int
 	// finalizeAttempts tracks how many times should_continue_execution(intent=finalize)
 	// returned true in a row. Reset when cont=false or intent != finalize.
@@ -58,6 +58,22 @@ type ConversationExecutionState struct {
 	maxEvidence      int
 	maxCoverage      int
 	lastAccess       time.Time
+
+	// Iteration-1 decision flags (execution decision architecture).
+	// toolDead: hard-failed tools (templates_missing / not in PATH) — do not re-call.
+	toolDead map[string]string
+	// surfaceSignalSeen: high-value attack surface detected this session (inventory/disclosure taxonomy).
+	surfaceSignalSeen bool
+	// vulnerabilityRecorded: L1 candidate or L2 formal record succeeded this session.
+	vulnerabilityRecorded bool
+	// roleTools: tools bound for this conversation (empty = unrestricted / default role).
+	roleTools  []string
+	controller *ExecutionController
+
+	// pendingCloser clears ADK run-loop pending tool IDs (framework-dropped calls).
+	// Separate mutex so emit path never deadlocks with s.mu.
+	pendingCloserMu sync.Mutex
+	pendingCloser   func(ids []string)
 }
 
 const (
@@ -98,13 +114,74 @@ func GetConversationExecutionState(conversationID string) *ConversationExecution
 	s := &ConversationExecutionState{
 		Coverage:       map[string]CoverageItem{},
 		InjectedSkills: map[string]struct{}{},
+		toolDead:       map[string]string{},
 		maxEvidence:    defaultMaxEvidence,
 		maxCoverage:    defaultMaxCoverage,
 		lastAccess:     time.Now(),
+		controller:     NewExecutionController(""),
 	}
 	execStates[id] = s
 	evictOldestConversationsLocked()
 	return s
+}
+
+// Controller returns the single-target execution controller for this conversation.
+func (s *ConversationExecutionState) Controller() *ExecutionController {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.controller == nil {
+		s.controller = NewExecutionController("")
+	}
+	return s.controller
+}
+
+// SetPrimaryTarget fixes the first non-empty target for this conversation.
+func (s *ConversationExecutionState) SetPrimaryTarget(target string) string {
+	return s.Controller().SetPrimaryTarget(target)
+}
+
+// SetPendingToolCallCloser registers the active ADK run-loop pending map cleaner.
+// Pass nil on run end. Middleware framework-drops call this so UI pending is not orphaned.
+func (s *ConversationExecutionState) SetPendingToolCallCloser(fn func(ids []string)) {
+	if s == nil {
+		return
+	}
+	s.pendingCloserMu.Lock()
+	s.pendingCloser = fn
+	s.pendingCloserMu.Unlock()
+}
+
+// NotifyPendingToolCallsResolved removes tool call IDs from the active run-loop pending map.
+func NotifyPendingToolCallsResolved(conversationID string, ids ...string) {
+	cleaned := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			cleaned = append(cleaned, id)
+		}
+	}
+	if len(cleaned) == 0 {
+		return
+	}
+	id := strings.TrimSpace(conversationID)
+	if id == "" {
+		id = "default"
+	}
+	execStateMu.Lock()
+	state := execStates[id]
+	execStateMu.Unlock()
+	if state == nil {
+		return
+	}
+	state.pendingCloserMu.Lock()
+	fn := state.pendingCloser
+	state.pendingCloserMu.Unlock()
+	if fn != nil {
+		fn(cleaned)
+	}
 }
 
 // ResetConversationExecutionStateForTest clears state (tests only).
@@ -126,6 +203,25 @@ func ConversationExecutionStateCount() int {
 	execStateMu.Lock()
 	defer execStateMu.Unlock()
 	return len(execStates)
+}
+
+// ConversationExecutionSummary snapshots an existing controller without creating state.
+func ConversationExecutionSummary(conversationID string) (ExecutionSummary, bool) {
+	id := strings.TrimSpace(conversationID)
+	if id == "" {
+		id = "default"
+	}
+	execStateMu.Lock()
+	state, ok := execStates[id]
+	execStateMu.Unlock()
+	if !ok || state == nil {
+		return ExecutionSummary{}, false
+	}
+	summary := state.Controller().Summary()
+	meaningful := summary.ToolCallsPlanned != 0 || summary.ToolCallsExecuted != 0 || summary.ToolCallsDropped != 0 ||
+		summary.Timeouts != 0 || summary.StagnationGates != 0 || summary.ObligationsCreated != 0 || summary.ObligationsPending != 0 ||
+		!summary.LastNewEvidenceAt.IsZero()
+	return summary, meaningful
 }
 
 // SetMaxConversationsForTest overrides global session cap (tests only; 0 restores default).
@@ -175,6 +271,145 @@ func DeleteConversationExecutionState(conversationID string) {
 	execStateMu.Lock()
 	defer execStateMu.Unlock()
 	delete(execStates, strings.TrimSpace(conversationID))
+}
+
+// MarkToolDead records a hard tool failure so the agent should not re-invoke it.
+func (s *ConversationExecutionState) MarkToolDead(name, reason string) {
+	if s == nil {
+		return
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toolDead == nil {
+		s.toolDead = map[string]string{}
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "unavailable"
+	}
+	s.toolDead[name] = reason
+}
+
+// IsToolDead reports whether the tool was marked dead this session.
+func (s *ConversationExecutionState) IsToolDead(name string) (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toolDead == nil {
+		return false, ""
+	}
+	r, ok := s.toolDead[name]
+	return ok, r
+}
+
+// MarkSurfaceSignalSeen marks that a high-value attack surface was observed.
+func (s *ConversationExecutionState) MarkSurfaceSignalSeen() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.surfaceSignalSeen = true
+}
+
+// SurfaceSignalSeen reports whether a high-value surface was observed.
+func (s *ConversationExecutionState) SurfaceSignalSeen() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.surfaceSignalSeen
+}
+
+// MarkVulnerabilityRecorded marks successful L1 candidate or L2 formal record.
+func (s *ConversationExecutionState) MarkVulnerabilityRecorded() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vulnerabilityRecorded = true
+}
+
+// VulnerabilityRecorded reports whether L1/L2 was written this session.
+func (s *ConversationExecutionState) VulnerabilityRecorded() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.vulnerabilityRecorded
+}
+
+// SurfaceNeedsRecord is true when a surface was seen but no L1/L2 was recorded yet.
+func (s *ConversationExecutionState) SurfaceNeedsRecord() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.surfaceSignalSeen && !s.vulnerabilityRecorded
+}
+
+// SetRoleTools stores the role tool allowlist for this conversation (empty = unrestricted).
+func (s *ConversationExecutionState) SetRoleTools(tools []string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(tools) == 0 {
+		s.roleTools = nil
+		return
+	}
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	s.roleTools = out
+}
+
+// RoleTools returns a copy of the role tool allowlist (nil/empty = unrestricted).
+func (s *ConversationExecutionState) RoleTools() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.roleTools) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.roleTools))
+	copy(out, s.roleTools)
+	return out
+}
+
+// Package-level helpers for conversation id convenience.
+
+// MarkConversationSurfaceSignalSeen marks surface seen for conversationID.
+func MarkConversationSurfaceSignalSeen(conversationID string) {
+	GetConversationExecutionState(conversationID).MarkSurfaceSignalSeen()
+}
+
+// MarkConversationVulnerabilityRecorded marks L1/L2 written for conversationID.
+func MarkConversationVulnerabilityRecorded(conversationID string) {
+	GetConversationExecutionState(conversationID).MarkVulnerabilityRecorded()
+}
+
+// SetConversationRoleTools stores role tools for conversationID (session memory; optional diagnostics).
+// Exec 扫描器纪律由提示词约束，不做 toolboundary 硬拦截。
+func SetConversationRoleTools(conversationID string, tools []string) {
+	GetConversationExecutionState(conversationID).SetRoleTools(tools)
 }
 
 func (s *ConversationExecutionState) RecordTool(entry ToolEvidenceEntry) {
@@ -317,6 +552,15 @@ func (s *ConversationExecutionState) InjectedSkillsCopy() map[string]struct{} {
 }
 
 func (s *ConversationExecutionState) UpsertCoverage(item CoverageItem) {
+	s.upsertCoverage(item, false)
+}
+
+// UpsertAutomaticCoverage preserves terminal coverage written by explicit decisions.
+func (s *ConversationExecutionState) UpsertAutomaticCoverage(item CoverageItem) {
+	s.upsertCoverage(item, true)
+}
+
+func (s *ConversationExecutionState) upsertCoverage(item CoverageItem, automatic bool) {
 	if s == nil {
 		return
 	}
@@ -342,6 +586,14 @@ func (s *ConversationExecutionState) UpsertCoverage(item CoverageItem) {
 	// Normalize priority casing
 	item.Priority = strings.ToUpper(strings.TrimSpace(item.Priority))
 	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+	if automatic {
+		if existing, ok := s.Coverage[path]; ok {
+			status := strings.ToLower(strings.TrimSpace(existing.Status))
+			if status == "done" || status == "blocked" {
+				return
+			}
+		}
+	}
 	s.Coverage[path] = item
 	s.lastAccess = time.Now()
 	if s.maxCoverage <= 0 {
@@ -528,9 +780,9 @@ func FormatToolEvidenceBlock(entries []ToolEvidenceEntry) string {
 
 // ExtractTargetFromText finds a URL / host:port / bare domain from user text.
 var (
-	reURL    = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
+	reURL      = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
 	reHostPort = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b`)
-	reDomain = regexp.MustCompile(`\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
+	reDomain   = regexp.MustCompile(`\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
 )
 
 func ExtractTargetFromText(s string) string {

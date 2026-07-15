@@ -126,12 +126,15 @@ func BuildStructuredToolSummary(toolName, arguments, output string) StructuredTo
 			}
 		}
 	}
-	// status_hint refinement for scanners
+	// status_hint refinement for scanners + attack-surface inventory
 	tn := normalizeToolBaseName(toolName)
 	switch {
 	case strings.Contains(low, "vulnerable") || strings.Contains(low, "injection found") ||
 		strings.Contains(low, "is vulnerable") || strings.Contains(low, "[critical]") ||
 		strings.Contains(low, "[high]") && strings.Contains(low, "matched"):
+		s.StatusHint = "interesting"
+	case HasHighValueSurfaceSignal(output):
+		// API/schema inventory or high-value disclosure: not a soft "ok" 200.
 		s.StatusHint = "interesting"
 	case strings.Contains(low, "error") || strings.Contains(low, "failed") || strings.Contains(low, "traceback"):
 		if s.StatusHint == "ok" {
@@ -140,6 +143,9 @@ func BuildStructuredToolSummary(toolName, arguments, output string) StructuredTo
 	}
 	s.ErrorCode, s.Retryable = classifyToolError(output)
 	s.NextHint = nextHintForTool(tn, s)
+	if HasHighValueSurfaceSignal(output) && (s.NextHint == "" || strings.Contains(s.NextHint, "对照框架版本")) {
+		s.NextHint = "高价值攻击面已暴露：先 L1/L2 落库，再用已加载工具钉住入口/资源验证；勿只总结或跳无关横向"
+	}
 	return s
 }
 
@@ -200,7 +206,10 @@ func nextHintForTool(toolName string, s StructuredToolSummary) string {
 	case "dalfox":
 		return "确认反射上下文；用 fetch 到受控地址证危害，禁 alert"
 	case "http-framework-test":
-		return "对照框架版本与已知 CVE；RCE/反序列化信号写 candidate"
+		if s.StatusHint == "interesting" {
+			return "高信号响应：落库 candidate/info，钉住路径做 method/参数验证；勿只总结"
+		}
+		return "对照框架版本与已知 CVE；服务清单/堆栈类信号写 candidate 并深挖业务入口"
 	case "execute-python-script", "exec", "execute":
 		return "保留关键 stdout/stderr；成功 PoC 写入 proof 再 L2"
 	default:

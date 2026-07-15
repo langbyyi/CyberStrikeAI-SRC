@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
@@ -79,6 +80,10 @@ func RunEinoSingleChatModelAgent(
 
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
 	einoExecBegin, einoExecFinish := newEinoExecuteMonitorCallbacks(ag, recorder)
+	// Bind role tool list into session state (diagnostics / future use).
+	// Exec 是否调用未挂载扫描器：仅提示词约束，不在此硬拦。
+	SetConversationRoleTools(conversationID, roleTools)
+	GetConversationExecutionState(conversationID).SetPrimaryTarget(ExtractTargetFromText(userMessage))
 	mainDefs := ag.ToolsForRole(roleTools)
 	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, nil, toolInvokeNotify, einoSingleAgentName)
 	if err != nil {
@@ -138,18 +143,28 @@ func RunEinoSingleChatModelAgent(
 		conversationID: conversationID,
 		trace:          modelFacingTrace,
 	})
+	if appCfg.Agent.EinoSingleExecution.EnabledEffective() {
+		handlers = append(handlers, newEinoSingleExecutionMiddleware(
+			conversationID,
+			progress,
+			time.Duration(appCfg.Agent.EinoSingleExecution.ModelCallTimeoutSecondsEffective())*time.Second,
+			time.Duration(appCfg.Agent.EinoSingleExecution.ModelStreamIdleTimeoutSecondsEffective())*time.Second,
+		))
+	}
 
-	maxIter := agentMaxIterations(appCfg)
+	maxIter := einoSingleMaxIterations(appCfg)
 
 	mainToolsCfg := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
 			ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
-				MW:             &ma.EinoMiddleware,
-				SkillsRoot:     skillsRoot,
-				ConversationID: conversationID,
-				Logger:         logger,
+				MW:                 &ma.EinoMiddleware,
+				SkillsRoot:         skillsRoot,
+				ConversationID:     conversationID,
+				Logger:             logger,
+				DecisionController: appCfg.Agent.EinoSingleExecution.EnabledEffective(),
+				Progress:           progress,
 			}),
 		},
 		EmitInternalEvents: true,
@@ -224,4 +239,11 @@ func RunEinoSingleChatModelAgent(
 		EmptyResponseMessage: "(Eino ADK single-agent session completed but no assistant text was captured. Check process details or logs.) " +
 			"（Eino ADK 单代理会话已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}, baseMsgs)
+}
+
+func einoSingleMaxIterations(appCfg *config.Config) int {
+	if appCfg == nil {
+		return 200
+	}
+	return appCfg.Agent.EinoSingleExecution.MaxIterationsEffective()
 }

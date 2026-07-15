@@ -4,93 +4,94 @@ import (
 	"strings"
 
 	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/mcp/builtin"
 )
 
-// DefaultHuntingAlwaysVisibleTools is the production always_visible baseline for SRC hunting.
-// Merged when ExecutionBoost is enabled (in addition to configured names + all builtin MCP tools).
-var DefaultHuntingAlwaysVisibleTools = []string{
-	// Manual verification / analysis (heavy scanners removed: SRC targets are tested by hand)
-	"http-framework-test",
-	// Execution / scripting
-	"exec",
-	"execute",
-	"execute-python-script",
-	// Auth / OOB / skill
-	"jwt-analyzer",
-	"dnslog",
-	"skill",
-	// Vulnerability / fact / knowledge (also covered by GetAllBuiltinTools; listed for clarity)
-	builtin.ToolRecordVulnerability,
-	builtin.ToolRecordVulnerabilityCandidate,
-	builtin.ToolListVulnerabilities,
-	builtin.ToolGetVulnerability,
-	builtin.ToolUpsertProjectFact,
-	builtin.ToolGetProjectFact,
-	builtin.ToolListProjectFacts,
-	builtin.ToolSearchProjectFacts,
-	// Coverage / finalize gate
-	builtin.ToolUpsertExecutionCoverage,
-	builtin.ToolGetExecutionCoverage,
-	builtin.ToolShouldContinueExecution,
-	// Logic Track probe
-	builtin.ToolLogicProbeDiff,
+// Framework meta-tools (Eino ADK)，非 MCP 角色 tools；reduction 永不 clear。
+var frameworkMetaToolsNeverClear = []string{
+	"task", "transfer_to_agent", "exit", "write_todos", "skill", "tool_search",
+	"TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
 }
 
-// DefaultReductionClearExcludeHunting tools whose large outputs should not be cleared from history
-// (structured trunc + on-disk path preferred over wipe).
-var DefaultReductionClearExcludeHunting = []string{
-	"http-framework-test",
-	"execute-python-script",
-	"jwt-analyzer",
-	"dnslog",
-	builtin.ToolRecordVulnerability,
-	builtin.ToolRecordVulnerabilityCandidate,
-	builtin.ToolUpsertProjectFact,
-	builtin.ToolUpsertExecutionCoverage,
-	builtin.ToolGetExecutionCoverage,
-	builtin.ToolShouldContinueExecution,
-	builtin.ToolLogicProbeDiff,
+// resolveAlwaysVisibleToolNames 计算 tool_search 的 always_visible 名称列表。
+//
+// 规则（禁止编排层硬编码 MCP 工具名）：
+//  1. 仅允许出现在 boundNames 中的名字（boundNames = 本轮已按角色 ToolsForRole 绑定的工具）；
+//  2. 优先使用 configured（config.tool_search_always_visible_tools），与 bound 求交；
+//  3. 若求交为空且 fallbackCount>0，则按 bound 原有顺序取前 fallbackCount 个（即角色 tools 顺序）。
+//
+// boundNames 为空时返回 nil（无角色工具则无 always_visible 注入）。
+func resolveAlwaysVisibleToolNames(configured, boundNames []string, fallbackCount int) []string {
+	if len(boundNames) == 0 {
+		return nil
+	}
+	boundOrder := make([]string, 0, len(boundNames))
+	boundSet := make(map[string]struct{}, len(boundNames))
+	for _, n := range boundNames {
+		key := strings.ToLower(strings.TrimSpace(n))
+		if key == "" {
+			continue
+		}
+		if _, ok := boundSet[key]; ok {
+			continue
+		}
+		boundSet[key] = struct{}{}
+		boundOrder = append(boundOrder, key)
+	}
+	if len(boundOrder) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(boundOrder))
+	seen := make(map[string]struct{}, len(boundOrder))
+	add := func(name string) {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			return
+		}
+		if _, ok := boundSet[key]; !ok {
+			return // 禁止注入未绑定（非角色）工具
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+
+	for _, n := range configured {
+		add(n)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	// 无有效配置：按角色绑定顺序取前 N 个常驻
+	if fallbackCount <= 0 {
+		return nil
+	}
+	if fallbackCount > len(boundOrder) {
+		fallbackCount = len(boundOrder)
+	}
+	return append([]string(nil), boundOrder[:fallbackCount]...)
 }
 
-// mergeAlwaysVisibleToolNames merges configured names, builtin MCP tools, and (when boost) hunting defaults.
+// mergeAlwaysVisibleToolNamesWithBoost 已废弃语义：不再因 boost 注入内置/挖洞硬编码列表。
+// 仅透传 configured；真正与角色求交在 resolveAlwaysVisibleToolNames + bound 列表。
+// 保留函数签名供旧测试/调用兼容；executionBoost 参数忽略。
+func mergeAlwaysVisibleToolNamesWithBoost(configured []string, executionBoost bool) []string {
+	_ = executionBoost
+	return resolveAlwaysVisibleToolNames(configured, configured, 0)
+}
+
+// mergeAlwaysVisibleToolNames 兼容旧名：仅配置列表自身去重（不注入框架硬编码）。
 func mergeAlwaysVisibleToolNames(configured []string) []string {
 	return mergeAlwaysVisibleToolNamesWithBoost(configured, true)
 }
 
-// mergeAlwaysVisibleToolNamesWithBoost is the testable merge entry for always_visible tool names.
-func mergeAlwaysVisibleToolNamesWithBoost(configured []string, executionBoost bool) []string {
-	merged := make([]string, 0, len(configured)+64)
-	seen := make(map[string]struct{}, len(configured)+64)
-	add := func(name string) {
-		n := strings.TrimSpace(strings.ToLower(name))
-		if n == "" {
-			return
-		}
-		if _, ok := seen[n]; ok {
-			return
-		}
-		seen[n] = struct{}{}
-		merged = append(merged, n)
-	}
-	for _, n := range configured {
-		add(n)
-	}
-	for _, n := range builtin.GetAllBuiltinTools() {
-		add(n)
-	}
-	if executionBoost {
-		for _, n := range DefaultHuntingAlwaysVisibleTools {
-			add(n)
-		}
-	}
-	return merged
-}
-
-// mergeReductionClearExclude merges user exclude list with production hunting defaults when boost is on.
-func mergeReductionClearExclude(configured []string, executionBoost bool) []string {
-	merged := make([]string, 0, len(configured)+32)
-	seen := make(map[string]struct{}, len(configured)+32)
+// mergeReductionClearExclude 合并 reduction 不清空列表。
+// 仅：用户配置 + 框架元工具 + 本轮已绑定工具名（角色来源），禁止额外硬编码 MCP 工具名。
+func mergeReductionClearExclude(configured []string, boundToolNames []string) []string {
+	merged := make([]string, 0, len(configured)+len(boundToolNames)+16)
+	seen := make(map[string]struct{}, len(configured)+len(boundToolNames)+16)
 	add := func(name string) {
 		n := strings.TrimSpace(name)
 		if n == "" {
@@ -106,17 +107,11 @@ func mergeReductionClearExclude(configured []string, executionBoost bool) []stri
 	for _, n := range configured {
 		add(n)
 	}
-	// Framework meta-tools always excluded from clear
-	for _, n := range []string{
-		"task", "transfer_to_agent", "exit", "write_todos", "skill", "tool_search",
-		"TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
-	} {
+	for _, n := range frameworkMetaToolsNeverClear {
 		add(n)
 	}
-	if executionBoost {
-		for _, n := range DefaultReductionClearExcludeHunting {
-			add(n)
-		}
+	for _, n := range boundToolNames {
+		add(n)
 	}
 	return merged
 }

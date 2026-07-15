@@ -1655,12 +1655,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-loop/cancel": map[string]interface{}{
+			"/api/agent-tasks/cancel": map[string]interface{}{
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "取消任务",
-					"description": "取消正在执行的Agent Loop任务",
-					"operationId": "cancelAgentLoop",
+					"description": "取消正在执行的代理任务（Eino 单/多代理）。与 /api/agent-loop/cancel 等价（历史路径）。",
+					"operationId": "cancelAgentTask",
 					"requestBody": map[string]interface{}{
 						"required": true,
 						"content": map[string]interface{}{
@@ -1705,12 +1705,36 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-loop/tasks": map[string]interface{}{
+			"/api/agent-loop/cancel": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"对话交互"},
+					"summary":     "取消任务（历史路径）",
+					"description": "与 /api/agent-tasks/cancel 相同；保留兼容旧客户端与 Burp 插件。",
+					"operationId": "cancelAgentLoop",
+					"deprecated":  true,
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/CancelAgentLoopRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "取消请求已提交"},
+						"404": map[string]interface{}{"description": "未找到正在执行的任务"},
+						"401": map[string]interface{}{"description": "未授权"},
+					},
+				},
+			},
+			"/api/agent-tasks/tasks": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "列出运行中的任务",
-					"description": "获取所有正在运行的Agent Loop任务",
-					"operationId": "listAgentTasks",
+					"description": "获取所有正在运行的代理任务。与 /api/agent-loop/tasks 等价（历史路径）。",
+					"operationId": "listAgentTasksPreferred",
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
 							"description": "获取成功",
@@ -1737,12 +1761,25 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-loop/tasks/completed": map[string]interface{}{
+			"/api/agent-loop/tasks": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"对话交互"},
+					"summary":     "列出运行中的任务（历史路径）",
+					"description": "与 /api/agent-tasks/tasks 相同。",
+					"operationId": "listAgentTasks",
+					"deprecated":  true,
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "获取成功"},
+						"401": map[string]interface{}{"description": "未授权"},
+					},
+				},
+			},
+			"/api/agent-tasks/tasks/completed": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "列出已完成的任务",
-					"description": "获取最近完成的Agent Loop任务历史",
-					"operationId": "listCompletedTasks",
+					"description": "获取最近完成的代理任务历史。与 /api/agent-loop/tasks/completed 等价。",
+					"operationId": "listCompletedTasksPreferred",
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
 							"description": "获取成功",
@@ -1766,6 +1803,19 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"401": map[string]interface{}{
 							"description": "未授权",
 						},
+					},
+				},
+			},
+			"/api/agent-loop/tasks/completed": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"对话交互"},
+					"summary":     "列出已完成的任务（历史路径）",
+					"description": "与 /api/agent-tasks/tasks/completed 相同。",
+					"operationId": "listCompletedTasks",
+					"deprecated":  true,
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "获取成功"},
+						"401": map[string]interface{}{"description": "未授权"},
 					},
 				},
 			},

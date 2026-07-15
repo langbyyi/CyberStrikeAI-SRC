@@ -85,22 +85,22 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		} else {
 			finalMessage = webshellContext
 		}
-		roleTools = []string{
-			builtin.ToolWebshellExec,
-			builtin.ToolWebshellFileList,
-			builtin.ToolWebshellFileRead,
-			builtin.ToolWebshellFileWrite,
-			builtin.ToolRecordVulnerability,
-			builtin.ToolListVulnerabilities,
-			builtin.ToolGetVulnerability,
-			builtin.ToolUpsertProjectFact,
-			builtin.ToolGetProjectFact,
-			builtin.ToolListProjectFacts,
-			builtin.ToolSearchProjectFacts,
-			builtin.ToolDeprecateProjectFact,
-			builtin.ToolRestoreProjectFact,
-			builtin.ToolListKnowledgeRiskTypes,
-			builtin.ToolSearchKnowledgeBase,
+		// WebShell：工具集仅来自角色定义；未选角色或角色无 tools 时拒绝全量 MCP（避免绕过角色白名单）。
+		if req.Role != "" && req.Role != "默认" && h.config != nil && h.config.Roles != nil {
+			if role, exists := h.config.Roles[req.Role]; exists && role.Enabled && len(role.Tools) > 0 {
+				roleTools = append([]string(nil), role.Tools...)
+			}
+		}
+		if len(roleTools) == 0 {
+			// 兼容：无角色 tools 时使用 webshell 专用最小集（非编排 hardcode 扫描器；仅会话型 webshell 能力）
+			roleTools = []string{
+				builtin.ToolWebshellExec,
+				builtin.ToolWebshellFileList,
+				builtin.ToolWebshellFileRead,
+				builtin.ToolWebshellFileWrite,
+			}
+			h.logger.Info("WebShell AI：未配置角色 tools，使用 webshell 最小工具集",
+				zap.String("connection_id", req.WebShellConnectionID))
 		}
 	} else if req.Role != "" && req.Role != "默认" && h.config != nil && h.config.Roles != nil {
 		if role, exists := h.config.Roles[req.Role]; exists && role.Enabled {

@@ -28,11 +28,26 @@ var finalizeWrapUpPhrases = []string{
 	"本次扫描未发现",
 	"可以结束",
 	"建议收工",
+	"建议结束",
+	"先到这里",
+	"暂时没有发现",
+	"目前没有发现",
+	"整体较为安全",
+	"风险较低",
+	"安全状况良好",
+	"无需进一步",
+	"未发现可利用",
+	"未发现有效漏洞",
+	"信息收集完成",
+	"侦察完成",
 	"no vulnerabilities found",
 	"no vulnerability found",
 	"testing complete",
 	"scan complete",
 	"nothing found",
+	"looks secure",
+	"no issues found",
+	"no security issues",
 }
 
 // FinalizeGateInstruction is appended/rewritten when open P0/P1 + wrap-up phrasing.
@@ -81,6 +96,58 @@ func CoverageShouldBlockFinalize(state *ConversationExecutionState, responseText
 	return true, reason
 }
 
+// SurfaceRecordGateInstruction is appended when high-value surface was seen but no L1/L2 recorded.
+// Scenario-agnostic (Web/API/cloud/config/info-leak).
+const SurfaceRecordGateInstruction = "\n\n## [surface_record_blocked] 框架门闩（非用户消息）\n" +
+	"本会话已检测到**高价值攻击面**（API/服务清单、调试入口、源码/密钥/云元数据、目录列表或强信息泄露等），但尚未调用 " +
+	"`record_vulnerability_candidate`（L1）或 `record_vulnerability`（L2）落库。\n" +
+	"**禁止直接交付总结报告。** 请立即：\n" +
+	"1. 对可复现暴露调用 `record_vulnerability_candidate` 或 `record_vulnerability`(severity=info/low/对应等级)，target=用户指定目标；\n" +
+	"2. 再 `should_continue_execution(intent=finalize)` 收工。\n" +
+	"证明须含真实目标标识、状态码/输出摘要；禁止套用无关历史案例标题。\n"
+
+// SurfaceRecordShouldBlockFinalize blocks wrap-up when surface was seen but no vuln recorded.
+// Also treats long "渗透测试报告" style delivery as wrap-up for this gate only.
+func SurfaceRecordShouldBlockFinalize(state *ConversationExecutionState, responseText string) (bool, string) {
+	resp := strings.TrimSpace(responseText)
+	if resp == "" || state == nil {
+		return false, ""
+	}
+	if strings.Contains(resp, "surface_record_blocked") {
+		return false, ""
+	}
+	if !state.SurfaceNeedsRecord() {
+		return false, ""
+	}
+	// Broaden wrap-up detection: final report headers count as delivery.
+	if IsFinalizeWrapUpText(resp) || isDeliveryReportText(resp) {
+		return true, "surface_seen_without_vulnerability_record"
+	}
+	return false, ""
+}
+
+func isDeliveryReportText(text string) bool {
+	low := strings.ToLower(text)
+	markers := []string{
+		"渗透测试报告",
+		"漏洞记录情况",
+		"风险与修复建议",
+		"# 渗透测试",
+		"## 已确认攻击面",
+		"executive summary",
+	}
+	for _, m := range markers {
+		if strings.Contains(low, strings.ToLower(m)) {
+			return true
+		}
+	}
+	// Long structured markdown conclusion
+	if strings.Count(text, "## ") >= 3 && (strings.Contains(text, "修复") || strings.Contains(low, "finding")) {
+		return true
+	}
+	return false
+}
+
 // ApplyFinalizeGate is the pure post-process for assistant final text.
 // When coverage has open P0/P1 and response is wrap-up phrasing, rewrites/appends a continue instruction.
 // Also appends identity-gap hint when idor_horizontal is open without dual-auth probe (even if not blocked).
@@ -105,6 +172,15 @@ func ApplyFinalizeGate(conversationID, response string) (string, bool) {
 		}
 		out = b.String()
 	}
+	// Surface without L1/L2: block report-style delivery after confirmed inventory/disclosure.
+	if sBlock, sReason := SurfaceRecordShouldBlockFinalize(state, out); sBlock {
+		var b strings.Builder
+		b.WriteString(out)
+		b.WriteString(SurfaceRecordGateInstruction)
+		b.WriteString(fmt.Sprintf("reason=%s\n", sReason))
+		out = b.String()
+		block = true
+	}
 	// Identity gap: honest degradation for horizontal tests without dual accounts.
 	out = AppendIdentityGapIfNeeded(state, out)
 	// blocked flag: true if gate rewrote wrap-up; identity gap alone does not count as "blocked"
@@ -117,6 +193,7 @@ func ApplyFinalizeGate(conversationID, response string) (string, bool) {
 // changes the text — wrap-up gate (blocked=true) and/or identity_gap (blocked may be false).
 // Must not early-return on !blocked, or identity_gap would be discarded on the production path.
 // Logs finalize_gate_blocked only when the wrap-up gate fired.
+// 随后叠加 depth_force：无 open coverage 的浅扫收工也会被拦截。
 func ApplyFinalizeGateToRunResult(out *RunResult, conversationID string, logger *zap.Logger) *RunResult {
 	if out == nil {
 		return out
@@ -142,5 +219,6 @@ func ApplyFinalizeGateToRunResult(out *RunResult, conversationID string, logger 
 			zap.Int("response_runes", len([]rune(newResp))),
 		)
 	}
-	return out
+	// 深度门闩：coverage 未开但工具过少时仍拦截「无洞收工」
+	return ApplyDepthForceGateToRunResult(out, conversationID, logger)
 }

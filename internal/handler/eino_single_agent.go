@@ -151,8 +151,8 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 	var result *multiagent.RunResult
 	var runErr error
 
-	baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
-	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, 600*time.Minute)
+	runDeadline := time.Now().Add(time.Duration(h.config.Agent.EinoSingleExecution.RunTimeoutMinutesEffective()) * time.Minute)
+	baseCtx, cancelWithCause, taskCtx, timeoutCancel := newEinoSingleSegmentContexts(runDeadline)
 
 	if _, err := h.tasks.StartTask(conversationID, req.Message, cancelWithCause); err != nil {
 		var errorMsg string
@@ -244,7 +244,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 			if h.tryContinueOnEinoEmptyResponse(taskCtx, mw, conversationID, result, &emptyResponseContinueAttempt, &curHistory, &curFinalMessage, progressCallback) {
 				mainIterationOffset += segmentMainIterationMax
 				timeoutCancel()
-				baseCtx, cancelWithCause, taskCtx, timeoutCancel = h.rebindEinoRunningTask(conversationID, timeoutCancel)
+				baseCtx, cancelWithCause, taskCtx, timeoutCancel = h.rebindEinoSingleRunningTask(conversationID, timeoutCancel, runDeadline)
 				continue
 			}
 			timeoutCancel()
@@ -276,10 +276,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 			})
 			mainIterationOffset += segmentMainIterationMax
 			timeoutCancel()
-			baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
-			h.tasks.BindTaskCancel(conversationID, cancelWithCause)
-			taskCtx, timeoutCancel = context.WithTimeout(baseCtx, 600*time.Minute)
-			h.tasks.UpdateTaskStatus(conversationID, "running")
+			baseCtx, cancelWithCause, taskCtx, timeoutCancel = h.rebindEinoSingleRunningTask(conversationID, timeoutCancel, runDeadline)
 			continue
 		}
 
@@ -364,6 +361,22 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 		"agentMode":       "eino_single",
 	})
 	sendEvent("done", "", map[string]interface{}{"conversationId": conversationID})
+}
+
+func newEinoSingleSegmentContexts(deadline time.Time) (context.Context, context.CancelCauseFunc, context.Context, context.CancelFunc) {
+	baseCtx, cancelWithCause := context.WithCancelCause(context.Background())
+	taskCtx, timeoutCancel := context.WithDeadline(baseCtx, deadline)
+	return baseCtx, cancelWithCause, taskCtx, timeoutCancel
+}
+
+func (h *AgentHandler) rebindEinoSingleRunningTask(conversationID string, timeoutCancel context.CancelFunc, deadline time.Time) (context.Context, context.CancelCauseFunc, context.Context, context.CancelFunc) {
+	if timeoutCancel != nil {
+		timeoutCancel()
+	}
+	baseCtx, cancelWithCause, taskCtx, newTimeoutCancel := newEinoSingleSegmentContexts(deadline)
+	h.tasks.BindTaskCancel(conversationID, cancelWithCause)
+	h.tasks.UpdateTaskStatus(conversationID, "running")
+	return baseCtx, cancelWithCause, taskCtx, newTimeoutCancel
 }
 
 // EinoSingleAgentLoop Eino ADK 单代理非流式对话。

@@ -22,7 +22,9 @@ import (
 var mcpToolTimeoutBuckets = map[string]int{
 	// scanner：模板/字典型扫描器，默认 900s。
 	"nuclei": 900, "ffuf": 900, "nikto": 900, "dalfox": 900, "katana": 900,
-	"dirsearch": 900, "gobuster": 900, "http-framework-test": 900, "arjun": 900,
+	"dirsearch": 900, "gobuster": 900, "arjun": 900,
+	// http-framework-test is a lightweight request/probe, not a dictionary scan.
+	"http-framework-test": 120,
 	// exploit：利用类工具，默认 1800s。
 	"sqlmap": 1800, "hydra": 1800, "metasploit": 1800,
 	// 其余（nmap/masscan/subfinder/rustscan 等侦察类）默认走 defaultDur。
@@ -207,18 +209,31 @@ func perCallTimeoutInvokable(cfg executionToolMiddlewareConfig, defaultSec int, 
 				toolName = input.Name
 			}
 			d := resolveMCPToolTimeout(toolName, defaultSec, perTool)
+			started := time.Now()
+			layer := timeoutLayerFor(ctx, d)
 			if d > 0 {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, d)
+				var effective time.Duration
+				ctx, cancel, effective = EffectiveChildTimeout(ctx, d)
+				d = effective
 				defer cancel()
 			}
 			output, err := next(ctx, input)
-			if err != nil && ctx.Err() == context.DeadlineExceeded {
-				logPerCallTimeout(cfg, toolName, d)
+			if d > 0 && ctx.Err() != nil {
 				if output == nil {
 					output = &compose.ToolOutput{}
 				}
-				output.Result = einomcp.ToolErrorPrefix + mcpPerCallTimeoutMessage(toolName, d)
+				code := "cancelled"
+				if ctx.Err() == context.DeadlineExceeded {
+					code = "timeout"
+					logPerCallTimeout(cfg, toolName, d)
+					GetConversationExecutionState(cfg.ConversationID).Controller().RecordTimeout()
+					if cfg.Progress != nil {
+						cfg.Progress("tool_timeout", "工具调用超过执行预算", map[string]interface{}{"tool": toolName, "timeoutLayer": layer})
+					}
+				}
+				outcome := ToolOutcome{Code: code, TimeoutLayer: layer, Retryable: false, RetryLeft: 0, PartialOutput: output.Result, Duration: time.Since(started)}
+				output.Result = einomcp.ToolErrorPrefix + RenderToolOutcome(outcome)
 				return output, nil
 			}
 			return output, err
@@ -234,9 +249,13 @@ func perCallTimeoutStreamable(cfg executionToolMiddlewareConfig, defaultSec int,
 				toolName = input.Name
 			}
 			d := resolveMCPToolTimeout(toolName, defaultSec, perTool)
+			started := time.Now()
+			layer := timeoutLayerFor(ctx, d)
 			if d > 0 {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, d)
+				var effective time.Duration
+				ctx, cancel, effective = EffectiveChildTimeout(ctx, d)
+				d = effective
 				defer cancel()
 			}
 			out, err := next(ctx, input)
@@ -253,10 +272,19 @@ func perCallTimeoutStreamable(cfg executionToolMiddlewareConfig, defaultSec int,
 				chunks = append(chunks, chunk)
 			}
 			out.Result.Close()
-			if ctx.Err() == context.DeadlineExceeded {
-				logPerCallTimeout(cfg, toolName, d)
+			if d > 0 && ctx.Err() != nil {
+				code := "cancelled"
+				if ctx.Err() == context.DeadlineExceeded {
+					code = "timeout"
+					logPerCallTimeout(cfg, toolName, d)
+					GetConversationExecutionState(cfg.ConversationID).Controller().RecordTimeout()
+					if cfg.Progress != nil {
+						cfg.Progress("tool_timeout", "流式工具调用超过执行预算", map[string]interface{}{"tool": toolName, "timeoutLayer": layer})
+					}
+				}
+				outcome := ToolOutcome{Code: code, TimeoutLayer: layer, Retryable: false, RetryLeft: 0, PartialOutput: strings.Join(chunks, ""), Duration: time.Since(started)}
 				return &compose.StreamToolOutput{
-					Result: schema.StreamReaderFromArray([]string{einomcp.ToolErrorPrefix + mcpPerCallTimeoutMessage(toolName, d)}),
+					Result: schema.StreamReaderFromArray([]string{einomcp.ToolErrorPrefix + RenderToolOutcome(outcome)}),
 				}, nil
 			}
 			return &compose.StreamToolOutput{Result: schema.StreamReaderFromArray(chunks)}, nil
