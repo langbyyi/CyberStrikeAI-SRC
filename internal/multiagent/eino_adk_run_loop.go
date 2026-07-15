@@ -192,6 +192,35 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	pendingByID := make(map[string]toolCallPendingInfo)
 	pendingQueueByAgent := make(map[string][]string)
 	var pendingMu sync.Mutex
+	// Register closer for middleware framework-drops: middleware holds the outer progress
+	// pointer created before this loop, so progress-wrapping alone cannot clear pending.
+	GetConversationExecutionState(conversationID).SetPendingToolCallCloser(func(ids []string) {
+		if len(ids) == 0 {
+			return
+		}
+		pendingMu.Lock()
+		for _, id := range ids {
+			delete(pendingByID, id)
+		}
+		pendingMu.Unlock()
+	})
+	defer GetConversationExecutionState(conversationID).SetPendingToolCallCloser(nil)
+	// Also clear pending when any tool_result carries toolCallId (real ADK results + drops via shared progress).
+	if progress != nil {
+		userProgress := progress
+		progress = func(eventType, message string, data interface{}) {
+			if eventType == "tool_result" {
+				if m, ok := data.(map[string]interface{}); ok {
+					if id, _ := m["toolCallId"].(string); strings.TrimSpace(id) != "" {
+						pendingMu.Lock()
+						delete(pendingByID, strings.TrimSpace(id))
+						pendingMu.Unlock()
+					}
+				}
+			}
+			userProgress(eventType, message, data)
+		}
+	}
 	markPending := func(tc toolCallPendingInfo) {
 		if tc.ToolCallID == "" {
 			return

@@ -93,7 +93,7 @@ func reductionCacheRootDir(configuredBase, projectID, conversationID string) str
 	return filepath.Join(base, "conversations", sanitizeEinoPathSegment(conv))
 }
 
-func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
+func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, boundToolNames []string, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
 	if loc == nil {
 		return nil, fmt.Errorf("reduction: local backend nil")
 	}
@@ -101,7 +101,8 @@ func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddl
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("reduction root: %w", err)
 	}
-	excl := mergeReductionClearExclude(mw.ReductionClearExclude, mw.ExecutionBoostEffective())
+	// 不清空：用户配置 + 框架元工具 + 本轮角色绑定工具（禁止硬编码 MCP 工具名）
+	excl := mergeReductionClearExclude(mw.ReductionClearExclude, boundToolNames)
 	redMW, err := reduction.New(ctx, &reduction.Config{
 		Backend:           loc,
 		RootDir:           root,
@@ -117,6 +118,7 @@ func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddl
 		logger.Info("eino middleware: reduction enabled",
 			zap.String("root", root),
 			zap.Bool("execution_boost", mw.ExecutionBoostEffective()),
+			zap.Int("bound_tools", len(boundToolNames)),
 			zap.Int("clear_exclude_count", len(excl)))
 	}
 	return redMW, nil
@@ -140,6 +142,8 @@ func prependEinoMiddlewares(
 		return tools, nil, false, nil
 	}
 	outTools = tools
+	// 本轮已绑定工具名（来自角色 ToolsForRole → ToolsFromDefinitions），编排层禁止再注入硬编码 MCP 名
+	boundNames := collectToolNames(ctx, tools)
 
 	if mw.PatchToolCallsEffective() {
 		patchMW, perr := patchtoolcalls.New(ctx, &patchtoolcalls.Config{})
@@ -153,7 +157,7 @@ func prependEinoMiddlewares(
 		if place == einoMWSub && !mw.ReductionSubAgents {
 			// skip
 		} else {
-			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, logger)
+			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, boundNames, logger)
 			if rerr != nil {
 				return nil, nil, false, rerr
 			}
@@ -170,7 +174,8 @@ func prependEinoMiddlewares(
 		alwaysVis = 12
 	}
 	boost := mw.ExecutionBoostEffective()
-	alwaysVisibleMerged := mergeAlwaysVisibleToolNamesWithBoost(mw.ToolSearchAlwaysVisibleTools, boost)
+	// always_visible 仅能来自：配置∩角色绑定 或 角色绑定列表前 N 项
+	alwaysVisibleMerged := resolveAlwaysVisibleToolNames(mw.ToolSearchAlwaysVisibleTools, boundNames, alwaysVis)
 	if mw.ToolSearchEnable && len(tools) >= minTools {
 		static, dynamic, split := splitToolsForToolSearchByNames(tools, alwaysVisibleMerged, alwaysVis)
 		if split && len(dynamic) > 0 {

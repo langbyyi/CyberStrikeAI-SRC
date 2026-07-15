@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.6.49-src"
+version: "v1.6.50-src"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
@@ -84,13 +84,21 @@ fofa:
 # Agent 配置
 # 达到最大迭代次数时，AI 会自动总结测试结果
 agent:
-  max_iterations: 12000 # 最大迭代次数，AI 代理最多执行多少轮工具调用
+  max_iterations: 12000 # 最大迭代次数，AI 代理最多执行多少轮工具调用（Deep/Plan-Execute/Supervisor 等；eino_single 见下方专属配置）
   large_result_threshold: 102400 # 大结果阈值（字节），默认50KB，超过此大小会自动保存到存储
   result_storage_dir: tmp # 结果存储目录，大结果会保存在此目录下
   tool_timeout_minutes: 60 # 单次工具执行最大时长（分钟），超时自动终止；0 表示不限制（不推荐，易出现长时间挂起）
   # system_prompt_path: prompts/single-react.md # 可选：单代理系统提示文件（相对本配置文件所在目录）；非空且可读时替换内置提示
 
   system_prompt_path: ""
+  # eino_single 专属执行控制（不影响 Deep / Plan-Execute / Supervisor / 子 Agent）
+  # 省略整块或省略字段时使用下列默认；enabled=false 关闭义务/批次/停滞门，仍保留 run 超时与 shell 有界回收
+  eino_single_execution:
+    enabled: true # false：回滚义务与工具批次重写
+    max_iterations: 200 # 单 ADK 最大迭代
+    run_timeout_minutes: 120 # 整次 run 绝对 deadline；中断续跑不延期
+    model_call_timeout_seconds: 300 # 单次模型调用上限（受 run 剩余时间压缩）
+    model_stream_idle_timeout_seconds: 120 # 模型流式分片空闲超时
 # 人机协同（HITL）全局白名单：此处列出的工具始终免审批，与对话页「白名单工具（免审批，逗号分隔）」合并为并集；侧栏「应用」可合并写入本列表并立即生效。
 hitl:
   # 按你环境里的真实工具名增删（与侧栏一致、小写不敏感）；不需要全局免审批可改为 []

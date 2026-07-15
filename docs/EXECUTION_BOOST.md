@@ -26,13 +26,15 @@ task_require_target: true
 
 | 能力 | 配置键 | 行为 |
 |------|--------|------|
-| 核心工具常驻可见 | `execution_boost` | 合并 `sqlmap/nuclei/ffuf/katana/arjun/dalfox/http-framework-test/exec/execute-python-script/jwt-analyzer/dnslog/skill` 与漏洞/fact/coverage 内置工具到 always_visible |
-| Skill 自动触达 | `skill_router_*` / `src_hunter_runtime.skill_router` | 工具结果后处理注入 Top1–3 skill 要点（去重+预算） |
+| 核心工具常驻可见 | `tool_search` + 角色 | **不再硬编码 MCP 工具名**。always_visible = `tool_search_always_visible_tools`∩角色绑定工具，或角色 tools 顺序前 N 项 |
+| Skill 自动触达 | `skill_router_*` / `src_hunter_runtime.skill_router` | 工具结果后处理注入 Top1–3 skill 要点（去重+预算）；eino_single 决策开启时强制 TopK=1、≤4000 runes |
 | 上下文保全 | `reduction_clear_exclude` + summarization instruction | 默认 exclude 安全工具；摘要强制保留 open_hypotheses/almost_signals/dead_ends/auth_coverage |
 | task 交接 | `task_evidence_k` / `task_require_target` | 附加用户目标、最近 K 次工具摘要、项目 fact 正文；缺 target 拒绝或回填；verify/exploit 纠正 subagent 路由 |
 | L1 候选 | 工具 `record_vulnerability_candidate` | 差分/信号即可写 status=candidate；L2 `record_vulnerability` 门槛不变 |
+| 漏洞读写闭环 | `list/get/record/update/delete_vulnerability*` | Agent 可新建、查询、**按 ID 更新/删除**（授权=当前项目或会话）；补 PoC/改状态用 update，勿重复 record |
 | 硬拒绝粒度 | （代码） | key=`(conversation, target, type/category)`，同站不同类型不互伤 |
 | 执行门闩（软） | `upsert/get_execution_coverage`、`should_continue_execution` | 会话 coverage + P0/P1 未闭环提示；关键工具自动 upsert |
+| eino_single 执行控制 | `agent.eino_single_execution` | 见**第七节**：证据义务、批次裁剪、停滞/重试、统一超时与 `executionSummary` |
 
 ### 第一轮关键日志
 
@@ -53,10 +55,10 @@ task_require_target: true
 
 - 扫描器：`sqlmap` `nuclei` `ffuf` `katana` `arjun` `dalfox` `http-framework-test`
 - 执行：`exec` `execute-python-script` `jwt-analyzer` `dnslog` `skill`
-- 漏洞/事实：`record_vulnerability` `record_vulnerability_candidate` `list_vulnerabilities` `get_vulnerability` 与 project fact 工具
+- 漏洞/事实：`record_vulnerability` `record_vulnerability_candidate` `list_vulnerabilities` `get_vulnerability` `update_vulnerability` `delete_vulnerability` 与 project fact 工具
 - coverage：`upsert_execution_coverage` `get_execution_coverage` `should_continue_execution`
 
-**只改 tools 列表，不改 user_prompt 长文。** 单测：`TestHuntingRolesToolsIncludeCoreSet`。
+**只改 tools 列表，不改 user_prompt 长文。** 角色 YAML 与 `registerVulnerabilityTools` 需同步上述工具名。
 
 ### 2. 收工半硬门闩（finalize gate）
 
@@ -92,6 +94,112 @@ status_hint / http_status / length / time_ms / error_sig / interesting_params / 
 - 日志：`coverage_auto_from_candidate`
 - L2 `record_vulnerability` 成功时尽力将匹配 coverage 标 `done`
 
+### 6. 攻击面自动决策（surface，通用 taxonomy）
+
+**问题（通用）**：工具已打出可报告的服务/API 清单、调试入口或泄露指纹，但 `status_hint` 仍为 `ok`、coverage 只有无意义的 `tool.*`，模型不 record、主线漂移。
+
+**手段（非提示词、非单产品特化）**：
+
+- `DetectSurfaceSignals`（跨场景 taxonomy）：
+  - `api_inventory`：OpenAPI/Swagger/GraphQL schema/WSDL/服务清单等通用清单指纹
+  - `debug_entry`：管理/调试入口 body 证据
+  - `vcs_exposure` / `dir_listing`：源码与目录列表 body
+  - `cloud_meta` / `secret_leak`：云元数据、密钥材料
+  - `info_disclosure`：强堆栈/异常指纹
+- `AutoUpsertSurfaceCoverageFromTool`：自动 open `surface.<kind>` + `surface.resource:...`，并 `MarkSurfaceSignalSeen`；经 `UpsertAutomaticCoverage` **不重开** `done/blocked`
+- 结构化摘要标 `interesting`
+- **eino_single 决策路径**（见第七节）：强证据经 `SignalsFromSurfaceOutput` → `ExecutionController` 义务 + 批次裁剪 + 执行前 precheck；**不再**向工具结果追加长文 `[surface_force_next]`
+- **元工具豁免**：`skill` / `tool_search` / fact·coverage·record·本地读写 等**不**做 surface 检测，避免文档示例词被当成目标实锤
+- **假阳性抑制（保留真挖洞）**：剥离 `interesting_params` / WAF 412 路径探测行；扫描清单不当暴露；真实 schema/git body/密钥/元数据回显仍建义务
+- 批次裁剪时对 dropped 调用回写 `tool_result`，并经会话 `pendingCloser` **同步清 ADK pending**（避免收尾 orphan 双记）
+- 日志：`coverage_auto_from_surface`
+
+### 7. eino_single 执行控制器（superpowers 计划）
+
+计划：`docs/superpowers/plans/2026-07-15-eino-single-execution-control.md`  
+设计：`docs/superpowers/specs/2026-07-15-eino-single-execution-control-design.md`
+
+**只影响 `eino_single`**，不改变 Deep / Plan-Execute / Supervisor / 子 Agent。
+
+#### 配置（`agent.eino_single_execution`）
+
+```yaml
+agent:
+  eino_single_execution:
+    enabled: true                 # 省略默认 true；false 关闭义务/批次重写/停滞门
+    max_iterations: 200           # 专属最大迭代；不复用 agent.max_iterations
+    run_timeout_minutes: 120      # 整次 run 绝对 deadline；中断续跑不延期
+    model_call_timeout_seconds: 300
+    model_stream_idle_timeout_seconds: 120
+```
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `enabled` | `true`（字段省略） | `false` 时回滚义务/批次/停滞治理；run/model 超时与 shell 有界回收仍保留 |
+| `max_iterations` | `200` | 仅 `RunEinoSingleChatModelAgent` 使用 |
+| `run_timeout_minutes` | `120` | handler 固定绝对 deadline |
+| `model_call_timeout_seconds` | `300` | 单次 Generate/Stream 上限，受 run 剩余时间压缩 |
+| `model_stream_idle_timeout_seconds` | `120` | Stream 分片空闲超时 |
+
+关闭方式：`agent.eino_single_execution.enabled: false` 后重启（或热重载配置后新会话生效）。
+
+#### 超时层级
+
+| 层 | 来源 | 行为 |
+|----|------|------|
+| run | `run_timeout_minutes` | 整次任务绝对截止；中断续跑复用同一 deadline |
+| model | `model_call_timeout_*` | middleware `WrapModel` 派生 call/stream idle |
+| tool | `tool_exec_governor` + per-tool 覆盖 | `EffectiveChildTimeout` 不得超出父 ctx 剩余时间 |
+| shell | `security.executor` | terminate 后 `waitShellExitBounded`（默认 5s）再强杀 |
+
+超时结果统一为结构化 `ToolOutcome`（`[tool_outcome] {...}`），可带部分流输出。
+
+#### 运行时行为摘要
+
+- 会话级 `ExecutionController`：主目标、证据义务、调用签名、结果指纹、停滞/重试预算、摘要
+- `AfterModelRewriteState`：pending 义务时只保留绑定 L1/L2；纯 probe 最多 3；state 优先于 probe；unknown/long 独占
+- tool precheck：pending 时仅放行绑定 record；否则校验重试预算与停滞门
+- L1/L2 DB 成功后 `ResolveConversationObligation` 关闭关联自动 coverage
+- SkillRouter 在决策开启时强制 TopK=1、maxRunes=4000，并与手工 `skill` 共用注入去重集
+
+#### process detail 事件名
+
+| 事件 | 含义 |
+|------|------|
+| `execution_obligation_created` | 强证据创建记录义务 |
+| `execution_obligation_resolved` | L1/L2 满足义务 |
+| `tool_batch_rewritten` | 模型工具批次被裁剪 |
+| `tool_call_blocked` | 执行前 precheck 阻断调用 |
+| `tool_timeout` | 工具层超时（含 timeoutLayer） |
+| `execution_stagnation` | 连续探测无新证据，需 pivot |
+
+#### completed 任务 `executionSummary`
+
+`GET /api/agent-loop/tasks/completed` 可选字段 `executionSummary`（`FinishTask` 快照后清理会话态）：
+
+| 字段 | JSON | 含义 |
+|------|------|------|
+| planned | `toolCallsPlanned` | 模型计划工具调用数 |
+| executed | `toolCallsExecuted` | 实际保留执行数 |
+| dropped | `toolCallsDropped` | 批次/门闩裁剪数 |
+| timeouts | `timeouts` | 工具超时次数 |
+| stagnation | `stagnationGates` | 停滞门触发次数 |
+| obligations created | `obligationsCreated` | 创建的记录义务数 |
+| obligations pending | `obligationsPending` | 完成时仍未解析数 |
+| last evidence | `lastNewEvidenceAt` | 最近新颖证据时间 |
+
+### 8. 执行决策 Iteration 1（历史补强，仍生效）
+
+计划：`docs/superpowers/plans/2026-07-15-execution-decision-iter1.md`（若存在）
+
+| 能力 | 行为 |
+|------|------|
+| `surface_record_blocked` | 已见高价值攻击面但未 L1/L2 时，拦截「渗透测试报告」类收工文案 |
+| `tool_dead` | templates_missing / executable not found → 本会话禁止再调该工具 |
+| exec 纪律 | **仅提示词**：勿用 exec 替代未挂载扫描器（无代码硬拦） |
+| L1/L2 成功 | `MarkVulnerabilityRecorded`，释放 surface_record 门闩 |
+| 角色 tools 绑定 | `SetConversationRoleTools` 写入会话内存（可选诊断） |
+
 ### 第二轮关键日志
 
 | 字段 | 含义 |
@@ -99,27 +207,32 @@ status_hint / http_status / length / time_ms / error_sig / interesting_params / 
 | `finalize_gate_blocked` | 收工话术被门闩拦截并改写/追加 |
 | `tool_structured_summary` | 扫描器结果已置顶结构化摘要 |
 | `coverage_auto_from_candidate` | L1 候选写入时自动 upsert coverage |
+| `coverage_auto_from_surface` | 通用攻击面 taxonomy 信号自动 open coverage |
+| `execution_obligation_created` / `resolved` | eino_single 强证据义务生命周期 |
+| `tool_batch_rewritten` / `tool_call_blocked` / `execution_stagnation` | eino_single 批次与门闩 |
 
 ---
 
-## 第三节 · 代码健全与回归
+## 第三节 · 代码健全与验收
 
-本轮把挖洞运行时当作**框架本体**做代码层健全：边界条件、配置一致性、热重载、并发安全、单测锁、可观测与失败降级。**不依赖真实 SRC/内网目标**，不要求本机长期跑服务。
+运行时以框架本体为准：配置一致性、热重载、并发安全、可观测与失败降级。仓库当前**不依赖** `*_test.go` 作为交付门槛；上线前以编译 + 真机会话验收。
 
-### 1. 如何只跑单测验收
+### 1. 如何验收
 
 ```bash
-# 核心三包（无 CGO 时 sqlite 相关 Skip，不得红）
-go test ./internal/multiagent/ ./internal/app/ ./internal/config/ -count=1
+# 编译（最低门槛）
 go build ./cmd/server/
+
+# 可选：只编译关键包
+go build ./internal/multiagent/ ./internal/app/ ./internal/handler/ ./internal/config/
 ```
 
-Windows PowerShell：
+真机建议（`eino_single` 新会话）：
 
-```powershell
-$env:CGO_ENABLED=0; go test ./internal/multiagent/ ./internal/app/ ./internal/config/ -count=1
-go build ./cmd/server/
-```
+1. 重启服务以加载 MCP 工具与配置。
+2. 跑一轮授权目标；看 process-details：`tool_batch_rewritten` / `execution_obligation_*` / 收尾 **不宜再大面积** `eino_pending_orphaned`。
+3. 对已有洞调用 `update_vulnerability`（补 PoC/改 status）；误报用 `delete_vulnerability`。
+4. `GET /api/agent-loop/tasks/completed` 应有 `executionSummary`。
 
 ### 2. 默认即内核与 kill_switch
 
@@ -129,6 +242,7 @@ go build ./cmd/server/
 | SkillRouter | 跟随 boost | `skill_router_enable: false` 或 `src_hunter_runtime.skill_router: false` |
 | finalize 半硬门闩 | 跟随 boost | `finalize_gate_enable: false` |
 | 结构化摘要预算 | 1200 runes | `structured_summary_max_runes: N`（≤0→1200；>8000→8000） |
+| eino_single 执行控制 | **开**（`enabled` 省略为 true） | `agent.eino_single_execution.enabled: false` |
 
 L1 candidate / coverage 工具在 boost 关闭后**仍注册**（热重载 `registerCoreSessionTools`），只是不再合并 always_visible 默认扫描器集、不注入 SkillRouter。
 
@@ -141,20 +255,24 @@ L1 candidate / coverage 工具在 boost 关闭后**仍注册**（热重载 `regi
 | `tool_structured_summary` | 扫描器结果已置顶结构化摘要 |
 | `finalize_gate_blocked` | 收工话术被门闩改写/追加 |
 | `coverage_auto_from_candidate` | L1 候选写入时自动 upsert coverage |
+| `coverage_auto_from_surface` | 通用攻击面 taxonomy 信号自动 open coverage |
 
-### 4. 代码契约（单测锁定）
+### 4. 代码契约（实现约定）
 
 - **finalize**：`CoverageShouldBlockFinalize` / `ApplyFinalizeGate`；ADK 正常结束与错误/部分结果出口均经 `maybeApplyFinalizeGate`；logger nil 安全
 - **摘要顺序**：`summary → 原文 → skill block`（`ComposeToolResultWithBoostOrder`）
-- **coverage**：path 规范化（host 小写、去默认端口）；priority 表（sqli/rce/auth→P0/P1，info→P2/P3）；`ShouldContinue` 仅计 open|in_progress 的 P0/P1
-- **会话态**：`ConversationExecutionState` 方法均带 mutex；coverage / 会话 map 有 max entries 淘汰
-- **角色 tools**：`TestHuntingRolesToolsIncludeCoreSet` + tools/*.yaml 存在性校验
+- **coverage**：path 规范化；priority 表；`ShouldContinue` 仅计 open|in_progress 的 P0/P1；surface 自动路径用 `UpsertAutomaticCoverage`（不重开 done/blocked）
+- **会话态**：`ConversationExecutionState` 方法持锁；会话 map 有上限淘汰
+- **批次 drop**：`emitDroppedToolCallResults` + `NotifyPendingToolCallsResolved` 清 ADK pending，避免收尾 orphan 双记
+- **漏洞工具**：`record_*` / `list` / `get` / `update_vulnerability` / `delete_vulnerability` 同源授权（项目或会话）；update 改分类仍受 SRC 硬拒绝约束
+- **surface 指纹**：跨场景 taxonomy，**无单产品品牌特化**（历史样本≠运行时特例）
 
 ### 5. 已知限制
 
 1. finalize 门闩**改写最终助手文本**，不硬 kill 进程/会话；模型仍可在下一轮无视提示。
-2. **无实网 / 无真 LLM 集成测试**；验收以纯函数与结构单测为准。
-3. L2 `record_vulnerability` 证据门槛**不降低**；candidate 仅联动 coverage，不替代完整 PoC。
+2. 仓库默认**不附带**完整 `*_test.go` 回归套件；上线靠编译 + 真机会话。
+3. L2 `record_vulnerability` 证据门槛**不降低**；candidate 仅联动 coverage，不替代完整 PoC；已有洞应 **update** 而非重复新建。
+4. pending 记录义务期间 precheck 仅放行绑定的 L1/L2；update/delete 属 state 类，与 probe 混批时仍可能被裁剪。
 
 ### 6. 禁改路径（回归自检）
 
@@ -163,6 +281,19 @@ git diff -- internal/agent/default_single_system_prompt.go agents/
 ```
 
 应为空（或仅无关空白，本轮要求作战长文零改动）。
+
+---
+
+## 第六节 · 深度门闩（depth force，不含扫描器注入）
+
+**工具来源（硬约束）**：编排层 **禁止**硬编码 MCP 工具名。`ToolsForRole(role.Tools)` 决定可调用工具。
+
+| 能力 | 行为 |
+|------|------|
+| depth_force 收工门闩 | 验证类工具不足且话术收工 → `[depth_force_blocked]`（改写最终文本，**不**自动再 Run） |
+| depth_force_next | interesting / 强信号 → `[depth_force_next]` |
+
+日志：`depth_force_blocked`。紧急回滚：`execution_boost: false`。
 
 ---
 
@@ -231,14 +362,13 @@ git diff -- roles/
 - nuclei/CVE 扫描轨不变；**业务 open 未完成**时不能只靠 CVE 列表收工。
 - 支付入口 open 的是 param_tamper/workflow 等，不是「默认唯一 idor」。
 
-### 5. 验收（仅代码层）
+### 5. 验收
 
 ```bash
-go test ./internal/multiagent/ ./internal/app/ ./internal/config/ -count=1
 go build ./cmd/server/
 ```
 
-重点：`TestHeuristic_PaymentCheckout_*`、`TestRouteSkills_PayCreateAmount_*`、`TestLogicProbe_DescriptionBusinessFirst`、`TestFinalize_BusinessParamTamper*`、`TestFinalize_NoDualAuth_BusinessOpen_*`、`TestL1PaymentCandidate_*`。
+真机会话中：支付/流程类目标应能 open 业务 coverage、L1 candidate 可写；无双号时 finalize 仍可挡「无洞」收工（业务 open 未闭环）。
 
 ### 6. 关键日志
 
@@ -320,18 +450,17 @@ tool_exec_governor:
 | `cmd_timeout_injected` | 命令层超时注入（curl/wget） |
 | `exec_wall_clock_timeout` | exec/execute 触发 wall-clock 总上限；工具结果中同时带 `[error_code: timeout, retryable: true]` |
 
-### 6. 验收（仅代码层）
+### 6. 验收
 
 ```bash
-$env:CGO_ENABLED=0; go test ./internal/multiagent/ ./internal/app/ ./internal/config/ ./internal/security/ -count=1
-go build ./cmd/server/
+go build ./cmd/server/ ./internal/multiagent/ ./internal/security/
 ```
 
-重点：`TestMaybeInjectCmdTimeout` / `TestPreflightToolPaths` / `TestClassifyToolError_Patterns` / `TestResolveMCPToolTimeout` / `TestConcurrencyLimit_BlocksBeyondCap` / `TestPerCallTimeout_InvokableSoftError`。
+真机：挂死 curl（无 `--max-time`）应被注入/墙钟截断并返回 soft error；UI 应出现 `adk_wait_tools_running` 心跳而非无限静默。
 
 ### 7. 已知限制
 
 1. 并发信号量按会话隔离，会话量累积时不主动回收（会话量可控，YAGNI）。
 2. per-call 超时 Streamable 端缓冲整流（与 executionBoostStreamable 一致），非真流式超时。
 3. 命令层超时注入为保守字符串替换，复杂管道/多 curl 仅覆盖简单情况。
-4. 无实网 / 无真 LLM e2e；验收以纯函数与结构单测为准。
+4. 仓库默认不附带完整单元测试套件；上线靠编译 + 真机会话。

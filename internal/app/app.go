@@ -828,7 +828,12 @@ func setupRoutes(
 		protected.POST("/hitl/tool-whitelist", agentHandler.MergeHITLGlobalToolWhitelist)
 		protected.GET("/hitl/audit-strategy", agentHandler.GetHITLAuditStrategy)
 		protected.PUT("/hitl/audit-strategy", agentHandler.UpdateHITLAuditStrategy)
-		// Agent Loop 取消与任务列表
+		// 运行中任务：取消 / 列表 / SSE 镜像（路径 agent-loop 为历史名，语义为任务生命周期，非 ReAct 对话入口）
+		// 推荐使用 /agent-tasks/*；/agent-loop/* 双挂兼容前端、Burp 插件与旧客户端。
+		protected.POST("/agent-tasks/cancel", agentHandler.CancelAgentLoop)
+		protected.GET("/agent-tasks/tasks", agentHandler.ListAgentTasks)
+		protected.GET("/agent-tasks/task-events", agentHandler.SubscribeAgentTaskEvents)
+		protected.GET("/agent-tasks/tasks/completed", agentHandler.ListCompletedTasks)
 		protected.POST("/agent-loop/cancel", agentHandler.CancelAgentLoop)
 		protected.GET("/agent-loop/tasks", agentHandler.ListAgentTasks)
 		protected.GET("/agent-loop/task-events", agentHandler.SubscribeAgentTaskEvents)

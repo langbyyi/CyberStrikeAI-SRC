@@ -22,6 +22,33 @@ import (
 	"go.uber.org/zap"
 )
 
+var errShellReapTimeout = errors.New("shell process did not exit within reap grace")
+
+const shellReapGrace = 5 * time.Second
+
+func waitShellExitBounded(done <-chan error, grace time.Duration, force func()) error {
+	if grace <= 0 {
+		grace = shellReapGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		if force != nil {
+			force()
+		}
+		return errShellReapTimeout
+	}
+}
+
+func waitShellSessionBounded(session *ShellSession) error {
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	return waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
+}
+
 // ToolOutputCallback 用于在工具执行过程中把 stdout/stderr 增量推给上层（SSE）。
 // 通过 context 传递，避免修改 MCP ToolHandler 签名导致的“写死工具”问题。
 type ToolOutputCallback func(chunk string)
@@ -37,7 +64,7 @@ type Executor struct {
 	toolIndex               map[string]*config.ToolConfig // 工具索引，用于 O(1) 查找
 	mcpServer               *mcp.Server
 	logger                  *zap.Logger
-	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
+	shellNoOutputTimeoutSec int  // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
 	injectCmdTimeout        bool // 对 curl/wget 在未指定超时时注入 --max-time 兜底（默认 true，见 SetInjectCmdTimeout）
 	maxWallClockSec         int  // exec/execute 单次工具调用 wall-clock 总上限秒数；0=默认 300；-1=关闭（见 SetMaxWallClockSeconds）
 }
@@ -1096,12 +1123,12 @@ func combinedOutputCancellableWithInactivity(ctx context.Context, cmd *exec.Cmd,
 	select {
 	case waitErr = <-done:
 	case <-ctx.Done():
-		waitErr = <-done
+		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
 		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), ctx.Err()
 	case <-idleCh:
 		// 无输出空闲超时：杀进程组，等待回收，返回软失败提示（模型可见、可换路）。
 		TerminateShellCmdSession(session)
-		waitErr = <-done
+		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
 		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), fmt.Errorf("%s", ShellNoOutputTimeoutMessage(noOutputSec))
 	}
 	return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), waitErr
@@ -1341,7 +1368,7 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		if cb != nil {
 			cb(msg)
 		}
-		_ = session.Wait()
+		_ = waitShellSessionBounded(session)
 	}
 
 chunksLoop:
@@ -1354,7 +1381,7 @@ chunksLoop:
 		case <-ctx.Done():
 			TerminateShellCmdSession(session)
 			flush()
-			_ = session.Wait()
+			_ = waitShellSessionBounded(session)
 			return outBuilder.String(), ctx.Err()
 		case <-idleCh:
 			fireInactivity()

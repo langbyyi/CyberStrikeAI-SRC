@@ -245,3 +245,33 @@ func MarkCoverageDoneForVuln(conversationID, title, target string) []string {
 	}
 	return marked
 }
+
+// ResolveConversationObligation resolves only the obligation bound to callID and
+// closes its discovery coverage. Candidate coverage created by L1 is intentionally
+// not linked and therefore remains open for L2 verification.
+func ResolveConversationObligation(conversationID, callID, vulnerabilityID string) []string {
+	state := GetConversationExecutionState(conversationID)
+	resolved := state.Controller().ResolveBoundObligation(callID, vulnerabilityID)
+	if resolved == nil {
+		return nil
+	}
+	items := state.ListCoverage()
+	byPath := make(map[string]CoverageItem, len(items))
+	for _, item := range items {
+		byPath[item.Path] = item
+	}
+	closed := make([]string, 0, len(resolved.LinkedCoverage))
+	for _, path := range resolved.LinkedCoverage {
+		item, ok := byPath[path]
+		if !ok {
+			continue
+		}
+		item.Status = "done"
+		item.Note = "resolved by L1/L2: " + strings.TrimSpace(vulnerabilityID)
+		item.UpdatedAt = time.Now()
+		state.UpsertCoverage(item)
+		closed = append(closed, path)
+	}
+	state.MarkVulnerabilityRecorded()
+	return closed
+}

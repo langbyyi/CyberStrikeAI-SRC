@@ -236,12 +236,13 @@ func (m *AgentTaskManager) ActiveMCPExecutionID(conversationID string) string {
 
 // CompletedTask 已完成的任务（用于历史记录）
 type CompletedTask struct {
-	ConversationID string    `json:"conversationId"`
-	Title          string    `json:"title,omitempty"`
-	Message        string    `json:"message,omitempty"`
-	StartedAt      time.Time `json:"startedAt"`
-	CompletedAt    time.Time `json:"completedAt"`
-	Status         string    `json:"status"`
+	ConversationID   string                       `json:"conversationId"`
+	Title            string                       `json:"title,omitempty"`
+	Message          string                       `json:"message,omitempty"`
+	StartedAt        time.Time                    `json:"startedAt"`
+	CompletedAt      time.Time                    `json:"completedAt"`
+	Status           string                       `json:"status"`
+	ExecutionSummary *multiagent.ExecutionSummary `json:"executionSummary,omitempty"`
 }
 
 // AgentTaskManager 管理正在运行的Agent任务
@@ -440,6 +441,9 @@ func (m *AgentTaskManager) FinishTask(conversationID string, finalStatus string)
 		StartedAt:      task.StartedAt,
 		CompletedAt:    time.Now(),
 		Status:         finalStatus,
+	}
+	if summary, ok := multiagent.ConversationExecutionSummary(conversationID); ok {
+		completedTask.ExecutionSummary = &summary
 	}
 
 	// 添加到历史记录

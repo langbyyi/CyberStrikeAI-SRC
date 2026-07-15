@@ -1398,7 +1398,7 @@ func (h *AgentHandler) cancelToolContinueAfter(conversationID, preferredExecID, 
 	return false, nil
 }
 
-// CancelAgentLoop 取消正在执行的任务
+// CancelAgentLoop 取消正在执行的任务（路由：/api/agent-tasks/cancel 与历史 /api/agent-loop/cancel）。
 func (h *AgentHandler) CancelAgentLoop(c *gin.Context) {
 	var req struct {
 		ConversationID string `json:"conversationId" binding:"required"`
