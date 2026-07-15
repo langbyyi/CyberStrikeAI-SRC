@@ -132,7 +132,10 @@ func (m *einoSingleExecutionMiddleware) BeforeModelRewriteState(ctx context.Cont
 	if pending != nil {
 		summary := truncateRunes(strings.TrimSpace(pending.EvidenceSummary), 200)
 		state.Messages = append(state.Messages, schema.SystemMessage(fmt.Sprintf(
-			"[framework_next_action]\n已有可复现强证据待记录。下一个并且唯一的工具调用必须是 record_vulnerability_candidate 或 record_vulnerability。禁止与探测、coverage、fact 或 skill 并发。\nevidence: %s",
+			"[framework_next_action]\n已有可复现强证据待记录。请用 L1/L2 落库新发现，或对同项目已有洞 update_vulnerability 写入最新复测证据。\n"+
+				"- 新建：record_vulnerability_candidate（L1）/ record_vulnerability（L2）\n"+
+				"- 已有洞（同项目任意会话）：update_vulnerability（id + proof 等）；误报用 delete_vulnerability\n"+
+				"update/delete 为自由管理工具，不与义务互斥。勿只做无关探测。\nevidence: %s",
 			summary)))
 		return ctx, state, nil
 	}
@@ -161,17 +164,40 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 	plannedCalls := append([]schema.ToolCall(nil), last.ToolCalls...)
 	planned := len(plannedCalls)
 	kept, reason := rewriteEinoSingleToolCalls(plannedCalls, controller.PendingObligation())
-	if pending := controller.PendingObligation(); pending != nil && len(kept) == 1 && isRecordTool(kept[0].Function.Name) {
-		if recordCallMatchesObligation(kept[0].Function.Arguments, pending) {
-			controller.BindResolutionCall(pending.ID, kept[0].ID)
-		} else {
-			kept = nil
-			reason = "record_arguments_mismatch"
+	if pending := controller.PendingObligation(); pending != nil && len(kept) > 0 {
+		// Only L1/L2 need argument match + bind. update/delete are free manage tools.
+		bound := false
+		filtered := kept[:0]
+		for _, call := range kept {
+			if isFreeVulnManageTool(call.Function.Name) {
+				filtered = append(filtered, call)
+				continue
+			}
+			if isL1L2RecordTool(call.Function.Name) {
+				if recordCallMatchesObligation(call.Function.Arguments, pending) {
+					controller.BindResolutionCall(pending.ID, call.ID)
+					filtered = append(filtered, call)
+					bound = true
+				} else {
+					reason = "record_arguments_mismatch"
+				}
+				continue
+			}
+			filtered = append(filtered, call)
+		}
+		kept = filtered
+		if !bound && len(kept) == 0 && planned > 0 {
+			// keep path handled below by pending_record_missing fallback
+			_ = bound
 		}
 	}
 	if controller.PendingObligation() == nil {
 		filtered := kept[:0]
 		for _, call := range kept {
+			if isFreeVulnManageTool(call.Function.Name) {
+				filtered = append(filtered, call)
+				continue
+			}
 			class := classifyExecutionTool(call.Function.Name)
 			if class == executionToolDecision || class == executionToolStateMutation {
 				filtered = append(filtered, call)
@@ -196,6 +222,9 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 	controller.RecordToolBatch(planned, dropped)
 	probeCallIDs := make([]string, 0, len(kept))
 	for _, call := range kept {
+		if isFreeVulnManageTool(call.Function.Name) {
+			continue
+		}
 		class := classifyExecutionTool(call.Function.Name)
 		if class != executionToolDecision && class != executionToolStateMutation {
 			probeCallIDs = append(probeCallIDs, call.ID)
@@ -238,7 +267,7 @@ func emitDroppedToolCallResults(progress func(string, string, interface{}), plan
 		if name == "" {
 			name = "unknown"
 		}
-		msg := fmt.Sprintf("[framework_tool_outcome] code=batch_rewritten retryable=false reason=%s\n本批次工具调用已被执行控制器裁剪，未真实执行。请按框架短指令在下一轮调整（强证据时仅 L1/L2；skill/state 不与 probe 并发）。", reason)
+		msg := fmt.Sprintf("[framework_tool_outcome] code=batch_rewritten retryable=false reason=%s\n本批次工具调用已被执行控制器裁剪，未真实执行。请按框架短指令调整（强证据时优先 L1/L2；update/delete 为自由工具；skill 不与 probe 并发）。", reason)
 		if progress != nil {
 			progress("tool_result", fmt.Sprintf("工具结果 (%s)", name), map[string]interface{}{
 				"toolName":       name,
@@ -268,42 +297,65 @@ func rewriteEinoSingleToolCalls(calls []schema.ToolCall, pending *DecisionObliga
 	if len(calls) == 0 {
 		return nil, "empty"
 	}
+	// update/delete 始终可走：同项目维护工具，不与 L1/L2 义务互斥。
+	freeManage := make([]schema.ToolCall, 0, len(calls))
+	rest := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if isFreeVulnManageTool(call.Function.Name) {
+			freeManage = append(freeManage, call)
+		} else {
+			rest = append(rest, call)
+		}
+	}
 	if pending != nil {
-		for _, call := range calls {
-			if isRecordTool(call.Function.Name) {
-				return []schema.ToolCall{call}, "pending_record"
+		for _, call := range rest {
+			if isL1L2RecordTool(call.Function.Name) {
+				out := append([]schema.ToolCall{call}, freeManage...)
+				return out, "pending_record"
 			}
+		}
+		if len(freeManage) > 0 {
+			return freeManage, "pending_vuln_manage"
 		}
 		return nil, "pending_record_missing"
 	}
 
 	bestState := -1
 	bestRank := int(^uint(0) >> 1)
-	for i := range calls {
-		class := classifyExecutionTool(calls[i].Function.Name)
+	for i := range rest {
+		class := classifyExecutionTool(rest[i].Function.Name)
 		if class != executionToolDecision && class != executionToolStateMutation {
 			continue
 		}
-		if rank := executionStateToolRank(calls[i].Function.Name); rank < bestRank {
+		if rank := executionStateToolRank(rest[i].Function.Name); rank < bestRank {
 			bestState, bestRank = i, rank
 		}
 	}
 	if bestState >= 0 {
-		return []schema.ToolCall{calls[bestState]}, "state_tool_exclusive"
+		out := append([]schema.ToolCall{rest[bestState]}, freeManage...)
+		return out, "state_tool_exclusive"
 	}
-	for i := range calls {
-		class := classifyExecutionTool(calls[i].Function.Name)
+	for i := range rest {
+		class := classifyExecutionTool(rest[i].Function.Name)
 		if class == executionToolLongRunning {
-			return []schema.ToolCall{calls[i]}, "long_running_exclusive"
+			out := append([]schema.ToolCall{rest[i]}, freeManage...)
+			return out, "long_running_exclusive"
 		}
 		if class == executionToolUnknown {
-			return []schema.ToolCall{calls[i]}, "unknown_exclusive"
+			out := append([]schema.ToolCall{rest[i]}, freeManage...)
+			return out, "unknown_exclusive"
 		}
 	}
-	if len(calls) > 3 {
-		return append([]schema.ToolCall(nil), calls[:3]...), "probe_limit"
+	// free manage + up to 3 probes
+	if len(rest) > 3 {
+		out := append(append([]schema.ToolCall(nil), freeManage...), rest[:3]...)
+		return out, "probe_limit"
 	}
-	return append([]schema.ToolCall(nil), calls...), "unchanged"
+	out := append(append([]schema.ToolCall(nil), freeManage...), rest...)
+	if len(freeManage) > 0 {
+		return out, "unchanged_with_vuln_manage"
+	}
+	return out, "unchanged"
 }
 
 func classifyExecutionTool(name string) executionToolClass {
@@ -311,9 +363,11 @@ func classifyExecutionTool(name string) executionToolClass {
 	switch name {
 	case "record_vulnerability", "record_vulnerability_candidate", "should_continue_execution":
 		return executionToolDecision
-	case "upsert_execution_coverage", "upsert_project_fact", "skill",
-		"update_vulnerability", "delete_vulnerability":
+	case "upsert_execution_coverage", "upsert_project_fact", "skill":
 		return executionToolStateMutation
+	case "update_vulnerability", "delete_vulnerability":
+		// Free project-scoped CRUD: never batch-blocked as exclusive state, never obligation-gated.
+		return executionToolProbe
 	case "nuclei", "ffuf", "nmap", "exec", "execute", "execute-python-script", "execute_python_script", "waybackurls":
 		return executionToolLongRunning
 	case "http-framework-test", "http_framework_test", "list_vulnerabilities", "get_vulnerability", "get_execution_coverage", "tool_search", "read_file", "grep", "glob":
@@ -334,9 +388,21 @@ func normalizedExecutionToolName(name string) string {
 	return name
 }
 
-func isRecordTool(name string) bool {
+// isL1L2RecordTool is formal new-finding write (bound by record obligations).
+func isL1L2RecordTool(name string) bool {
 	name = normalizedExecutionToolName(name)
 	return name == "record_vulnerability" || name == "record_vulnerability_candidate"
+}
+
+// isFreeVulnManageTool is always-allowed project CRUD (cross-session same project).
+func isFreeVulnManageTool(name string) bool {
+	name = normalizedExecutionToolName(name)
+	return name == "update_vulnerability" || name == "delete_vulnerability"
+}
+
+// isRecordTool tools that may clear a pending record obligation after success.
+func isRecordTool(name string) bool {
+	return isL1L2RecordTool(name) || normalizedExecutionToolName(name) == "update_vulnerability"
 }
 
 func executionStateToolRank(name string) int {
@@ -349,10 +415,8 @@ func executionStateToolRank(name string) int {
 		return 2
 	case "upsert_project_fact":
 		return 3
-	case "update_vulnerability", "delete_vulnerability":
-		return 4
 	case "skill":
-		return 5
+		return 4
 	default:
 		return 100
 	}
@@ -367,8 +431,34 @@ func recordCallMatchesObligation(arguments string, pending *DecisionObligation) 
 		return false
 	}
 	joined := strings.ToLower(arguments)
+	// Explicit target field must not conflict with the obligation primary target.
+	if raw, ok := args["target"].(string); ok {
+		if t := strings.TrimSpace(raw); t != "" {
+			nt := NormalizePrimaryTarget(t)
+			pt := pending.Target
+			if nt != "" && pt != "" && !strings.EqualFold(nt, pt) &&
+				!strings.Contains(strings.ToLower(pt), strings.ToLower(nt)) &&
+				!strings.Contains(strings.ToLower(nt), strings.ToLower(pt)) {
+				return false
+			}
+		}
+	}
+	// update_vulnerability: id + substantive retest fields fulfill the obligation.
+	// Agents often omit repeating the host when only refreshing proof/description.
+	if id, _ := args["id"].(string); strings.TrimSpace(id) != "" {
+		for _, key := range []string{"proof", "description", "impact", "title", "status", "severity", "vuln_urls", "recommendation"} {
+			if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
+				return true
+			}
+		}
+	}
 	if target := ExtractTargetFromText(arguments); target != "" && !strings.EqualFold(NormalizePrimaryTarget(target), pending.Target) {
-		return false
+		// Soft host presence in free text (e.g. proof URL) is OK when it matches primary host.
+		pt := strings.ToLower(pending.Target)
+		nt := strings.ToLower(NormalizePrimaryTarget(target))
+		if pt == "" || nt == "" || (!strings.Contains(pt, nt) && !strings.Contains(nt, pt)) {
+			return false
+		}
 	}
 	if pending.EvidenceSummary != "" && strings.Contains(joined, strings.ToLower(pending.EvidenceSummary)) {
 		return true
@@ -380,10 +470,14 @@ func recordCallMatchesObligation(arguments string, pending *DecisionObligation) 
 	}
 	// Record schemas differ; a matching primary target is sufficient after the batch has
 	// already been forced by this obligation, while an explicit conflicting target is not.
-	return strings.Contains(joined, strings.ToLower(pending.Target))
+	return pending.Target != "" && strings.Contains(joined, strings.ToLower(pending.Target))
 }
 
 func executionDecisionPrecheck(conversationID, toolName, callID, arguments string) string {
+	// Project-scoped update/delete are free tools: never blocked by obligations or retry budget.
+	if isFreeVulnManageTool(toolName) {
+		return ""
+	}
 	controller := GetConversationExecutionState(conversationID).Controller()
 	pending := controller.PendingObligation()
 	if pending == nil {
@@ -396,11 +490,11 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 		}
 		return ""
 	}
-	if !isRecordTool(toolName) || pending.BoundToolCallID == "" || pending.BoundToolCallID != strings.TrimSpace(callID) {
-		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n已有强证据待记录，当前调用已跳过；只允许绑定的 L1/L2 记录调用。", pending.ID)
+	if !isL1L2RecordTool(toolName) || pending.BoundToolCallID == "" || pending.BoundToolCallID != strings.TrimSpace(callID) {
+		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n已有强证据待记录，当前调用已跳过；请 L1/L2 落库，或对已有洞调用 update_vulnerability（自由工具，同项目跨会话）。", pending.ID)
 	}
 	if !recordCallMatchesObligation(arguments, pending) {
-		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n记录参数与主目标/待记录证据不一致，当前调用已跳过。", pending.ID)
+		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\nL1/L2 参数与主目标/待记录证据不一致。已有洞请用 update_vulnerability 写最新复测 proof；新洞用 record_vulnerability 完整落库。", pending.ID)
 	}
 	return ""
 }

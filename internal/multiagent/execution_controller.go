@@ -374,7 +374,7 @@ func (c *ExecutionController) ObserveSignals(signals []ExecutionSignal, linkedCo
 			EvidenceHash:    hash,
 			EvidenceSummary: strings.TrimSpace(signal.Summary),
 			Priority:        priority,
-			RequiredTools:   []string{"record_vulnerability_candidate", "record_vulnerability"},
+			RequiredTools:   []string{"record_vulnerability_candidate", "record_vulnerability", "update_vulnerability"},
 			LinkedCoverage:  normalizedUniqueStrings(linkedCoverage),
 			Status:          ObligationPending,
 			CreatedAt:       now,
@@ -441,6 +441,24 @@ func (c *ExecutionController) ResolveBoundObligation(callID, resolution string) 
 		return cloneObligation(ob)
 	}
 	return nil
+}
+
+// ResolveTopPendingObligation satisfies the highest-priority pending obligation without a bound call ID.
+// Used by free update_vulnerability path (cross-session retest rewrite).
+func (c *ExecutionController) ResolveTopPendingObligation(resolution string) *DecisionObligation {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ob := c.pendingLocked()
+	if ob == nil {
+		return nil
+	}
+	ob.Status = ObligationSatisfied
+	ob.Resolution = strings.TrimSpace(resolution)
+	ob.ResolvedAt = time.Now()
+	return cloneObligation(ob)
 }
 
 func (c *ExecutionController) Summary() ExecutionSummary {

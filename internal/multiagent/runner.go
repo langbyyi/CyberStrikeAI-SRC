@@ -774,6 +774,7 @@ func tryEmitToolCallsOnce(
 	seen map[string]struct{},
 	subAgentToolStep, mainAgentToolStep map[string]int,
 	markPending func(toolCallPendingInfo),
+	beginPendingBatch func(agentName string),
 ) {
 	if msg == nil || len(msg.ToolCalls) == 0 || progress == nil || seen == nil {
 		return
@@ -786,7 +787,7 @@ func tryEmitToolCallsOnce(
 		return
 	}
 	seen[sig] = struct{}{}
-	emitToolCallsFromMessage(msg, agentName, orchestratorName, conversationID, orchMode, progress, subAgentToolStep, mainAgentToolStep, markPending)
+	emitToolCallsFromMessage(msg, agentName, orchestratorName, conversationID, orchMode, progress, subAgentToolStep, mainAgentToolStep, markPending, beginPendingBatch)
 }
 
 func emitToolCallsFromMessage(
@@ -795,9 +796,14 @@ func emitToolCallsFromMessage(
 	progress func(string, string, interface{}),
 	subAgentToolStep, mainAgentToolStep map[string]int,
 	markPending func(toolCallPendingInfo),
+	beginPendingBatch func(agentName string),
 ) {
 	if msg == nil || len(msg.ToolCalls) == 0 || progress == nil {
 		return
+	}
+	// New tool batch for this agent: drop ghost pending IDs from prior stream/batches.
+	if beginPendingBatch != nil {
+		beginPendingBatch(agentName)
 	}
 	if subAgentToolStep == nil {
 		subAgentToolStep = make(map[string]int)

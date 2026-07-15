@@ -249,7 +249,7 @@ func applyExecutionBoostPostProcess(cfg executionToolMiddlewareConfig, toolName,
 			})
 		}
 		if isRecordTool(toolName) && state.Controller().PendingObligation() == nil && !strings.Contains(result, einomcp.ToolErrorPrefix) {
-			cfg.Progress("execution_obligation_resolved", "L1/L2 已满足记录义务", map[string]interface{}{
+			cfg.Progress("execution_obligation_resolved", "L1/L2/update 已满足记录义务", map[string]interface{}{
 				"tool": toolName, "callId": callID,
 			})
 		}
