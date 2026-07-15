@@ -109,9 +109,17 @@ parameters:
   - name: "confirmed"
     type: "string"
     description: |
-      用户已确认的具体敏感接口 URL。当系统检测到脚本包含敏感接口的写操作时，会拦截并提示你向用户报告。
-      用户明确同意后，将此参数设为用户同意的具体 URL（如 "http://192.168.1.1/api/delete"），系统会校验该 URL 是否在脚本中。
-      不同接口/不同目标需要分别授权，每次敏感操作都需要独立的用户确认。
-      未被拦截的普通脚本无需设置此参数。
+      敏感接口硬闸放行（兼容旧参数）：用户同意后填完整 URL，须与本次目标匹配。
+      更推荐：confirm_destructive=true + confirm_token=拦截消息中的令牌。
+    required: false
+    default: ""
+  - name: "confirm_destructive"
+    type: "boolean"
+    description: "敏感接口硬闸放行开关。仅在工具返回 [sensitive_http_gate] blocked 且用户明确同意后设为 true，并配合 confirm_token。"
+    required: false
+    default: false
+  - name: "confirm_token"
+    type: "string"
+    description: "敏感接口硬闸令牌。来自拦截消息中的 confirm_token，与 method+target 绑定，不可跨接口复用。"
     required: false
     default: ""

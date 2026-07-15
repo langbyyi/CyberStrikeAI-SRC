@@ -148,6 +148,17 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Any("args", args),
 	)
 
+	// 敏感 HTTP 写操作硬闸：在真实发请求/执行命令前拦截（非 HITL、非纯提示词）。
+	if blocked, msg := CheckSensitiveHTTPGate(toolName, args); blocked {
+		e.logger.Warn("敏感接口硬拦截",
+			zap.String("toolName", toolName),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{{Type: "text", Text: msg}},
+			IsError: true,
+		}, nil
+	}
+
 	// 特殊处理：exec工具直接执行系统命令
 	if toolName == "exec" {
 		e.logger.Info("执行exec工具")
@@ -419,7 +430,8 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 
 		// 对于需要子命令的工具（如 gobuster dir），position 0 必须紧跟在命令名后、所有 flag 之前
 		for _, param := range positionalParams {
-			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" {
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
+				isSensitiveGateOnlyParam(param.Name) {
 				continue
 			}
 			if param.Position != nil && *param.Position == 0 {
@@ -437,8 +449,9 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 		// 处理标志参数
 		for _, param := range flagParams {
 			// 跳过特殊参数，它们会在后面单独处理
-			// action 参数仅用于工具内部逻辑，不传递给命令
-			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" {
+			// action / 敏感闸放行参数仅用于框架逻辑，不传递给外部命令
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
+				isSensitiveGateOnlyParam(param.Name) {
 				continue
 			}
 
