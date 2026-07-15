@@ -165,7 +165,8 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 	planned := len(plannedCalls)
 	kept, reason := rewriteEinoSingleToolCalls(plannedCalls, controller.PendingObligation())
 	if pending := controller.PendingObligation(); pending != nil && len(kept) > 0 {
-		// Only L1/L2 need argument match + bind. update/delete are free manage tools.
+		// L1/L2 always bind+keep when pending (strict target match was deadlocking retests
+		// on a related host, e.g. primary 10.x vs retest 183.x). update/delete stay free.
 		bound := false
 		filtered := kept[:0]
 		for _, call := range kept {
@@ -174,12 +175,12 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 				continue
 			}
 			if isL1L2RecordTool(call.Function.Name) {
-				if recordCallMatchesObligation(call.Function.Arguments, pending) {
-					controller.BindResolutionCall(pending.ID, call.ID)
-					filtered = append(filtered, call)
-					bound = true
-				} else {
-					reason = "record_arguments_mismatch"
+				controller.BindResolutionCall(pending.ID, call.ID)
+				filtered = append(filtered, call)
+				bound = true
+				if !recordCallMatchesObligation(call.Function.Arguments, pending) {
+					// Soft note only: still execute so the agent is not stuck unable to record.
+					reason = "pending_record_soft_match"
 				}
 				continue
 			}
@@ -187,7 +188,6 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 		}
 		kept = filtered
 		if !bound && len(kept) == 0 && planned > 0 {
-			// keep path handled below by pending_record_missing fallback
 			_ = bound
 		}
 	}
@@ -490,11 +490,14 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 		}
 		return ""
 	}
-	if !isL1L2RecordTool(toolName) || pending.BoundToolCallID == "" || pending.BoundToolCallID != strings.TrimSpace(callID) {
-		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n已有强证据待记录，当前调用已跳过；请 L1/L2 落库，或对已有洞调用 update_vulnerability（自由工具，同项目跨会话）。", pending.ID)
+	// L1/L2 always allowed while a record obligation is open. Bind this call id so
+	// ResolveConversationObligation can close the duty after a successful write.
+	// (Strict argument match previously blocked legitimate retests on a related host.)
+	if isL1L2RecordTool(toolName) {
+		if pending.BoundToolCallID == "" || pending.BoundToolCallID != strings.TrimSpace(callID) {
+			controller.BindResolutionCall(pending.ID, callID)
+		}
+		return ""
 	}
-	if !recordCallMatchesObligation(arguments, pending) {
-		return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\nL1/L2 参数与主目标/待记录证据不一致。已有洞请用 update_vulnerability 写最新复测 proof；新洞用 record_vulnerability 完整落库。", pending.ID)
-	}
-	return ""
+	return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n已有强证据待记录，当前调用已跳过；请调用 record_vulnerability / record_vulnerability_candidate 落库，或 update_vulnerability 更新已有洞（自由工具）。", pending.ID)
 }

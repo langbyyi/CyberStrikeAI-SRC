@@ -1192,3 +1192,21 @@ parameters:
       - "trust_env=false"、"max_redirects=5" 等
     required: false
     flag: "--additional-args"
+  - name: "confirm_destructive"
+    type: "boolean"
+    description: |
+      敏感接口硬闸放行开关（框架层参数，不会发给目标站）。
+      当工具返回 [sensitive_http_gate] blocked（如 DELETE 或路径含 delOne/delete/reboot 等写操作）且用户明确同意后，
+      设为 true，并填 confirm_token=拦截消息中的令牌后重试。
+    required: false
+    default: false
+  - name: "confirm_token"
+    type: "string"
+    description: "敏感接口硬闸令牌（框架层，不发给目标站）。与 method+url 绑定；来自拦截消息 confirm_token 字段。"
+    required: false
+    default: ""
+  - name: "confirmed"
+    type: "string"
+    description: "兼容旧放行参数：用户同意的完整 URL（须与本次 url 匹配）。优先使用 confirm_destructive + confirm_token。"
+    required: false
+    default: ""
