@@ -157,9 +157,10 @@ agent:
 #### 运行时行为摘要
 
 - 会话级 `ExecutionController`：主目标、证据义务、调用签名、结果指纹、停滞/重试预算、摘要
-- `AfterModelRewriteState`：pending 义务时只保留绑定 L1/L2；纯 probe 最多 3；state 优先于 probe；unknown/long 独占
-- tool precheck：pending 时仅放行绑定 record；否则校验重试预算与停滞门
-- L1/L2 DB 成功后 `ResolveConversationObligation` 关闭关联自动 coverage
+- `AfterModelRewriteState`：pending 义务时保留 L1/L2；**`update_vulnerability`/`delete_vulnerability` 始终放行**（同项目 CRUD 自由工具）；纯 probe 最多 3；state 优先于 probe；unknown/long 独占
+- tool precheck：update/delete 永不拦截；pending 时仅 L1/L2 需绑定；否则校验重试预算与停滞门
+- L1/L2/update DB 成功后 `ResolveConversationObligation` 关闭关联自动 coverage（update 无 bind 时 resolve 顶层 pending）
+- 授权：同项目任意会话可 list/get/update/delete（含历史空 project_id、源会话属项目）
 - SkillRouter 在决策开启时强制 TopK=1、maxRunes=4000，并与手工 `skill` 共用注入去重集
 
 #### process detail 事件名
@@ -167,7 +168,7 @@ agent:
 | 事件 | 含义 |
 |------|------|
 | `execution_obligation_created` | 强证据创建记录义务 |
-| `execution_obligation_resolved` | L1/L2 满足义务 |
+| `execution_obligation_resolved` | L1/L2 或 update_vulnerability 满足义务 |
 | `tool_batch_rewritten` | 模型工具批次被裁剪 |
 | `tool_call_blocked` | 执行前 precheck 阻断调用 |
 | `tool_timeout` | 工具层超时（含 timeoutLayer） |
@@ -271,8 +272,8 @@ L1 candidate / coverage 工具在 boost 关闭后**仍注册**（热重载 `regi
 
 1. finalize 门闩**改写最终助手文本**，不硬 kill 进程/会话；模型仍可在下一轮无视提示。
 2. 仓库默认**不附带**完整 `*_test.go` 回归套件；上线靠编译 + 真机会话。
-3. L2 `record_vulnerability` 证据门槛**不降低**；candidate 仅联动 coverage，不替代完整 PoC；已有洞应 **update** 而非重复新建。
-4. pending 记录义务期间 precheck 仅放行绑定的 L1/L2；update/delete 属 state 类，与 probe 混批时仍可能被裁剪。
+3. L2 `record_vulnerability` 证据门槛**不降低**；candidate 仅联动 coverage，不替代完整 PoC；已有洞应 **update_vulnerability**（最新复测 proof 整段回写）而非重复新建。
+4. `update_vulnerability` / `delete_vulnerability` 为**自由管理工具**（同项目跨会话可用），不被 L1/L2 义务拦截；pending 时仍可单独或与 L1/L2 同批执行。
 
 ### 6. 禁改路径（回归自检）
 
@@ -446,7 +447,7 @@ tool_exec_governor:
 | `tool_concurrency_acquire_waited` | 并发槽位等待时长（>0 说明触及上限） |
 | `mcp_tool_per_call_timeout` | MCP 工具触发 per-call 超时（工具名/超时值） |
 | `tool_structured_summary.error_code` | 失败分类（取代裸 error_sig 推断） |
-| `adk_wait_tools_running` | 工具在途心跳（补盲区，区别于 adk_wait_after_tools） |
+| `adk_wait_tools_running` | 工具待结果心跳：中性文案 + 工具名摘要；`toolsPending`/`toolSummary`/`maxConcurrent`/`dedupeKey`；>180s 才升为可能阻塞提示 |
 | `cmd_timeout_injected` | 命令层超时注入（curl/wget） |
 | `exec_wall_clock_timeout` | exec/execute 触发 wall-clock 总上限；工具结果中同时带 `[error_code: timeout, retryable: true]` |
 
