@@ -83,7 +83,26 @@ func RunEinoSingleChatModelAgent(
 	// Bind role tool list into session state (diagnostics / future use).
 	// Exec 是否调用未挂载扫描器：仅提示词约束，不在此硬拦。
 	SetConversationRoleTools(conversationID, roleTools)
-	GetConversationExecutionState(conversationID).SetPrimaryTarget(ExtractTargetFromText(userMessage))
+	// Target before intent gate: obligations require both pentest intent AND a concrete target.
+	if target := ExtractTargetFromText(userMessage); target != "" {
+		GetConversationExecutionState(conversationID).SetPrimaryTarget(target)
+	}
+	// Intent (LLM + rules): chat | recon | pentest — only real pentest+target enables dependency_blocked.
+	roleHint := RoleHintFromTools(roleTools)
+	intentLLM := openai.NewClient(&appCfg.OpenAI, openai.NewLLMHTTPClient(), logger)
+	sessionIntent, intentSource := ResolveAndStoreSessionIntent(
+		ctx, conversationID, userMessage, roleHint, strings.TrimSpace(appCfg.OpenAI.Model), intentLLM, logger,
+	)
+	if progress != nil {
+		progress("session_intent", "会话意图: "+string(sessionIntent)+" ("+intentSource+")", map[string]interface{}{
+			"conversationId": conversationID,
+			"intent":         string(sessionIntent),
+			"source":         intentSource,
+			"obligations":    RecordObligationsEnabled(conversationID),
+			"primaryTarget": GetConversationExecutionState(conversationID).Controller().PrimaryTarget(),
+			"userPreview":   truncateRunes(strings.TrimSpace(userMessage), 80),
+		})
+	}
 	mainDefs := ag.ToolsForRole(roleTools)
 	mainTools, err := einomcp.ToolsFromDefinitions(ag, holder, mainDefs, recorder, nil, toolInvokeNotify, einoSingleAgentName)
 	if err != nil {
@@ -154,6 +173,8 @@ func RunEinoSingleChatModelAgent(
 
 	maxIter := einoSingleMaxIterations(appCfg)
 
+	// Decision controller only when truly pentesting a target (not chat/recon/unrelated).
+	decisionOn := appCfg.Agent.EinoSingleExecution.EnabledEffective() && RecordObligationsEnabled(conversationID)
 	mainToolsCfg := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
@@ -163,7 +184,7 @@ func RunEinoSingleChatModelAgent(
 				SkillsRoot:         skillsRoot,
 				ConversationID:     conversationID,
 				Logger:             logger,
-				DecisionController: appCfg.Agent.EinoSingleExecution.EnabledEffective(),
+				DecisionController: decisionOn,
 				Progress:           progress,
 			}),
 		},
@@ -172,6 +193,7 @@ func RunEinoSingleChatModelAgent(
 	ins := project.AppendSystemPromptBlock(ag.EinoSingleAgentSystemInstruction(), systemPromptExtra)
 	ins = project.AppendVisionImageAnalysisIfReady(ins, appCfg.Vision.Ready())
 	ins = injectToolNamesOnlyInstruction(ctx, ins, mainTools, singleToolSearchActive)
+	ins = appendSessionIntentInstruction(ins, sessionIntent)
 	if logger != nil {
 		names := collectToolNames(ctx, mainTools)
 		mountedNames := collectToolNames(ctx, mainToolsForCfg)

@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -84,10 +87,6 @@ func (h *FofaHandler) resolveCredentials() (email, apiKey string) {
 	// 优先环境变量（便于容器部署），其次配置文件
 	email = strings.TrimSpace(os.Getenv("FOFA_EMAIL"))
 	apiKey = strings.TrimSpace(os.Getenv("FOFA_API_KEY"))
-	if apiKey != "" {
-		// env vars override — email optional (some FOFA proxies like fofa.icu only need key)
-		return email, apiKey
-	}
 	if h.cfg != nil {
 		if email == "" {
 			email = strings.TrimSpace(h.cfg.FOFA.Email)
@@ -99,13 +98,352 @@ func (h *FofaHandler) resolveCredentials() (email, apiKey string) {
 	return email, apiKey
 }
 
+func (h *FofaHandler) resolveBearerToken() string {
+	if v := strings.TrimSpace(os.Getenv("FOFA_BEARER_TOKEN")); v != "" {
+		return v
+	}
+	if h.cfg != nil {
+		return strings.TrimSpace(h.cfg.FOFA.BearerToken)
+	}
+	return ""
+}
+
+func (h *FofaHandler) resolveAuthMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("FOFA_AUTH_MODE")))
+	if mode == "" && h.cfg != nil {
+		mode = strings.ToLower(strings.TrimSpace(h.cfg.FOFA.AuthMode))
+	}
+	switch mode {
+	case "key", "bearer", "auto":
+		return mode
+	default:
+		return "auto"
+	}
+}
+
 func (h *FofaHandler) resolveBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("FOFA_BASE_URL")); v != "" {
+		return v
+	}
 	if h.cfg != nil {
 		if v := strings.TrimSpace(h.cfg.FOFA.BaseURL); v != "" {
 			return v
 		}
 	}
 	return "https://fofa.info/api/v1/search/all"
+}
+
+func (h *FofaHandler) resolveFallbackBaseURLs() []string {
+	var out []string
+	if v := strings.TrimSpace(os.Getenv("FOFA_FALLBACK_BASE_URLS")); v != "" {
+		for _, p := range strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n'
+		}) {
+			if s := strings.TrimSpace(p); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	if h.cfg != nil {
+		for _, p := range h.cfg.FOFA.FallbackBaseURLs {
+			if s := strings.TrimSpace(p); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return uniqueStrings(out)
+}
+
+func (h *FofaHandler) resolveVerifySSL() *bool {
+	if v := strings.TrimSpace(os.Getenv("FOFA_VERIFY_SSL")); v != "" {
+		b := v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+		if v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "no") {
+			b = false
+		}
+		return &b
+	}
+	if h.cfg != nil && h.cfg.FOFA.VerifySSL != nil {
+		return h.cfg.FOFA.VerifySSL
+	}
+	return nil // auto
+}
+
+func (h *FofaHandler) resolveTimeout() time.Duration {
+	sec := 30
+	if v := strings.TrimSpace(os.Getenv("FOFA_TIMEOUT_SECONDS")); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			sec = n
+		}
+	} else if h.cfg != nil && h.cfg.FOFA.TimeoutSeconds > 0 {
+		sec = h.cfg.FOFA.TimeoutSeconds
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func isOfficialFOFAHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "fofa.info" || host == "api.fofa.info" || strings.HasSuffix(host, ".fofa.info")
+}
+
+func expandFOFABaseURLs(primary string, fallbacks []string) []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, e := range out {
+			if e == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(primary)
+	for _, f := range fallbacks {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		// 仅 host:port
+		if !strings.Contains(f, "://") && strings.Count(f, ":") == 1 {
+			add("http://" + f + "/api/v1/search/all")
+			add("https://" + f + "/api/v1/search/all")
+			continue
+		}
+		add(f)
+		if strings.Contains(f, "://") && !strings.Contains(f, "/api/") {
+			add(strings.TrimRight(f, "/") + "/api/v1/search/all")
+		}
+	}
+	// 代理 HTTPS 附带 HTTP 变体
+	extras := make([]string, 0)
+	for _, u := range out {
+		if isOfficialFOFAHost(u) {
+			continue
+		}
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Scheme != "https" {
+			continue
+		}
+		parsed.Scheme = "http"
+		extras = append(extras, parsed.String())
+	}
+	for _, e := range extras {
+		add(e)
+	}
+	return out
+}
+
+func fofaAuthModes(mode, apiKey, bearer string) []string {
+	switch mode {
+	case "key":
+		if apiKey != "" {
+			return []string{"key"}
+		}
+	case "bearer":
+		if bearer != "" {
+			return []string{"bearer"}
+		}
+	default: // auto
+		var m []string
+		if apiKey != "" {
+			m = append(m, "key")
+		}
+		if bearer != "" {
+			m = append(m, "bearer")
+		}
+		return m
+	}
+	return nil
+}
+
+func fofaVerifyModes(force *bool, rawURL string) []bool {
+	if force != nil {
+		return []bool{*force}
+	}
+	if isOfficialFOFAHost(rawURL) {
+		return []bool{true}
+	}
+	// 代理：先验真，TLS 失败再跳过校验
+	return []bool{true, false}
+}
+
+func newFOFAHTTPClient(timeout time.Duration, insecure bool) *http.Client {
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false, // 部分代理 HTTP/2/TLS 组合易 EOF
+		MaxIdleConns:          16,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec // 可选降级，仅代理/排障
+	}
+	return &http.Client{Timeout: timeout, Transport: tr}
+}
+
+type fofaAttempt struct {
+	URL       string `json:"url"`
+	Auth      string `json:"auth"`
+	VerifySSL bool   `json:"verify_ssl"`
+	Error     string `json:"error,omitempty"`
+	Status    int    `json:"http_status,omitempty"`
+}
+
+func (h *FofaHandler) doFOFASearch(ctx context.Context, query string, size, page int, fields string, full bool) (*fofaAPIResponse, string, string, error) {
+	email, apiKey := h.resolveCredentials()
+	bearer := h.resolveBearerToken()
+	if apiKey == "" && bearer == "" {
+		return nil, "", "", errors.New("FOFA 未配置 api_key 或 bearer_token")
+	}
+	base := h.resolveBaseURL()
+	urls := expandFOFABaseURLs(base, h.resolveFallbackBaseURLs())
+	modes := fofaAuthModes(h.resolveAuthMode(), apiKey, bearer)
+	if len(modes) == 0 {
+		return nil, "", "", errors.New("无可用鉴权方式：请配置 api_key 和/或 bearer_token")
+	}
+	timeout := h.resolveTimeout()
+	forceVerify := h.resolveVerifySSL()
+	qb64 := base64.StdEncoding.EncodeToString([]byte(query))
+
+	var attempts []fofaAttempt
+	var lastErr error
+
+	for _, rawURL := range urls {
+		for _, mode := range modes {
+			for _, verify := range fofaVerifyModes(forceVerify, rawURL) {
+				u, err := url.Parse(rawURL)
+				if err != nil {
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Error: err.Error()})
+					lastErr = err
+					continue
+				}
+				params := u.Query()
+				params.Set("qbase64", qb64)
+				params.Set("size", fmt.Sprintf("%d", size))
+				params.Set("page", fmt.Sprintf("%d", page))
+				params.Set("fields", strings.TrimSpace(fields))
+				if full {
+					params.Set("full", "true")
+				} else {
+					params.Set("full", "false")
+				}
+				headers := http.Header{}
+				headers.Set("Accept", "application/json, text/plain, */*")
+				headers.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-FOFA/1.6; +local)")
+				if !isOfficialFOFAHost(rawURL) {
+					origin := u.Scheme + "://" + u.Host
+					headers.Set("Referer", origin+"/")
+					headers.Set("Origin", origin)
+				}
+				switch mode {
+				case "key":
+					params.Set("key", apiKey)
+					if email != "" {
+						params.Set("email", email)
+					}
+				case "bearer":
+					headers.Set("Authorization", "Bearer "+bearer)
+					if apiKey != "" {
+						params.Set("key", apiKey)
+					}
+				}
+				u.RawQuery = params.Encode()
+
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+				if err != nil {
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Error: err.Error()})
+					lastErr = err
+					continue
+				}
+				req.Header = headers
+
+				client := newFOFAHTTPClient(timeout, !verify)
+				resp, err := client.Do(req)
+				if err != nil {
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Error: err.Error()})
+					lastErr = err
+					continue
+				}
+				body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+				resp.Body.Close()
+				if readErr != nil {
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Status: resp.StatusCode, Error: readErr.Error()})
+					lastErr = readErr
+					continue
+				}
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					snippet := string(body)
+					if len(snippet) > 240 {
+						snippet = snippet[:240]
+					}
+					err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Status: resp.StatusCode, Error: err.Error()})
+					lastErr = err
+					continue
+				}
+				var apiResp fofaAPIResponse
+				if err := json.Unmarshal(body, &apiResp); err != nil {
+					snippet := string(body)
+					if len(snippet) > 240 {
+						snippet = snippet[:240]
+					}
+					err = fmt.Errorf("解析 JSON 失败: %v; body=%s", err, snippet)
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Status: resp.StatusCode, Error: err.Error()})
+					lastErr = err
+					continue
+				}
+				if apiResp.Error {
+					msg := strings.TrimSpace(apiResp.ErrMsg)
+					if msg == "" {
+						msg = "FOFA 返回 error=true"
+					}
+					err = errors.New(msg)
+					attempts = append(attempts, fofaAttempt{URL: rawURL, Auth: mode, VerifySSL: verify, Status: resp.StatusCode, Error: msg})
+					lastErr = err
+					continue
+				}
+				return &apiResp, rawURL, mode, nil
+			}
+		}
+	}
+
+	// 汇总错误
+	msg := "请求 FOFA 失败"
+	if lastErr != nil {
+		msg = lastErr.Error()
+	}
+	if len(attempts) > 0 {
+		// 附带末次尝试，便于排障
+		a := attempts[len(attempts)-1]
+		msg = fmt.Sprintf("%s（末次: url=%s auth=%s verify_ssl=%v）", msg, a.URL, a.Auth, a.VerifySSL)
+	}
+	if h.logger != nil {
+		h.logger.Warn("FOFA 查询全部尝试失败", zap.Int("attempts", len(attempts)), zap.String("error", msg))
+	}
+	return nil, "", "", errors.New(msg)
 }
 
 // ParseNaturalLanguage 将自然语言解析为 FOFA 查询语法（仅生成，不执行查询）
@@ -358,73 +696,30 @@ func (h *FofaHandler) Search(c *gin.Context) {
 		req.Fields = "host,ip,port,domain,title,protocol,country,province,city,server"
 	}
 
-	email, apiKey := h.resolveCredentials()
-	if apiKey == "" {
+	_, apiKey := h.resolveCredentials()
+	bearer := h.resolveBearerToken()
+	if apiKey == "" && bearer == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "FOFA 未配置：请在系统设置中填写 FOFA API Key（fofa.info 需同时填 Email，fofa.icu 等代理只用 Key），或设置环境变量 FOFA_API_KEY",
+			"error":   "FOFA 未配置：请在系统设置或 config.yaml 填写 fofa.api_key（及按需 base_url / bearer_token）",
 			"need":    []string{"fofa.api_key"},
-			"env_key": []string{"FOFA_API_KEY"},
+			"env_key": []string{"FOFA_API_KEY", "FOFA_BASE_URL", "FOFA_BEARER_TOKEN"},
 		})
 		return
 	}
 
-	baseURL := h.resolveBaseURL()
-	qb64 := base64.StdEncoding.EncodeToString([]byte(req.Query))
-
-	u, err := url.Parse(baseURL)
+	apiResp, usedURL, usedAuth, err := h.doFOFASearch(c.Request.Context(), req.Query, req.Size, req.Page, req.Fields, req.Full)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "FOFA base_url 无效: " + err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error":            "请求 FOFA 失败: " + err.Error(),
+			"base_url":         h.resolveBaseURL(),
+			"fallback":         h.resolveFallbackBaseURLs(),
+			"suggestion":       "请检查 fofa.base_url 与 api_key 是否匹配；TLS 失败可设 verify_ssl=false；可配 fallback_base_urls / bearer_token",
+			"endpoint_tried":   usedURL,
+			"auth_mode_config": h.resolveAuthMode(),
+		})
 		return
 	}
-
-	params := u.Query()
-	if email != "" {
-		params.Set("email", email)
-	}
-	params.Set("key", apiKey)
-	params.Set("qbase64", qb64)
-	params.Set("size", fmt.Sprintf("%d", req.Size))
-	params.Set("page", fmt.Sprintf("%d", req.Page))
-	params.Set("fields", strings.TrimSpace(req.Fields))
-	if req.Full {
-		params.Set("full", "true")
-	} else {
-		// 明确传 false，便于排查
-		params.Set("full", "false")
-	}
-	u.RawQuery = params.Encode()
-
-	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, u.String(), nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
-		return
-	}
-
-	resp, err := h.client.Do(httpReq)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "请求 FOFA 失败: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("FOFA 返回非 2xx: %d", resp.StatusCode)})
-		return
-	}
-
-	var apiResp fofaAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "解析 FOFA 响应失败: " + err.Error()})
-		return
-	}
-	if apiResp.Error {
-		msg := strings.TrimSpace(apiResp.ErrMsg)
-		if msg == "" {
-			msg = "FOFA 返回错误"
-		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": msg})
-		return
-	}
+	_ = usedAuth
 
 	fields := splitAndCleanCSV(req.Fields)
 	results := make([]map[string]interface{}, 0, len(apiResp.Results))

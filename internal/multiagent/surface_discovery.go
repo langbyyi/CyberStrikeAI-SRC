@@ -444,6 +444,10 @@ func AutoUpsertSurfaceCoverageFromTool(conversationID, toolName, arguments, outp
 	if !surfaceDetectionEligibleTool(toolName) {
 		return nil
 	}
+	// Chat / non-ops sessions: never invent record obligations from tool noise.
+	if !RecordObligationsEnabled(conversationID) {
+		return nil
+	}
 	sigs := DetectSurfaceSignals(output)
 	if len(sigs) == 0 {
 		return nil

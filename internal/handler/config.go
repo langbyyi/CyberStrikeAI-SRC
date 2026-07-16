@@ -1703,6 +1703,17 @@ func updateFOFAConfig(doc *yaml.Node, cfg config.FofaConfig) {
 	setStringInMap(fofaNode, "base_url", cfg.BaseURL)
 	setStringInMap(fofaNode, "email", cfg.Email)
 	setStringInMap(fofaNode, "api_key", cfg.APIKey)
+	setStringInMap(fofaNode, "auth_mode", cfg.AuthMode)
+	setStringInMap(fofaNode, "bearer_token", cfg.BearerToken)
+	if cfg.TimeoutSeconds > 0 {
+		setIntInMap(fofaNode, "timeout_seconds", cfg.TimeoutSeconds)
+	}
+	if cfg.VerifySSL != nil {
+		setBoolInMap(fofaNode, "verify_ssl", *cfg.VerifySSL)
+	}
+	if cfg.FallbackBaseURLs != nil {
+		setStringSliceInMap(fofaNode, "fallback_base_urls", cfg.FallbackBaseURLs)
+	}
 }
 
 func updateKnowledgeConfig(doc *yaml.Node, cfg config.KnowledgeConfig) {

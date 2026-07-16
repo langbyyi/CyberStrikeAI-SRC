@@ -839,6 +839,18 @@ type FofaConfig struct {
 	Email   string `yaml:"email,omitempty" json:"email,omitempty"`
 	APIKey  string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"` // 默认 https://fofa.info/api/v1/search/all
+
+	// 兼容非官方 search 端点时的连通/鉴权选项（端点与密钥一律来自用户配置，无内置第三方地址）
+	// AuthMode: auto|key|bearer；auto 先 key 查询参数，再试 Bearer（若已配置）
+	AuthMode string `yaml:"auth_mode,omitempty" json:"auth_mode,omitempty"`
+	// BearerToken 可选；部分兼容接口使用 Authorization: Bearer
+	BearerToken string `yaml:"bearer_token,omitempty" json:"bearer_token,omitempty"`
+	// VerifySSL: nil=自动（官方校验证书；非官方遇 TLS 错误自动降级）；true/false 强制
+	VerifySSL *bool `yaml:"verify_ssl,omitempty" json:"verify_ssl,omitempty"`
+	// TimeoutSeconds 单次 HTTP 超时，默认 30
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
+	// FallbackBaseURLs 备用 search URL，主 base_url 失败时依次尝试
+	FallbackBaseURLs []string `yaml:"fallback_base_urls,omitempty" json:"fallback_base_urls,omitempty"`
 }
 
 type SecurityConfig struct {
