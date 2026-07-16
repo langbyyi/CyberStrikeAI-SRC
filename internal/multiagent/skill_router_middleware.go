@@ -132,6 +132,21 @@ func executionBoostStreamable(cfg executionToolMiddlewareConfig) compose.Streama
 	}
 }
 
+// toolResultLooksFailed is a light check so we do not clear obligations on framework/tool errors.
+func toolResultLooksFailed(result string) bool {
+	if strings.Contains(result, einomcp.ToolErrorPrefix) {
+		return true
+	}
+	low := strings.ToLower(result)
+	if strings.Contains(low, "[framework_tool_outcome]") || strings.Contains(low, "code=dependency_blocked") {
+		return true
+	}
+	if strings.Contains(result, "\"status\": \"error\"") || strings.Contains(result, `"status":"error"`) {
+		return true
+	}
+	return false
+}
+
 // deadToolPrecheck returns a framework message if the tool must not run again this session.
 func deadToolPrecheck(cfg executionToolMiddlewareConfig, toolName string) string {
 	if cfg.MW == nil || !cfg.MW.ExecutionBoostEffective() {
@@ -241,17 +256,30 @@ func applyExecutionBoostPostProcess(cfg executionToolMiddlewareConfig, toolName,
 			)
 		}
 	}
-	if cfg.DecisionController && cfg.Progress != nil {
-		after := state.Controller().Summary().ObligationsCreated
-		if after > obligationsBefore {
-			cfg.Progress("execution_obligation_created", "强证据已创建记录义务", map[string]interface{}{
-				"created": after - obligationsBefore, "tool": toolName, "callId": callID,
-			})
+	if cfg.DecisionController {
+		// Discharge pending record obligation via successful project-fact write (recon roles).
+		// L1/L2/update still resolve in vulnerability_tools via ResolveConversationObligation.
+		if isObligationDischargeTool(toolName) && !toolResultLooksFailed(result) {
+			if closed := ResolveConversationObligation(cfg.ConversationID, callID, "project_fact"); len(closed) > 0 || state.Controller().PendingObligation() == nil {
+				if cfg.Progress != nil {
+					cfg.Progress("execution_obligation_resolved", "项目事实已写入，记录义务已解除", map[string]interface{}{
+						"tool": toolName, "callId": callID, "via": "upsert_project_fact",
+					})
+				}
+			}
 		}
-		if isRecordTool(toolName) && state.Controller().PendingObligation() == nil && !strings.Contains(result, einomcp.ToolErrorPrefix) {
-			cfg.Progress("execution_obligation_resolved", "L1/L2/update 已满足记录义务", map[string]interface{}{
-				"tool": toolName, "callId": callID,
-			})
+		if cfg.Progress != nil {
+			after := state.Controller().Summary().ObligationsCreated
+			if after > obligationsBefore {
+				cfg.Progress("execution_obligation_created", "强证据已创建记录义务", map[string]interface{}{
+					"created": after - obligationsBefore, "tool": toolName, "callId": callID,
+				})
+			}
+			if isL1L2RecordTool(toolName) && state.Controller().PendingObligation() == nil && !toolResultLooksFailed(result) {
+				cfg.Progress("execution_obligation_resolved", "L1/L2 已满足记录义务", map[string]interface{}{
+					"tool": toolName, "callId": callID,
+				})
+			}
 		}
 	}
 	// Logic Track: business entry/params → open logic coverage (P0/P1) so finalize gate blocks CVE-only wrap-up.

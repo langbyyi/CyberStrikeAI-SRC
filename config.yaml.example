@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.6.50-src"
+version: "v1.6.51-src"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
@@ -68,19 +68,23 @@ openai:
 # ============================================
 # 信息收集（FOFA）配置（可选）
 # ============================================
-# 用于「信息收集」页面调用 FOFA API（后端代理，避免前端暴露 key）
-# 也可通过环境变量配置：FOFA_EMAIL / FOFA_API_KEY（优先级更高）
+# 用于「信息收集」页面 + Agent 工具 fofa_search（密钥只放配置/环境变量，不写死在代码里）
+# 环境变量优先级更高：
+#   FOFA_EMAIL / FOFA_API_KEY / FOFA_BASE_URL
+#   FOFA_BEARER_TOKEN / FOFA_AUTH_MODE / FOFA_VERIFY_SSL
+#   FOFA_FALLBACK_BASE_URLS / FOFA_TIMEOUT_SECONDS
 #
-# 支持两种 FOFA 服务：
-#   1. 官方 FOFA (fofa.info)：需同时填 email + api_key（注册 https://fofa.info）
-#   2. FOFA 代理 (fofa.icu)：只需 api_key（无需 email，国内访问稳定，注册 http://fofa.icu）
+# base_url 留空默认官方；若使用兼容 search 接口，填该服务完整 URL，并保证 api_key 与之匹配。
 fofa:
-  # base_url 留空默认官方 fofa.info；用代理时填：
-  #   官方：https://fofa.info/api/v1/search/all
-  #   代理：http://fofa.icu/api/v1/search/all
-  base_url: "" # 可选，留空则使用默认（https://fofa.info/api/v1/search/all）
-  email: "" # FOFA 账号邮箱（仅官方 fofa.info 必填；用 fofa.icu 等代理时留空）
-  api_key: "" # FOFA API Key（官方填 api key；fofa.icu 填卡密）
+  base_url: "" # 留空默认 https://fofa.info/api/v1/search/all
+  email: ""
+  api_key: ""
+  auth_mode: auto # auto | key | bearer
+  bearer_token: ""
+  # verify_ssl 省略=自动；连通异常时可显式 false
+  # verify_ssl: false
+  timeout_seconds: 30
+  fallback_base_urls: []
 # Agent 配置
 # 达到最大迭代次数时，AI 会自动总结测试结果
 agent:

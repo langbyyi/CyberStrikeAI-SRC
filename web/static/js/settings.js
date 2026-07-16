@@ -306,9 +306,26 @@ async function loadConfig(loadTools = true) {
         const fofaEmailEl = document.getElementById('fofa-email');
         const fofaKeyEl = document.getElementById('fofa-api-key');
         const fofaBaseUrlEl = document.getElementById('fofa-base-url');
+        const fofaAuthModeEl = document.getElementById('fofa-auth-mode');
+        const fofaBearerEl = document.getElementById('fofa-bearer-token');
+        const fofaVerifyEl = document.getElementById('fofa-verify-ssl');
+        const fofaFallbackEl = document.getElementById('fofa-fallback-urls');
         if (fofaEmailEl) fofaEmailEl.value = fofa.email || '';
         if (fofaKeyEl) fofaKeyEl.value = fofa.api_key || '';
         if (fofaBaseUrlEl) fofaBaseUrlEl.value = fofa.base_url || '';
+        if (fofaAuthModeEl) fofaAuthModeEl.value = fofa.auth_mode || 'auto';
+        if (fofaBearerEl) fofaBearerEl.value = fofa.bearer_token || '';
+        if (fofaVerifyEl) {
+            if (fofa.verify_ssl === true || fofa.verify_ssl === false) {
+                fofaVerifyEl.value = String(fofa.verify_ssl);
+            } else {
+                fofaVerifyEl.value = 'auto';
+            }
+        }
+        if (fofaFallbackEl) {
+            const fb = fofa.fallback_base_urls;
+            fofaFallbackEl.value = Array.isArray(fb) ? fb.join(',') : (fb || '');
+        }
         
         // 填充Agent配置
         document.getElementById('agent-max-iterations').value = currentConfig.agent.max_iterations || 30;
@@ -1321,11 +1338,24 @@ async function applySettings() {
                 }
             },
             vision: visionPayload,
-            fofa: {
-                email: document.getElementById('fofa-email')?.value.trim() || '',
-                api_key: document.getElementById('fofa-api-key')?.value.trim() || '',
-                base_url: document.getElementById('fofa-base-url')?.value.trim() || ''
-            },
+            fofa: (() => {
+                const verifySel = document.getElementById('fofa-verify-ssl')?.value || 'auto';
+                const fallbackRaw = document.getElementById('fofa-fallback-urls')?.value.trim() || '';
+                const fallback = fallbackRaw
+                    ? fallbackRaw.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean)
+                    : [];
+                const payload = {
+                    email: document.getElementById('fofa-email')?.value.trim() || '',
+                    api_key: document.getElementById('fofa-api-key')?.value.trim() || '',
+                    base_url: document.getElementById('fofa-base-url')?.value.trim() || '',
+                    auth_mode: document.getElementById('fofa-auth-mode')?.value || 'auto',
+                    bearer_token: document.getElementById('fofa-bearer-token')?.value.trim() || '',
+                    fallback_base_urls: fallback
+                };
+                if (verifySel === 'true') payload.verify_ssl = true;
+                else if (verifySel === 'false') payload.verify_ssl = false;
+                return payload;
+            })(),
             agent: {
                 max_iterations: parseInt(document.getElementById('agent-max-iterations').value) || 30
             },

@@ -330,6 +330,16 @@ func (c *ExecutionController) SetPrimaryTarget(target string) string {
 	return c.primary
 }
 
+// ClearPrimaryTarget drops the session primary target (e.g. when intent falls back to chat).
+func (c *ExecutionController) ClearPrimaryTarget() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.primary = ""
+}
+
 func (c *ExecutionController) PrimaryTarget() string {
 	if c == nil {
 		return ""
@@ -441,6 +451,32 @@ func (c *ExecutionController) ResolveBoundObligation(callID, resolution string) 
 		return cloneObligation(ob)
 	}
 	return nil
+}
+
+// ClearPendingObligations marks all pending obligations satisfied (e.g. session switched to chat).
+// Returns how many were cleared.
+func (c *ExecutionController) ClearPendingObligations(resolution string) int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	now := time.Now()
+	res := strings.TrimSpace(resolution)
+	if res == "" {
+		res = "cleared"
+	}
+	for _, ob := range c.obligations {
+		if ob == nil || ob.Status != ObligationPending {
+			continue
+		}
+		ob.Status = ObligationSatisfied
+		ob.Resolution = res
+		ob.ResolvedAt = now
+		n++
+	}
+	return n
 }
 
 // ResolveTopPendingObligation satisfies the highest-priority pending obligation without a bound call ID.

@@ -127,15 +127,21 @@ func (m *einoSingleExecutionMiddleware) BeforeModelRewriteState(ctx context.Cont
 	if state == nil {
 		return ctx, state, nil
 	}
+	// Chat sessions skip obligation directives entirely.
+	if !RecordObligationsEnabled(m.conversationID) {
+		return ctx, state, nil
+	}
 	controller := GetConversationExecutionState(m.conversationID).Controller()
 	pending := controller.ConsumePendingDirective()
 	if pending != nil {
 		summary := truncateRunes(strings.TrimSpace(pending.EvidenceSummary), 200)
 		state.Messages = append(state.Messages, schema.SystemMessage(fmt.Sprintf(
-			"[framework_next_action]\n已有可复现强证据待记录。请用 L1/L2 落库新发现，或对同项目已有洞 update_vulnerability 写入最新复测证据。\n"+
-				"- 新建：record_vulnerability_candidate（L1）/ record_vulnerability（L2）\n"+
-				"- 已有洞（同项目任意会话）：update_vulnerability（id + proof 等）；误报用 delete_vulnerability\n"+
-				"update/delete 为自由管理工具，不与义务互斥。勿只做无关探测。\nevidence: %s",
+			"[framework_next_action]\n已有可复现强证据待记录，其它探测会被 dependency_blocked。\n"+
+				"任选其一解除（本批只做落库，勿再扫）：\n"+
+				"1) 角色含漏洞工具时：record_vulnerability_candidate（L1）/ record_vulnerability（L2）；或 update_vulnerability\n"+
+				"2) 纯信息收集/无 record_* 时：upsert_project_fact 写入已确认资产事实（可解除义务）\n"+
+				"3) record_* 在动态池时：先 tool_search（义务期间已放行）加载 schema，再落库\n"+
+				"禁止反复调用 exec/fofa 等探测工具撞墙。\nevidence: %s",
 			summary)))
 		return ctx, state, nil
 	}
@@ -154,6 +160,19 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 		return ctx, state, nil
 	}
 	controller := GetConversationExecutionState(m.conversationID).Controller()
+	// Chat mode: no record-obligation rewrite / stagnation pivot pressure.
+	if !RecordObligationsEnabled(m.conversationID) {
+		_ = controller.ClearPendingObligations("session_intent_non_pentest")
+		plannedCalls := append([]schema.ToolCall(nil), last.ToolCalls...)
+		kept, reason := rewriteEinoSingleToolCalls(plannedCalls, nil)
+		last.ToolCalls = kept
+		dropped := len(plannedCalls) - len(kept)
+		controller.RecordToolBatch(len(plannedCalls), dropped)
+		if dropped > 0 {
+			emitDroppedToolCallResults(m.progress, plannedCalls, kept, reason, m.conversationID)
+		}
+		return ctx, state, nil
+	}
 	wasPivot := controller.PivotRequired()
 	controller.CompleteProbeBatch()
 	if !wasPivot && controller.PivotRequired() && m.progress != nil {
@@ -308,10 +327,24 @@ func rewriteEinoSingleToolCalls(calls []schema.ToolCall, pending *DecisionObliga
 		}
 	}
 	if pending != nil {
+		// Prefer formal L1/L2 record when the model already planned it.
 		for _, call := range rest {
 			if isL1L2RecordTool(call.Function.Name) {
 				out := append([]schema.ToolCall{call}, freeManage...)
 				return out, "pending_record"
+			}
+		}
+		// Discharge path for recon roles without record_* (or deferred schema load).
+		for _, call := range rest {
+			if isObligationDischargeTool(call.Function.Name) {
+				out := append([]schema.ToolCall{call}, freeManage...)
+				return out, "pending_record_discharge"
+			}
+		}
+		for _, call := range rest {
+			if isObligationUnlockTool(call.Function.Name) {
+				out := append([]schema.ToolCall{call}, freeManage...)
+				return out, "pending_record_unlock"
 			}
 		}
 		if len(freeManage) > 0 {
@@ -400,9 +433,28 @@ func isFreeVulnManageTool(name string) bool {
 	return name == "update_vulnerability" || name == "delete_vulnerability"
 }
 
+// isObligationUnlockTool may run while a record obligation is pending so the model
+// can load deferred record schemas (tool_search) or inspect existing vulns before update.
+func isObligationUnlockTool(name string) bool {
+	switch normalizedExecutionToolName(name) {
+	case "tool_search", "list_vulnerabilities", "get_vulnerability":
+		return true
+	default:
+		return false
+	}
+}
+
+// isObligationDischargeTool can clear a pending record obligation without L1/L2 —
+// required for roles like 信息收集 that only have project facts, not record_*.
+func isObligationDischargeTool(name string) bool {
+	return normalizedExecutionToolName(name) == "upsert_project_fact"
+}
+
 // isRecordTool tools that may clear a pending record obligation after success.
 func isRecordTool(name string) bool {
-	return isL1L2RecordTool(name) || normalizedExecutionToolName(name) == "update_vulnerability"
+	return isL1L2RecordTool(name) ||
+		normalizedExecutionToolName(name) == "update_vulnerability" ||
+		isObligationDischargeTool(name)
 }
 
 func executionStateToolRank(name string) int {
@@ -478,6 +530,13 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 	if isFreeVulnManageTool(toolName) {
 		return ""
 	}
+	// Casual chat / non-ops intent: never enforce record obligations.
+	if !RecordObligationsEnabled(conversationID) {
+		if c := GetConversationExecutionState(conversationID).Controller(); c != nil && c.PendingObligation() != nil {
+			_ = c.ClearPendingObligations("session_intent_non_pentest")
+		}
+		return ""
+	}
 	controller := GetConversationExecutionState(conversationID).Controller()
 	pending := controller.PendingObligation()
 	if pending == nil {
@@ -499,5 +558,23 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 		}
 		return ""
 	}
-	return fmt.Sprintf("[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n已有强证据待记录，当前调用已跳过；请调用 record_vulnerability / record_vulnerability_candidate 落库，或 update_vulnerability 更新已有洞（自由工具）。", pending.ID)
+	// Recon roles without record_*: project fact discharge (bound for post-success resolve).
+	if isObligationDischargeTool(toolName) {
+		if pending.BoundToolCallID == "" || pending.BoundToolCallID != strings.TrimSpace(callID) {
+			controller.BindResolutionCall(pending.ID, callID)
+		}
+		return ""
+	}
+	// Must be able to tool_search deferred record schemas; list/get for update path.
+	if isObligationUnlockTool(toolName) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"[framework_tool_outcome] code=dependency_blocked retryable=false obligation=%s\n"+
+			"已有强证据待记录，当前调用已跳过。请立即任选其一（勿继续扫）：\n"+
+			"- record_vulnerability_candidate / record_vulnerability（角色有漏洞工具时）\n"+
+			"- update_vulnerability（同项目已有洞）\n"+
+			"- upsert_project_fact（纯信息收集/无 record_* 时写入资产事实即可解除）\n"+
+			"- tool_search（仅当需要加载 record_* schema 时；已放行）\n",
+		pending.ID)
 }

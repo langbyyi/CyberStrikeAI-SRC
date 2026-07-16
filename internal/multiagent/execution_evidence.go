@@ -69,6 +69,8 @@ type ConversationExecutionState struct {
 	// roleTools: tools bound for this conversation (empty = unrestricted / default role).
 	roleTools  []string
 	controller *ExecutionController
+	// sessionIntent: chat | recon | pentest — gates record obligations (see session_intent.go).
+	sessionIntent SessionIntent
 
 	// pendingCloser clears ADK run-loop pending tool IDs (framework-dropped calls).
 	// Separate mutex so emit path never deadlocks with s.mu.
@@ -306,6 +308,26 @@ func (s *ConversationExecutionState) IsToolDead(name string) (bool, string) {
 	}
 	r, ok := s.toolDead[name]
 	return ok, r
+}
+
+// SessionIntent returns the stored conversation intent (empty if unset).
+func (s *ConversationExecutionState) SessionIntent() SessionIntent {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionIntent
+}
+
+// SetSessionIntent stores chat | recon | pentest for obligation gating.
+func (s *ConversationExecutionState) SetSessionIntent(intent SessionIntent) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionIntent = intent
 }
 
 // MarkSurfaceSignalSeen marks that a high-value attack surface was observed.

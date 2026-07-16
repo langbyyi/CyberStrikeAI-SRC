@@ -2591,17 +2591,42 @@
                                     <div class="settings-form">
                                         <div class="form-group">
                                             <label for="fofa-base-url">Base URL</label>
-                                            <input type="text" id="fofa-base-url" data-i18n="settingsBasic.fofaBaseUrlPlaceholder" data-i18n-attr="placeholder" placeholder="https://fofa.info/api/v1/search/all（可选）" />
-                                            <small class="form-hint" data-i18n="settingsBasic.fofaBaseUrlHint">留空则使用默认地址。</small>
+                                            <input type="text" id="fofa-base-url" data-i18n="settingsBasic.fofaBaseUrlPlaceholder" data-i18n-attr="placeholder" placeholder="留空默认官方，或填你的 search 接口完整 URL" />
+                                            <small class="form-hint" data-i18n="settingsBasic.fofaBaseUrlHint">完全以你保存的配置为准；留空则使用官方默认地址。</small>
                                         </div>
                                         <div class="form-group">
                                             <label for="fofa-email" data-i18n="settingsBasic.email">Email</label>
-                                            <input type="text" id="fofa-email" data-i18n="settingsBasic.fofaEmailPlaceholder" data-i18n-attr="placeholder" placeholder="输入 FOFA 账号邮箱" autocomplete="off" />
+                                            <input type="text" id="fofa-email" data-i18n="settingsBasic.fofaEmailPlaceholder" data-i18n-attr="placeholder" placeholder="输入 FOFA 账号邮箱（仅官方需要）" autocomplete="off" />
                                         </div>
                                         <div class="form-group">
                                             <label for="fofa-api-key">API Key</label>
-                                            <input type="password" id="fofa-api-key" data-i18n="settingsBasic.fofaApiKeyPlaceholder" data-i18n-attr="placeholder" placeholder="输入 FOFA API Key" autocomplete="off" />
-                                            <small class="form-hint" data-i18n="settingsBasic.fofaApiKeyHint">仅保存在服务器配置中（`config.yaml`）。</small>
+                                            <input type="password" id="fofa-api-key" data-i18n="settingsBasic.fofaApiKeyPlaceholder" data-i18n-attr="placeholder" placeholder="API Key（仅服务器配置）" autocomplete="off" />
+                                            <small class="form-hint" data-i18n="settingsBasic.fofaApiKeyHint">仅保存在服务器配置中（config.yaml），勿写入仓库。</small>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="fofa-auth-mode">鉴权模式</label>
+                                            <select id="fofa-auth-mode">
+                                                <option value="auto">auto（先 key，再 Bearer）</option>
+                                                <option value="key">key（query 参数）</option>
+                                                <option value="bearer">bearer（Authorization JWT）</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="fofa-bearer-token">Bearer Token（可选）</label>
+                                            <input type="password" id="fofa-bearer-token" placeholder="浏览器抓包 JWT，可选" autocomplete="off" />
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="fofa-verify-ssl">校验证书</label>
+                                            <select id="fofa-verify-ssl">
+                                                <option value="auto">自动（推荐）</option>
+                                                <option value="true">强制校验</option>
+                                                <option value="false">不校验（代理 TLS 异常时）</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="fofa-fallback-urls">备用 Base URL</label>
+                                            <input type="text" id="fofa-fallback-urls" placeholder="http://IP:PORT/api/v1/search/all，逗号分隔" autocomplete="off" />
+                                            <small class="form-hint">主地址失败时依次尝试；也可只填 IP:PORT。</small>
                                         </div>
                                     </div>
                                 </div>

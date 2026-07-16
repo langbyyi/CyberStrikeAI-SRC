@@ -53,6 +53,25 @@ func main() {
 	if v := strings.TrimSpace(cfg.FOFA.BaseURL); v != "" && os.Getenv("FOFA_BASE_URL") == "" {
 		os.Setenv("FOFA_BASE_URL", v)
 	}
+	if v := strings.TrimSpace(cfg.FOFA.BearerToken); v != "" && os.Getenv("FOFA_BEARER_TOKEN") == "" {
+		os.Setenv("FOFA_BEARER_TOKEN", v)
+	}
+	if v := strings.TrimSpace(cfg.FOFA.AuthMode); v != "" && os.Getenv("FOFA_AUTH_MODE") == "" {
+		os.Setenv("FOFA_AUTH_MODE", v)
+	}
+	if cfg.FOFA.VerifySSL != nil && os.Getenv("FOFA_VERIFY_SSL") == "" {
+		if *cfg.FOFA.VerifySSL {
+			os.Setenv("FOFA_VERIFY_SSL", "true")
+		} else {
+			os.Setenv("FOFA_VERIFY_SSL", "false")
+		}
+	}
+	if cfg.FOFA.TimeoutSeconds > 0 && os.Getenv("FOFA_TIMEOUT_SECONDS") == "" {
+		os.Setenv("FOFA_TIMEOUT_SECONDS", fmt.Sprintf("%d", cfg.FOFA.TimeoutSeconds))
+	}
+	if len(cfg.FOFA.FallbackBaseURLs) > 0 && os.Getenv("FOFA_FALLBACK_BASE_URLS") == "" {
+		os.Setenv("FOFA_FALLBACK_BASE_URLS", strings.Join(cfg.FOFA.FallbackBaseURLs, ","))
+	}
 
 	if *httpsBootstrap {
 		config.ApplyDevHTTPSBootstrap(cfg)

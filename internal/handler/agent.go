@@ -1356,6 +1356,10 @@ func (h *AgentHandler) cancelToolContinueAfter(conversationID, preferredExecID, 
 		return false, nil
 	}
 	note = strings.TrimSpace(note)
+	// Mid-run user note can downgrade intent (e.g. 只要信息收集 → recon，清 dependency_blocked)。
+	if note != "" {
+		_ = multiagent.ApplySessionIntentFromUserNote(conversationID, note)
+	}
 	execID := strings.TrimSpace(preferredExecID)
 	if execID == "" {
 		execID = h.tasks.ActiveMCPExecutionID(conversationID)
@@ -1434,6 +1438,9 @@ func (h *AgentHandler) CancelAgentLoop(c *gin.Context) {
 			return
 		}
 		// 无进行中的 MCP 工具（模型纯推理/流式输出阶段）：取消当前上下文并由 Eino 流式处理器合并用户补充后自动续跑。
+		if note != "" {
+			_ = multiagent.ApplySessionIntentFromUserNote(req.ConversationID, note)
+		}
 		h.tasks.SetInterruptContinueNote(req.ConversationID, note)
 		ok, err := h.tasks.CancelTask(req.ConversationID, multiagent.ErrInterruptContinue)
 		if err != nil {
