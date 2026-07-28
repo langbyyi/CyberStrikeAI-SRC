@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/multiagent"
 
 	"github.com/gin-gonic/gin"
 )
@@ -140,6 +141,28 @@ func TestAgentTaskTerminalStatus(t *testing.T) {
 				t.Fatalf("agentTaskTerminalStatus() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEinoRunFailurePresentationPreservesPartialWorkAndHidesRawError(t *testing.T) {
+	rawErr := errors.New(`transient retry exhausted after 3 attempts: Post "https://model.internal/v1/chat": connection reset by peer`)
+	result := &multiagent.RunResult{
+		MCPExecutionIDs:     []string{"execution-1"},
+		LastAgentTraceInput: `{"messages":[{"role":"tool"}]}`,
+	}
+
+	message, errorType := einoRunFailurePresentation(rawErr, result)
+
+	if errorType != "model_service_unavailable" {
+		t.Fatalf("errorType = %q, want model_service_unavailable", errorType)
+	}
+	if !strings.Contains(message, "已保留") || !strings.Contains(message, "继续") {
+		t.Fatalf("message must explain partial-work preservation, got %q", message)
+	}
+	for _, leaked := range []string{"model.internal", "connection reset", "transient retry"} {
+		if strings.Contains(strings.ToLower(message), leaked) {
+			t.Fatalf("message leaks raw infrastructure error %q: %q", leaked, message)
+		}
 	}
 }
 
