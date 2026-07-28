@@ -272,14 +272,24 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 
 		h.logger.Error("Eino ADK 单代理执行失败", zap.Error(runErr))
 		managedTask.SetStatus("failed")
-		errMsg := "执行失败: " + runErr.Error()
+		errMsg, errorType := einoRunFailurePresentation(runErr, result)
+		hasPartialWork := result != nil &&
+			(len(result.MCPExecutionIDs) > 0 ||
+				strings.TrimSpace(result.Response) != "" ||
+				strings.TrimSpace(result.LastAgentTraceInput) != "" ||
+				strings.TrimSpace(result.LastAgentTraceOutput) != "")
 		if assistantMessageID != "" {
 			_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", errMsg, time.Now(), assistantMessageID)
-			_ = h.db.AddProcessDetail(assistantMessageID, conversationID, "error", errMsg, nil)
+			_ = h.db.AddProcessDetail(assistantMessageID, conversationID, "error", errMsg, map[string]interface{}{
+				"errorType":            errorType,
+				"partialWorkPreserved": hasPartialWork,
+			})
 		}
 		sendEvent("error", errMsg, map[string]interface{}{
-			"conversationId": conversationID,
-			"messageId":      assistantMessageID,
+			"conversationId":       conversationID,
+			"messageId":            assistantMessageID,
+			"errorType":            errorType,
+			"partialWorkPreserved": hasPartialWork,
 		})
 		sendEvent("done", "", map[string]interface{}{"conversationId": conversationID})
 		timeoutCancel()

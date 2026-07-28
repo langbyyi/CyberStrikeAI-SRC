@@ -164,6 +164,50 @@ func agentTaskTerminalStatus(ctx context.Context, runErr error) string {
 	return "completed"
 }
 
+func einoRunFailurePresentation(runErr error, result *multiagent.RunResult) (string, string) {
+	raw := ""
+	if runErr != nil {
+		raw = strings.ToLower(runErr.Error())
+	}
+	transient := false
+	for _, marker := range []string{
+		"transient retry exhausted",
+		"connection reset",
+		"connection refused",
+		"unexpected eof",
+		"temporarily unavailable",
+		"too many requests",
+		"status code: 429",
+		"status code: 500",
+		"status code: 502",
+		"status code: 503",
+		"status code: 504",
+	} {
+		if strings.Contains(raw, marker) {
+			transient = true
+			break
+		}
+	}
+
+	message := "任务执行异常中断。"
+	errorType := "execution_failed"
+	if transient {
+		message = "模型服务暂时不可用，本次执行已中断。"
+		errorType = "model_service_unavailable"
+	}
+	hasPartialWork := result != nil &&
+		(len(result.MCPExecutionIDs) > 0 ||
+			strings.TrimSpace(result.Response) != "" ||
+			strings.TrimSpace(result.LastAgentTraceInput) != "" ||
+			strings.TrimSpace(result.LastAgentTraceOutput) != "")
+	if hasPartialWork {
+		message += "本轮已产生的工具结果、漏洞记录和执行过程均已保留，可在服务恢复后继续该任务。"
+	} else {
+		message += "请稍后重试。"
+	}
+	return message, errorType
+}
+
 type managedAgentTask struct {
 	manager        *AgentTaskManager
 	conversationID string

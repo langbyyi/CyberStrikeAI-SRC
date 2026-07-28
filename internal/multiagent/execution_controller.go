@@ -167,6 +167,14 @@ func normalizeCallValue(value interface{}, key string) interface{} {
 
 // ResultFingerprint removes volatile timestamps/UUIDs before hashing a bounded result view.
 func ResultFingerprint(toolName, result string) string {
+	if normalizedExecutionToolName(toolName) == "http-framework-test" {
+		status := BuildStructuredToolSummary(toolName, "", result).HTTPStatus
+		switch status {
+		case "404", "405", "410", "412":
+			sum := sha256.Sum256([]byte(normalizedExecutionToolName(toolName) + "\x1fhttp:" + status))
+			return hex.EncodeToString(sum[:])
+		}
+	}
 	normalized := strings.ToLower(strings.TrimSpace(result))
 	normalized = resultVolatilePattern.ReplaceAllString(normalized, "<volatile>")
 	normalized = strings.Join(strings.Fields(normalized), " ")
@@ -268,9 +276,7 @@ func (c *ExecutionController) CheckProbeCallAllowed(signature string) (bool, str
 		return false, "retry_exhausted"
 	}
 	if c.pivotRequired {
-		if _, seen := c.seenCalls[signature]; seen {
-			return false, "stagnation_blocked"
-		}
+		return false, "stagnation_blocked"
 	}
 	return true, ""
 }
@@ -298,7 +304,7 @@ func (c *ExecutionController) PivotDirective() string {
 		return ""
 	}
 	c.pivotDirectiveShown = true
-	return fmt.Sprintf("[framework_next_action]\n当前假设连续无新证据。下一步只能更换明显不同的调用签名、将分支标记 done/blocked，或调用 should_continue_execution；禁止扩大同类字典。")
+	return fmt.Sprintf("[framework_next_action]\n当前探测连续无新证据，已停止继续扩展同类路径。请保留已有发现并完成记录、总结或结束执行；禁止继续扩大同类字典。")
 }
 
 func (c *ExecutionController) ConsumePendingDirective() *DecisionObligation {
