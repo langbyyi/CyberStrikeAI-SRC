@@ -172,8 +172,8 @@ multi_agent:
     plan_execute_max_step_result_runes: 4000 # plan_execute 每步结果最大字符数（超出截断）
     plan_execute_keep_last_steps: 8 # plan_execute 仅保留最近 N 步正文，早期步骤折叠为标题
     checkpoint_dir: "" # 非空：为 adk.NewRunner 启用按会话子目录的文件型 CheckPointStore，便于中断恢复持久化；Resume 的 HTTP/前端流程需另行对接
-    run_retry_max_attempts: 0 # >0：429/5xx/网络抖动时 ADK 运行循环指数退避续跑次数；0=默认 10
-    run_retry_max_backoff_sec: 0 # 单次退避上限秒数；0=默认 30
+    run_retry_max_attempts: 0 # >0：429/5xx/网络抖动时 ADK 运行循环指数退避续跑次数；0=默认 3
+    run_retry_max_backoff_sec: 0 # 单次退避上限秒数；0=默认 10
     deep_output_key: "" # 非空：将最终助手输出写入 adk session 的键名（Deep 与 Supervisor 主代理）；空表示不写入
     deep_model_retry_max_retries: 0 # >0：ChatModel 调用失败时的框架级最大重试次数（Deep 与 Supervisor 主）；0：不重试
     task_tool_description_prefix: "" # 非空：仅 Deep 的 task 工具使用自定义描述前缀，运行时会拼接子代理名称；空则走 Eino 默认生成逻辑

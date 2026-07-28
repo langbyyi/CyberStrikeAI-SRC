@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -80,8 +79,8 @@ type einoADKRunLoopArgs struct {
 	StreamsMainAssistant func(agent string) bool
 	EinoRoleTag          func(agent string) string
 	CheckpointDir        string
-	// RunRetryMaxAttempts / RunRetryMaxBackoffSec：429、5xx、网络抖动时的指数退避续跑（0=默认 10 次 / 30s 上限）。
-	RunRetryMaxAttempts  int
+	// RunRetryMaxAttempts / RunRetryMaxBackoffSec：429、5xx、网络抖动时的指数退避续跑（0=默认 3 次 / 10s 上限）。
+	RunRetryMaxAttempts   int
 	RunRetryMaxBackoffSec int
 
 	McpIDsMu *sync.Mutex
@@ -112,7 +111,7 @@ type einoADKRunLoopArgs struct {
 	MwCfg *config.MultiAgentEinoMiddlewareConfig
 }
 
-func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs []adk.Message) (*RunResult, error) {
+func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs []adk.Message) (result *RunResult, runErr error) {
 	if args == nil || args.DA == nil {
 		return nil, fmt.Errorf("eino run loop: args 或 Agent 为空")
 	}
@@ -155,6 +154,8 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	// panic recovery：防止 Eino 框架内部 panic 导致整个 goroutine 崩溃、连接无法正常关闭。
 	defer func() {
 		if r := recover(); r != nil {
+			result = nil
+			runErr = fmt.Errorf("eino runner panic: %v", r)
 			if logger != nil {
 				logger.Error("eino runner panic recovered", zap.Any("recover", r), zap.Stack("stack"))
 			}
@@ -477,6 +478,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		} else {
 			cpStore = st
 			checkPointID = buildEinoCheckpointID(orchMode)
+			cpStore.BindExecutionState(conversationID, orchMode)
 			runnerCfg.CheckPointStore = st
 			if logger != nil {
 				logger.Info("eino runner: checkpoint store enabled",
@@ -494,11 +496,28 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	}
 	var iter *adk.AsyncIterator[*adk.AgentEvent]
 	if cpStore != nil && checkPointID != "" {
-		if _, existed, getErr := cpStore.Get(ctx, checkPointID); getErr != nil {
+		preResumeExecutionState := snapshotConversationExecutionState(conversationID)
+		ready, resumeStateErr := einoCheckpointReadyForResume(ctx, cpStore, checkPointID)
+		if resumeStateErr != nil {
 			if logger != nil {
-				logger.Warn("eino checkpoint preflight get failed", zap.String("checkPointID", checkPointID), zap.Error(getErr))
+				logger.Warn("eino checkpoint state invalid; fallback to fresh run",
+					zap.String("checkPointID", checkPointID),
+					zap.Error(resumeStateErr))
 			}
-		} else if existed {
+			if progress != nil {
+				progress("progress", "断点状态缺失或不兼容，已回退为全新执行。", map[string]interface{}{
+					"conversationId": conversationID,
+					"source":         "eino",
+					"orchestration":  orchMode,
+					"checkPointID":   checkPointID,
+				})
+			}
+			if deleteErr := cpStore.Delete(ctx, checkPointID); deleteErr != nil && logger != nil {
+				logger.Warn("eino invalid checkpoint cleanup failed",
+					zap.String("checkPointID", checkPointID),
+					zap.Error(deleteErr))
+			}
+		} else if ready {
 			if progress != nil {
 				progress("progress", "检测到断点，正在从中断节点恢复执行...", map[string]interface{}{
 					"conversationId": conversationID,
@@ -514,6 +533,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			if resumeErr == nil {
 				iter = resumeIter
 			} else {
+				restoreConversationExecutionState(conversationID, preResumeExecutionState)
 				if logger != nil {
 					logger.Warn("eino runner: resume failed, fallback to fresh run",
 						zap.String("checkPointID", checkPointID),
@@ -526,6 +546,11 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 						"orchestration":  orchMode,
 						"checkPointID":   checkPointID,
 					})
+				}
+				if deleteErr := cpStore.Delete(ctx, checkPointID); deleteErr != nil && logger != nil {
+					logger.Warn("eino failed checkpoint cleanup failed",
+						zap.String("checkPointID", checkPointID),
+						zap.Error(deleteErr))
 				}
 			}
 		}
@@ -658,9 +683,15 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
 			lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, true,
 		)
-		return maybeApplyFinalizeGate(partial, conversationID, logger, args.MwCfg), runErr
+		return partial, runErr
 	}
 
+	finalizeGateEnabled := false
+	if args.MwCfg != nil {
+		finalizeGateEnabled = args.MwCfg.FinalizeGateEffective()
+	}
+	var finalizeContinuations int
+	var finalizeLimitReason string
 	sawToolResult := false
 	for {
 		// iter.Next 可能长时间阻塞（工具执行、模型推理）；须与 ctx 联动，否则取消/超时无法及时 flush pending。
@@ -717,11 +748,58 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 					})
 				}
 			}
-			if cpStore != nil && checkPointID != "" {
-				if p, pErr := cpStore.path(checkPointID); pErr == nil {
-					if rmErr := os.Remove(p); rmErr != nil && !os.IsNotExist(rmErr) && logger != nil {
-						logger.Warn("eino checkpoint cleanup failed", zap.String("path", p), zap.Error(rmErr))
+			if finalizeGateEnabled {
+				ids := snapshotMCPIDs()
+				candidate := buildEinoRunResultFromAccumulated(
+					orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
+					lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, false,
+				)
+				decision := EvaluateFinalizeContinuation(GetConversationExecutionState(conversationID), candidate.Response)
+				if ShouldStartFinalizeContinuation(decision, finalizeContinuations) {
+					finalizeContinuations++
+					if logger != nil {
+						logger.Info("eino finalize gate continuing run",
+							zap.String("conversation_id", conversationID),
+							zap.String("kind", decision.Kind),
+							zap.String("reason", decision.Reason),
+							zap.Int("continuation", finalizeContinuations),
+							zap.Int("maxContinuations", MaxFinalizeContinuationsPerRun))
 					}
+					if progress != nil {
+						progress("finalize_continuation", "仍有验证项未闭环，正在继续执行…", map[string]interface{}{
+							"conversationId":   conversationID,
+							"source":           "eino",
+							"orchestration":    orchMode,
+							"kind":             decision.Kind,
+							"continuation":     finalizeContinuations,
+							"maxContinuations": MaxFinalizeContinuationsPerRun,
+						})
+					}
+					if cpStore != nil && checkPointID != "" {
+						if deleteErr := cpStore.Delete(ctx, checkPointID); deleteErr != nil && logger != nil {
+							logger.Warn("eino checkpoint cleanup before finalize continuation failed",
+								zap.String("checkPointID", checkPointID),
+								zap.Error(deleteErr))
+						}
+					}
+					continuationMessage := schema.UserMessage(decision.Instruction)
+					runAccumulatedMsgs = append(runAccumulatedMsgs, continuationMessage)
+					msgs = stripADKSystemMessages(runAccumulatedMsgs)
+					iter = startRunnerIter(msgs)
+					lastAssistant = ""
+					lastPlanExecuteExecutor = ""
+					sawToolResult = false
+					continue
+				}
+				if decision.Blocked {
+					finalizeLimitReason = decision.Reason
+				}
+			}
+			if cpStore != nil && checkPointID != "" {
+				if deleteErr := cpStore.Delete(ctx, checkPointID); deleteErr != nil && logger != nil {
+					logger.Warn("eino checkpoint cleanup failed",
+						zap.String("checkPointID", checkPointID),
+						zap.Error(deleteErr))
 				}
 			}
 			break
@@ -955,7 +1033,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 										"einoRole":        "orchestrator",
 										"einoAgent":       ev.AgentName,
 										"orchestration":   orchMode,
-										"iteration":     einoMainRound,
+										"iteration":       einoMainRound,
 										"streamId":        mainStreamID,
 									}, mainAssistantBuf))
 									mainAssistWireAccum, _ = normalizeStreamingDelta(mainAssistWireAccum, contentDelta)
@@ -1207,20 +1285,24 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		orchMode, runAccumulatedMsgs, persistTraceSource(args, runAccumulatedMsgs),
 		lastAssistant, lastPlanExecuteExecutor, emptyHint, ids, false,
 	)
-	out = maybeApplyFinalizeGate(out, conversationID, logger, args.MwCfg)
+	if finalizeLimitReason != "" {
+		out.Response = strings.TrimSpace(out.Response) + FinalizeContinuationLimitNotice(finalizeLimitReason)
+		out.LastAgentTraceOutput = out.Response
+		if logger != nil {
+			logger.Warn("eino finalize continuation limit reached",
+				zap.String("conversation_id", conversationID),
+				zap.String("reason", finalizeLimitReason),
+				zap.Int("continuations", finalizeContinuations))
+		}
+	}
+	if finalizeGateEnabled {
+		presented := AppendIdentityGapIfNeeded(GetConversationExecutionState(conversationID), out.Response)
+		if presented != out.Response {
+			out.Response = presented
+			out.LastAgentTraceOutput = presented
+		}
+	}
 	return out, nil
-}
-
-// maybeApplyFinalizeGate runs the semi-hard wrap-up gate unless finalize_gate_enable / boost is off.
-func maybeApplyFinalizeGate(out *RunResult, conversationID string, logger *zap.Logger, mw *config.MultiAgentEinoMiddlewareConfig) *RunResult {
-	var cfg config.MultiAgentEinoMiddlewareConfig
-	if mw != nil {
-		cfg = *mw
-	}
-	if !cfg.FinalizeGateEffective() {
-		return out
-	}
-	return ApplyFinalizeGateToRunResult(out, conversationID, logger)
 }
 
 func persistTraceSource(args *einoADKRunLoopArgs, fallback []adk.Message) []adk.Message {

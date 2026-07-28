@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	defaultEinoRunRetryMaxAttempts = 10
-	defaultEinoRunRetryMaxBackoff  = 30 * time.Second
+	defaultEinoRunRetryMaxAttempts = 3
+	defaultEinoRunRetryMaxBackoff  = 10 * time.Second
 )
+
+var einoTransientHTTPStatusPattern = regexp.MustCompile(`(?i)\b(?:http(?:\s+status)?|response\s+status|status(?:\s+code)?)\s*[:=_-]?\s*(429|5\d{2})\b`)
 
 // isEinoTransientRunError 是 Eino 运行期「可退避重试 vs 直接失败」的唯一判据。
 // 429/5xx/网络抖动等返回 true；用户取消、超时、迭代上限、鉴权失败等返回 false。
@@ -35,14 +38,31 @@ func isEinoTransientRunError(err error) bool {
 	if msg == "" {
 		return false
 	}
+	permanentMarkers := []string{
+		"quota exceeded",
+		"insufficient_quota",
+		"context length",
+		"context window",
+		"token count",
+		"tokens exceed",
+		"exceeds limit",
+		"unauthorized",
+		"forbidden",
+		"not acceptable",
+	}
+	for _, marker := range permanentMarkers {
+		if strings.Contains(msg, marker) {
+			return false
+		}
+	}
+	if einoTransientHTTPStatusPattern.MatchString(msg) {
+		return true
+	}
 	transientMarkers := []string{
-		"406",
-		"429",
 		"too many requests",
 		"rate limit",
 		"rate_limit",
 		"ratelimit",
-		"quota exceeded",
 		"overloaded",
 		"capacity",
 		"temporarily unavailable",
@@ -66,12 +86,6 @@ func isEinoTransientRunError(err error) bool {
 		"unexpected eof",
 		`": eof`, // net/http: Post "url": EOF (often wraps io.EOF)
 		"unexpected end of json",
-		"status code: 406",
-		"status code: 502",
-		"502",
-		"503",
-		"504",
-		"500",
 	}
 	for _, m := range transientMarkers {
 		if strings.Contains(msg, m) {
