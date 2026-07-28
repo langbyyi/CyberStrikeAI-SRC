@@ -19,10 +19,11 @@ type ConversationTaskStopper interface {
 
 // ConversationHandler 对话处理器
 type ConversationHandler struct {
-	db          *database.DB
-	logger      *zap.Logger
-	audit       *audit.Service
-	taskStopper ConversationTaskStopper
+	db                    *database.DB
+	logger                *zap.Logger
+	audit                 *audit.Service
+	taskStopper           ConversationTaskStopper
+	executionStateCleaner func(conversationID string)
 }
 
 // SetAudit wires platform audit logging.
@@ -33,6 +34,17 @@ func (h *ConversationHandler) SetAudit(s *audit.Service) {
 // SetTaskStopper wires cancellation of in-flight agent tasks on conversation delete.
 func (h *ConversationHandler) SetTaskStopper(stopper ConversationTaskStopper) {
 	h.taskStopper = stopper
+}
+
+// SetExecutionStateCleaner wires cleanup of process-local execution state after a conversation is deleted.
+func (h *ConversationHandler) SetExecutionStateCleaner(cleaner func(conversationID string)) {
+	h.executionStateCleaner = cleaner
+}
+
+func (h *ConversationHandler) cleanupExecutionState(conversationID string) {
+	if h.executionStateCleaner != nil {
+		h.executionStateCleaner(conversationID)
+	}
 }
 
 // NewConversationHandler 创建新的对话处理器
@@ -316,6 +328,7 @@ func (h *ConversationHandler) DeleteConversation(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.cleanupExecutionState(id)
 
 	if h.audit != nil {
 		h.audit.Record(c, audit.Entry{

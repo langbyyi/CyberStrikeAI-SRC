@@ -3,6 +3,8 @@ package multiagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -174,36 +176,51 @@ func intentTextForClassification(userMessage string) string {
 	return msg
 }
 
-// ClassifySessionIntentRules is a fast rule-based classifier (LLM fallback / seed).
-// Never marks pentest without explicit attack/exploit language (role alone is not enough).
-func ClassifySessionIntentRules(userMessage, roleHint string) SessionIntent {
+type sessionIntentRuleDecision struct {
+	intent    SessionIntent
+	confident bool
+}
+
+// classifySessionIntentRules is the single deterministic rule implementation.
+// Confidence only means the user text itself carries an explicit signal; role-only
+// and default classifications remain eligible for LLM disambiguation.
+func classifySessionIntentRules(userMessage, roleHint string) sessionIntentRuleDecision {
 	msg := intentTextForClassification(userMessage)
 	roleHint = strings.TrimSpace(roleHint)
 	if msg == "" {
-		return SessionIntentChat
+		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
 	}
 	if explicitChatOnly.MatchString(msg) && ExtractTargetFromText(msg) == "" && !pentestKeywords.MatchString(msg) {
-		return SessionIntentChat
+		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
 	}
 	// Explicit exploit/pentest language wins (even without target — obligations still need target).
 	if pentestKeywords.MatchString(msg) {
-		return SessionIntentPentest
+		return sessionIntentRuleDecision{intent: SessionIntentPentest, confident: true}
 	}
 	if reconKeywords.MatchString(msg) {
-		return SessionIntentRecon
+		return sessionIntentRuleDecision{intent: SessionIntentRecon, confident: true}
 	}
 	if ExtractTargetFromText(msg) != "" {
 		// URL/IP/domain only: recon. Role alone never upgrades to pentest.
-		return SessionIntentRecon
+		return sessionIntentRuleDecision{intent: SessionIntentRecon, confident: true}
 	}
 	if chatKeywords.MatchString(msg) {
-		return SessionIntentChat
+		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
+	}
+	if taskContextDialogue.MatchString(msg) {
+		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
 	}
 	if roleLooksRecon(roleHint) {
-		return SessionIntentRecon
+		return sessionIntentRuleDecision{intent: SessionIntentRecon}
 	}
 	// Default: non-pentest. Unrelated work must never enable dependency_blocked.
-	return SessionIntentChat
+	return sessionIntentRuleDecision{intent: SessionIntentChat}
+}
+
+// ClassifySessionIntentRules is a fast rule-based classifier (LLM fallback / seed).
+// Never marks pentest without explicit attack/exploit language (role alone is not enough).
+func ClassifySessionIntentRules(userMessage, roleHint string) SessionIntent {
+	return classifySessionIntentRules(userMessage, roleHint).intent
 }
 
 func roleLooksRecon(role string) bool {
@@ -213,11 +230,28 @@ func roleLooksRecon(role string) bool {
 		strings.Contains(r, "情报") || strings.Contains(r, "recon_only")
 }
 
+// rulesConfidentIntent returns a high-confidence rule label when the user text
+// already contains clear signals. Used to skip the intent LLM under reasoning/auto
+// models (long TTFT / thinking budget) so task start is not polluted by avoidable LLM failures.
+func rulesConfidentIntent(userMessage, roleHint string) (SessionIntent, bool) {
+	decision := classifySessionIntentRules(userMessage, roleHint)
+	if !decision.confident {
+		return "", false
+	}
+	return decision.intent, true
+}
+
 // ClassifySessionIntentWithLLMModel classifies with LLM; falls back to rules on any failure.
 // userMessage may be raw or already stripped; classification always normalizes via intentTextForClassification.
+//
+// Design notes (why start can fail while the rest of the run is fine):
+//   - Intent runs once at task start via openai.Client ChatCompletion (non-streaming, short timeout).
+//   - Main agent runs later via Eino with reasoning.auto + long stream timeout — independent path.
+//   - With reasoning/thinking models, a tiny max_tokens + short deadline often yields timeout/400,
+//     while the subsequent agent turn still works. Prefer rules when signals are clear.
 func ClassifySessionIntentWithLLMModel(ctx context.Context, userMessage, roleHint, prevIntent, model string, client *openai.Client, logger *zap.Logger) (SessionIntent, string) {
 	text := intentTextForClassification(userMessage)
-	// Hard gate BEFORE LLM: pure greetings never call the model (avoids rules_llm_error noise
+	// Hard gate BEFORE LLM: pure greetings never call the model (avoids unnecessary LLM calls
 	// and any contamination from role hints inside the LLM user payload).
 	if isPureGreeting(text) {
 		return SessionIntentChat, "rules_fast_chat"
@@ -232,6 +266,11 @@ func ClassifySessionIntentWithLLMModel(ctx context.Context, userMessage, roleHin
 			fallback = SessionIntentChat
 		}
 	}
+	// Clear keyword/target signal → skip LLM. Avoids start-of-task noise when the main
+	// model has reasoning.mode=auto (intent path is a separate short non-stream call).
+	if conf, ok := rulesConfidentIntent(userMessage, roleHint); ok {
+		return conf, "rules_confident"
+	}
 	if client == nil || strings.TrimSpace(text) == "" {
 		return fallback, "rules"
 	}
@@ -239,10 +278,7 @@ func ClassifySessionIntentWithLLMModel(ctx context.Context, userMessage, roleHin
 		return fallback, "rules_no_model"
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-
-	system := `你是会话意图分类器。根据用户当前消息判断唯一意图，只输出 JSON，不要 markdown。
+	system := `你是会话意图分类器。根据用户当前消息判断唯一意图，只输出 JSON，不要 markdown。不要思考过程，直接给结果。
 
 intent 必须是以下之一：
 - chat：闲聊、产品/配置咨询、写文档/改配置/问功能、问好、明确不要扫描；以及与安全测试无关的其它事
@@ -266,60 +302,155 @@ intent 必须是以下之一：
 		"\nprev_intent: " + emptyAs(prevIntent, "none") +
 		"\nuser_message:\n" + truncateRunes(text, 1500)
 
-	payload := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": user},
-		},
-		"temperature":           0.0,
-		"max_completion_tokens": 120,
+	messages := []map[string]string{
+		{"role": "system", "content": system},
+		{"role": "user", "content": user},
 	}
+
+	// Intent classification must not hold up task startup. Most compatible gateways
+	// accept max_tokens; only request-shape failures get one alternate-field retry.
+	const intentTotalBudget = 8 * time.Second
+	budgetCtx, budgetCancel := context.WithTimeout(ctx, intentTotalBudget)
+	defer budgetCancel()
+
+	type intentAttempt struct {
+		name    string
+		payload map[string]interface{}
+	}
+	attempts := []intentAttempt{
+		{
+			name: "max_tokens",
+			payload: map[string]interface{}{
+				"model":      model,
+				"messages":   messages,
+				"max_tokens": 256,
+			},
+		},
+		{
+			name: "max_completion_tokens",
+			payload: map[string]interface{}{
+				"model":                 model,
+				"messages":              messages,
+				"max_completion_tokens": 256,
+			},
+		},
+	}
+
 	var apiResponse struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := client.ChatCompletion(cctx, payload, &apiResponse); err != nil {
-		if logger != nil {
-			logger.Warn("session intent LLM failed, using rules", zap.Error(err))
+	for i, att := range attempts {
+		if budgetCtx.Err() != nil {
+			if logger != nil {
+				logger.Warn("session intent LLM canceled, using rules", zap.Error(budgetCtx.Err()))
+			}
+			return fallback, "rules_fallback"
 		}
-		return fallback, "rules_llm_error"
+		apiResponse = struct {
+			Choices []struct {
+				Message struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}{}
+		err := client.ChatCompletion(budgetCtx, att.payload, &apiResponse)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("session intent LLM attempt failed",
+					zap.Int("attempt", i+1),
+					zap.String("variant", att.name),
+					zap.Error(err),
+				)
+			}
+			if i == 0 && isIntentCompatibilityError(err) {
+				continue
+			}
+			return fallback, "rules_fallback"
+		}
+		if len(apiResponse.Choices) == 0 {
+			if logger != nil {
+				logger.Warn("session intent LLM empty choices, using rules")
+			}
+			return fallback, "rules_fallback"
+		}
+		content := extractIntentMessageContent(apiResponse.Choices[0].Message.Content, apiResponse.Choices[0].Message.ReasoningContent)
+		if content == "" {
+			if logger != nil {
+				logger.Warn("session intent LLM empty content, using rules")
+			}
+			return fallback, "rules_fallback"
+		}
+		var parsed struct {
+			Intent string `json:"intent"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+			if logger != nil {
+				logger.Warn("session intent LLM JSON parse failed",
+					zap.Int("attempt", i+1),
+					zap.String("variant", att.name),
+					zap.Error(err),
+				)
+			}
+			return fallback, "rules_fallback"
+		}
+		intent := normalizeSessionIntent(parsed.Intent)
+		if intent == "" {
+			if logger != nil {
+				logger.Warn("session intent LLM bad intent label",
+					zap.Int("attempt", i+1),
+					zap.String("variant", att.name),
+				)
+			}
+			return fallback, "rules_fallback"
+		}
+		// LLM may over-label pentest; require attack language or keep as recon/chat.
+		if intent == SessionIntentPentest && !pentestKeywords.MatchString(text) {
+			if ExtractTargetFromText(text) != "" {
+				return SessionIntentRecon, "llm_downgrade_recon"
+			}
+			return SessionIntentChat, "llm_downgrade_chat"
+		}
+		return intent, "llm"
 	}
-	if len(apiResponse.Choices) == 0 {
-		return fallback, "rules_llm_empty"
+	return fallback, "rules_fallback"
+}
+
+func isIntentCompatibilityError(err error) bool {
+	var apiErr *openai.APIError
+	if !errors.As(err, &apiErr) {
+		return false
 	}
-	content := strings.TrimSpace(apiResponse.Choices[0].Message.Content)
+	return apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusUnprocessableEntity
+}
+
+func stripIntentJSONContent(content string) string {
+	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
+	if i := strings.Index(content, "{"); i >= 0 {
+		if j := strings.LastIndex(content, "}"); j > i {
+			content = content[i : j+1]
+		}
+	}
+	return strings.TrimSpace(content)
+}
 
-	var parsed struct {
-		Intent string `json:"intent"`
-		Reason string `json:"reason"`
+func extractIntentMessageContent(content, reasoning string) string {
+	out := stripIntentJSONContent(content)
+	if out != "" {
+		return out
 	}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		// Do NOT substring-match "pentest" in free text (system/echo can contain the word).
-		if logger != nil {
-			logger.Warn("session intent LLM JSON parse failed", zap.String("snippet", truncateRunes(content, 200)))
-		}
-		return fallback, "rules_parse_error"
-	}
-	intent := normalizeSessionIntent(parsed.Intent)
-	if intent == "" {
-		return fallback, "rules_bad_intent"
-	}
-	// LLM may over-label pentest; require attack language or keep as recon/chat.
-	if intent == SessionIntentPentest && !pentestKeywords.MatchString(text) {
-		if ExtractTargetFromText(text) != "" {
-			return SessionIntentRecon, "llm_downgrade_recon"
-		}
-		return SessionIntentChat, "llm_downgrade_chat"
-	}
-	return intent, "llm"
+	// 推理模型偶发：正文空、JSON 只在 reasoning_content
+	return stripIntentJSONContent(reasoning)
 }
 
 func normalizeSessionIntent(s string) SessionIntent {
@@ -372,16 +503,17 @@ func ResolveAndStoreSessionIntent(ctx context.Context, conversationID, userMessa
 	text := intentTextForClassification(userMessage)
 	// Pass full userMessage; classifiers strip interrupt templates internally.
 	incoming, source := ClassifySessionIntentWithLLMModel(ctx, userMessage, roleHint, string(prev), model, client, logger)
-	next := sanitizeIntent(mergeSessionIntent(prev, incoming, text), text)
-	if next != incoming && logger != nil {
+	safeIncoming := sanitizeIntent(incoming, text)
+	if safeIncoming != incoming && logger != nil {
 		logger.Info("session intent sanitized",
 			zap.String("conversation_id", conversationID),
 			zap.String("from", string(incoming)),
-			zap.String("to", string(next)),
+			zap.String("to", string(safeIncoming)),
 			zap.String("source", source),
 		)
 		source = source + "+sanitize"
 	}
+	next := mergeSessionIntent(prev, safeIncoming, text)
 	state.SetSessionIntent(next)
 	if next == SessionIntentChat {
 		state.Controller().ClearPrimaryTarget()
@@ -397,6 +529,12 @@ var continuationAck = regexp.MustCompile(`(?i)^(` +
 	`好的?|继续|接着|嗯+|哦+|行|可以|ok|okay|go\s*on|continue|next|收到|明白` +
 	`)$`)
 
+var taskContextDialogue = regexp.MustCompile(`(?i)(` +
+	`(当前|目前|刚才|这次|测试|扫描|任务).*(进度|状态|情况|结果|发现|成果)|` +
+	`(总结|汇总|报告|查看|看看|说说).*(进度|状态|情况|结果|发现|成果)|` +
+	`做到哪|到哪一步|\b(progress|status|findings|summary)\b` +
+	`)`)
+
 func mergeSessionIntent(prev, incoming SessionIntent, userMessage string) SessionIntent {
 	msg := strings.TrimSpace(userMessage)
 	if prev == "" {
@@ -411,6 +549,16 @@ func mergeSessionIntent(prev, incoming SessionIntent, userMessage string) Sessio
 			return prev
 		}
 		return SessionIntentChat
+	}
+	// Questions about an active task are dialogue inside that task, not a request
+	// to abandon its target or execution obligations.
+	if (prev == SessionIntentPentest || prev == SessionIntentRecon) &&
+		incoming == SessionIntentChat &&
+		taskContextDialogue.MatchString(msg) &&
+		ExtractTargetFromText(msg) == "" &&
+		!pentestKeywords.MatchString(msg) &&
+		!reconKeywords.MatchString(msg) {
+		return prev
 	}
 	// Trust this turn's classifier for clear modes (chat/recon/pentest).
 	// Do NOT sticky-keep pentest when user switched to chat/recon/unrelated work.

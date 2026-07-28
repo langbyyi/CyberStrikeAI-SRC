@@ -35,11 +35,11 @@ import (
 
 // claudeRequest 表示 Anthropic Messages API 的请求体。
 type claudeRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	System    string          `json:"system,omitempty"`
-	Messages  []claudeMessage `json:"messages"`
-	Tools     []claudeTool    `json:"tools,omitempty"`
+	Model        string          `json:"model"`
+	MaxTokens    int             `json:"max_tokens"`
+	System       string          `json:"system,omitempty"`
+	Messages     []claudeMessage `json:"messages"`
+	Tools        []claudeTool    `json:"tools,omitempty"`
 	Stream       bool            `json:"stream,omitempty"`
 	Thinking     json.RawMessage `json:"thinking,omitempty"`
 	OutputConfig json.RawMessage `json:"output_config,omitempty"`
@@ -152,8 +152,10 @@ func convertOpenAIToClaude(payload interface{}) (*claudeRequest, error) {
 		req.Model = m
 	}
 
-	// max_tokens (Claude 必需)
+	// max_tokens (Claude 必需)；兼容 OpenAI 新字段 max_completion_tokens
 	if mt, ok := oai["max_tokens"].(float64); ok && mt > 0 {
+		req.MaxTokens = int(mt)
+	} else if mt, ok := oai["max_completion_tokens"].(float64); ok && mt > 0 {
 		req.MaxTokens = int(mt)
 	} else {
 		req.MaxTokens = 8192 // Claude 默认最大输出（兼容 Haiku/Sonnet/Opus）

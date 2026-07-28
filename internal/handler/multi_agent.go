@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"cyberstrike-ai/internal/config"
@@ -54,54 +53,10 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 	// 注意：baseCtx 会在后面创建；该变量用于闭包提前捕获引用。
 	var baseCtx context.Context
 
-	clientDisconnected := false
-	// 与 sseKeepalive 共用：禁止并发写 ResponseWriter，否则会破坏 chunked 编码（ERR_INVALID_CHUNKED_ENCODING）。
-	var sseWriteMu sync.Mutex
-	var ssePublishConversationID string
-	sendEvent := func(eventType, message string, data interface{}) {
-		// 用户主动停止时，Eino 可能仍会并发上报 eventType=="error"。
-		// 为避免 UI 看到“取消错误 + cancelled 文案”两条回复，这里直接丢弃取消对应的 error。
-		if eventType == "error" && baseCtx != nil {
-			cause := context.Cause(baseCtx)
-			if errors.Is(cause, ErrTaskCancelled) || errors.Is(cause, multiagent.ErrInterruptContinue) {
-				return
-			}
-		}
-		ev := StreamEvent{Type: eventType, Message: message, Data: data}
-		b, errMarshal := json.Marshal(ev)
-		if errMarshal != nil {
-			b = []byte(`{"type":"error","message":"marshal failed"}`)
-		}
-		sseLine := make([]byte, 0, len(b)+8)
-		sseLine = append(sseLine, []byte("data: ")...)
-		sseLine = append(sseLine, b...)
-		sseLine = append(sseLine, '\n', '\n')
-		if ssePublishConversationID != "" && h.taskEventBus != nil {
-			h.taskEventBus.Publish(ssePublishConversationID, sseLine)
-		}
-		if clientDisconnected {
-			return
-		}
-		select {
-		case <-c.Request.Context().Done():
-			clientDisconnected = true
-			return
-		default:
-		}
-		sseWriteMu.Lock()
-		_, err := c.Writer.Write(sseLine)
-		if err != nil {
-			sseWriteMu.Unlock()
-			clientDisconnected = true
-			return
-		}
-		if flusher, ok := c.Writer.(http.Flusher); ok {
-			flusher.Flush()
-		} else {
-			c.Writer.Flush()
-		}
-		sseWriteMu.Unlock()
-	}
+	stream := newAgentSSEStream(c, h.taskEventBus, func() context.Context {
+		return baseCtx
+	})
+	sendEvent := stream.Send
 
 	h.logger.Info("收到 Eino DeepAgent 流式请求",
 		zap.String("conversationId", req.ConversationID),
@@ -113,7 +68,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		sendEvent("done", "", nil)
 		return
 	}
-	ssePublishConversationID = prep.ConversationID
+	stream.SetConversationID(prep.ConversationID)
 	if prep.CreatedNew {
 		sendEvent("conversation", "会话已创建", map[string]interface{}{
 			"conversationId": prep.ConversationID,
@@ -140,30 +95,22 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 	roleTools := prep.RoleTools
 	orch := strings.TrimSpace(req.Orchestration)
 
-	taskStatus := "completed"
-	// 仅在成功 StartTask 后再 FinishTask；避免「任务已存在」分支 return 时误删正在运行的同会话任务。
-	taskOwned := false
-	defer func() {
-		if taskOwned {
-			h.tasks.FinishTask(conversationID, taskStatus)
-		}
-	}()
-
 	sendEvent("progress", "正在启动 Eino 多代理...", map[string]interface{}{
 		"conversationId": conversationID,
 	})
 
 	stopKeepalive := make(chan struct{})
-	go sseKeepalive(c, stopKeepalive, &sseWriteMu)
+	go sseKeepalive(c, stopKeepalive, stream.WriteMutex())
 	defer close(stopKeepalive)
 
 	var result *multiagent.RunResult
 	var runErr error
 
 	baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
-	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, 600*time.Minute)
+	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, einoExecutionTimeout(h.config, "deep"))
 
-	if _, err := h.tasks.StartTask(conversationID, req.Message, cancelWithCause); err != nil {
+	managedTask, err := beginManagedAgentTask(h.tasks, conversationID, req.Message, cancelWithCause)
+	if err != nil {
 		var errorMsg string
 		if errors.Is(err, ErrTaskAlreadyRunning) {
 			errorMsg = "⚠️ 当前会话已有任务正在执行中，请等待当前任务完成或点击「停止任务」后再尝试。"
@@ -182,7 +129,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		timeoutCancel()
 		return
 	}
-	taskOwned = true
+	defer managedTask.Finish()
 
 	// 同一 HTTP 流内多段 Run（如中断并继续）合并 MCP execution id，供最终 response / 库表与工具芯片展示完整列表
 	var cumulativeMCPExecutionIDs []string
@@ -290,7 +237,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 			timeoutCancel()
 			baseCtx, cancelWithCause = context.WithCancelCause(context.Background())
 			h.tasks.BindTaskCancel(conversationID, cancelWithCause)
-			taskCtx, timeoutCancel = context.WithTimeout(baseCtx, 600*time.Minute)
+			taskCtx, timeoutCancel = context.WithTimeout(baseCtx, einoExecutionTimeout(h.config, "deep"))
 			h.tasks.UpdateTaskStatus(conversationID, "running")
 			continue
 		}
@@ -299,8 +246,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 			h.persistEinoAgentTraceForResume(conversationID, result)
 		}
 		if errors.Is(cause, ErrTaskCancelled) {
-			taskStatus = "cancelled"
-			h.tasks.UpdateTaskStatus(conversationID, taskStatus)
+			managedTask.SetStatus("cancelled")
 			cancelMsg := "任务已被用户取消，后续操作已停止。"
 			if assistantMessageID != "" {
 				if result != nil {
@@ -323,8 +269,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		}
 
 		if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(context.Cause(taskCtx), context.DeadlineExceeded) {
-			taskStatus = "timeout"
-			h.tasks.UpdateTaskStatus(conversationID, taskStatus)
+			managedTask.SetStatus("timeout")
 			timeoutMsg := "任务执行超时，已自动终止。"
 			if assistantMessageID != "" {
 				_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", timeoutMsg, time.Now(), assistantMessageID)
@@ -341,8 +286,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		}
 
 		h.logger.Error("Eino DeepAgent 执行失败", zap.Error(runErr))
-		taskStatus = "failed"
-		h.tasks.UpdateTaskStatus(conversationID, taskStatus)
+		managedTask.SetStatus("failed")
 		errMsg := "执行失败: " + runErr.Error()
 		if assistantMessageID != "" {
 			_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", errMsg, time.Now(), assistantMessageID)
@@ -359,8 +303,15 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 
 	timeoutCancel()
 
-	if assistantMessageID != "" {
-		_ = h.db.UpdateAssistantMessageFinalize(assistantMessageID, result.Response, cumulativeMCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput))
+	if err := persistAssistantFinal(h.db.UpdateAssistantMessageFinalize, assistantMessageID, result.Response, cumulativeMCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput)); err != nil {
+		h.logger.Error("更新最终助手消息失败", zap.Error(err))
+		managedTask.SetStatus("failed")
+		sendEvent("error", "保存最终回复失败", map[string]interface{}{
+			"conversationId": conversationID,
+			"messageId":      assistantMessageID,
+		})
+		sendEvent("done", "", map[string]interface{}{"conversationId": conversationID})
+		return
 	}
 
 	if result.LastAgentTraceInput != "" || result.LastAgentTraceOutput != "" {
@@ -410,7 +361,22 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 
 	baseCtx, cancelWithCause := context.WithCancelCause(c.Request.Context())
 	defer cancelWithCause(nil)
-	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, 600*time.Minute)
+	managedTask, err := beginManagedAgentTask(h.tasks, prep.ConversationID, req.Message, cancelWithCause)
+	if err != nil {
+		status := http.StatusInternalServerError
+		errorMsg := "无法启动任务: " + err.Error()
+		if errors.Is(err, ErrTaskAlreadyRunning) {
+			status = http.StatusConflict
+			errorMsg = "当前会话已有任务正在执行中"
+		}
+		if prep.AssistantMessageID != "" {
+			_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", errorMsg, time.Now(), prep.AssistantMessageID)
+		}
+		c.JSON(status, gin.H{"error": errorMsg})
+		return
+	}
+	defer managedTask.Finish()
+	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, einoExecutionTimeout(h.config, "deep"))
 	defer timeoutCancel()
 	progressCallback := h.createProgressCallback(taskCtx, cancelWithCause, prep.ConversationID, prep.AssistantMessageID, nil)
 	taskCtx = multiagent.WithHITLToolInterceptor(taskCtx, func(ctx context.Context, toolName, arguments string) (string, error) {
@@ -446,6 +412,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 		if shouldPersistEinoAgentTraceAfterRunError(baseCtx) {
 			h.persistEinoAgentTraceForResume(prep.ConversationID, result)
 		}
+		managedTask.SetStatus(agentTaskTerminalStatus(taskCtx, runErr))
 		h.logger.Error("Eino DeepAgent 执行失败", zap.Error(runErr))
 		errMsg := "执行失败: " + runErr.Error()
 		if prep.AssistantMessageID != "" {
@@ -455,8 +422,11 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 		return
 	}
 
-	if prep.AssistantMessageID != "" {
-		_ = h.db.UpdateAssistantMessageFinalize(prep.AssistantMessageID, result.Response, result.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput))
+	if err := persistAssistantFinal(h.db.UpdateAssistantMessageFinalize, prep.AssistantMessageID, result.Response, result.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput)); err != nil {
+		h.logger.Error("更新最终助手消息失败", zap.Error(err))
+		managedTask.SetStatus("failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存最终回复失败"})
+		return
 	}
 
 	if result.LastAgentTraceInput != "" || result.LastAgentTraceOutput != "" {
