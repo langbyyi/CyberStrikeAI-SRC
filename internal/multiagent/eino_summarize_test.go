@@ -18,7 +18,19 @@ func (blockingSummaryModel) Generate(ctx context.Context, _ []*schema.Message, _
 }
 
 func (blockingSummaryModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	panic("summarization deadline test does not use Stream")
+	panic("use context-aware blockingSummaryStreamModel for stream tests")
+}
+
+type blockingSummaryStreamModel struct{ blockingSummaryModel }
+
+func (blockingSummaryStreamModel) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	reader, writer := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer writer.Close()
+		<-ctx.Done()
+		writer.Send(nil, ctx.Err())
+	}()
+	return reader, nil
 }
 
 func TestSummarizationDeadlineFallsBackDeterministically(t *testing.T) {
@@ -62,5 +74,22 @@ func TestDeterministicSummaryBoundsLargeToolOutput(t *testing.T) {
 	}
 	if !strings.Contains(got, "继续验证目标") {
 		t.Fatal("fallback must retain the user goal")
+	}
+}
+
+func TestSummarizationStreamHonorsDeadline(t *testing.T) {
+	wrapped := newSummarizationDeadlineModel(blockingSummaryStreamModel{}, 20*time.Millisecond, nil, "conv-stream")
+	stream, err := wrapped.Stream(context.Background(), []*schema.Message{schema.UserMessage("继续验证")})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	start := time.Now()
+	if _, recvErr := stream.Recv(); recvErr == nil || !strings.Contains(recvErr.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("stream must surface its bounded deadline, err=%v", recvErr)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("stream deadline exceeded bound: %s", elapsed)
 	}
 }
