@@ -103,6 +103,7 @@ agent:
     run_timeout_minutes: 120 # 整次 run 绝对 deadline；中断续跑不延期
     model_call_timeout_seconds: 300 # 单次模型调用上限（受 run 剩余时间压缩）
     model_stream_idle_timeout_seconds: 120 # 模型流式分片空闲超时
+    summarization_timeout_seconds: 120 # 历史摘要独立 deadline；超时使用确定性本地摘要继续执行
 # 人机协同（HITL）全局白名单：此处列出的工具始终免审批，与对话页「白名单工具（免审批，逗号分隔）」合并为并集；侧栏「应用」可合并写入本列表并立即生效。
 hitl:
   # 按你环境里的真实工具名增删（与侧栏一致、小写不敏感）；不需要全局免审批可改为 []

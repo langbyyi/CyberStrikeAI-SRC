@@ -884,6 +884,7 @@ type EinoSingleExecutionConfig struct {
 	RunTimeoutMinutes             int   `yaml:"run_timeout_minutes,omitempty" json:"run_timeout_minutes,omitempty"`
 	ModelCallTimeoutSeconds       int   `yaml:"model_call_timeout_seconds,omitempty" json:"model_call_timeout_seconds,omitempty"`
 	ModelStreamIdleTimeoutSeconds int   `yaml:"model_stream_idle_timeout_seconds,omitempty" json:"model_stream_idle_timeout_seconds,omitempty"`
+	SummarizationTimeoutSeconds   int   `yaml:"summarization_timeout_seconds,omitempty" json:"summarization_timeout_seconds,omitempty"`
 }
 
 func (c EinoSingleExecutionConfig) EnabledEffective() bool {
@@ -914,6 +915,13 @@ func (c EinoSingleExecutionConfig) ModelCallTimeoutSecondsEffective() int {
 func (c EinoSingleExecutionConfig) ModelStreamIdleTimeoutSecondsEffective() int {
 	if c.ModelStreamIdleTimeoutSeconds > 0 {
 		return c.ModelStreamIdleTimeoutSeconds
+	}
+	return 120
+}
+
+func (c EinoSingleExecutionConfig) SummarizationTimeoutSecondsEffective() int {
+	if c.SummarizationTimeoutSeconds > 0 {
+		return c.SummarizationTimeoutSeconds
 	}
 	return 120
 }

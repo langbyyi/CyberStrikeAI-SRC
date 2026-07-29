@@ -2,10 +2,12 @@ package multiagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
@@ -14,11 +16,11 @@ import (
 	"cyberstrike-ai/internal/project"
 
 	"github.com/bytedance/sonic"
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"go.uber.org/zap"
 )
 
@@ -104,6 +106,130 @@ type loggingSummaryModel struct {
 	conversationID string
 }
 
+type summarizationDeadlineModel struct {
+	inner          model.BaseChatModel
+	timeout        time.Duration
+	logger         *zap.Logger
+	conversationID string
+}
+
+func newSummarizationDeadlineModel(inner model.BaseChatModel, timeout time.Duration, logger *zap.Logger, conversationID string) model.BaseChatModel {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	return &summarizationDeadlineModel{
+		inner:          inner,
+		timeout:        timeout,
+		logger:         logger,
+		conversationID: conversationID,
+	}
+}
+
+func (m *summarizationDeadlineModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	callCtx, cancel := context.WithTimeout(ctx, m.timeout)
+	defer cancel()
+	type response struct {
+		message *schema.Message
+		err     error
+	}
+	done := make(chan response, 1)
+	go func() {
+		message, err := m.inner.Generate(callCtx, input, opts...)
+		done <- response{message: message, err: err}
+	}()
+	select {
+	case result := <-done:
+		if result.err == nil || !errors.Is(result.err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return result.message, result.err
+		}
+	case <-callCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if m.logger != nil {
+		m.logger.Warn("eino summarization deadline exceeded; using deterministic fallback",
+			zap.String("conversationId", m.conversationID),
+			zap.Duration("timeout", m.timeout),
+		)
+	}
+	return schema.AssistantMessage(deterministicSummarizationFallback(input), nil), nil
+}
+
+func (m *summarizationDeadlineModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	callCtx, _ := context.WithTimeout(ctx, m.timeout)
+	return m.inner.Stream(callCtx, input, opts...)
+}
+
+func deterministicSummarizationFallback(input []*schema.Message) string {
+	const maxItems = 5
+	users := make([]string, 0, maxItems)
+	tools := make([]string, 0, maxItems)
+	for i := len(input) - 1; i >= 0 && (len(users) < maxItems || len(tools) < maxItems); i-- {
+		msg := input[i]
+		if msg == nil {
+			continue
+		}
+		content := truncateSummaryText(msg.Content, 600)
+		if content == "" {
+			continue
+		}
+		switch msg.Role {
+		case schema.User:
+			if len(users) < maxItems {
+				users = append(users, content)
+			}
+		case schema.Tool:
+			if len(tools) < maxItems {
+				tools = append(tools, content)
+			}
+		}
+	}
+	reverseStrings(users)
+	reverseStrings(tools)
+
+	var out strings.Builder
+	out.WriteString("<summary>\n")
+	out.WriteString("## 摘要状态\n- 摘要模型超时；以下内容由本地确定性降级生成，未确认项不得视为已关闭。\n")
+	out.WriteString("## 最近用户目标与约束\n")
+	writeSummaryItems(&out, users)
+	out.WriteString("## 最近工具事实\n")
+	writeSummaryItems(&out, tools)
+	out.WriteString("## open_hypotheses\n- 保留超时前仍在验证的假设；依据最近工具事实继续，不重复已证明无效的路径。\n")
+	out.WriteString("## almost_signals\n- 无法由确定性降级安全推断；须从保留的最近轨迹继续验证。\n")
+	out.WriteString("## dead_ends\n- 以最近工具事实中的稳定否定结果为准，避免无差异重跑。\n")
+	out.WriteString("## auth_coverage\n- 未由摘要模型完成归纳；不得据此声称认证覆盖已闭环。\n")
+	out.WriteString("</summary>")
+	return out.String()
+}
+
+func truncateSummaryText(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
+func reverseStrings(values []string) {
+	for left, right := 0, len(values)-1; left < right; left, right = left+1, right-1 {
+		values[left], values[right] = values[right], values[left]
+	}
+}
+
+func writeSummaryItems(out *strings.Builder, values []string) {
+	if len(values) == 0 {
+		out.WriteString("- 无\n")
+		return
+	}
+	for _, value := range values {
+		out.WriteString("- ")
+		out.WriteString(strings.ReplaceAll(value, "\n", " "))
+		out.WriteByte('\n')
+	}
+}
+
 func (m *loggingSummaryModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	if m.logger != nil {
 		m.logger.Info("eino summarization Generate start",
@@ -148,6 +274,8 @@ func newEinoSummarizationMiddleware(
 	}
 	// Always wrap so hang-on-summary is visible even without ChatModel phase callbacks.
 	summaryModel = &loggingSummaryModel{inner: summaryModel, logger: logger, conversationID: conversationID}
+	summaryTimeout := time.Duration(appCfg.Agent.EinoSingleExecution.SummarizationTimeoutSecondsEffective()) * time.Second
+	summaryModel = newSummarizationDeadlineModel(summaryModel, summaryTimeout, logger, conversationID)
 	maxTotal := appCfg.OpenAI.MaxTotalTokens
 	if maxTotal <= 0 {
 		maxTotal = 120000
