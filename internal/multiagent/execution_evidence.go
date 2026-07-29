@@ -69,6 +69,7 @@ type ConversationExecutionState struct {
 	// roleTools: tools bound for this conversation (empty = unrestricted / default role).
 	roleTools  []string
 	controller *ExecutionController
+	pending    *PendingLedger
 	// sessionIntent: chat | recon | pentest — gates record obligations (see session_intent.go).
 	sessionIntent SessionIntent
 
@@ -121,6 +122,7 @@ func GetConversationExecutionState(conversationID string) *ConversationExecution
 		maxCoverage:    defaultMaxCoverage,
 		lastAccess:     time.Now(),
 		controller:     NewExecutionController(""),
+		pending:        NewPendingLedger(),
 	}
 	execStates[id] = s
 	evictOldestConversationsLocked()
@@ -138,6 +140,28 @@ func (s *ConversationExecutionState) Controller() *ExecutionController {
 		s.controller = NewExecutionController("")
 	}
 	return s.controller
+}
+
+func (s *ConversationExecutionState) PendingLedger() *PendingLedger {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending == nil {
+		s.pending = NewPendingLedger()
+	}
+	return s.pending
+}
+
+func (s *ConversationExecutionState) ResetPendingLedger() *PendingLedger {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = NewPendingLedger()
+	return s.pending
 }
 
 // SetPrimaryTarget fixes the first non-empty target for this conversation.
@@ -177,6 +201,10 @@ func NotifyPendingToolCallsResolved(conversationID string, ids ...string) {
 	execStateMu.Unlock()
 	if state == nil {
 		return
+	}
+	ledger := state.PendingLedger()
+	for _, callID := range cleaned {
+		ledger.Resolve(callID)
 	}
 	state.pendingCloserMu.Lock()
 	fn := state.pendingCloser
