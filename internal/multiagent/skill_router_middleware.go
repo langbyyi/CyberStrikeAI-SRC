@@ -180,12 +180,15 @@ func applyExecutionBoostPostProcess(cfg executionToolMiddlewareConfig, toolName,
 	}
 	if cfg.DecisionController {
 		class := classifyExecutionTool(toolName)
-		if class != executionToolDecision && class != executionToolStateMutation {
-			code, _ := classifyToolError(result)
-			if code == "" {
-				code = "ok"
-			}
-			state.Controller().RecordProbeResult(callID, CallSignature(toolName, args), ResultFingerprint(toolName, result), code)
+		if class != executionToolDecision {
+			failed := toolResultLooksFailed(result)
+			outcome := ClassifySemanticOutcome(toolName, args, result, failed)
+			state.Controller().RecordSemanticOutcome(
+				callID,
+				toolName,
+				CallSignature(toolName, args),
+				outcome,
+			)
 		}
 	}
 	// Note: invoke-time dead-tool block is in deadToolPrecheck (PRE next).

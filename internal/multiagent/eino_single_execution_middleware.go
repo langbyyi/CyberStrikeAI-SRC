@@ -218,11 +218,11 @@ func (m *einoSingleExecutionMiddleware) AfterModelRewriteState(ctx context.Conte
 				continue
 			}
 			class := classifyExecutionTool(call.Function.Name)
-			if class == executionToolDecision || class == executionToolStateMutation {
+			if class == executionToolDecision {
 				filtered = append(filtered, call)
 				continue
 			}
-			if allowed, _ := controller.CheckProbeCallAllowed(CallSignature(call.Function.Name, call.Function.Arguments)); allowed {
+			if allowed, _ := controller.CheckToolCallAllowed(call.Function.Name, call.Function.Arguments); allowed {
 				filtered = append(filtered, call)
 			} else {
 				reason = "stagnation_or_retry_budget"
@@ -541,10 +541,10 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 	pending := controller.PendingObligation()
 	if pending == nil {
 		class := classifyExecutionTool(toolName)
-		if class == executionToolDecision || class == executionToolStateMutation {
+		if class == executionToolDecision {
 			return ""
 		}
-		if allowed, reason := controller.CheckProbeCallAllowed(CallSignature(toolName, arguments)); !allowed {
+		if allowed, reason := controller.CheckToolCallAllowed(toolName, arguments); !allowed {
 			return fmt.Sprintf("[framework_tool_outcome] code=%s retryable=false\n当前调用签名已被执行控制器阻断，请换假设或关闭分支。", reason)
 		}
 		return ""
