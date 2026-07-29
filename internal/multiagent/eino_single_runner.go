@@ -18,6 +18,7 @@ import (
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -99,8 +100,8 @@ func RunEinoSingleChatModelAgent(
 			"intent":         string(sessionIntent),
 			"source":         intentSource,
 			"obligations":    RecordObligationsEnabled(conversationID),
-			"primaryTarget": GetConversationExecutionState(conversationID).Controller().PrimaryTarget(),
-			"userPreview":   truncateRunes(strings.TrimSpace(userMessage), 80),
+			"primaryTarget":  GetConversationExecutionState(conversationID).Controller().PrimaryTarget(),
+			"userPreview":    truncateRunes(strings.TrimSpace(userMessage), 80),
 		})
 	}
 	mainDefs := ag.ToolsForRole(roleTools)
@@ -235,6 +236,22 @@ func RunEinoSingleChatModelAgent(
 		_ = agent
 		return "orchestrator"
 	}
+	finalizer := func(finalizeCtx context.Context, prompt string) (string, error) {
+		timeout := time.Duration(appCfg.Agent.EinoSingleExecution.SummarizationTimeoutSecondsEffective()) * time.Second
+		callCtx, cancel := context.WithTimeout(finalizeCtx, timeout)
+		defer cancel()
+		message, callErr := mainModel.Generate(callCtx, []*schema.Message{
+			schema.SystemMessage("你是执行结果收尾器。只能基于输入事实生成简洁最终报告；禁止调用工具、描述后续计划、输出内部框架标记或把候选写成已确认漏洞。"),
+			schema.UserMessage(prompt),
+		})
+		if callErr != nil {
+			return "", callErr
+		}
+		if message == nil {
+			return "", fmt.Errorf("eino single finalizer returned nil message")
+		}
+		return strings.TrimSpace(message.Content), nil
+	}
 
 	return runEinoADKAgentLoop(ctx, &einoADKRunLoopArgs{
 		OrchMode:                "eino_single",
@@ -258,6 +275,7 @@ func RunEinoSingleChatModelAgent(
 		ModelFacingTrace:        modelFacingTrace,
 		EinoCallbacks:           &ma.EinoCallbacks,
 		MwCfg:                   &ma.EinoMiddleware,
+		Finalizer:               finalizer,
 		EmptyResponseMessage: "(Eino ADK single-agent session completed but no assistant text was captured. Check process details or logs.) " +
 			"（Eino ADK 单代理会话已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}, baseMsgs)
