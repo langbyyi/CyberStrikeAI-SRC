@@ -70,6 +70,9 @@ type ConversationExecutionState struct {
 	roleTools  []string
 	controller *ExecutionController
 	pending    *PendingLedger
+	// evidenceRejections is keyed by evidence fingerprint, not category, so
+	// changing vulnerability labels cannot bypass a prior policy rejection.
+	evidenceRejections map[string]string
 	// sessionIntent: chat | recon | pentest — gates record obligations (see session_intent.go).
 	sessionIntent SessionIntent
 
@@ -115,14 +118,15 @@ func GetConversationExecutionState(conversationID string) *ConversationExecution
 		return s
 	}
 	s := &ConversationExecutionState{
-		Coverage:       map[string]CoverageItem{},
-		InjectedSkills: map[string]struct{}{},
-		toolDead:       map[string]string{},
-		maxEvidence:    defaultMaxEvidence,
-		maxCoverage:    defaultMaxCoverage,
-		lastAccess:     time.Now(),
-		controller:     NewExecutionController(""),
-		pending:        NewPendingLedger(),
+		Coverage:           map[string]CoverageItem{},
+		InjectedSkills:     map[string]struct{}{},
+		toolDead:           map[string]string{},
+		maxEvidence:        defaultMaxEvidence,
+		maxCoverage:        defaultMaxCoverage,
+		lastAccess:         time.Now(),
+		controller:         NewExecutionController(""),
+		pending:            NewPendingLedger(),
+		evidenceRejections: map[string]string{},
 	}
 	execStates[id] = s
 	evictOldestConversationsLocked()
@@ -162,6 +166,28 @@ func (s *ConversationExecutionState) ResetPendingLedger() *PendingLedger {
 	defer s.mu.Unlock()
 	s.pending = NewPendingLedger()
 	return s.pending
+}
+
+func (s *ConversationExecutionState) RememberEvidenceRejection(fingerprint, code string) {
+	if s == nil || strings.TrimSpace(fingerprint) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.evidenceRejections == nil {
+		s.evidenceRejections = make(map[string]string)
+	}
+	s.evidenceRejections[strings.TrimSpace(fingerprint)] = strings.TrimSpace(code)
+}
+
+func (s *ConversationExecutionState) EvidenceRejection(fingerprint string) (string, bool) {
+	if s == nil || strings.TrimSpace(fingerprint) == "" {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	code, ok := s.evidenceRejections[strings.TrimSpace(fingerprint)]
+	return code, ok
 }
 
 // SetPrimaryTarget fixes the first non-empty target for this conversation.

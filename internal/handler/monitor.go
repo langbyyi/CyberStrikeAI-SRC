@@ -73,11 +73,12 @@ const monitorPageTopTools = 6
 
 // MonitorStatsSummary 工具调用汇总
 type MonitorStatsSummary struct {
-	TotalCalls   int        `json:"totalCalls"`
-	SuccessCalls int        `json:"successCalls"`
-	FailedCalls  int        `json:"failedCalls"`
-	LastCallTime *time.Time `json:"lastCallTime,omitempty"`
-	ToolCount    int        `json:"toolCount"`
+	TotalCalls       int            `json:"totalCalls"`
+	SuccessCalls     int            `json:"successCalls"`
+	FailedCalls      int            `json:"failedCalls"`
+	LastCallTime     *time.Time     `json:"lastCallTime,omitempty"`
+	ToolCount        int            `json:"toolCount"`
+	SemanticOutcomes map[string]int `json:"semanticOutcomes,omitempty"`
 }
 
 // MonitorResponse 监控响应
@@ -245,10 +246,12 @@ func slimToolExecution(exec *mcp.ToolExecution) *mcp.ToolExecution {
 		return nil
 	}
 	slim := &mcp.ToolExecution{
-		ID:        exec.ID,
-		ToolName:  exec.ToolName,
-		Status:    exec.Status,
-		StartTime: exec.StartTime,
+		ID:              exec.ID,
+		ToolName:        exec.ToolName,
+		Status:          exec.Status,
+		StartTime:       exec.StartTime,
+		ConversationID:  exec.ConversationID,
+		SemanticOutcome: exec.SemanticOutcome,
 	}
 	if exec.EndTime != nil {
 		end := *exec.EndTime
@@ -340,13 +343,36 @@ func (h *MonitorHandler) loadStatsSummary(topN int) (*MonitorStatsSummary, []*mc
 	if h.db != nil {
 		result, err := h.db.LoadToolStatsSummary(topN)
 		if err == nil {
-			return dbStatsSummaryToMonitor(result), result.TopTools
+			summary := dbStatsSummaryToMonitor(result)
+			if counts, countErr := h.db.LoadToolSemanticOutcomeCounts(); countErr == nil {
+				summary.SemanticOutcomes = counts
+			}
+			return summary, result.TopTools
 		}
 		h.logger.Warn("从数据库加载统计汇总失败，回退到内存数据", zap.Error(err))
 	}
 
 	stats := h.loadStatsMap()
-	return summarizeToolStats(stats, topN)
+	summary, tools := summarizeToolStats(stats, topN)
+	summary.SemanticOutcomes = semanticOutcomeCounts(h.mcpServer.GetAllExecutions())
+	return summary, tools
+}
+
+func semanticOutcomeCounts(executions []*mcp.ToolExecution) map[string]int {
+	counts := make(map[string]int)
+	for _, execution := range executions {
+		if execution == nil {
+			continue
+		}
+		outcome := strings.TrimSpace(execution.SemanticOutcome)
+		if outcome == "" && execution.Status != "running" {
+			outcome = mcp.ClassifyToolExecutionSemanticOutcome(execution)
+		}
+		if outcome != "" {
+			counts[outcome]++
+		}
+	}
+	return counts
 }
 
 func dbStatsSummaryToMonitor(result *database.ToolStatsSummaryResult) *MonitorStatsSummary {
@@ -531,7 +557,7 @@ func (h *MonitorHandler) CancelExecution(c *gin.Context) {
 
 func (h *MonitorHandler) enrichExecutionsConversationID(executions []*mcp.ToolExecution) {
 	for _, exec := range executions {
-		if exec == nil || exec.Status != "running" {
+		if exec == nil || strings.TrimSpace(exec.ConversationID) != "" {
 			continue
 		}
 		exec.ConversationID = h.conversationIDForRunningExecution(exec.ID)

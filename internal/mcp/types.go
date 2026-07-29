@@ -190,17 +190,17 @@ type CallToolResponse struct {
 
 // ToolExecution 工具执行记录
 type ToolExecution struct {
-	ID        string                 `json:"id"`
-	ToolName  string                 `json:"toolName"`
-	Arguments map[string]interface{} `json:"arguments"`
-	Status    string                 `json:"status"` // pending, running, completed, failed, cancelled
-	Result    *ToolResult            `json:"result,omitempty"`
-	Error     string                 `json:"error,omitempty"`
-	StartTime time.Time              `json:"startTime"`
-	EndTime   *time.Time             `json:"endTime,omitempty"`
-	Duration  time.Duration          `json:"duration,omitempty"`
-	// ConversationID 仅 API 展示用（进行中的 Agent 任务），不写入 tool_executions 表。
-	ConversationID string `json:"conversationId,omitempty"`
+	ID              string                 `json:"id"`
+	ToolName        string                 `json:"toolName"`
+	Arguments       map[string]interface{} `json:"arguments"`
+	Status          string                 `json:"status"` // pending, running, completed, failed, cancelled
+	Result          *ToolResult            `json:"result,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	StartTime       time.Time              `json:"startTime"`
+	EndTime         *time.Time             `json:"endTime,omitempty"`
+	Duration        time.Duration          `json:"duration,omitempty"`
+	ConversationID  string                 `json:"conversationId,omitempty"`
+	SemanticOutcome string                 `json:"semanticOutcome,omitempty"`
 }
 
 // ToolStats 工具统计信息

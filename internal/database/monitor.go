@@ -13,6 +13,9 @@ import (
 
 // SaveToolExecution 保存工具执行记录
 func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
+	if strings.TrimSpace(exec.SemanticOutcome) == "" && exec.Status != "running" {
+		exec.SemanticOutcome = mcp.ClassifyToolExecutionSemanticOutcome(exec)
+	}
 	argsJSON, err := json.Marshal(exec.Arguments)
 	if err != nil {
 		db.logger.Warn("序列化执行参数失败", zap.Error(err))
@@ -46,8 +49,8 @@ func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
 
 	query := `
 		INSERT OR REPLACE INTO tool_executions 
-		(id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, conversation_id, semantic_outcome, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = db.Exec(query,
@@ -60,6 +63,8 @@ func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
 		exec.StartTime,
 		endTime,
 		durationMs,
+		exec.ConversationID,
+		exec.SemanticOutcome,
 		time.Now(),
 	)
 
@@ -116,6 +121,33 @@ func (db *DB) CountToolExecutions(status, toolName string) (int, error) {
 	return count, nil
 }
 
+func (db *DB) LoadToolSemanticOutcomeCounts() (map[string]int, error) {
+	rows, err := db.Query(`
+		SELECT CASE
+			WHEN TRIM(COALESCE(semantic_outcome, '')) <> '' THEN semantic_outcome
+			WHEN status IN ('failed', 'cancelled') THEN 'invocation_error'
+			ELSE 'completed'
+		END AS outcome, COUNT(*)
+		FROM tool_executions
+		WHERE status <> 'running'
+		GROUP BY outcome
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var outcome string
+		var count int
+		if err := rows.Scan(&outcome, &count); err != nil {
+			return nil, err
+		}
+		counts[outcome] = count
+	}
+	return counts, rows.Err()
+}
+
 // LoadToolExecutions 加载所有工具执行记录（支持分页）
 func (db *DB) LoadToolExecutions() ([]*mcp.ToolExecution, error) {
 	return db.LoadToolExecutionsWithPagination(0, 1000, "", "")
@@ -135,7 +167,7 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 	}
 
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, conversation_id, semantic_outcome
 		FROM tool_executions
 	`
 	args := []interface{}{}
@@ -172,6 +204,7 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 		var errorText sql.NullString
 		var endTime sql.NullTime
 		var durationMs sql.NullInt64
+		var conversationID, semanticOutcome sql.NullString
 
 		err := rows.Scan(
 			&exec.ID,
@@ -183,6 +216,8 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&conversationID,
+			&semanticOutcome,
 		)
 		if err != nil {
 			db.logger.Warn("加载执行记录失败", zap.Error(err))
@@ -218,6 +253,12 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 		// 设置持续时间
 		if durationMs.Valid {
 			exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
+		}
+		if conversationID.Valid {
+			exec.ConversationID = conversationID.String
+		}
+		if semanticOutcome.Valid {
+			exec.SemanticOutcome = semanticOutcome.String
 		}
 
 		executions = append(executions, &exec)
@@ -345,7 +386,7 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 	}
 
 	query := `
-		SELECT id, tool_name, status, start_time, end_time, duration_ms
+		SELECT id, tool_name, status, start_time, end_time, duration_ms, conversation_id, semantic_outcome
 		FROM tool_executions
 	`
 	whereSQL, args := toolExecutionsFilterSQL(status, toolName)
@@ -363,6 +404,7 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 		var exec mcp.ToolExecution
 		var endTime sql.NullTime
 		var durationMs sql.NullInt64
+		var conversationID, semanticOutcome sql.NullString
 
 		if err := rows.Scan(
 			&exec.ID,
@@ -371,6 +413,8 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&conversationID,
+			&semanticOutcome,
 		); err != nil {
 			db.logger.Warn("加载执行记录列表失败", zap.Error(err))
 			continue
@@ -381,6 +425,12 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 		if durationMs.Valid {
 			exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
 		}
+		if conversationID.Valid {
+			exec.ConversationID = conversationID.String
+		}
+		if semanticOutcome.Valid {
+			exec.SemanticOutcome = semanticOutcome.String
+		}
 		executions = append(executions, &exec)
 	}
 
@@ -390,7 +440,7 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 // GetToolExecution 根据ID获取单条工具执行记录
 func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, conversation_id, semantic_outcome
 		FROM tool_executions
 		WHERE id = ?
 	`
@@ -403,6 +453,7 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	var errorText sql.NullString
 	var endTime sql.NullTime
 	var durationMs sql.NullInt64
+	var conversationID, semanticOutcome sql.NullString
 
 	err := row.Scan(
 		&exec.ID,
@@ -414,6 +465,8 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 		&exec.StartTime,
 		&endTime,
 		&durationMs,
+		&conversationID,
+		&semanticOutcome,
 	)
 	if err != nil {
 		return nil, err
@@ -443,6 +496,12 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 
 	if durationMs.Valid {
 		exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
+	}
+	if conversationID.Valid {
+		exec.ConversationID = conversationID.String
+	}
+	if semanticOutcome.Valid {
+		exec.SemanticOutcome = semanticOutcome.String
 	}
 
 	return &exec, nil
@@ -584,7 +643,7 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 	}
 
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, conversation_id, semantic_outcome
 		FROM tool_executions
 		WHERE id IN (` + strings.Join(placeholders, ",") + `)
 	`
@@ -603,6 +662,7 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 		var errorText sql.NullString
 		var endTime sql.NullTime
 		var durationMs sql.NullInt64
+		var conversationID, semanticOutcome sql.NullString
 
 		err := rows.Scan(
 			&exec.ID,
@@ -614,6 +674,8 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&conversationID,
+			&semanticOutcome,
 		)
 		if err != nil {
 			db.logger.Warn("加载执行记录失败", zap.Error(err))
@@ -649,6 +711,12 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 		// 设置持续时间
 		if durationMs.Valid {
 			exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
+		}
+		if conversationID.Valid {
+			exec.ConversationID = conversationID.String
+		}
+		if semanticOutcome.Valid {
+			exec.SemanticOutcome = semanticOutcome.String
 		}
 
 		executions = append(executions, &exec)

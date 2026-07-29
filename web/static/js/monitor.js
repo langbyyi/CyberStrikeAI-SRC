@@ -4743,7 +4743,37 @@ function bindMonitorStatsPanelEvents() {
     monitorStatsPanelEventsBound = true;
 }
 
-function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, lastCallText, hasCalls = true) {
+function semanticOutcomeLabel(outcome) {
+    const keys = {
+        completed: 'outcomeCompleted',
+        target_negative: 'outcomeTargetNegative',
+        external_transient: 'outcomeExternalTransient',
+        invocation_error: 'outcomeInvocationError',
+        policy_rejected: 'outcomePolicyRejected',
+        framework_dropped: 'outcomeFrameworkDropped'
+    };
+    const key = keys[outcome];
+    if (key && typeof window.t === 'function') {
+        return window.t('mcpMonitor.' + key);
+    }
+    return outcome || monitorFallback('未知', 'Unknown');
+}
+
+function renderSemanticOutcomeChips(outcomes) {
+    if (!outcomes || typeof outcomes !== 'object') return '';
+    const order = ['target_negative', 'external_transient', 'invocation_error', 'policy_rejected', 'framework_dropped'];
+    return order
+        .filter((key) => Number(outcomes[key]) > 0)
+        .map((key) => {
+            const tone = key === 'target_negative' ? 'is-neutral'
+                : key === 'external_transient' ? 'is-warning'
+                    : 'is-fail';
+            return `<span class="mcp-stats-kpi__chip ${tone}">${escapeHtml(semanticOutcomeLabel(key))} ${Number(outcomes[key])}</span>`;
+        })
+        .join('');
+}
+
+function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, lastCallText, hasCalls = true, semanticOutcomes = null) {
     const totalCallsLabel = mcpMonitorT('totalCalls') || monitorFallback('总调用次数', 'Total calls');
     const successRateLabel = mcpMonitorT('successRate') || monitorFallback('成功率', 'Success rate');
     const lastCallLabel = mcpMonitorT('lastCall') || monitorFallback('最近一次调用', 'Last call');
@@ -4761,6 +4791,7 @@ function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, la
                     <div class="mcp-stats-kpi__meta">
                         <span class="mcp-stats-kpi__chip is-ok">${escapeHtml(successPill)}</span>
                         <span class="mcp-stats-kpi__chip is-fail">${escapeHtml(failedPill)}</span>
+                        ${renderSemanticOutcomeChips(semanticOutcomes)}
                     </div>
                 </div>
             </article>
@@ -5040,7 +5071,7 @@ function renderMonitorStats(summary = null, topTools = [], lastFetchedAt = null)
     const showCombined = hasAnyCalls && (tools.length > 0 || showTimeline);
     const html = `
         <div class="mcp-exec-stats">
-            ${renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, lastCallText, hasCalls)}
+            ${renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, lastCallText, hasCalls, summary && summary.semanticOutcomes)}
             ${showCombined ? renderMcpStatsCombinedSection(
                 tools,
                 totals,
@@ -5101,6 +5132,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
     const deleteLabel = typeof window.t === 'function' ? window.t('mcpMonitor.delete') : '删除';
     const deleteExecTitle = typeof window.t === 'function' ? window.t('mcpMonitor.deleteExecTitle') : '删除此执行记录';
     const terminateLabel = typeof window.t === 'function' ? window.t('mcpMonitor.terminateExecution') : '终止';
+    const unknownOutcomeLabel = typeof window.t === 'function' ? window.t('mcpMonitor.outcomeUnknown') : monitorFallback('未分类', 'Unclassified');
     const statusKeyMap = { pending: 'statusPending', running: 'statusRunning', completed: 'statusCompleted', failed: 'statusFailed', cancelled: 'statusCancelled' };
     const locale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : undefined;
     const rows = executions
@@ -5109,6 +5141,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
             const statusClass = `monitor-status-chip ${status}`;
             const statusKey = statusKeyMap[status];
             const statusLabel = (typeof window.t === 'function' && statusKey) ? window.t('mcpMonitor.' + statusKey) : getStatusText(status);
+            const outcomeLabel = exec.semanticOutcome ? semanticOutcomeLabel(exec.semanticOutcome) : unknownOutcomeLabel;
             const startTime = exec.startTime ? (new Date(exec.startTime).toLocaleString ? new Date(exec.startTime).toLocaleString(locale || 'en-US') : String(exec.startTime)) : unknownLabel;
             const duration = formatExecutionDuration(exec.startTime, exec.endTime);
             const toolName = escapeHtml(formatMonitorToolName(exec.toolName) || unknownToolLabel);
@@ -5126,6 +5159,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
                     </td>
                     <td>${toolName}</td>
                     <td><span class="${statusClass}">${escapeHtml(statusLabel)}</span></td>
+                    <td>${escapeHtml(outcomeLabel)}</td>
                     <td>${escapeHtml(startTime)}</td>
                     <td>${escapeHtml(duration)}</td>
                     <td>
@@ -5156,6 +5190,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
     tableContainer.className = 'monitor-table-container';
     const colTool = typeof window.t === 'function' ? window.t('mcpMonitor.columnTool') : '工具';
     const colStatus = typeof window.t === 'function' ? window.t('mcpMonitor.columnStatus') : '状态';
+    const colOutcome = typeof window.t === 'function' ? window.t('mcpMonitor.columnOutcome') : monitorFallback('语义结果', 'Semantic outcome');
     const colStartTime = typeof window.t === 'function' ? window.t('mcpMonitor.columnStartTime') : '开始时间';
     const colDuration = typeof window.t === 'function' ? window.t('mcpMonitor.columnDuration') : '耗时';
     const colActions = typeof window.t === 'function' ? window.t('mcpMonitor.columnActions') : '操作';
@@ -5168,6 +5203,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
                     </th>
                     <th>${escapeHtml(colTool)}</th>
                     <th>${escapeHtml(colStatus)}</th>
+                    <th>${escapeHtml(colOutcome)}</th>
                     <th>${escapeHtml(colStartTime)}</th>
                     <th>${escapeHtml(colDuration)}</th>
                     <th>${escapeHtml(colActions)}</th>

@@ -475,6 +475,7 @@ func (s *Server) handleCallTool(msg *Message) *Message {
 		now := time.Now()
 		execution.EndTime = &now
 		execution.Duration = now.Sub(execution.StartTime)
+		execution.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(execution)
 
 		if s.storage != nil {
 			if err := s.storage.SaveToolExecution(execution); err != nil {
@@ -554,6 +555,7 @@ func (s *Server) handleCallTool(msg *Message) *Message {
 	}
 
 	finalResult = execution.Result
+	execution.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(execution)
 	s.mu.Unlock()
 
 	if s.storage != nil {
@@ -820,11 +822,12 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	// 创建执行记录
 	executionID := uuid.New().String()
 	execution := &ToolExecution{
-		ID:        executionID,
-		ToolName:  toolName,
-		Arguments: args,
-		Status:    "running",
-		StartTime: time.Now(),
+		ID:             executionID,
+		ToolName:       toolName,
+		Arguments:      args,
+		Status:         "running",
+		StartTime:      time.Now(),
+		ConversationID: MCPConversationIDFromContext(ctx),
 	}
 
 	s.mu.Lock()
@@ -898,6 +901,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	if finalResult == nil {
 		finalResult = execution.Result
 	}
+	execution.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(execution)
 	s.mu.Unlock()
 
 	if s.storage != nil {
@@ -1007,6 +1011,7 @@ func (s *Server) FinishToolExecution(executionID, toolName string, args map[stri
 		finalResult = &ToolResult{Content: []Content{{Type: "text", Text: text}}}
 		exec.Result = finalResult
 	}
+	exec.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(exec)
 	s.mu.Unlock()
 
 	if s.storage != nil {

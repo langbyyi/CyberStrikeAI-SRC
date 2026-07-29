@@ -585,11 +585,12 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 	// 创建执行记录
 	executionID := uuid.New().String()
 	execution := &ToolExecution{
-		ID:        executionID,
-		ToolName:  toolName, // 使用完整工具名称（包含MCP名称）
-		Arguments: args,
-		Status:    "running",
-		StartTime: time.Now(),
+		ID:             executionID,
+		ToolName:       toolName, // 使用完整工具名称（包含MCP名称）
+		Arguments:      args,
+		Status:         "running",
+		StartTime:      time.Now(),
+		ConversationID: MCPConversationIDFromContext(ctx),
 	}
 
 	m.mu.Lock()
@@ -655,6 +656,7 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 		}
 		execution.Result = result
 	}
+	execution.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(execution)
 	m.mu.Unlock()
 
 	if m.storage != nil {

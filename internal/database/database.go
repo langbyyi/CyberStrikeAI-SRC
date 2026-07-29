@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -225,6 +225,8 @@ func (db *DB) initTables() error {
 		start_time DATETIME NOT NULL,
 		end_time DATETIME,
 		duration_ms INTEGER,
+		conversation_id TEXT,
+		semantic_outcome TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);`
 
@@ -758,6 +760,9 @@ func (db *DB) initTables() error {
 		db.logger.Warn("迁移messages表失败", zap.Error(err))
 		// 不返回错误，允许继续运行
 	}
+	if err := db.migrateToolExecutionsTable(); err != nil {
+		db.logger.Warn("迁移tool_executions表失败", zap.Error(err))
+	}
 
 	if err := db.migrateConversationGroupsTable(); err != nil {
 		db.logger.Warn("迁移conversation_groups表失败", zap.Error(err))
@@ -799,6 +804,64 @@ func (db *DB) initTables() error {
 
 	db.logger.Info("数据库表初始化完成")
 	return nil
+}
+
+func (db *DB) migrateToolExecutionsTable() error {
+	for _, column := range []struct {
+		name string
+		stmt string
+	}{
+		{name: "conversation_id", stmt: "ALTER TABLE tool_executions ADD COLUMN conversation_id TEXT"},
+		{name: "semantic_outcome", stmt: "ALTER TABLE tool_executions ADD COLUMN semantic_outcome TEXT"},
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tool_executions') WHERE name=?", column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := db.Exec(column.stmt); err != nil {
+				return err
+			}
+		}
+	}
+	// Backfill existing monitor records once so historical transport-level
+	// "success" can be distinguished from target-negative and framework outcomes.
+	_, err := db.Exec(`
+		UPDATE tool_executions
+		SET semantic_outcome = CASE
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%[framework_tool_outcome]%'
+				AND LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%code=policy_rejected%'
+				THEN 'policy_rejected'
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%[framework_tool_outcome]%'
+				THEN 'framework_dropped'
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%policy_rejected%'
+				OR COALESCE(error, '') LIKE '%硬拒绝%'
+				OR COALESCE(result, '') LIKE '%硬拒绝%'
+				THEN 'policy_rejected'
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%invalid argument%'
+				OR COALESCE(error, '') LIKE '%须为数组%'
+				OR COALESCE(result, '') LIKE '%须为数组%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%validation failed%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%missing required%'
+				THEN 'invocation_error'
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%connection reset by peer%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%unexpected eof%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http 429%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 5%'
+				THEN 'external_transient'
+			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 404%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 405%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 410%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 412%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%connection refused%'
+				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%no route to host%'
+				THEN 'target_negative'
+			WHEN status IN ('failed', 'cancelled') THEN 'invocation_error'
+			ELSE 'completed'
+		END
+		WHERE status <> 'running' AND TRIM(COALESCE(semantic_outcome, '')) = ''
+	`)
+	return err
 }
 
 // migrateMessagesTable 迁移 messages 表，补充 updated_at 字段。
