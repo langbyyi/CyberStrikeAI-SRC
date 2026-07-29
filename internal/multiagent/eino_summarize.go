@@ -157,8 +157,26 @@ func (m *summarizationDeadlineModel) Generate(ctx context.Context, input []*sche
 }
 
 func (m *summarizationDeadlineModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	callCtx, _ := context.WithTimeout(ctx, m.timeout)
-	return m.inner.Stream(callCtx, input, opts...)
+	callCtx, cancel := context.WithTimeout(ctx, m.timeout)
+	upstream, err := m.inner.Stream(callCtx, input, opts...)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	reader, writer := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer cancel()
+		defer upstream.Close()
+		defer writer.Close()
+		for {
+			chunk, recvErr := upstream.Recv()
+			if writer.Send(chunk, recvErr) || recvErr != nil {
+				return
+			}
+		}
+	}()
+	return reader, nil
 }
 
 func deterministicSummarizationFallback(input []*schema.Message) string {
