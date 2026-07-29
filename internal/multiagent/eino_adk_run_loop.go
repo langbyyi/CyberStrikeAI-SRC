@@ -109,6 +109,10 @@ type einoADKRunLoopArgs struct {
 
 	// MwCfg optional: used for FinalizeGateEffective kill-switch (nil → gate on, matching boost default).
 	MwCfg *config.MultiAgentEinoMiddlewareConfig
+
+	// Finalizer performs one no-tool model call when the captured assistant text
+	// is planning-only or contains framework control text.
+	Finalizer NoToolFinalizer
 }
 
 func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs []adk.Message) (result *RunResult, runErr error) {
@@ -1301,12 +1305,9 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 				zap.Int("continuations", finalizeContinuations))
 		}
 	}
-	if finalizeGateEnabled {
-		presented := AppendIdentityGapIfNeeded(GetConversationExecutionState(conversationID), out.Response)
-		if presented != out.Response {
-			out.Response = presented
-			out.LastAgentTraceOutput = presented
-		}
+	if orchMode == "eino_single" {
+		out.Response = FinalizeRunResponse(ctx, GetConversationExecutionState(conversationID), out.Response, args.Finalizer)
+		out.LastAgentTraceOutput = out.Response
 	}
 	return out, nil
 }
