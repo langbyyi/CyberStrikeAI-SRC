@@ -33,6 +33,15 @@ const (
 	ObligationBlocked   = "blocked"
 )
 
+type ExecutionPhase string
+
+const (
+	ExecutionPhaseExploring  ExecutionPhase = "exploring"
+	ExecutionPhasePivoting   ExecutionPhase = "pivoting"
+	ExecutionPhaseFinalizing ExecutionPhase = "finalizing"
+	ExecutionPhaseFinished   ExecutionPhase = "finished"
+)
+
 // ExecutionSignal is a scenario-neutral evidence signal consumed by the execution layer.
 type ExecutionSignal struct {
 	Class      string
@@ -84,24 +93,30 @@ type ExecutionController struct {
 	seenCalls           map[string]struct{}
 	callAttempts        map[string]int
 	lastCallCode        map[string]string
+	outcomeAttempts     map[string]int
+	toolLastOutcome     map[string]SemanticOutcome
 	activeProbeCalls    map[string]struct{}
 	activeBatchNovel    bool
 	noNovelBatches      int
 	noNovelProbeCalls   int
 	pivotRequired       bool
 	pivotDirectiveShown bool
+	phase               ExecutionPhase
 	summary             ExecutionSummary
 }
 
 func NewExecutionController(primaryTarget string) *ExecutionController {
 	return &ExecutionController{
-		primary:      NormalizePrimaryTarget(primaryTarget),
-		seen:         make(map[string]struct{}),
-		directives:   make(map[string]struct{}),
-		seenResults:  make(map[string]struct{}),
-		seenCalls:    make(map[string]struct{}),
-		callAttempts: make(map[string]int),
-		lastCallCode: make(map[string]string),
+		primary:         NormalizePrimaryTarget(primaryTarget),
+		seen:            make(map[string]struct{}),
+		directives:      make(map[string]struct{}),
+		seenResults:     make(map[string]struct{}),
+		seenCalls:       make(map[string]struct{}),
+		callAttempts:    make(map[string]int),
+		lastCallCode:    make(map[string]string),
+		outcomeAttempts: make(map[string]int),
+		toolLastOutcome: make(map[string]SemanticOutcome),
+		phase:           ExecutionPhaseExploring,
 	}
 }
 
@@ -201,30 +216,96 @@ func (c *ExecutionController) StartProbeBatch(callIDs []string) {
 }
 
 func (c *ExecutionController) RecordProbeResult(callID, signature, fingerprint, code string) bool {
+	kind := SemanticOutcomeCompleted
+	progress := true
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "http_404", "http_405", "http_410", "http_412", "target_unreachable":
+		kind, progress = SemanticOutcomeTargetNegative, false
+	case "timeout", "idle_timeout", "http_429", "http_5xx", "external_transient":
+		kind, progress = SemanticOutcomeExternalTransient, false
+	case "config_error", "templates_missing", "invalid_arguments":
+		kind, progress = SemanticOutcomeInvocationError, false
+	case "dependency_blocked", "stagnation_blocked", "batch_rewritten":
+		kind, progress = SemanticOutcomeFrameworkDropped, false
+	}
+	return c.RecordSemanticOutcome(callID, "", signature, SemanticOutcome{
+		Kind:             kind,
+		Code:             code,
+		Fingerprint:      fingerprint,
+		EvidenceProgress: progress,
+	})
+}
+
+func (c *ExecutionController) RecordSemanticOutcome(callID, toolName, signature string, outcome SemanticOutcome) bool {
 	if c == nil {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	signature = strings.TrimSpace(signature)
-	fingerprint = strings.TrimSpace(fingerprint)
-	code = strings.ToLower(strings.TrimSpace(code))
+	fingerprint := strings.TrimSpace(outcome.Fingerprint)
+	code := strings.ToLower(strings.TrimSpace(outcome.Code))
 	if signature != "" {
 		c.seenCalls[signature] = struct{}{}
 		c.callAttempts[signature]++
 		c.lastCallCode[signature] = code
 	}
+	if fingerprint != "" {
+		c.outcomeAttempts[fingerprint]++
+	}
+	if toolName = normalizedExecutionToolName(toolName); toolName != "" {
+		c.toolLastOutcome[toolName] = outcome
+	}
+	_, activeProbe := c.activeProbeCalls[strings.TrimSpace(callID)]
 	_, known := c.seenResults[fingerprint]
-	novel := fingerprint != "" && !known
+	novel := outcome.EvidenceProgress && fingerprint != "" && !known
 	if novel {
 		c.seenResults[fingerprint] = struct{}{}
-		c.activeBatchNovel = true
+		if activeProbe {
+			c.activeBatchNovel = true
+		}
 		c.noNovelProbeCalls = 0
 		c.summary.LastNewEvidenceAt = time.Now()
-	} else {
+	} else if activeProbe {
 		c.noNovelProbeCalls++
 	}
 	return novel
+}
+
+func (c *ExecutionController) CheckToolCallAllowed(toolName, arguments string) (bool, string) {
+	if c == nil {
+		return true, ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	toolName = normalizedExecutionToolName(toolName)
+	if c.phase == ExecutionPhaseFinalizing && classifyExecutionTool(toolName) != executionToolStateMutation {
+		return false, "finalizing"
+	}
+	if previous, ok := c.toolLastOutcome[toolName]; ok {
+		attempts := c.outcomeAttempts[previous.Fingerprint]
+		switch previous.Kind {
+		case SemanticOutcomeInvocationError:
+			if attempts >= 2 {
+				return false, "invocation_error_exhausted"
+			}
+		case SemanticOutcomeExternalTransient:
+			if attempts >= 2 {
+				return false, "external_transient_exhausted"
+			}
+		}
+	}
+	signature := CallSignature(toolName, arguments)
+	code := c.lastCallCode[signature]
+	attempts := c.callAttempts[signature]
+	maxAttempts := retryMaxAttempts(code)
+	if maxAttempts >= 0 && attempts >= maxAttempts {
+		return false, "retry_exhausted"
+	}
+	if c.pivotRequired {
+		return false, "stagnation_blocked"
+	}
+	return true, ""
 }
 
 func (c *ExecutionController) CompleteProbeBatch() {
@@ -239,14 +320,22 @@ func (c *ExecutionController) CompleteProbeBatch() {
 	if c.activeBatchNovel {
 		c.noNovelBatches = 0
 		c.pivotRequired = false
+		if c.phase != ExecutionPhaseFinalizing && c.phase != ExecutionPhaseFinished {
+			c.phase = ExecutionPhaseExploring
+		}
 	} else {
 		c.noNovelBatches++
-		if c.noNovelBatches >= 3 || c.noNovelProbeCalls >= 12 {
+		if c.noNovelProbeCalls >= 12 {
+			c.phase = ExecutionPhaseFinalizing
+			c.pivotRequired = false
+			c.summary.StagnationGates++
+		} else if c.noNovelBatches >= 3 {
 			if !c.pivotRequired {
 				c.summary.StagnationGates++
 				c.pivotDirectiveShown = false
 			}
 			c.pivotRequired = true
+			c.phase = ExecutionPhasePivoting
 		}
 	}
 	c.activeProbeCalls = nil
@@ -260,6 +349,24 @@ func (c *ExecutionController) PivotRequired() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pivotRequired
+}
+
+func (c *ExecutionController) Phase() ExecutionPhase {
+	if c == nil {
+		return ExecutionPhaseExploring
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.phase
+}
+
+func (c *ExecutionController) FinalizationRequired() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.phase == ExecutionPhaseFinalizing
 }
 
 func (c *ExecutionController) CheckProbeCallAllowed(signature string) (bool, string) {
@@ -304,6 +411,11 @@ func (c *ExecutionController) PivotDirective() string {
 		return ""
 	}
 	c.pivotDirectiveShown = true
+	c.pivotRequired = false
+	c.noNovelBatches = 0
+	if c.phase == ExecutionPhasePivoting {
+		c.phase = ExecutionPhaseExploring
+	}
 	return fmt.Sprintf("[framework_next_action]\n当前探测连续无新证据，已停止继续扩展同类路径。请保留已有发现并完成记录、总结或结束执行；禁止继续扩大同类字典。")
 }
 
