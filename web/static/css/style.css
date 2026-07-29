@@ -8312,6 +8312,16 @@ header {
     background: rgba(239, 68, 68, 0.1);
 }
 
+.mcp-stats-kpi__chip.is-neutral {
+    color: #1e40af;
+    background: rgba(59, 130, 246, 0.1);
+}
+
+.mcp-stats-kpi__chip.is-warning {
+    color: #92400e;
+    background: rgba(245, 158, 11, 0.12);
+}
+
 .mcp-stats-kpi__status {
     font-size: 0.75rem;
     font-weight: 500;

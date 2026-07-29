@@ -1,0 +1,31 @@
+{
+  "session_id": "de13e76b-d849-4213-8c09-466b5b1901eb",
+  "target": "target.test",
+  "probe_outcomes": [
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /admin returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/admin returned stable 404"},
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /console returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/users returned stable 404"},
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /manage returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/orders returned stable 404"},
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /dashboard returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/account returned stable 404"},
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /internal returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/internal returned stable 404"},
+    {"code": "spa_shell", "fingerprint": "spa-shell", "summary": "GET /system returned the same SPA shell"},
+    {"code": "http_404", "fingerprint": "http-404", "summary": "GET /api/system returned stable 404"}
+  ],
+  "first_record": {
+    "target": "https://target.test/jsonp?callback=alert(1)",
+    "category": "XSS",
+    "vulnerability_type": "XSS",
+    "proof": "HTTP/1.1 200 OK\nAccess-Control-Allow-Origin: *\nAccess-Control-Allow-Credentials: true"
+  },
+  "type_swap_record": {
+    "target": "https://target.test/jsonp?callback=alert(1)",
+    "category": "CORS",
+    "vulnerability_type": "CORS",
+    "proof": "HTTP/1.1 200 OK\nAccess-Control-Allow-Origin: *\nAccess-Control-Allow-Credentials: true"
+  },
+  "dropped_call_id": "call-dropped-before-register"
+}

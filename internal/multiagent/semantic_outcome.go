@@ -46,9 +46,13 @@ func ClassifySemanticOutcome(toolName, arguments, result string, isError bool) S
 		kind, code, progress = SemanticOutcomeFrameworkDropped, "framework_dropped", false
 		if match := frameworkOutcomeCodePattern.FindStringSubmatch(low); len(match) == 2 {
 			code = match[1]
+			if code == "policy_rejected" {
+				kind = SemanticOutcomePolicyRejected
+			}
 		}
 	case strings.Contains(low, "policy rejected") ||
 		strings.Contains(low, "policy_rejected") ||
+		strings.Contains(result, "硬拒绝") ||
 		strings.Contains(low, "证据不足") ||
 		strings.Contains(low, "evidence is insufficient"):
 		kind, code, progress = SemanticOutcomePolicyRejected, "policy_rejected", false

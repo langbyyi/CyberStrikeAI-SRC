@@ -189,6 +189,12 @@ func applyExecutionBoostPostProcess(cfg executionToolMiddlewareConfig, toolName,
 				CallSignature(toolName, args),
 				outcome,
 			)
+		} else if isL1L2RecordTool(toolName) {
+			outcome := ClassifySemanticOutcome(toolName, args, result, toolResultLooksFailed(result))
+			if outcome.Kind == SemanticOutcomePolicyRejected {
+				fingerprint, _ := vulnerabilityEvidenceFingerprint(args)
+				state.RememberEvidenceRejection(fingerprint, outcome.Code)
+			}
 		}
 	}
 	// Note: invoke-time dead-tool block is in deadToolPrecheck (PRE next).

@@ -538,6 +538,17 @@ func executionDecisionPrecheck(conversationID, toolName, callID, arguments strin
 		return ""
 	}
 	controller := GetConversationExecutionState(conversationID).Controller()
+	if isL1L2RecordTool(toolName) {
+		state := GetConversationExecutionState(conversationID)
+		decision := EvaluateVulnerabilityEvidencePolicy(toolName, arguments, state)
+		if !decision.Allowed {
+			state.RememberEvidenceRejection(decision.Fingerprint, decision.Code)
+			return fmt.Sprintf(
+				"[framework_tool_outcome] code=policy_rejected retryable=false reason=%s\n%s。证据不足时请保留为候选或补齐差异验证，禁止换类型绕过。",
+				decision.Code, decision.Reason,
+			)
+		}
+	}
 	pending := controller.PendingObligation()
 	if pending == nil {
 		class := classifyExecutionTool(toolName)
