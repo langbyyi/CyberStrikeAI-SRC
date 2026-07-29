@@ -194,19 +194,22 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	pendingByID := make(map[string]toolCallPendingInfo)
 	pendingQueueByAgent := make(map[string][]string)
 	var pendingMu sync.Mutex
+	executionState := GetConversationExecutionState(conversationID)
+	pendingLedger := executionState.ResetPendingLedger()
 	// Register closer for middleware framework-drops: middleware holds the outer progress
 	// pointer created before this loop, so progress-wrapping alone cannot clear pending.
-	GetConversationExecutionState(conversationID).SetPendingToolCallCloser(func(ids []string) {
+	executionState.SetPendingToolCallCloser(func(ids []string) {
 		if len(ids) == 0 {
 			return
 		}
 		pendingMu.Lock()
 		for _, id := range ids {
+			pendingLedger.Resolve(id)
 			delete(pendingByID, id)
 		}
 		pendingMu.Unlock()
 	})
-	defer GetConversationExecutionState(conversationID).SetPendingToolCallCloser(nil)
+	defer executionState.SetPendingToolCallCloser(nil)
 	// Also clear pending when any tool_result carries toolCallId (real ADK results + drops via shared progress).
 	if progress != nil {
 		userProgress := progress
@@ -214,6 +217,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			if eventType == "tool_result" {
 				if m, ok := data.(map[string]interface{}); ok {
 					if id, _ := m["toolCallId"].(string); strings.TrimSpace(id) != "" {
+						pendingLedger.Resolve(id)
 						pendingMu.Lock()
 						delete(pendingByID, strings.TrimSpace(id))
 						pendingMu.Unlock()
@@ -231,6 +235,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		agentName = strings.TrimSpace(agentName)
 		for id, tc := range pendingByID {
 			if strings.TrimSpace(tc.EinoAgent) == agentName {
+				pendingLedger.Resolve(id)
 				delete(pendingByID, id)
 			}
 		}
@@ -239,6 +244,9 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 	}
 	markPending := func(tc toolCallPendingInfo) {
 		if tc.ToolCallID == "" {
+			return
+		}
+		if !pendingLedger.Register(tc) {
 			return
 		}
 		pendingMu.Lock()
@@ -313,6 +321,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 			pendingQueueByAgent[agentName] = q
 			if tc, ok := pendingByID[id]; ok {
 				delete(pendingByID, id)
+				pendingLedger.Resolve(id)
 				return tc, true
 			}
 		}
@@ -324,6 +333,7 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		}
 		pendingMu.Lock()
 		defer pendingMu.Unlock()
+		pendingLedger.Resolve(toolCallID)
 		delete(pendingByID, toolCallID)
 	}
 	popAnyPending := func() (toolCallPendingInfo, bool) {
@@ -331,21 +341,17 @@ func runEinoADKAgentLoop(ctx context.Context, args *einoADKRunLoopArgs, baseMsgs
 		defer pendingMu.Unlock()
 		for id, tc := range pendingByID {
 			delete(pendingByID, id)
+			pendingLedger.Resolve(id)
 			return tc, true
 		}
 		return toolCallPendingInfo{}, false
 	}
 	pendingCount := func() int {
-		pendingMu.Lock()
-		defer pendingMu.Unlock()
-		return len(pendingByID)
+		return pendingLedger.Count()
 	}
 	flushAllPendingAsFailed := func(err error) {
+		toFlush := pendingLedger.Flush()
 		pendingMu.Lock()
-		toFlush := make([]toolCallPendingInfo, 0, len(pendingByID))
-		for _, tc := range pendingByID {
-			toFlush = append(toFlush, tc)
-		}
 		pendingByID = make(map[string]toolCallPendingInfo)
 		pendingQueueByAgent = make(map[string][]string)
 		pendingMu.Unlock()
