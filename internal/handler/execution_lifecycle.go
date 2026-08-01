@@ -164,6 +164,18 @@ func agentTaskTerminalStatus(ctx context.Context, runErr error) string {
 	return "completed"
 }
 
+func isUserCancelledRun(ctx context.Context, runErr error) bool {
+	var cause error
+	if ctx != nil {
+		cause = context.Cause(ctx)
+	}
+	if errors.Is(cause, context.DeadlineExceeded) ||
+		errors.Is(runErr, context.DeadlineExceeded) {
+		return false
+	}
+	return errors.Is(cause, ErrTaskCancelled)
+}
+
 func einoRunFailurePresentation(runErr error, result *multiagent.RunResult) (string, string) {
 	raw := ""
 	if runErr != nil {
@@ -182,6 +194,7 @@ func einoRunFailurePresentation(runErr error, result *multiagent.RunResult) (str
 		"status code: 502",
 		"status code: 503",
 		"status code: 504",
+		"awaiting response headers",
 	} {
 		if strings.Contains(raw, marker) {
 			transient = true
@@ -195,17 +208,32 @@ func einoRunFailurePresentation(runErr error, result *multiagent.RunResult) (str
 		message = "模型服务暂时不可用，本次执行已中断。"
 		errorType = "model_service_unavailable"
 	}
-	hasPartialWork := result != nil &&
-		(len(result.MCPExecutionIDs) > 0 ||
-			strings.TrimSpace(result.Response) != "" ||
-			strings.TrimSpace(result.LastAgentTraceInput) != "" ||
-			strings.TrimSpace(result.LastAgentTraceOutput) != "")
+	hasPartialWork := result != nil && len(result.MCPExecutionIDs) > 0
 	if hasPartialWork {
 		message += "本轮已产生的工具结果、漏洞记录和执行过程均已保留，可在服务恢复后继续该任务。"
 	} else {
 		message += "请稍后重试。"
 	}
 	return message, errorType
+}
+
+func einoRunFailureFinalContentForRun(conversationID string, executionIDs []string, evidenceCursor, coverageCursor uint64, notice string) string {
+	notice = strings.TrimSpace(notice)
+	if len(executionIDs) == 0 {
+		return notice
+	}
+	state := multiagent.GetConversationExecutionState(conversationID)
+	defer state.Controller().CompleteFinalization()
+	report := multiagent.BuildDeterministicFinalReportForRun(state, evidenceCursor, coverageCursor)
+	report = strings.TrimSpace(report)
+	switch {
+	case report == "":
+		return notice
+	case notice == "":
+		return report
+	default:
+		return report + "\n\n" + notice
+	}
 }
 
 type managedAgentTask struct {

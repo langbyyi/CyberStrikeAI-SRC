@@ -373,8 +373,19 @@ func RouteSkills(in SkillRouterInput) SkillRouterResult {
 			break
 		}
 		perBudget := remaining / (len(hits) - len(out.Injected))
-		if perBudget > 1200 {
-			perBudget = 1200
+		// Per-skill budget cap. When only one skill matches (common for the
+		// DecisionController topK=1 path) the previous hard cap of 1200 left
+		// most of the 4000-rune total budget unused and truncated core
+		// methodology buried later in the skill file (e.g. SQLi boolean-blind
+		// pairing). Raise the single-skill cap so the full methodology is
+		// visible; keep a tighter cap when several skills share the budget.
+		singleSkill := len(hits) == 1
+		perSkillCap := 2400
+		if singleSkill {
+			perSkillCap = remaining // use all remaining budget for the lone skill
+		}
+		if perBudget > perSkillCap {
+			perBudget = perSkillCap
 		}
 		if perBudget < 120 {
 			perBudget = 120
@@ -426,7 +437,7 @@ func loadSkillTipsFromDisk(skillsRoot, skillDir string, maxRunes int) string {
 	if err != nil {
 		return ""
 	}
-	tips := extractSkillTips(string(raw), 1800)
+	tips := extractSkillTips(string(raw), 3000)
 	skillTipsCacheMu.Lock()
 	skillTipsCache[path] = tips
 	skillTipsCacheMu.Unlock()
@@ -478,7 +489,17 @@ func extractSkillTips(md string, maxRunes int) string {
 	if idx := regexp.MustCompile(`(?m)^##\s+[5-9]\.`).FindStringIndex(out); idx != nil && idx[0] > 200 {
 		out = strings.TrimSpace(out[:idx[0]])
 	}
-	return truncateRunes(out, maxRunes)
+	out = truncateRunes(out, maxRunes)
+	// Snap a hard cut to the last complete `## ` heading boundary so we don't
+	// leave a methodology sentence dangling mid-way. If the truncated tail is
+	// long enough to matter, drop the partial final section.
+	if len([]rune(out)) >= maxRunes {
+		lastHeading := strings.LastIndex(out, "\n## ")
+		if lastHeading > maxRunes/2 {
+			out = strings.TrimSpace(out[:lastHeading])
+		}
+	}
+	return out
 }
 
 // preferBusinessLogicFirstPass extracts payment/workflow/race checklist lines when present.

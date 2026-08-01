@@ -63,3 +63,49 @@ func TestNotifyPendingToolCallsResolvedPreventsLateRunnerRegister(t *testing.T) 
 		t.Fatal("middleware drop notification must tombstone the call before the runner sees it")
 	}
 }
+
+func TestPendingLedgerOwnsSnapshotAndAgentQueue(t *testing.T) {
+	ledger := NewPendingLedger()
+	first := toolCallPendingInfo{ToolCallID: "call-1", ToolName: "execute", EinoAgent: "agent-a"}
+	second := toolCallPendingInfo{ToolCallID: "call-2", ToolName: "nmap", EinoAgent: "agent-a"}
+	other := toolCallPendingInfo{ToolCallID: "call-3", ToolName: "http-framework-test", EinoAgent: "agent-b"}
+	for _, call := range []toolCallPendingInfo{first, second, other} {
+		if !ledger.Register(call) {
+			t.Fatalf("register %s failed", call.ToolCallID)
+		}
+	}
+
+	snapshot := ledger.Snapshot()
+	if len(snapshot) != 3 {
+		t.Fatalf("snapshot count=%d want 3", len(snapshot))
+	}
+	popped, ok := ledger.PopNext("agent-a")
+	if !ok || popped.ToolCallID != first.ToolCallID {
+		t.Fatalf("first agent queue item=%+v ok=%v", popped, ok)
+	}
+	if got := ledger.Count(); got != 2 {
+		t.Fatalf("count after pop=%d want 2", got)
+	}
+
+	resolved := ledger.ResolveAgent("agent-a")
+	if len(resolved) != 1 || resolved[0].ToolCallID != second.ToolCallID {
+		t.Fatalf("remaining agent calls=%+v", resolved)
+	}
+	if snapshot = ledger.Snapshot(); len(snapshot) != 1 || snapshot[0].ToolCallID != other.ToolCallID {
+		t.Fatalf("snapshot after agent resolve=%+v", snapshot)
+	}
+}
+
+func TestPendingLedgerResolveBeforeRegisterNeverAppearsInSnapshot(t *testing.T) {
+	ledger := NewPendingLedger()
+	ledger.Resolve("late-call")
+	if ledger.Register(toolCallPendingInfo{ToolCallID: "late-call", ToolName: "execute", EinoAgent: "agent-a"}) {
+		t.Fatal("tombstoned call unexpectedly registered")
+	}
+	if snapshot := ledger.Snapshot(); len(snapshot) != 0 {
+		t.Fatalf("late registration leaked into snapshot: %+v", snapshot)
+	}
+	if _, ok := ledger.PopNext("agent-a"); ok {
+		t.Fatal("late registration leaked into agent queue")
+	}
+}

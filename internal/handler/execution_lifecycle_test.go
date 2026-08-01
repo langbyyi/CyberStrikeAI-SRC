@@ -144,6 +144,23 @@ func TestAgentTaskTerminalStatus(t *testing.T) {
 	}
 }
 
+func TestIsUserCancelledRunDistinguishesCancellationFromTimeout(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrTaskCancelled)
+	if !isUserCancelledRun(cancelledCtx, context.Canceled) {
+		t.Fatal("explicit user cancellation must bypass formal failure finalization")
+	}
+
+	timeoutCtx, timeoutCancel := context.WithCancelCause(context.Background())
+	timeoutCancel(context.DeadlineExceeded)
+	if isUserCancelledRun(timeoutCtx, context.DeadlineExceeded) {
+		t.Fatal("deadline must still produce a deterministic failure report")
+	}
+	if isUserCancelledRun(context.Background(), context.Canceled) {
+		t.Fatal("a bare downstream context.Canceled is not an explicit user cancellation")
+	}
+}
+
 func TestEinoRunFailurePresentationPreservesPartialWorkAndHidesRawError(t *testing.T) {
 	rawErr := errors.New(`transient retry exhausted after 3 attempts: Post "https://model.internal/v1/chat": connection reset by peer`)
 	result := &multiagent.RunResult{
@@ -163,6 +180,107 @@ func TestEinoRunFailurePresentationPreservesPartialWorkAndHidesRawError(t *testi
 		if strings.Contains(strings.ToLower(message), leaked) {
 			t.Fatalf("message leaks raw infrastructure error %q: %q", leaked, message)
 		}
+	}
+}
+
+// TestEinoRunFailurePresentationClassifiesHttp2HeaderStallAsTransient 验证 StepFun 网关
+// 「accepts TCP but never sends headers」的 http2 超时被归类为模型服务暂时不可用，
+// 而非硬性执行失败——这样它会走退避重试，并向用户展示友好的模型服务不可用提示。
+func TestEinoRunFailurePresentationClassifiesHttp2HeaderStallAsTransient(t *testing.T) {
+	rawErr := errors.New(`Post "https://api.stepfun.com/step_plan/v1/chat/completions": http2: timeout awaiting response headers`)
+
+	message, errorType := einoRunFailurePresentation(rawErr, nil)
+
+	if errorType != "model_service_unavailable" {
+		t.Fatalf("errorType = %q, want model_service_unavailable (http2 header stall is transient)", errorType)
+	}
+	if !strings.Contains(message, "模型服务暂时不可用") {
+		t.Fatalf("message must indicate model-service-unavailable, got %q", message)
+	}
+	for _, leaked := range []string{"api.stepfun.com", "http2", "awaiting"} {
+		if strings.Contains(strings.ToLower(message), leaked) {
+			t.Fatalf("message leaks raw infrastructure error %q: %q", leaked, message)
+		}
+	}
+}
+
+func TestEinoRunFailureFinalContentPreservesEvidenceReport(t *testing.T) {
+	conversationID := "failure-final-report"
+	state := multiagent.GetConversationExecutionState(conversationID)
+	state.RecordTool(multiagent.ToolEvidenceEntry{
+		ToolName:   "http-framework-test",
+		StatusHint: "404",
+		Summary:    "GET /api/admin returned stable 404",
+	})
+	result := &multiagent.RunResult{Response: "下一步计划：继续扫描更多路径。", MCPExecutionIDs: []string{"run-tool-1"}}
+
+	got := einoRunFailureFinalContentForRun(conversationID, result.MCPExecutionIDs, 0, 0, "任务执行超时，已自动终止。")
+
+	for _, required := range []string{"已验证事实", "/api/admin", "任务执行超时"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("failure final content missing %q: %q", required, got)
+		}
+	}
+	if strings.Contains(got, "继续扫描更多路径") {
+		t.Fatalf("planning-only partial response leaked into failure report: %q", got)
+	}
+}
+
+func TestEinoRunFailureWithoutPartialWorkDoesNotReuseOldEvidence(t *testing.T) {
+	conversationID := "failure-without-partial-work"
+	multiagent.GetConversationExecutionState(conversationID).RecordTool(multiagent.ToolEvidenceEntry{
+		ToolName:   "http-framework-test",
+		StatusHint: "200",
+		Length:     100,
+		Summary:    "historical result from an earlier run",
+	})
+	notice := "模型服务暂时不可用，本次执行已中断。"
+
+	if got := einoRunFailureFinalContentForRun(conversationID, nil, 0, 0, notice); got != notice {
+		t.Fatalf("failure before any partial work must not reuse historical evidence: %q", got)
+	}
+	traceOnly := &multiagent.RunResult{LastAgentTraceInput: `{"messages":[]}`, LastAgentTraceOutput: "model failed"}
+	if got := einoRunFailureFinalContentForRun(conversationID, traceOnly.MCPExecutionIDs, 0, 0, notice); got != notice {
+		t.Fatalf("trace-only failure must not reuse historical evidence: %q", got)
+	}
+	responseOnly := &multiagent.RunResult{Response: "下一步计划：先枚举路径"}
+	if got := einoRunFailureFinalContentForRun(conversationID, responseOnly.MCPExecutionIDs, 0, 0, notice); got != notice {
+		t.Fatalf("planning-only failure must not reuse historical evidence: %q", got)
+	}
+}
+
+func TestEinoRunFailureUsesCumulativeExecutionIDs(t *testing.T) {
+	conversationID := "failure-cumulative-ids"
+	multiagent.GetConversationExecutionState(conversationID).RecordTool(multiagent.ToolEvidenceEntry{
+		ToolName: "http-framework-test", StatusHint: "interesting", Length: 10, Summary: "current tool evidence",
+	})
+	got := einoRunFailureFinalContentForRun(conversationID, []string{"earlier-segment-id"}, 0, 0, "failed")
+	if !strings.Contains(got, "已验证事实") {
+		t.Fatalf("cumulative execution IDs must preserve current-run evidence: %q", got)
+	}
+}
+
+func TestEinoRunFailureDoesNotTrustPartialModelClaim(t *testing.T) {
+	conversationID := "failure-untrusted-partial"
+	multiagent.GetConversationExecutionState(conversationID).RecordTool(multiagent.ToolEvidenceEntry{
+		ToolName: "http-framework-test", StatusHint: "404", Length: 10, Summary: "GET /missing returned 404",
+	})
+	result := &multiagent.RunResult{Response: "已确认存在远程代码执行漏洞", MCPExecutionIDs: []string{"tool-1"}}
+	got := einoRunFailureFinalContentForRun(conversationID, result.MCPExecutionIDs, 0, 0, "failed")
+	if strings.Contains(got, "已确认存在远程代码执行漏洞") {
+		t.Fatalf("failure finalization must not trust partial model claims: %q", got)
+	}
+}
+
+func TestEinoRunFailureReportIsScopedToCurrentRunEvidence(t *testing.T) {
+	conversationID := "failure-run-scope"
+	state := multiagent.GetConversationExecutionState(conversationID)
+	state.RecordTool(multiagent.ToolEvidenceEntry{ToolName: "old-tool", Length: 10, Summary: "historical-secret"})
+	cursor := state.EvidenceCursor()
+	state.RecordTool(multiagent.ToolEvidenceEntry{ToolName: "new-tool", Length: 10, Summary: "current-result"})
+	got := einoRunFailureFinalContentForRun(conversationID, []string{"tool-1"}, cursor, 0, "failed")
+	if strings.Contains(got, "historical-secret") || !strings.Contains(got, "current-result") {
+		t.Fatalf("failure report must contain only current-run evidence: %q", got)
 	}
 }
 

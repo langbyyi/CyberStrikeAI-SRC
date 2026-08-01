@@ -105,11 +105,6 @@ func registerLogicProbeTools(mcpServer *mcp.Server, logger *zap.Logger) {
 		if errMsg := multiagent.ValidateLogicProbeRequest(req); errMsg != "" {
 			return textResult(errMsg, true), nil
 		}
-		// Record dual-auth fact before HTTP so finalize can see intent even if requests fail.
-		multiagent.GetConversationExecutionState(convID).MarkAuthProbe(
-			strings.TrimSpace(req.AuthA) != "",
-			strings.TrimSpace(req.AuthB) != "",
-		)
 		result := multiagent.RunLogicProbeDiff(ctx, req)
 		if result.Error != "" {
 			return textResult(result.Error, true), nil

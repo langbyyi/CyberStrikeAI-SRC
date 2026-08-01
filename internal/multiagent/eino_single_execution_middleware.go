@@ -131,7 +131,17 @@ func (m *einoSingleExecutionMiddleware) BeforeModelRewriteState(ctx context.Cont
 	if !RecordObligationsEnabled(m.conversationID) {
 		return ctx, state, nil
 	}
-	controller := GetConversationExecutionState(m.conversationID).Controller()
+	execState := GetConversationExecutionState(m.conversationID)
+	controller := execState.Controller()
+	// Proactive coverage digest: tell the model what P0/P1 paths remain open
+	// and which are blocked, so it stops re-testing dead ends and targets the
+	// longest-pending untested surface. Only when no record obligation is
+	// pending (to avoid drowning out the obligation directive).
+	if controller.PendingObligation() == nil {
+		if digest := execState.CompactCoverageDigest(500); digest != "" {
+			state.Messages = append(state.Messages, schema.SystemMessage(digest))
+		}
+	}
 	pending := controller.ConsumePendingDirective()
 	if pending != nil {
 		summary := truncateRunes(strings.TrimSpace(pending.EvidenceSummary), 200)
@@ -146,6 +156,11 @@ func (m *einoSingleExecutionMiddleware) BeforeModelRewriteState(ctx context.Cont
 		return ctx, state, nil
 	}
 	if directive := controller.PivotDirective(); directive != "" {
+		// Make the pivot directive concrete: name the longest-pending untested
+		// surfaces so the model pivots *to* something, not just away.
+		if suggestions := execState.NextOpenPaths(2); len(suggestions) > 0 {
+			directive += "\n建议转向（最久未测的 open 路径）：" + strings.Join(suggestions, "、")
+		}
 		state.Messages = append(state.Messages, schema.SystemMessage(directive))
 	}
 	return ctx, state, nil

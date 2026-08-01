@@ -46,6 +46,27 @@ func TestClassifySessionIntentRules_NoFalsePentest(t *testing.T) {
 	}
 }
 
+func TestSecurityKnowledgeRequestWithURLStaysChat(t *testing.T) {
+	if got := ClassifySessionIntentRules("解释 https://example.com 的 XSS 原理", ""); got != SessionIntentChat {
+		t.Fatalf("knowledge request with a URL must remain chat, got %q", got)
+	}
+}
+
+func TestMixedKnowledgeAndExecutionPrefersExplicitExecution(t *testing.T) {
+	if got := ClassifySessionIntentRules("解释原理后帮我验证这个 XSS 漏洞", ""); got != SessionIntentPentest {
+		t.Fatalf("explicit execution request must not be swallowed by knowledge wording, got %q", got)
+	}
+}
+
+func TestMixedKnowledgeAndDirectExecutionPrefersExecution(t *testing.T) {
+	if got := ClassifySessionIntentRules("解释 XSS 原理，测试 https://a.example.com", ""); got != SessionIntentPentest {
+		t.Fatalf("direct execution verb must override knowledge wording, got %q", got)
+	}
+	if got := sanitizeIntent(SessionIntentPentest, "解释 XSS 原理，测试 https://a.example.com"); got != SessionIntentPentest {
+		t.Fatalf("intent sanitization must preserve direct execution, got %q", got)
+	}
+}
+
 func TestRecordObligationsEnabled_RequiresPentestAndTarget(t *testing.T) {
 	id := "test-intent-obl-1"
 	s := GetConversationExecutionState(id)
@@ -433,6 +454,45 @@ func TestUnrelatedNewTaskClearsActivePentestState(t *testing.T) {
 	}
 	if target := state.Controller().PrimaryTarget(); target != "" {
 		t.Fatalf("target=%q want cleared target", target)
+	}
+}
+
+func TestSecurityKnowledgeRequestsDoNotBecomePentest(t *testing.T) {
+	for _, message := range []string{
+		"解释一下 XSS 的原理",
+		"介绍一下渗透测试的基本流程",
+		"帮我写一篇未授权访问风险说明",
+		"不是让你测试，只是分析这个 SSRF 报告",
+	} {
+		t.Run(message, func(t *testing.T) {
+			if got := ClassifySessionIntentRules(message, "role_tools:record_capable"); got != SessionIntentChat {
+				t.Fatalf("security knowledge request intent=%q want chat", got)
+			}
+		})
+	}
+}
+
+func TestExplicitNoTestClearsHistoricalPentestEvenWithSecurityKeyword(t *testing.T) {
+	id := "intent-explicit-no-test-security-keyword"
+	state := GetConversationExecutionState(id)
+	state.SetSessionIntent(SessionIntentPentest)
+	state.SetPrimaryTarget("https://old-target.test")
+
+	intent, _ := ResolveAndStoreSessionIntent(
+		context.Background(),
+		id,
+		"不是让你测试，只是解释 XSS",
+		"",
+		"test-model",
+		nil,
+		zap.NewNop(),
+	)
+
+	if intent != SessionIntentChat {
+		t.Fatalf("intent=%q want chat", intent)
+	}
+	if target := state.Controller().PrimaryTarget(); target != "" {
+		t.Fatalf("explicit no-test request must clear historical target, got %q", target)
 	}
 }
 

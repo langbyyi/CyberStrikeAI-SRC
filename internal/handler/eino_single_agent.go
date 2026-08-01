@@ -63,6 +63,9 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 
 	conversationID := prep.ConversationID
 	assistantMessageID := prep.AssistantMessageID
+	executionState := multiagent.GetConversationExecutionState(conversationID)
+	evidenceCursor := executionState.EvidenceCursor()
+	coverageCursor := executionState.CoverageCursor()
 	h.activateHITLForConversation(conversationID, req.Hitl)
 	if h.hitlManager != nil {
 		defer h.hitlManager.DeactivateConversation(conversationID)
@@ -255,7 +258,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 
 		if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(context.Cause(taskCtx), context.DeadlineExceeded) {
 			managedTask.SetStatus("timeout")
-			timeoutMsg := "任务执行超时，已自动终止。"
+			timeoutMsg := einoRunFailureFinalContentForRun(conversationID, cumulativeMCPExecutionIDs, evidenceCursor, coverageCursor, "任务执行超时，已自动终止。")
 			if assistantMessageID != "" {
 				_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", timeoutMsg, time.Now(), assistantMessageID)
 				_ = h.db.AddProcessDetail(assistantMessageID, conversationID, "timeout", timeoutMsg, nil)
@@ -272,7 +275,8 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 
 		h.logger.Error("Eino ADK 单代理执行失败", zap.Error(runErr))
 		managedTask.SetStatus("failed")
-		errMsg, errorType := einoRunFailurePresentation(runErr, result)
+		failureNotice, errorType := einoRunFailurePresentation(runErr, result)
+		errMsg := einoRunFailureFinalContentForRun(conversationID, cumulativeMCPExecutionIDs, evidenceCursor, coverageCursor, failureNotice)
 		hasPartialWork := result != nil &&
 			(len(result.MCPExecutionIDs) > 0 ||
 				strings.TrimSpace(result.Response) != "" ||
@@ -359,6 +363,9 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	executionState := multiagent.GetConversationExecutionState(prep.ConversationID)
+	evidenceCursor := executionState.EvidenceCursor()
+	coverageCursor := executionState.CoverageCursor()
 	h.activateHITLForConversation(prep.ConversationID, req.Hitl)
 	if h.hitlManager != nil {
 		defer h.hitlManager.DeactivateConversation(prep.ConversationID)
@@ -421,7 +428,23 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 			h.persistEinoAgentTraceForResume(prep.ConversationID, result)
 		}
 		managedTask.SetStatus(agentTaskTerminalStatus(taskCtx, runErr))
-		errMsg := "执行失败: " + runErr.Error()
+		if isUserCancelledRun(baseCtx, runErr) {
+			cancelMsg := "任务已被用户取消，后续操作已停止。"
+			if prep.AssistantMessageID != "" {
+				if result != nil {
+					_ = h.mergeAssistantMessagePartialOnCancel(prep.AssistantMessageID, result.Response)
+				}
+				_ = h.appendAssistantMessageNotice(prep.AssistantMessageID, cancelMsg)
+			}
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": cancelMsg})
+			return
+		}
+		failureNotice, _ := einoRunFailurePresentation(runErr, result)
+		executionIDs := []string(nil)
+		if result != nil {
+			executionIDs = result.MCPExecutionIDs
+		}
+		errMsg := einoRunFailureFinalContentForRun(prep.ConversationID, executionIDs, evidenceCursor, coverageCursor, failureNotice)
 		if prep.AssistantMessageID != "" {
 			_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", errMsg, time.Now(), prep.AssistantMessageID)
 		}

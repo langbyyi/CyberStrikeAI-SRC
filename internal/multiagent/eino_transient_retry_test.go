@@ -17,6 +17,7 @@ func TestIsEinoTransientRunError(t *testing.T) {
 		{name: "rate limited", err: errors.New("unexpected status code: 429"), want: true},
 		{name: "server error", err: errors.New("HTTP status 502 Bad Gateway"), want: true},
 		{name: "network reset", err: errors.New("read tcp: connection reset by peer"), want: true},
+		{name: "http2 header stall", err: errors.New(`Post "https://api.stepfun.com/step_plan/v1/chat/completions": http2: timeout awaiting response headers`), want: true},
 		{name: "not acceptable", err: errors.New("unexpected status code: 406"), want: false},
 		{name: "quota exhausted", err: errors.New("quota exceeded for this project"), want: false},
 		{name: "token limit", err: errors.New("request token count 15000 exceeds limit"), want: false},

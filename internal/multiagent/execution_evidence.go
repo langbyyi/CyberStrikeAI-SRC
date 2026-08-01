@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ type ToolEvidenceEntry struct {
 	InterestingParams string    `json:"interesting_params,omitempty"`
 	Summary           string    `json:"summary"`
 	At                time.Time `json:"at"`
+	Sequence          uint64    `json:"sequence,omitempty"`
 	// SkipBreaker, when true, prevents this tool call from counting toward the
 	// upsert circuit breaker. Used for terminal-status upserts (done/blocked)
 	// which represent real closure, not management churn.
@@ -34,6 +36,7 @@ type CoverageItem struct {
 	Priority  string    `json:"priority"` // P0 | P1 | P2
 	Note      string    `json:"note,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Sequence  uint64    `json:"sequence,omitempty"`
 }
 
 // ConversationExecutionState holds per-conversation evidence + coverage + skill dedupe.
@@ -44,9 +47,12 @@ type ConversationExecutionState struct {
 	Coverage       map[string]CoverageItem
 	InjectedSkills map[string]struct{}
 	// Dual-auth probe tracking (Logic Track E): set when logic_probe_diff sees both auth_a and auth_b.
-	dualAuthProbe bool
-	authASeen     bool
-	authBSeen     bool
+	dualAuthProbe    bool
+	authASeen        bool
+	authBSeen        bool
+	dualAuthTargets  map[string]struct{}
+	evidenceSequence uint64
+	coverageSequence uint64
 	// Recent upsert tracking: sliding window of recent tool names and the count of
 	// upsert_execution_coverage calls within that window. This prevents LLM from
 	// bypassing the breaker by interleaving upserts with management tools.
@@ -127,6 +133,7 @@ func GetConversationExecutionState(conversationID string) *ConversationExecution
 		controller:         NewExecutionController(""),
 		pending:            NewPendingLedger(),
 		evidenceRejections: map[string]string{},
+		dualAuthTargets:    map[string]struct{}{},
 	}
 	execStates[id] = s
 	evictOldestConversationsLocked()
@@ -497,6 +504,8 @@ func (s *ConversationExecutionState) RecordTool(entry ToolEvidenceEntry) {
 	if entry.At.IsZero() {
 		entry.At = time.Now()
 	}
+	s.evidenceSequence++
+	entry.Sequence = s.evidenceSequence
 	s.RecentTools = append(s.RecentTools, entry)
 	if s.maxEvidence <= 0 {
 		s.maxEvidence = 40
@@ -506,6 +515,30 @@ func (s *ConversationExecutionState) RecordTool(entry ToolEvidenceEntry) {
 	}
 	// Maintain sliding window of recent tool names and upsert count.
 	s.recordRecentToolNameLocked(entry.ToolName, entry.SkipBreaker)
+}
+
+func (s *ConversationExecutionState) EvidenceCursor() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.evidenceSequence
+}
+
+func (s *ConversationExecutionState) EvidenceSince(cursor uint64) []ToolEvidenceEntry {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ToolEvidenceEntry, 0, len(s.RecentTools))
+	for _, entry := range s.RecentTools {
+		if entry.Sequence > cursor {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func (s *ConversationExecutionState) recordRecentToolNameLocked(toolName string, skipBreaker bool) {
@@ -670,6 +703,8 @@ func (s *ConversationExecutionState) upsertCoverage(item CoverageItem, automatic
 			}
 		}
 	}
+	s.coverageSequence++
+	item.Sequence = s.coverageSequence
 	s.Coverage[path] = item
 	s.lastAccess = time.Now()
 	if s.maxCoverage <= 0 {
@@ -707,6 +742,26 @@ func (s *ConversationExecutionState) ListCoverage() []CoverageItem {
 	return out
 }
 
+func (s *ConversationExecutionState) CoverageCursor() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.coverageSequence
+}
+
+func (s *ConversationExecutionState) CoverageSince(cursor uint64) []CoverageItem {
+	items := s.ListCoverage()
+	filtered := items[:0]
+	for _, item := range items {
+		if item.Sequence > cursor {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 // ShouldContinue reports whether P0/P1 open paths remain.
 // Logic-class open items (workflow_skip/param_tamper/… ) use the same P0/P1 rule as inject classes.
 // tool.* paths (tool execution records like tool.list_vulnerabilities, tool.get_execution_coverage)
@@ -732,6 +787,105 @@ func (s *ConversationExecutionState) ShouldContinue() (continueWork bool, reason
 		return true, fmt.Sprintf("存在 %d 条 P0/P1 未闭环 coverage，禁止以「无洞/完成」收尾", len(open)), open
 	}
 	return false, "P0/P1 coverage 均已闭环（done/blocked），可进入 finalize", nil
+}
+
+// CompactCoverageDigest builds a short (<maxRunes) summary of open P0/P1
+// coverage paths plus a blocked-path count. It is injected into the model
+// context each turn so the model knows what remains untested without having
+// to call get_execution_coverage itself. Paths are sorted oldest-first so the
+// longest-pending untested surface is surfaced first.
+func (s *ConversationExecutionState) CompactCoverageDigest(maxRunes int) string {
+	if s == nil {
+		return ""
+	}
+	items := s.ListCoverage()
+	if len(items) == 0 {
+		return ""
+	}
+	var open []CoverageItem
+	blocked := 0
+	for _, it := range items {
+		path := strings.TrimSpace(it.Path)
+		st := strings.ToLower(strings.TrimSpace(it.Status))
+		if strings.HasPrefix(strings.ToLower(path), "tool.") {
+			continue
+		}
+		if strings.EqualFold(st, "blocked") {
+			blocked++
+			continue
+		}
+		pr := strings.ToUpper(strings.TrimSpace(it.Priority))
+		if (pr == "P0" || pr == "P1") && (st == "open" || st == "in_progress" || st == "") {
+			open = append(open, it)
+		}
+	}
+	if len(open) == 0 && blocked == 0 {
+		return ""
+	}
+	// Oldest first — longest-pending untested paths surface first so the model
+	// is nudged toward them rather than re-testing recent ones.
+	sort.SliceStable(open, func(i, j int) bool {
+		return open[i].UpdatedAt.Before(open[j].UpdatedAt)
+	})
+	var b strings.Builder
+	b.WriteString("[framework_coverage]\n")
+	b.WriteString(fmt.Sprintf("待测高优先级路径（剩余 %d，P0 优先）:\n", len(open)))
+	maxItems := 8
+	if maxItems > len(open) {
+		maxItems = len(open)
+	}
+	for i := 0; i < maxItems; i++ {
+		it := open[i]
+		line := fmt.Sprintf("- %s（%s）", it.Path, it.Priority)
+		if note := strings.TrimSpace(it.Note); note != "" {
+			line += " " + note
+		}
+		b.WriteString(line + "\n")
+		if len([]rune(b.String())) >= maxRunes {
+			break
+		}
+	}
+	if len(open) > maxItems {
+		b.WriteString(fmt.Sprintf("（另有 %d 条略）\n", len(open)-maxItems))
+	}
+	if blocked > 0 {
+		b.WriteString(fmt.Sprintf("已阻断: %d 条（勿重复）\n", blocked))
+	}
+	b.WriteString("框架注入，非用户消息；优先覆盖上述 open 路径，勿重复已阻断项。")
+	return truncateRunes(b.String(), maxRunes)
+}
+
+// NextOpenPaths returns up to n open P0/P1 coverage paths, oldest-first. Used
+// to make the stagnation pivot directive concrete: instead of a vague "change
+// approach", the model is pointed at the longest-pending untested surface.
+func (s *ConversationExecutionState) NextOpenPaths(n int) []string {
+	if s == nil || n <= 0 {
+		return nil
+	}
+	items := s.ListCoverage()
+	var open []CoverageItem
+	for _, it := range items {
+		path := strings.TrimSpace(it.Path)
+		st := strings.ToLower(strings.TrimSpace(it.Status))
+		if strings.HasPrefix(strings.ToLower(path), "tool.") {
+			continue
+		}
+		pr := strings.ToUpper(strings.TrimSpace(it.Priority))
+		if (pr == "P0" || pr == "P1") && (st == "open" || st == "in_progress" || st == "") {
+			open = append(open, it)
+		}
+	}
+	sort.SliceStable(open, func(i, j int) bool {
+		return open[i].UpdatedAt.Before(open[j].UpdatedAt)
+	})
+	if len(open) > n {
+		open = open[:n]
+	}
+	out := make([]string, 0, len(open))
+	for _, it := range open {
+		out = append(out, it.Path)
+	}
+	return out
 }
 
 // MarkAuthProbe records whether auth_a / auth_b were supplied (logic_probe_diff).
@@ -763,6 +917,247 @@ func (s *ConversationExecutionState) HasDualAuthProbe() bool {
 	return s.dualAuthProbe
 }
 
+func (s *ConversationExecutionState) MarkSuccessfulDualAuthProbe(target string) {
+	if s == nil {
+		return
+	}
+	target = strings.ToLower(strings.TrimSpace(NormalizePrimaryTarget(target)))
+	if target == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dualAuthTargets == nil {
+		s.dualAuthTargets = make(map[string]struct{})
+	}
+	s.dualAuthTargets[target] = struct{}{}
+	s.authASeen = true
+	s.authBSeen = true
+	s.dualAuthProbe = true
+}
+
+func (s *ConversationExecutionState) HasDualAuthProbeForTarget(target string) bool {
+	if s == nil {
+		return false
+	}
+	target = strings.ToLower(strings.TrimSpace(NormalizePrimaryTarget(target)))
+	if target == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.dualAuthTargets[target]
+	return ok
+}
+
+func (s *ConversationExecutionState) HasDualAuthProbeForAnyTarget(targets []string) bool {
+	for _, target := range targets {
+		if s.HasDualAuthProbeForTarget(target) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasObservedBrowserOriginEvidence accepts browser-origin proof only when it
+// came from a recorded tool result in this conversation. Text supplied later
+// to record_vulnerability is deliberately not considered evidence.
+func (s *ConversationExecutionState) HasObservedBrowserOriginEvidence(target string) bool {
+	if s == nil {
+		return false
+	}
+	target = strings.ToLower(strings.TrimSpace(NormalizePrimaryTarget(target)))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range s.RecentTools {
+		if !toolEvidenceExecutionSucceeded(entry) {
+			continue
+		}
+		tool := strings.ToLower(strings.TrimSpace(entry.ToolName))
+		if !strings.Contains(tool, "playwright") &&
+			!strings.Contains(tool, "selenium") &&
+			!strings.Contains(tool, "browser") {
+			continue
+		}
+		text := strings.ToLower(strings.Join([]string{
+			entry.ToolName,
+			entry.InterestingParams,
+			entry.PayloadHint,
+			entry.Summary,
+		}, "\n"))
+		browserObserved := strings.Contains(tool, "browser") ||
+			strings.Contains(text, "playwright") ||
+			strings.Contains(text, "selenium") ||
+			strings.Contains(text, "browser console") ||
+			strings.Contains(text, "浏览器控制台")
+		originObserved := strings.Contains(text, "document.origin") ||
+			strings.Contains(text, "location.origin") ||
+			strings.Contains(text, "executed in target origin") ||
+			strings.Contains(text, "在目标源执行")
+		if !browserObserved || !originObserved {
+			continue
+		}
+		if target == "" || strings.Contains(text, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConversationExecutionState) HasObservedBrowserOriginEvidenceAny(targets []string) bool {
+	for _, target := range targets {
+		if s.HasObservedBrowserOriginEvidence(target) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasObservedVulnerabilityEvidence checks that a formal finding is backed by
+// at least one completed target-facing tool record from this conversation.
+// Management and framework-only calls cannot satisfy the gate.
+func (s *ConversationExecutionState) HasObservedVulnerabilityEvidence(target, vulnerabilityClass, proof string) bool {
+	if s == nil {
+		return false
+	}
+	target = strings.ToLower(strings.TrimSpace(NormalizePrimaryTarget(target)))
+	if target == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range s.RecentTools {
+		tool := normalizedExecutionToolName(entry.ToolName)
+		switch tool {
+		case "", "record_vulnerability", "record_vulnerability_candidate",
+			"update_vulnerability", "delete_vulnerability",
+			"upsert_execution_coverage", "upsert_project_fact",
+			"should_continue_execution", "tool_search",
+			"list_vulnerabilities", "get_vulnerability", "skill":
+			continue
+		}
+		if entry.Length <= 0 || strings.TrimSpace(entry.Summary) == "" ||
+			!toolEvidenceExecutionSucceeded(entry) {
+			continue
+		}
+		if isGenericCommandEvidenceTool(tool) && !commandEvidenceContactsTarget(tool, entry.InterestingParams, target) {
+			continue
+		}
+		scopeText := strings.ToLower(strings.Join([]string{
+			entry.InterestingParams,
+			entry.PayloadHint,
+			entry.Summary,
+		}, "\n"))
+		observedOutput := strings.ToLower(entry.Summary)
+		if strings.Contains(scopeText, target) &&
+			observedEvidenceMatchesFinding(observedOutput, scopeText, vulnerabilityClass, proof) &&
+			!strings.Contains(observedOutput, "[framework_tool_outcome]") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConversationExecutionState) HasObservedVulnerabilityEvidenceAny(targets []string, vulnerabilityClass, proof string) bool {
+	for _, target := range targets {
+		if s.HasObservedVulnerabilityEvidence(target, vulnerabilityClass, proof) {
+			return true
+		}
+	}
+	return false
+}
+
+var proofRequestPathPattern = regexp.MustCompile(`(?i)\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+([/?][^\s?#]*)`)
+var targetFacingExecutablePattern = regexp.MustCompile(`(?i)^\s*["']?(?:(?:[a-z]:\\|/)[^\s"']*[\\/])?(?:curl|wget|httpx|nuclei|sqlmap|ffuf|wfuzz|gobuster|feroxbuster|nikto|nmap|ncat|nc|dalfox|katana|arjun|whatweb|dirsearch|invoke-webrequest|invoke-restmethod)(?:\.exe)?(?:["']?\s|$)`)
+
+func isGenericCommandEvidenceTool(tool string) bool {
+	return tool == "exec" || tool == "execute" ||
+		tool == "execute-python-script" || tool == "execute_python_script"
+}
+
+func commandEvidenceContactsTarget(tool, params, target string) bool {
+	if tool == "execute-python-script" || tool == "execute_python_script" {
+		return false
+	}
+	params = strings.ToLower(strings.TrimSpace(params))
+	if params == "" || !strings.Contains(params, target) {
+		return false
+	}
+	if split := strings.IndexByte(params, '='); split >= 0 {
+		params = strings.TrimSpace(params[split+1:])
+	}
+	if strings.ContainsAny(params, ";`#\r\n|&<>") ||
+		strings.Contains(params, "$(") {
+		return false
+	}
+	return targetFacingExecutablePattern.MatchString(params)
+}
+
+func observedEvidenceMatchesFinding(observedOutput, scopeText, vulnerabilityClass, proof string) bool {
+	class := strings.ToLower(vulnerabilityClass)
+	markers := []string{}
+	switch {
+	case strings.Contains(class, "sql"):
+		markers = []string{"sql", "mysql", "postgres", "sqlite", "ora-", "database"}
+	case strings.Contains(class, "ssrf"):
+		markers = []string{"ssrf", "169.254.169.254", "metadata", "localhost", "127.0.0.1"}
+	case strings.Contains(class, "xss"):
+		markers = []string{"xss", "<script", "javascript:", "callback", "alert("}
+	case strings.Contains(class, "rce") || strings.Contains(class, "命令执行") || strings.Contains(class, "代码执行"):
+		markers = []string{"rce", "uid=", "gid=", "whoami", "command execution", "命令执行"}
+	case strings.Contains(class, "文件上传"):
+		markers = []string{"upload", "uploaded", "multipart", "shell.php", "/uploads/"}
+	case strings.Contains(class, "文件读取") || strings.Contains(class, "路径穿越"):
+		markers = []string{"/etc/passwd", "../", "traversal", "root:x:"}
+	case strings.Contains(class, "未授权"):
+		markers = []string{"unauthorized", "without auth", "未授权", "admin data"}
+	case strings.Contains(class, "idor") || strings.Contains(class, "越权"):
+		markers = []string{"authorization bypass", "accessed owner", "cross-account access", "越权成功", "读取他人对象"}
+	case strings.Contains(class, "弱口令"):
+		markers = []string{"weak password", "default password", "login succeeded", "弱口令"}
+	case strings.Contains(class, "敏感信息"):
+		markers = []string{"secret", "token", "credential", "敏感信息", "api_key"}
+	case strings.Contains(class, "逻辑缺陷"):
+		markers = []string{"tamper accepted", "mutation accepted", "price changed", "amount accepted", "race condition confirmed", "invariant violated", "流程绕过成功", "篡改成功", "不变量被破坏"}
+	case strings.Contains(class, "csrf"):
+		markers = []string{"csrf", "cross-site request", "跨站请求"}
+	case strings.Contains(class, "反序列化"):
+		markers = []string{"deserial", "gadget", "反序列化"}
+	case strings.Contains(class, "ssti") || strings.Contains(class, "模板注入"):
+		markers = []string{"ssti", "template expression", "{{7*7}}", "模板"}
+	case strings.Contains(class, "xxe"):
+		markers = []string{"xxe", "external entity", "<!entity"}
+	case strings.Contains(class, "ai漏洞"):
+		markers = []string{"prompt injection", "system prompt", "jailbreak", "提示词注入"}
+	default:
+		return strings.EqualFold(strings.TrimSpace(vulnerabilityClass), "interesting")
+	}
+	matched := false
+	for _, marker := range markers {
+		if strings.Contains(observedOutput, marker) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	if path := proofRequestPathPattern.FindStringSubmatch(proof); len(path) == 2 && path[1] != "/" {
+		return strings.Contains(scopeText, strings.ToLower(path[1]))
+	}
+	return true
+}
+
+func toolEvidenceExecutionSucceeded(entry ToolEvidenceEntry) bool {
+	if strings.TrimSpace(entry.ErrorSig) != "" {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(entry.StatusHint))
+	return status != "error_or_reject" &&
+		status != "404" && status != "405" && status != "410" &&
+		!strings.HasPrefix(status, "5")
+}
+
 // SummarizeToolResult builds a compact evidence entry from raw tool I/O (pure-ish helper).
 func SummarizeToolResult(toolName, arguments, output string) ToolEvidenceEntry {
 	out := output
@@ -775,8 +1170,15 @@ func SummarizeToolResult(toolName, arguments, output string) ToolEvidenceEntry {
 		At:       time.Now(),
 	}
 	low := strings.ToLower(output)
+	targetErrorEvidence := strings.Contains(low, "sql syntax") ||
+		strings.Contains(low, "mysql_fetch") ||
+		strings.Contains(low, "postgresql") ||
+		strings.Contains(low, "ora-")
 	switch {
-	case strings.Contains(low, "error") || strings.Contains(low, "failed") || strings.Contains(low, "拒绝"):
+	case targetErrorEvidence:
+		entry.StatusHint = "interesting"
+	case strings.Contains(low, "failed") || strings.Contains(low, "拒绝") ||
+		strings.Contains(low, "connection refused") || strings.Contains(low, "timed out"):
 		entry.StatusHint = "error_or_reject"
 	case strings.Contains(low, "vulnerable") || strings.Contains(low, "injection") || strings.Contains(low, "poc"):
 		entry.StatusHint = "interesting"
@@ -787,7 +1189,8 @@ func SummarizeToolResult(toolName, arguments, output string) ToolEvidenceEntry {
 	for _, line := range strings.Split(output, "\n") {
 		l := strings.TrimSpace(line)
 		ll := strings.ToLower(l)
-		if strings.Contains(ll, "error") || strings.Contains(ll, "exception") || strings.Contains(ll, "traceback") {
+		if !targetErrorEvidence &&
+			(strings.Contains(ll, "error") || strings.Contains(ll, "exception") || strings.Contains(ll, "traceback")) {
 			entry.ErrorSig = truncateRunes(l, 160)
 			break
 		}
@@ -800,7 +1203,9 @@ func SummarizeToolResult(toolName, arguments, output string) ToolEvidenceEntry {
 			for k, v := range raw {
 				ks := strings.ToLower(k)
 				if strings.Contains(ks, "url") || strings.Contains(ks, "param") || strings.Contains(ks, "payload") ||
-					strings.Contains(ks, "data") || strings.Contains(ks, "target") || strings.Contains(ks, "cmd") {
+					strings.Contains(ks, "data") || strings.Contains(ks, "target") || strings.Contains(ks, "cmd") ||
+					strings.Contains(ks, "command") ||
+					strings.Contains(ks, "code") || strings.Contains(ks, "script") {
 					keys = append(keys, fmt.Sprintf("%s=%v", k, truncateRunes(fmt.Sprint(v), 80)))
 				}
 			}
