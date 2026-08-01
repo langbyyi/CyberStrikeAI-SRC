@@ -61,6 +61,27 @@ Also load [SCENARIOS.md](./SCENARIOS.md) when you need:
 
 ---
 
+## 0.5 差分验证铁律(布尔盲注必读)
+
+> 布尔盲注的核心是**成对对照**,不是单点。最常见错误是只发一个 payload 就下结论。
+
+**必须配对测试,缺一不可:**
+
+| 上下文 | True 条件 | False 条件 | 判定 |
+|---|---|---|---|
+| 字符串型 | `' AND 1=1--` | `' AND 1=2--` | True 正常 + False 异常 → 注入 |
+| 数字型 | ` AND 1=1` | ` AND 1=2` | True 正常 + False 异常 → 注入 |
+
+**铁律:**
+1. **True 和 False 必须成对发**,两者响应**不同**才能确认注入。只发 True(1=1)得到"正常"不能证明任何事。
+2. **对照必须是同一记录的不同条件**,不是不同记录。`id=63 AND 1=1` vs `id=64` 是错误对照(后者是不同记录)。正确:`id=63 AND 1=1` vs `id=63 AND 1=2`。
+3. **数字型不加引号**:`id=63 AND 1=1`(不是 `id=63' AND 1=1`)。字符串型加引号闭合:`id=63' AND 1=1--`。
+4. **先判断注入类型**:加 `'` 报错→字符串型;加 `'` 无变化但 `AND 1=1`/`AND 1=2` 有差异→数字型。
+5. **响应差分维度**:HTTP 状态码、body 长度、关键字、重定向。任一维度 True/False 不同即成立。
+6. **若 True/False 响应相同**:可能无注入,或有 WAF/过滤。换时间盲注(`SLEEP`/`WAITFOR DELAY`)或 OOB。
+
+---
+
 ## 1. DETECTION — SUBTLE INDICATORS
 
 Most SQLi is found by **behavioral differences**, not errors:

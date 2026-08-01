@@ -20,7 +20,8 @@ func EvaluateVulnerabilityEvidencePolicy(toolName, arguments string, state *Conv
 	if !isL1L2RecordTool(toolName) {
 		return decision
 	}
-	if state != nil {
+	formalRecord := normalizedExecutionToolName(toolName) == "record_vulnerability"
+	if formalRecord && state != nil {
 		if _, rejected := state.EvidenceRejection(fingerprint); rejected {
 			return EvidencePolicyDecision{
 				Allowed:     false,
@@ -57,7 +58,9 @@ func EvaluateVulnerabilityEvidencePolicy(toolName, arguments string, state *Conv
 		strings.Contains(strings.ToLower(fields["vulnerability_type"]), "xss") ||
 		strings.Contains(strings.ToLower(fields["title"]), "xss")
 	isJSONP := strings.Contains(joined, "jsonp") || strings.Contains(proof, "callback=")
-	if isXSS && isJSONP && !hasBrowserOriginEvidence(proof) {
+	scopes := vulnerabilityEvidenceScopes(fields)
+	if formalRecord && isXSS && isJSONP &&
+		(state == nil || !state.HasObservedBrowserOriginEvidenceAny(scopes)) {
 		return EvidencePolicyDecision{
 			Allowed:     false,
 			Code:        "jsonp_origin_unproven",
@@ -69,8 +72,13 @@ func EvaluateVulnerabilityEvidencePolicy(toolName, arguments string, state *Conv
 	isIDOR := strings.Contains(strings.ToLower(fields["category"]), "idor") ||
 		strings.Contains(strings.ToLower(fields["category"]), "越权") ||
 		strings.Contains(strings.ToLower(fields["vulnerability_type"]), "idor")
-	if normalizedExecutionToolName(toolName) == "record_vulnerability" && isIDOR &&
-		(state == nil || !state.HasDualAuthProbe()) && !hasDualIdentityEvidence(proof) {
+	idorObserved := state != nil && state.HasObservedVulnerabilityEvidenceAny(
+		scopes,
+		strings.Join([]string{fields["category"], fields["vulnerability_type"], fields["title"]}, " "),
+		fields["proof"],
+	)
+	if formalRecord && isIDOR &&
+		(state == nil || (!state.HasDualAuthProbeForAnyTarget(scopes) && !idorObserved)) {
 		return EvidencePolicyDecision{
 			Allowed:     false,
 			Code:        "idor_dual_identity_missing",
@@ -78,7 +86,35 @@ func EvaluateVulnerabilityEvidencePolicy(toolName, arguments string, state *Conv
 			Fingerprint: fingerprint,
 		}
 	}
+	if formalRecord && !isIDOR && !(isXSS && isJSONP) &&
+		(state == nil || !state.HasObservedVulnerabilityEvidenceAny(
+			scopes,
+			strings.Join([]string{fields["category"], fields["vulnerability_type"], fields["title"]}, " "),
+			fields["proof"],
+		)) {
+		return EvidencePolicyDecision{
+			Allowed:     false,
+			Code:        "observed_evidence_missing",
+			Reason:      "正式漏洞记录必须关联当前会话已经完成的目标工具结果；模型填写的 proof 不能替代已观察证据",
+			Fingerprint: fingerprint,
+		}
+	}
 	return decision
+}
+
+func vulnerabilityEvidenceScopes(fields map[string]string) []string {
+	var scopes []string
+	for _, line := range strings.FieldsFunc(fields["vuln_urls"], func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	}) {
+		if scope := strings.TrimSpace(line); scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	if len(scopes) == 0 && strings.TrimSpace(fields["target"]) != "" {
+		scopes = append(scopes, fields["target"])
+	}
+	return scopes
 }
 
 func vulnerabilityEvidenceFingerprint(arguments string) (string, map[string]string) {
@@ -91,9 +127,9 @@ func vulnerabilityEvidenceFingerprint(arguments string) (string, map[string]stri
 			}
 		}
 	}
-	target := NormalizeCoverageTarget(fields["target"])
+	target := NormalizeCoverageTarget(fields["vuln_urls"])
 	if target == "" {
-		target = NormalizeCoverageTarget(fields["vuln_urls"])
+		target = NormalizeCoverageTarget(fields["target"])
 	}
 	evidence := fields["proof"]
 	if evidence == "" {
@@ -106,32 +142,4 @@ func vulnerabilityEvidenceFingerprint(arguments string) (string, map[string]stri
 	}
 	sum := sha256.Sum256([]byte(target + "\x1f" + evidence))
 	return hex.EncodeToString(sum[:]), fields
-}
-
-func hasBrowserOriginEvidence(proof string) bool {
-	for _, marker := range []string{
-		"playwright", "selenium", "browser console", "浏览器控制台",
-		"document.origin", "location.origin", "executed in target origin",
-		"在目标源执行", "document.cookie=", "cookie exfiltration",
-	} {
-		if strings.Contains(proof, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasDualIdentityEvidence(proof string) bool {
-	for _, pair := range [][2]string{
-		{"auth_a", "auth_b"},
-		{"account a", "account b"},
-		{"账号a", "账号b"},
-		{"用户a", "用户b"},
-		{"owner token", "attacker token"},
-	} {
-		if strings.Contains(proof, pair[0]) && strings.Contains(proof, pair[1]) {
-			return true
-		}
-	}
-	return false
 }

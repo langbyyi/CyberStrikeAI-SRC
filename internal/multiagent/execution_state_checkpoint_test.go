@@ -24,7 +24,7 @@ func TestExecutionStateCheckpointRoundTrip(t *testing.T) {
 	state.MarkToolDead("missing-scanner", "not in PATH")
 	state.MarkSurfaceSignalSeen()
 	state.MarkVulnerabilityRecorded()
-	state.MarkAuthProbe(true, true)
+	state.MarkSuccessfulDualAuthProbe("https://example.com/orders/1")
 	state.SetRoleTools([]string{"http_probe", "upsert_execution_coverage"})
 	state.MarkSkillsInjected([]string{"sqli", "xss"})
 	state.UpsertCoverage(CoverageItem{
@@ -79,6 +79,15 @@ func TestExecutionStateCheckpointRoundTrip(t *testing.T) {
 	}
 	if !got.SurfaceSignalSeen() || !got.VulnerabilityRecorded() || !got.HasDualAuthProbe() {
 		t.Fatal("execution decision flags were not restored")
+	}
+	if !got.HasDualAuthProbeForTarget("https://example.com/orders/2") {
+		t.Fatal("target-scoped dual-auth evidence was not restored")
+	}
+	if got.EvidenceCursor() == 0 {
+		t.Fatal("evidence sequence cursor was not restored")
+	}
+	if got.CoverageCursor() == 0 {
+		t.Fatal("coverage sequence cursor was not restored")
 	}
 	if got.FinalizeAttempts() != 1 {
 		t.Fatalf("finalize attempts = %d, want 1", got.FinalizeAttempts())

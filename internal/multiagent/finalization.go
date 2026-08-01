@@ -47,18 +47,37 @@ func IsPlanningOnlyFinalResponse(response string) bool {
 		return true
 	}
 	low := strings.ToLower(cleaned)
-	evidenceCues := []string{
-		"已验证", "确认", "返回", "状态码", "http/", "未发现", "未确认", "证据",
-		"漏洞", "限制", "blocked", "verified", "confirmed", "status", "result",
+	// Strong evidence cues: these substring pairs only co-occur in real finding
+	// summaries, not in planning fragments. A single generic word like "漏洞"
+	// was too broad — a planning sentence ("尝试 5vshop 已知漏洞") matched it and
+	// masqueraded as a finished report, suppressing the deterministic fallback.
+	strongEvidence := [][]string{
+		{"已验证", "事实"},
+		{"已验证", "exec"},
+		{"status=", "http"},
+		{"status_hint", "http"},
+		{"http_status", ":"},
+		{"未确认候选"},
+		{"限制与下一步"},
 	}
-	for _, cue := range evidenceCues {
+	for _, pair := range strongEvidence {
+		if strings.Contains(low, pair[0]) && strings.Contains(low, pair[1]) {
+			return false
+		}
+	}
+	// Single-word cues that are reliable on their own (rare in planning text).
+	strongSingles := []string{
+		"http/", "verified", "confirmed",
+	}
+	for _, cue := range strongSingles {
 		if strings.Contains(low, cue) {
 			return false
 		}
 	}
 	planningCues := []string{
 		"下一步", "接下来", "我将", "我会", "继续扫描", "继续请求", "计划",
-		"next step", "i will", "i'll", "continue scanning",
+		"尝试", "让我", "转向", "换", "搜索",
+		"next step", "i will", "i'll", "continue scanning", "let me", "try",
 	}
 	for _, cue := range planningCues {
 		if strings.Contains(low, cue) {
@@ -68,9 +87,29 @@ func IsPlanningOnlyFinalResponse(response string) bool {
 	return false
 }
 
+// shortCandidateThreshold is the rune length below which a post-stagnation
+// candidate is treated as a planning fragment rather than a real report, so the
+// deterministic fallback report is forced. Stagnation cuts off tool calls, and
+// the model often emits a one-line plan ("尝试已知漏洞…") as its final message.
+const shortCandidateThreshold = 400
+
 func FinalizeRunResponse(ctx context.Context, state *ConversationExecutionState, candidate string, finalizer NoToolFinalizer) string {
+	if state != nil {
+		defer state.Controller().CompleteFinalization()
+	}
 	cleaned := SanitizeFinalResponse(candidate)
 	forceFinalizer := state != nil && state.Controller().FinalizationRequired()
+	// Stagnation path: pivot-driven ends never enter the Finalizing phase, so
+	// FinalizationRequired() is false. If stagnation fired at least once AND the
+	// candidate is a short fragment (typical "let me try…" plan), force the
+	// deterministic report so the user always sees a real summary.
+	if !forceFinalizer && state != nil {
+		if gates := state.Controller().StagnationGates(); gates > 0 {
+			if IsPlanningOnlyFinalResponse(cleaned) || len([]rune(cleaned)) <= shortCandidateThreshold {
+				forceFinalizer = true
+			}
+		}
+	}
 	if !forceFinalizer && !IsPlanningOnlyFinalResponse(cleaned) {
 		return cleaned
 	}
@@ -93,9 +132,24 @@ func buildFinalizerPrompt(state *ConversationExecutionState, candidate string) s
 }
 
 func BuildDeterministicFinalReport(state *ConversationExecutionState) string {
+	return buildDeterministicFinalReport(state, state.LastK(8))
+}
+
+func BuildDeterministicFinalReportSince(state *ConversationExecutionState, cursor uint64) string {
+	return buildDeterministicFinalReport(state, state.EvidenceSince(cursor))
+}
+
+func BuildDeterministicFinalReportForRun(state *ConversationExecutionState, evidenceCursor, coverageCursor uint64) string {
+	return buildDeterministicFinalReportParts(state.EvidenceSince(evidenceCursor), state.CoverageSince(coverageCursor))
+}
+
+func buildDeterministicFinalReport(state *ConversationExecutionState, evidence []ToolEvidenceEntry) string {
+	return buildDeterministicFinalReportParts(evidence, state.ListCoverage())
+}
+
+func buildDeterministicFinalReportParts(evidence []ToolEvidenceEntry, coverage []CoverageItem) string {
 	var out strings.Builder
 	out.WriteString("## 已验证事实\n")
-	evidence := state.LastK(8)
 	if len(evidence) == 0 {
 		out.WriteString("- 本次执行未保留足够的结构化工具事实，不能据此确认漏洞。\n")
 	} else {
@@ -116,7 +170,6 @@ func BuildDeterministicFinalReport(state *ConversationExecutionState) string {
 		}
 	}
 
-	coverage := state.ListCoverage()
 	sort.SliceStable(coverage, func(i, j int) bool {
 		return coverage[i].Path < coverage[j].Path
 	})

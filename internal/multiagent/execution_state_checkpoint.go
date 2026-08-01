@@ -24,6 +24,7 @@ type executionStateSnapshot struct {
 	DualAuthProbe         bool                        `json:"dual_auth_probe,omitempty"`
 	AuthASeen             bool                        `json:"auth_a_seen,omitempty"`
 	AuthBSeen             bool                        `json:"auth_b_seen,omitempty"`
+	DualAuthTargets       []string                    `json:"dual_auth_targets,omitempty"`
 	RecentToolNames       []string                    `json:"recent_tool_names,omitempty"`
 	RecentUpsertCount     int                         `json:"recent_upsert_count,omitempty"`
 	FinalizeAttempts      int                         `json:"finalize_attempts,omitempty"`
@@ -109,6 +110,7 @@ func snapshotConversationExecutionState(conversationID string) executionStateSna
 		DualAuthProbe:         state.dualAuthProbe,
 		AuthASeen:             state.authASeen,
 		AuthBSeen:             state.authBSeen,
+		DualAuthTargets:       sortedStringSet(state.dualAuthTargets),
 		RecentToolNames:       append([]string(nil), state.recentToolNames...),
 		RecentUpsertCount:     state.recentUpsertCount,
 		FinalizeAttempts:      state.finalizeAttempts,
@@ -130,11 +132,24 @@ func restoreConversationExecutionState(conversationID string, snapshot execution
 
 	state.mu.Lock()
 	state.RecentTools = append([]ToolEvidenceEntry(nil), snapshot.RecentTools...)
+	state.evidenceSequence = 0
+	for _, entry := range state.RecentTools {
+		if entry.Sequence > state.evidenceSequence {
+			state.evidenceSequence = entry.Sequence
+		}
+	}
 	state.Coverage = cloneCoverageMap(snapshot.Coverage)
+	state.coverageSequence = 0
+	for _, item := range state.Coverage {
+		if item.Sequence > state.coverageSequence {
+			state.coverageSequence = item.Sequence
+		}
+	}
 	state.InjectedSkills = stringSetFromSlice(snapshot.InjectedSkills)
 	state.dualAuthProbe = snapshot.DualAuthProbe
 	state.authASeen = snapshot.AuthASeen
 	state.authBSeen = snapshot.AuthBSeen
+	state.dualAuthTargets = stringSetFromSlice(snapshot.DualAuthTargets)
 	state.recentToolNames = append([]string(nil), snapshot.RecentToolNames...)
 	state.recentUpsertCount = snapshot.RecentUpsertCount
 	state.finalizeAttempts = snapshot.FinalizeAttempts

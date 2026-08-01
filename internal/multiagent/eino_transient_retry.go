@@ -82,7 +82,8 @@ func isEinoTransientRunError(err error) bool {
 		"dial tcp",
 		"tls handshake timeout",
 		"stream error",
-		"goaway", // http2: server sent GOAWAY and closed the connection
+		"goaway",                    // http2: server sent GOAWAY and closed the connection
+		"awaiting response headers", // http2: timeout awaiting response headers (gateway accepts TCP but stalls)
 		"unexpected eof",
 		`": eof`, // net/http: Post "url": EOF (often wraps io.EOF)
 		"unexpected end of json",

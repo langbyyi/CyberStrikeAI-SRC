@@ -54,7 +54,7 @@ var DefaultPaymentMutations = map[string][]string{
 
 // LogicProbeRequest is the pure input for differential logic probing.
 type LogicProbeRequest struct {
-	Method     string            // default GET
+	Method     string // default GET
 	URL        string
 	Headers    map[string]string // shared headers (without auth override)
 	Body       string
@@ -85,20 +85,20 @@ type LogicProbeVariant struct {
 
 // LogicProbeResult is the structured differential output for the model.
 type LogicProbeResult struct {
-	Mode                    string             `json:"mode"`
-	URL                     string             `json:"url"`
+	Mode                    string              `json:"mode"`
+	URL                     string              `json:"url"`
 	Variants                []LogicProbeVariant `json:"variants"`
-	StatusA                 int                `json:"status_a,omitempty"`
-	StatusB                 int                `json:"status_b,omitempty"`
-	LenA                    int                `json:"len_a,omitempty"`
-	LenB                    int                `json:"len_b,omitempty"`
-	BodyHashA               string             `json:"body_hash_a,omitempty"`
-	BodyHashB               string             `json:"body_hash_b,omitempty"`
-	HeaderDiffKeys          []string           `json:"header_diff_keys,omitempty"`
-	Note                    string             `json:"note"`
-	SuggestedInvariantBreak string             `json:"suggested_invariant_break,omitempty"`
-	DualAuthRecorded        bool               `json:"dual_auth_recorded"`
-	Error                   string             `json:"error,omitempty"`
+	StatusA                 int                 `json:"status_a,omitempty"`
+	StatusB                 int                 `json:"status_b,omitempty"`
+	LenA                    int                 `json:"len_a,omitempty"`
+	LenB                    int                 `json:"len_b,omitempty"`
+	BodyHashA               string              `json:"body_hash_a,omitempty"`
+	BodyHashB               string              `json:"body_hash_b,omitempty"`
+	HeaderDiffKeys          []string            `json:"header_diff_keys,omitempty"`
+	Note                    string              `json:"note"`
+	SuggestedInvariantBreak string              `json:"suggested_invariant_break,omitempty"`
+	DualAuthRecorded        bool                `json:"dual_auth_recorded"`
+	Error                   string              `json:"error,omitempty"`
 }
 
 // ValidateLogicProbeRequest returns a user-facing error string or "".
@@ -200,7 +200,6 @@ func RunLogicProbeDiff(ctx context.Context, req LogicProbeRequest) LogicProbeRes
 
 	out := LogicProbeResult{Mode: mode, URL: req.URL}
 	dual := strings.TrimSpace(req.AuthA) != "" && strings.TrimSpace(req.AuthB) != ""
-	out.DualAuthRecorded = dual
 
 	doOne := func(label, reqURL, body, auth string) LogicProbeVariant {
 		v := LogicProbeVariant{Label: label}
@@ -266,9 +265,13 @@ func RunLogicProbeDiff(ctx context.Context, req LogicProbeRequest) LogicProbeRes
 		out.BodyHashA, out.BodyHashB = a.BodyHash, b.BodyHash
 		out.HeaderDiffKeys = headerKeyDiff(a.HeadersKey, b.HeadersKey)
 		out.Note = "identity_diff (optional): compare status/len/hash across auth_a vs auth_b — horizontal access only"
-		if a.Status != b.Status || a.BodyHash != b.BodyHash {
+		out.DualAuthRecorded = dual && a.Err == "" && b.Err == "" && a.Status > 0 && b.Status > 0
+		if a.Err != "" || b.Err != "" {
+			out.Error = fmt.Sprintf("identity_diff request failed: auth_a=%s; auth_b=%s", a.Err, b.Err)
+			out.SuggestedInvariantBreak = "identity_probe_failed: no comparable dual-auth responses"
+		} else if a.Status != b.Status || a.BodyHash != b.BodyHash {
 			out.SuggestedInvariantBreak = "identity_response_divergence: cross-account access differs — check IDOR/BOLA (subset of logic track)"
-		} else if dual {
+		} else if out.DualAuthRecorded {
 			out.SuggestedInvariantBreak = "no_identity_divergence: continue payment/workflow tests with param_tamper/step_skip on same account"
 		} else {
 			out.SuggestedInvariantBreak = "identity_diff without dual auth: only one identity used — optional for IDOR; payment/param tests do not need auth_b"

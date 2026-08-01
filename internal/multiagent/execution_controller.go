@@ -206,6 +206,7 @@ func (c *ExecutionController) StartProbeBatch(callIDs []string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.resetFinishedRunLocked()
 	c.activeProbeCalls = make(map[string]struct{}, len(callIDs))
 	for _, id := range callIDs {
 		if id = strings.TrimSpace(id); id != "" {
@@ -254,7 +255,7 @@ func (c *ExecutionController) RecordSemanticOutcome(callID, toolName, signature 
 		c.outcomeAttempts[fingerprint]++
 	}
 	if toolName = normalizedExecutionToolName(toolName); toolName != "" {
-		c.toolLastOutcome[toolName] = outcome
+		c.toolLastOutcome[semanticToolBranchKey(toolName, outcome.Branch)] = outcome
 	}
 	_, activeProbe := c.activeProbeCalls[strings.TrimSpace(callID)]
 	_, known := c.seenResults[fingerprint]
@@ -278,11 +279,13 @@ func (c *ExecutionController) CheckToolCallAllowed(toolName, arguments string) (
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.resetFinishedRunLocked()
 	toolName = normalizedExecutionToolName(toolName)
 	if c.phase == ExecutionPhaseFinalizing && classifyExecutionTool(toolName) != executionToolStateMutation {
 		return false, "finalizing"
 	}
-	if previous, ok := c.toolLastOutcome[toolName]; ok {
+	branch := semanticOutcomeBranch(arguments)
+	if previous, ok := c.toolLastOutcome[semanticToolBranchKey(toolName, branch)]; ok {
 		attempts := c.outcomeAttempts[previous.Fingerprint]
 		switch previous.Kind {
 		case SemanticOutcomeInvocationError:
@@ -293,11 +296,27 @@ func (c *ExecutionController) CheckToolCallAllowed(toolName, arguments string) (
 			if attempts >= 2 {
 				return false, "external_transient_exhausted"
 			}
+		case SemanticOutcomeAuthRejected:
+			// Online credential guessing risks account lockout / IP ban. Allow
+			// at most one auth-rejected attempt per (tool, branch) so the model
+			// gets a single confirmation signal but cannot brute-force.
+			if attempts >= 1 {
+				return false, "auth_rejected_exhausted"
+			}
 		}
 	}
 	signature := CallSignature(toolName, arguments)
 	code := c.lastCallCode[signature]
 	attempts := c.callAttempts[signature]
+	// duplicate_proven: an identical probe/long-running call that already
+	// completed successfully once is blocked immediately on the 2nd attempt.
+	// This closes the gap where retryMaxAttempts("completed")=-1 (no limit) let
+	// the model re-fire a byte-identical exec/http-framework-test command many
+	// times before the batch-level stagnation gate kicked in. Idempotent write
+	// tools (record/update/upsert/skill) are exempt — they are not probing.
+	if attempts > 0 && isProvenSuccessfulCode(code) && classifyExecutionTool(toolName) != executionToolStateMutation {
+		return false, "duplicate_proven"
+	}
 	maxAttempts := retryMaxAttempts(code)
 	if maxAttempts >= 0 && attempts >= maxAttempts {
 		return false, "retry_exhausted"
@@ -306,6 +325,26 @@ func (c *ExecutionController) CheckToolCallAllowed(toolName, arguments string) (
 		return false, "stagnation_blocked"
 	}
 	return true, ""
+}
+
+func (c *ExecutionController) resetFinishedRunLocked() {
+	if c.phase != ExecutionPhaseFinished {
+		return
+	}
+	c.phase = ExecutionPhaseExploring
+	c.noNovelProbeCalls = 0
+	c.noNovelBatches = 0
+	c.pivotRequired = false
+	c.pivotDirectiveShown = false
+	c.seenCalls = make(map[string]struct{})
+	c.callAttempts = make(map[string]int)
+	c.lastCallCode = make(map[string]string)
+	c.outcomeAttempts = make(map[string]int)
+	c.toolLastOutcome = make(map[string]SemanticOutcome)
+}
+
+func semanticToolBranchKey(toolName, branch string) string {
+	return normalizedExecutionToolName(toolName) + "\x1f" + strings.ToLower(strings.TrimSpace(branch))
 }
 
 func (c *ExecutionController) CompleteProbeBatch() {
@@ -369,6 +408,20 @@ func (c *ExecutionController) FinalizationRequired() bool {
 	return c.phase == ExecutionPhaseFinalizing
 }
 
+// CompleteFinalization closes the one-way finalization phase after either the
+// no-tool finalizer or deterministic fallback has produced the user report.
+func (c *ExecutionController) CompleteFinalization() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.phase = ExecutionPhaseFinished
+	c.pivotRequired = false
+	c.activeProbeCalls = nil
+	c.activeBatchNovel = false
+}
+
 func (c *ExecutionController) CheckProbeCallAllowed(signature string) (bool, string) {
 	if c == nil {
 		return true, ""
@@ -399,6 +452,17 @@ func retryMaxAttempts(code string) int {
 	default:
 		return -1
 	}
+}
+
+// isProvenSuccessfulCode reports whether a stored lastCallCode corresponds to a
+// call that completed successfully (not an error/transient/negative outcome).
+// Such calls, when repeated with an identical signature, are pure duplicates.
+func isProvenSuccessfulCode(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "", "completed", "target_database_error":
+		return true
+	}
+	return false
 }
 
 func (c *ExecutionController) PivotDirective() string {
@@ -628,6 +692,19 @@ func (c *ExecutionController) Summary() ExecutionSummary {
 		}
 	}
 	return out
+}
+
+// StagnationGates reports how many times the controller forced a pivot/finalize
+// due to consecutive non-novel probe batches. Used by finalization to decide
+// whether a short post-stagnation candidate must fall back to the deterministic
+// report — otherwise a one-line planning fragment reaches the user verbatim.
+func (c *ExecutionController) StagnationGates() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.summary.StagnationGates
 }
 
 func (c *ExecutionController) RecordToolBatch(planned, dropped int) {

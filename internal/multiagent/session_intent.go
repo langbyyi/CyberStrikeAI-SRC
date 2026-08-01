@@ -52,6 +52,26 @@ var (
 		`\bpentest\b|\bpenetration\b|\bexploit\b|\bnuclei\b` +
 		`)`)
 
+	// Security nouns alone describe knowledge/document/code requests as often as
+	// active testing. A confident pentest decision therefore requires an
+	// execution verb (or an established active-testing phrase), not merely XSS,
+	// SSRF, 未授权, payload, etc.
+	pentestExecutionKeywords = regexp.MustCompile(`(?i)(` +
+		`渗透|漏扫|漏洞扫描|漏洞测试|挖洞|打点|红队|攻防|授权测试|` +
+		`爆破|提权|复测|验证漏洞|漏洞验证|漏洞利用|` +
+		`\bpentest\b|\bpenetration\b|\bexploit\b|\bnuclei\b|` +
+		`(?:测试|验证|扫描|检测|利用|复现).{0,16}(?:未授权|越权|注入|漏洞|\bxss\b|\bsqli\b|\bssrf\b|\brce\b|\bpoc\b|\bpayload\b)|` +
+		`(?:未授权|越权|注入|漏洞|\bxss\b|\bsqli\b|\bssrf\b|\brce\b|\bpoc\b|\bpayload\b).{0,16}(?:测试|验证|扫描|检测|利用|复现)` +
+		`)`)
+
+	securityKnowledgeRequest = regexp.MustCompile(`(?i)(` +
+		`解释|介绍|原理|是什么|有什么区别|基本流程|写一篇|写一段|文档|文章|风险说明|` +
+		`示例代码|代码示例|教程|如何防|怎么防|防护建议|修复建议|` +
+		`\bexplain\b|\bwhat\s+is\b|\bwrite\b.{0,12}\b(document|article|code)\b` +
+		`)`)
+	explicitExecutionAfterKnowledge = regexp.MustCompile(`(?i)(?:帮我|请|然后|并|再).{0,12}(?:测试|验证|扫描|检测|利用|复现)`)
+	directSecurityExecutionRequest  = regexp.MustCompile(`(?i)(?:测试|验证|扫描|检测|利用|复现).{0,16}(?:https?://|未授权|越权|注入|漏洞|\bxss\b|\bsqli\b|\bssrf\b|\brce\b|\bpoc\b|\bpayload\b)`)
+
 	chatKeywords = regexp.MustCompile(`(?i)(` +
 		`^你好|^您好|^嗨|^在吗|^在不在|^谢谢|^感谢|^早上好|^晚上好|^中午好|` +
 		`你是谁|你能做什么|怎么用|如何使用|介绍一下|帮我看看设置|配置怎么写|` +
@@ -88,10 +108,15 @@ func sanitizeIntent(intent SessionIntent, userText string) SessionIntent {
 	if isPureGreeting(text) {
 		return SessionIntentChat
 	}
-	if explicitChatOnly.MatchString(text) && ExtractTargetFromText(text) == "" && !pentestKeywords.MatchString(text) {
+	if explicitChatOnly.MatchString(text) {
 		return SessionIntentChat
 	}
-	if intent == SessionIntentPentest && !pentestKeywords.MatchString(text) {
+	if securityKnowledgeRequest.MatchString(text) &&
+		!explicitExecutionAfterKnowledge.MatchString(text) &&
+		!directSecurityExecutionRequest.MatchString(text) {
+		return SessionIntentChat
+	}
+	if intent == SessionIntentPentest && !pentestExecutionKeywords.MatchString(text) {
 		if ExtractTargetFromText(text) != "" || reconKeywords.MatchString(text) {
 			return SessionIntentRecon
 		}
@@ -190,11 +215,16 @@ func classifySessionIntentRules(userMessage, roleHint string) sessionIntentRuleD
 	if msg == "" {
 		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
 	}
-	if explicitChatOnly.MatchString(msg) && ExtractTargetFromText(msg) == "" && !pentestKeywords.MatchString(msg) {
+	if explicitChatOnly.MatchString(msg) {
+		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
+	}
+	if securityKnowledgeRequest.MatchString(msg) &&
+		!explicitExecutionAfterKnowledge.MatchString(msg) &&
+		!directSecurityExecutionRequest.MatchString(msg) {
 		return sessionIntentRuleDecision{intent: SessionIntentChat, confident: true}
 	}
 	// Explicit exploit/pentest language wins (even without target — obligations still need target).
-	if pentestKeywords.MatchString(msg) {
+	if pentestExecutionKeywords.MatchString(msg) || directSecurityExecutionRequest.MatchString(msg) {
 		return sessionIntentRuleDecision{intent: SessionIntentPentest, confident: true}
 	}
 	if reconKeywords.MatchString(msg) {
@@ -259,7 +289,7 @@ func ClassifySessionIntentWithLLMModel(ctx context.Context, userMessage, roleHin
 	// Rules fallback MUST classify only the user text, never the LLM prompt blob.
 	fallback := ClassifySessionIntentRules(userMessage, roleHint)
 	// Safety: never allow fallback pentest without attack language in the user text itself.
-	if fallback == SessionIntentPentest && !pentestKeywords.MatchString(text) {
+	if fallback == SessionIntentPentest && !pentestExecutionKeywords.MatchString(text) {
 		if ExtractTargetFromText(text) != "" {
 			fallback = SessionIntentRecon
 		} else {
@@ -411,7 +441,7 @@ intent 必须是以下之一：
 			return fallback, "rules_fallback"
 		}
 		// LLM may over-label pentest; require attack language or keep as recon/chat.
-		if intent == SessionIntentPentest && !pentestKeywords.MatchString(text) {
+		if intent == SessionIntentPentest && !pentestExecutionKeywords.MatchString(text) {
 			if ExtractTargetFromText(text) != "" {
 				return SessionIntentRecon, "llm_downgrade_recon"
 			}
@@ -540,7 +570,7 @@ func mergeSessionIntent(prev, incoming SessionIntent, userMessage string) Sessio
 	if prev == "" {
 		return incoming
 	}
-	if explicitChatOnly.MatchString(msg) && ExtractTargetFromText(msg) == "" && !pentestKeywords.MatchString(msg) {
+	if explicitChatOnly.MatchString(msg) {
 		return SessionIntentChat
 	}
 	// Short "continue" during an active task keeps mode; do not invent pentest from ack alone.

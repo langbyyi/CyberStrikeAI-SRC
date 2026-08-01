@@ -43,6 +43,21 @@ Every upload feature should be tested as four separate trust boundaries:
 
 Many targets validate only one stage. The bug usually appears in a different stage than the one where the file was uploaded.
 
+### 1.1 验证顺序铁律(避免原地打转)
+
+> 上传类漏洞最高频的失败模式是反复猜测路径参数而从未确认文件是否落地。
+
+**严格按顺序执行:**
+
+1. **先确认落地(Store)**:上传一个**已知无害的 .txt/.jpg**,用响应里的 URL、目录列表、或 `filepath`/`savepath` 参数回显定位文件物理位置。**确认能访问到上传的文件后**,再尝试恶意内容。
+2. **再测绕过(Accept)**:确认落地路径后,逐个尝试扩展名/内容/MIME 绕过,**每次只改一个变量**,并立即验证文件是否以可执行形式落地。
+3. **最后测执行(Serve/Process)**:文件落地后,访问它确认是否被服务器解析执行(而非当成静态资源下载)。
+
+**铁律:**
+- **filepath/savepath/path 参数**:先传一个确定值(如 `attached`),上传成功后再访问 `/<该值>/test.txt` 确认落地。**不要在未确认落地前反复猜测路径**。
+- **MapPath/路径错误(ASP)**:`Server.MapPath()` 错误说明路径参数为空或非法,需补 `filepath` 参数而非继续盲测。
+- **每个绕过姿势单独验证**:改扩展名就只改扩展名,改内容就只改内容,避免多变量同时变导致无法归因。
+
 ---
 
 ## 2. RECON QUESTIONS FIRST

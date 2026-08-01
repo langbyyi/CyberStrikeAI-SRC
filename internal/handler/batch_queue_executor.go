@@ -230,6 +230,9 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 
 	var resultMA *multiagent.RunResult
 	var runErr error
+	executionState := multiagent.GetConversationExecutionState(conversationID)
+	evidenceCursor := executionState.EvidenceCursor()
+	coverageCursor := executionState.CoverageCursor()
 	switch {
 	case useBatchMulti:
 		resultMA, runErr = multiagent.RunDeepAgent(taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger, conversationID, h.conversationProjectID(conversationID), finalMessage, []agent.ChatMessage{}, roleTools, progressCallback, h.agentsMarkdownDir, batchOrch, nil, h.agentSessionContextBlock(conversationID))
@@ -242,7 +245,7 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 	}
 
 	if runErr != nil {
-		h.handleBatchSubTaskRunError(queueID, task, conversationID, assistantMessageID, baseCtx, taskCtx, resultMA, runErr, &finishStatus)
+		h.handleBatchSubTaskRunError(queueID, task, conversationID, assistantMessageID, baseCtx, taskCtx, resultMA, runErr, evidenceCursor, coverageCursor, &finishStatus)
 		return
 	}
 
@@ -289,6 +292,7 @@ func (h *AgentHandler) handleBatchSubTaskRunError(
 	baseCtx, taskCtx context.Context,
 	resultMA *multiagent.RunResult,
 	runErr error,
+	evidenceCursor, coverageCursor uint64,
 	finishStatus *string,
 ) {
 	if shouldPersistEinoAgentTraceAfterRunError(baseCtx) {
@@ -335,7 +339,15 @@ func (h *AgentHandler) handleBatchSubTaskRunError(
 	}
 
 	h.logger.Error("批量任务执行失败", zap.String("queueId", queueID), zap.String("taskId", task.ID), zap.String("conversationId", conversationID), zap.Error(runErr))
-	errorMsg := "执行失败: " + runErr.Error()
+	failureNotice, _ := einoRunFailurePresentation(runErr, resultMA)
+	if isTimeout {
+		failureNotice = "任务执行超时，已自动终止。"
+	}
+	executionIDs := []string(nil)
+	if resultMA != nil {
+		executionIDs = resultMA.MCPExecutionIDs
+	}
+	errorMsg := einoRunFailureFinalContentForRun(conversationID, executionIDs, evidenceCursor, coverageCursor, failureNotice)
 	if assistantMessageID != "" {
 		if _, updateErr := h.db.Exec(
 			"UPDATE messages SET content = ?, updated_at = ? WHERE id = ?",
