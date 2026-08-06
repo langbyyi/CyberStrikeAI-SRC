@@ -38,4 +38,5 @@ tools:
 - dalfox
 - gau
 - jwt-analyzer
+- web_search
 enabled: true

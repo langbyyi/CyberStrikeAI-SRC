@@ -28,4 +28,5 @@ tools:
 - checksec
 - zsteg
 - volatility3
+- web_search
 enabled: true

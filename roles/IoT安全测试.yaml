@@ -45,4 +45,5 @@ tools:
 - skill
 - http-framework-test
 - dnslog
+- web_search
 enabled: true

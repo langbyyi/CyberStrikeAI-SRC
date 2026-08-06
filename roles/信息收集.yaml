@@ -30,4 +30,5 @@ tools:
 - list_project_facts
 - search_project_facts
 - gau
+- web_search
 enabled: true

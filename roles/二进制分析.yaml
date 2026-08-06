@@ -28,4 +28,5 @@ tools:
 - pwntools
 - angr
 - one-gadget
+- web_search
 enabled: true

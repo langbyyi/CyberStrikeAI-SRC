@@ -45,4 +45,5 @@ tools:
 - get_project_fact
 - list_project_facts
 - search_project_facts
+- web_search
 enabled: true

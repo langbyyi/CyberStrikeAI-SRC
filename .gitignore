@@ -6,9 +6,14 @@ data/
 *.sqlite
 *.sqlite3
 
+# Eino plantask 运行时任务板
+skills/.eino/
+
 # Local configuration and secrets
 config.yaml
 config.local.yaml
+config.yaml.backup
+config.*.backup
 .env
 .env.*
 *.pem

@@ -59,4 +59,5 @@ tools:
 - gobuster
 - dalfox
 - jwt-analyzer
+- web_search
 enabled: true

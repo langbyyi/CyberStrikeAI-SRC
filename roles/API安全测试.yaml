@@ -93,4 +93,5 @@ tools:
 - search_project_facts
 - dalfox
 - jwt-analyzer
+- web_search
 enabled: true
