@@ -76,7 +76,8 @@ parameters:
       额外的libc-database参数。用于传递未在参数列表中定义的libc-database选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - --add <libc.so>（添加libc）
+      - --identify <name>（识别libc）
 
       **注意事项：**
       - 多个参数用空格分隔

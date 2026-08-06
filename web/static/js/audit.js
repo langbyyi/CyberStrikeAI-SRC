@@ -15,7 +15,7 @@ const AUDIT_ACTIONS_BY_CATEGORY = {
     c2: ['listener_create', 'listener_delete', 'listener_start', 'listener_stop',
         'session_delete', 'task_create', 'task_cancel', 'task_delete'],
     webshell: ['connection_create', 'connection_delete'],
-    knowledge: ['item_delete', 'index_rebuild'],
+    knowledge: ['item_delete', 'index_build', 'index_rebuild_full'],
     conversation: ['create', 'delete', 'delete_turn'],
     vulnerability: ['create', 'update', 'delete'],
     external_mcp: ['upsert', 'delete'],
@@ -771,9 +771,16 @@ document.addEventListener('languagechange', function () {
 var auditCustomSelectMap = {};
 var auditFilterSelectsDocListener = false;
 
+function closeAuditCustomSelect(selectId) {
+    var reg = auditCustomSelectMap[selectId];
+    if (reg && reg.wrapper) {
+        reg.wrapper.classList.remove('open');
+    }
+}
+
 function closeAllAuditCustomSelects() {
     Object.keys(auditCustomSelectMap).forEach(function (id) {
-        auditCustomSelectMap[id].wrapper.classList.remove('open');
+        closeAuditCustomSelect(id);
     });
 }
 
@@ -872,13 +879,15 @@ function enhanceAuditFilterSelect(selectId) {
     dropdown.addEventListener('click', function (e) {
         var opt = e.target.closest('.audit-custom-select-option');
         if (!opt) return;
+        e.stopPropagation();
         var val = opt.getAttribute('data-value');
         if (val === null) val = '';
+        closeAuditCustomSelect(selectId);
         if (select.value !== val) {
             select.value = val;
             select.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        wrapper.classList.remove('open');
+        closeAuditCustomSelect(selectId);
         syncAuditCustomSelect(selectId);
     });
 

@@ -387,3 +387,12 @@ cat subdomains.txt | nuclei -t exposures/ -t misconfiguration/ -o exposed.txt
 /crossdomain.xml              → Flash cross-domain policy
 /.well-known/                 → Various well-known URIs
 ```
+
+---
+
+## Related Routing
+
+- Direct Web testing once entrypoints found → [web-attack-methods](../web-attack-methods/SKILL.md) / [api-sec](../api-sec/SKILL.md)
+- Service exposure triage (Redis/ES/admin panels) → [unauthorized-access-common-services](../unauthorized-access-common-services/SKILL.md)
+- Burp history-based verification → [burp-mcp-vuln-check](../burp-mcp-vuln-check/SKILL.md)
+- VCS/backup leaks → [insecure-source-code-management](../insecure-source-code-management/SKILL.md)

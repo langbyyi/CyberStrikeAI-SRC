@@ -41,7 +41,10 @@ function buildApiSpecTagToKey() {
 function translateApiDocTag(tag) {
     if (!tag) return tag;
     var key = apiSpecTagToKey[tag];
-    return key ? _t('apiDocs.tags.' + key) : tag;
+    if (!key) return tag;
+    var i18nKey = 'apiDocs.tags.' + key;
+    var translated = _t(i18nKey);
+    return translated === i18nKey ? tag : translated;
 }
 function translateApiDocSummaryFromOp(op) {
     var key = op && op['x-i18n-summary'];
@@ -96,12 +99,9 @@ async function loadToken() {
 // 加载OpenAPI规范
 async function loadAPISpec() {
     try {
-        let url = '/api/openapi/spec';
-        if (currentToken) {
-            url += '?token=' + encodeURIComponent(currentToken);
-        }
-        
-        const response = await fetch(url);
+        const url = '/api/openapi/spec';
+        const headers = currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {};
+        const response = await fetch(url, { headers });
         if (!response.ok) {
             if (response.status === 401) {
                 showError(_t('apiDocs.errorLoginRequired'));

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"cyberstrike-ai/internal/agent"
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/c2"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
@@ -29,7 +31,7 @@ func registerC2Tools(mcpServer *mcp.Server, c2Manager *c2.Manager, logger *zap.L
 	registerC2EventTool(mcpServer, c2Manager, logger)
 	registerC2ProfileTool(mcpServer, c2Manager, logger)
 	registerC2FileTool(mcpServer, c2Manager, logger)
-	logger.Info("C2 MCP tools registered (8 unified tools)")
+	logger.Debug("C2 MCP tools registered (8 unified tools)")
 }
 
 func makeC2Result(data interface{}, err error) (*mcp.ToolResult, error) {
@@ -66,16 +68,17 @@ tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + ImplantToken）才登
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"action":      map[string]interface{}{"type": "string", "description": "操作: list/get/create/update/start/stop/delete", "enum": []string{"list", "get", "create", "update", "start", "stop", "delete"}},
-				"listener_id": map[string]interface{}{"type": "string", "description": "监听器 ID（get/update/start/stop/delete 需要）"},
-				"name":        map[string]interface{}{"type": "string", "description": "监听器名称（create/update）"},
-				"type":        map[string]interface{}{"type": "string", "description": "监听器类型（create）", "enum": []string{"tcp_reverse", "http_beacon", "https_beacon", "websocket"}},
+				"action":        map[string]interface{}{"type": "string", "description": "操作: list/get/create/update/start/stop/delete", "enum": []string{"list", "get", "create", "update", "start", "stop", "delete"}},
+				"listener_id":   map[string]interface{}{"type": "string", "description": "监听器 ID（get/update/start/stop/delete 需要）"},
+				"name":          map[string]interface{}{"type": "string", "description": "监听器名称（create/update）"},
+				"type":          map[string]interface{}{"type": "string", "description": "监听器类型（create）", "enum": []string{"tcp_reverse", "http_beacon", "https_beacon", "websocket"}},
 				"bind_host":     map[string]interface{}{"type": "string", "description": "绑定地址，默认 127.0.0.1；外网监听常用 0.0.0.0"},
 				"callback_host": map[string]interface{}{"type": "string", "description": "可选：植入端/Payload 回连主机名（公网 IP 或域名）。写入 config_json；生成 oneliner/beacon 时优先于 bind_host。update 时传入空字符串可清除"},
-				"bind_port":   map[string]interface{}{"type": "integer", "description": fmt.Sprintf("绑定端口（create 必填）。须 ≠ %d（当前本服务 Web/API 端口，配置 server.port）", webListenPort), "minimum": 1, "maximum": 65535},
-				"profile_id":  map[string]interface{}{"type": "string", "description": "Malleable Profile ID"},
-				"remark":      map[string]interface{}{"type": "string", "description": "备注"},
-				"config":      map[string]interface{}{"type": "object", "description": "高级配置（beacon 路径/TLS/OPSEC 等），create/update 可用。tcp_reverse 可选 allow_legacy_shell:true 允许未加密经典 shell（默认 false）"},
+				"bind_port":     map[string]interface{}{"type": "integer", "description": fmt.Sprintf("绑定端口（create 必填）。须 ≠ %d（当前本服务 Web/API 端口，配置 server.port）", webListenPort), "minimum": 1, "maximum": 65535},
+				"project_id":    map[string]interface{}{"type": "string", "description": "所属项目 ID。create 省略时默认使用当前对话绑定项目；未绑定项目的对话则创建未绑定监听器"},
+				"profile_id":    map[string]interface{}{"type": "string", "description": "Malleable Profile ID"},
+				"remark":        map[string]interface{}{"type": "string", "description": "备注"},
+				"config":        map[string]interface{}{"type": "object", "description": "高级配置（beacon 路径/TLS/OPSEC 等），create/update 可用。tcp_reverse 可选 allow_legacy_shell:true 允许未加密经典 shell（默认 false）"},
 			},
 			"required": []string{"action"},
 		},
@@ -85,7 +88,7 @@ tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + ImplantToken）才登
 
 		switch action {
 		case "list":
-			listeners, err := m.DB().ListC2Listeners()
+			listeners, err := m.DB().ListC2ListenersForAccess(c2ToolAccess(ctx), mcpEffectiveProjectFilter(ctx, m.DB()))
 			if err != nil {
 				return makeC2Result(nil, err)
 			}
@@ -114,6 +117,13 @@ tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + ImplantToken）才登
 				cfg = &c2.ListenerConfig{}
 				_ = json.Unmarshal(cfgBytes, cfg)
 			}
+			projectID := strings.TrimSpace(getString(params, "project_id"))
+			if projectID == "" {
+				projectID = mcpEffectiveProjectFilter(ctx, m.DB())
+				if projectID == database.ProjectFilterUnbound {
+					projectID = ""
+				}
+			}
 			input := c2.CreateListenerInput{
 				Name:         getString(params, "name"),
 				Type:         getString(params, "type"),
@@ -121,12 +131,17 @@ tcp_reverse 默认仅接受 CSB1 加密 Beacon（AES-GCM + ImplantToken）才登
 				BindPort:     int(getFloat64(params, "bind_port")),
 				ProfileID:    getString(params, "profile_id"),
 				Remark:       getString(params, "remark"),
+				ProjectID:    projectID,
 				Config:       cfg,
 				CallbackHost: getString(params, "callback_host"),
 			}
 			listener, err := m.CreateListener(input)
 			if err != nil {
 				return makeC2Result(nil, err)
+			}
+			if principal, ok := authctx.PrincipalFromContext(ctx); ok {
+				_ = m.DB().SetResourceOwner("c2_listener", listener.ID, principal.UserID)
+				_ = m.DB().AssignResourceToUser(principal.UserID, "c2_listener", listener.ID)
 			}
 			implantToken := listener.ImplantToken
 			listener.EncryptionKey = ""
@@ -254,6 +269,7 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 		case "list":
 			filter := database.ListC2SessionsFilter{
 				ListenerID: getString(params, "listener_id"),
+				ProjectID:  mcpEffectiveProjectFilter(ctx, m.DB()),
 				Status:     getString(params, "status"),
 				OS:         getString(params, "os"),
 				Search:     getString(params, "search"),
@@ -264,7 +280,7 @@ func registerC2SessionTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 			if v, ok := params["suspicious"].(bool); ok && v {
 				filter.Suspicious = true
 			}
-			sessions, err := m.DB().ListC2Sessions(filter)
+			sessions, err := m.DB().ListC2SessionsForAccess(filter, c2ToolAccess(ctx))
 			return makeC2Result(map[string]interface{}{"sessions": sessions, "count": len(sessions)}, err)
 
 		case "get":
@@ -489,12 +505,13 @@ func registerC2TaskManageTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 		case "list":
 			filter := database.ListC2TasksFilter{
 				SessionID: getString(params, "session_id"),
+				ProjectID: mcpEffectiveProjectFilter(ctx, m.DB()),
 				Status:    getString(params, "status"),
 			}
 			if limit := int(getFloat64(params, "limit")); limit > 0 {
 				filter.Limit = limit
 			}
-			tasks, err := m.DB().ListC2Tasks(filter)
+			tasks, err := m.DB().ListC2TasksForAccess(filter, c2ToolAccess(ctx))
 			return makeC2Result(map[string]interface{}{"tasks": tasks, "count": len(tasks)}, err)
 
 		case "cancel":
@@ -602,6 +619,9 @@ func registerC2PayloadTool(s *mcp.Server, m *c2.Manager, l *zap.Logger, webListe
 			if err != nil {
 				return makeC2Result(nil, err)
 			}
+			if principal, ok := authctx.PrincipalFromContext(ctx); ok {
+				_ = m.DB().RecordC2PayloadArtifact(filepath.Base(result.OutputPath), result.PayloadID, result.ListenerID, principal.UserID)
+			}
 			return makeC2Result(map[string]interface{}{
 				"payload_id": result.PayloadID, "download_path": result.DownloadPath,
 				"os": result.OS, "arch": result.Arch, "size_bytes": result.SizeBytes,
@@ -636,6 +656,7 @@ func registerC2EventTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 		filter := database.ListC2EventsFilter{
 			Level:     getString(params, "level"),
 			Category:  getString(params, "category"),
+			ProjectID: mcpEffectiveProjectFilter(ctx, m.DB()),
 			SessionID: getString(params, "session_id"),
 			TaskID:    getString(params, "task_id"),
 			Limit:     int(getFloat64(params, "limit")),
@@ -648,9 +669,17 @@ func registerC2EventTool(s *mcp.Server, m *c2.Manager, l *zap.Logger) {
 				filter.Since = &t
 			}
 		}
-		events, err := m.DB().ListC2Events(filter)
+		events, err := m.DB().ListC2EventsForAccess(filter, c2ToolAccess(ctx))
 		return makeC2Result(map[string]interface{}{"events": events, "count": len(events)}, err)
 	})
+}
+
+func c2ToolAccess(ctx context.Context) database.RBACListAccess {
+	principal, ok := authctx.PrincipalFromContext(ctx)
+	if !ok {
+		return database.RBACListAccess{Scope: database.RBACScopeAssigned}
+	}
+	return database.RBACListAccess{UserID: principal.UserID, Scope: principal.ScopeFor("c2:read")}
 }
 
 // ============================================================================

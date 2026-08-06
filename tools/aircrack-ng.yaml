@@ -1,0 +1,28 @@
+name: aircrack-ng
+command: aircrack-ng
+enabled: false
+short_description: WiFi 密码破解（WEP/WPA）
+description: '无线网络审计工具套件核心，破解 WEP/WPA 握手包。
+
+  **使用场景：** WiFi 安全测试、密码破解。
+
+
+  **安装：** `apt install aircrack-ng`（需无线网卡与 root；若不可用先安装）。'
+parameters:
+  - name: capture_file
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 抓取的 pcap 文件
+  - name: wordlist
+    type: string
+    required: false
+    flag: -w
+    format: flag
+    description: 字典文件
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-b`(指定 BSSID) `-e`(指定 ESSID)

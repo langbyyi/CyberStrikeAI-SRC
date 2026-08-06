@@ -322,3 +322,5 @@ This converts a path traversal into a CSRF-like attack without needing a CSRF to
 | Token bypass | Needs token forgery | No token needed (same-origin) |
 | SameSite | Blocked by SameSite=Strict | Bypasses SameSite (same site!) |
 | Detection | Standard CSRF checks | Requires input validation on path segments |
+
+

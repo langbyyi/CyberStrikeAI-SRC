@@ -1,0 +1,28 @@
+name: msfconsole
+command: msfconsole
+enabled: true
+short_description: Metasploit 交互式控制台（exploit 管理）
+description: 'Metasploit 交互式控制台，管理模块、会话、利用。
+
+  **使用场景：** 交互式漏洞利用、模块查询、数据库集成。
+
+
+  **安装：** Kali 自带（`apt install metasploit-framework`）；若不可用先安装。'
+parameters:
+  - name: script
+    type: string
+    required: false
+    flag: -x
+    format: flag
+    description: 交互式执行命令（如 `-x 'search ms17; use exploit/...; set RHOSTS 1.2.3.4; run'`）
+  - name: resource
+    type: string
+    required: false
+    flag: -r
+    format: flag
+    description: resource 脚本文件
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-q`(安静) `--console`

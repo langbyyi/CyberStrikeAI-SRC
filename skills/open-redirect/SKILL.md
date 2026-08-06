@@ -182,3 +182,13 @@ if (window.opener) {
 - User-generated content with links (forums, comments, profiles)
 - `target="_blank"` links to external domains
 - PDF viewers, document previews opening in new tabs
+
+---
+
+## Related Routing
+
+- OAuth redirect_uri manipulation → [oauth-oidc-misconfiguration](../oauth-oidc-misconfiguration/SKILL.md)
+- Open redirect → SSRF chain → [ssrf-server-side-request-forgery](../ssrf-server-side-request-forgery/SKILL.md)
+- URL parameter CRLF → [crlf-injection](../crlf-injection/SKILL.md)
+- Cache poisoning via redirect → [web-cache-deception](../web-cache-deception/SKILL.md)
+- XSS via redirect target page → [xss-cross-site-scripting](../xss-cross-site-scripting/SKILL.md)

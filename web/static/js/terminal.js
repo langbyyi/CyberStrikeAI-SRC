@@ -72,6 +72,17 @@
         else t.term.writeln('');
     }
 
+    function writeTermData(tab, data) {
+        if (!tab || !tab.term || data === undefined || data === null) return;
+        try {
+            tab.term.write(data, function () {
+                try { tab.term.scrollToBottom(); } catch (e) {}
+            });
+        } catch (e) {
+            tab.term.write(data);
+        }
+    }
+
     function writeOutput(tab, text, isError) {
         var t = tab || getCurrent();
         if (!t || !t.term || !text) return;
@@ -136,18 +147,18 @@
                 // 处理二进制消息和文本消息
                 if (ev.data instanceof ArrayBuffer) {
                     var decoder = new TextDecoder('utf-8');
-                    tab.term.write(decoder.decode(ev.data));
+                    writeTermData(tab, decoder.decode(ev.data));
                 } else if (ev.data instanceof Blob) {
                     // Blob 类型，需要异步读取
                     var reader = new FileReader();
                     reader.onload = function () {
                         var decoder = new TextDecoder('utf-8');
-                        tab.term.write(decoder.decode(reader.result));
+                        writeTermData(tab, decoder.decode(reader.result));
                     };
                     reader.readAsArrayBuffer(ev.data);
                 } else {
                     // 字符串类型
-                    tab.term.write(ev.data);
+                    writeTermData(tab, ev.data);
                 }
             };
 
@@ -183,6 +194,9 @@
             fontSize: 13,
             fontFamily: 'Menlo, Monaco, "Courier New", monospace',
             lineHeight: 1.2,
+            smoothScrollDuration: 0,
+            scrollSensitivity: 1,
+            fastScrollSensitivity: 5,
             scrollback: 1000,
             theme: {
                 background: '#0d1117',
@@ -258,6 +272,19 @@
 
         tab.term = term;
         tab.fitAddon = fitAddon;
+        if (typeof ResizeObserver !== 'undefined' && fitAddon) {
+            var resizeTimer;
+            tab.resizeObserver = new ResizeObserver(function () {
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(function () {
+                    try {
+                        fitAddon.fit();
+                        term.scrollToBottom();
+                    } catch (e) {}
+                }, 50);
+            });
+            tab.resizeObserver.observe(container);
+        }
         // 立即建立 WebSocket，让后端 PTY/Shell 马上启动并输出提示符；
         // 若等到首次按键才 connect，用户会感觉必须先按回车才能输入（实为连接尚未建立）。
         ensureTerminalWS(tab);
@@ -278,9 +305,19 @@
         });
         var t = getCurrent();
         if (t && t.term) {
+            try {
+                if (t.fitAddon) t.fitAddon.fit();
+                t.term.scrollToBottom();
+            } catch (e) {}
             if (prevId !== id) {
                 requestAnimationFrame(function () {
-                    if (currentTabId === id && t.term) t.term.focus();
+                    if (currentTabId === id && t.term) {
+                        try {
+                            if (t.fitAddon) t.fitAddon.fit();
+                            t.term.scrollToBottom();
+                        } catch (e) {}
+                        t.term.focus();
+                    }
                 });
             } else {
                 t.term.focus();
@@ -356,9 +393,11 @@
         var switchToIndex = deletingCurrent ? (idx > 0 ? idx - 1 : 0) : -1;
 
         var tab = terminals[idx];
+        if (tab.resizeObserver && tab.resizeObserver.disconnect) tab.resizeObserver.disconnect();
         if (tab.term && tab.term.dispose) tab.term.dispose();
         tab.term = null;
         tab.fitAddon = null;
+        tab.resizeObserver = null;
         terminals.splice(idx, 1);
 
         var tabDiv = document.querySelector('.terminal-tab[data-tab-id="' + id + '"]');

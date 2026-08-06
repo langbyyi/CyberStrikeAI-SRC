@@ -1,0 +1,19 @@
+name: mimikatz
+command: mimikatz
+enabled: true
+short_description: Windows 凭据提取工具（mimikatz，需在Windows目标执行）
+description: 'Windows 凭据提取工具（mimikatz）。
+
+
+  **注意：** 本机（Kali）的 mimikatz 命令仅定位 Windows 资源文件（/usr/share/windows-resources/mimikatz），**不能在本机直接执行凭据提取**。
+
+  **正确用法：** 提取的 mimikatz.exe/kiwi 需上传到 Windows 目标主机执行（privilege::debug sekurlsa::logonpasswords）。
+
+  **本机用途：** 查看资源路径、准备上传文件。'
+parameters:
+  - name: command
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: mimikatz 命令（注意：本机仅显示资源路径，实际凭据提取需在 Windows 目标主机上运行 mimikatz.exe）

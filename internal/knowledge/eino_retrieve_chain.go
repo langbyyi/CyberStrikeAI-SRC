@@ -8,8 +8,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// BuildKnowledgeRetrieveChain 编译「查询字符串 → 文档列表」的 Eino Chain，底层为 SQLite 向量检索（[VectorEinoRetriever]）。
-// 去重、上下文预算截断与最终 Top-K 均在 [VectorEinoRetriever.Retrieve] 内完成，与 HTTP/MCP 检索路径一致。
+// BuildKnowledgeRetrieveChain 编译「查询字符串 → 文档列表」的 Eino Chain（MultiQuery → 向量 → 重排 → 后处理）。
 func BuildKnowledgeRetrieveChain(ctx context.Context, r *Retriever) (compose.Runnable[string, []*schema.Document], error) {
 	if r == nil {
 		return nil, fmt.Errorf("retriever is nil")

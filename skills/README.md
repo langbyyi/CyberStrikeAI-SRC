@@ -2,6 +2,16 @@
 
 - 每个技能为**子目录**，根上必须有 **`SKILL.md`**（YAML front matter：`name`、`description` + Markdown 正文），见 [agentskills.io](https://agentskills.io/specification.md)。
 - **目录名须与 `name` 一致**。
-- **运行时加载**：在 **Eino DeepAgent（多代理）** 会话中由 ADK **`skill` 中间件**渐进披露（系统提示中列出各 skill 的 name/description，模型再调用 **`skill`** 工具拉取 `SKILL.md` 全文）。可选开启 **`multi_agent.eino_skills.filesystem_tools`**，使用与本机相同的 `read_file` / `execute` 等访问包内脚本与资源。
+- **运行时加载**：Eino `single` / `deep` / `plan_execute` / `supervisor` 共用 ADK **`skill` 中间件**渐进披露（系统提示列出 name/description，模型再调用 **`skill`** 拉取正文）。可选开启 **`multi_agent.eino_skills.filesystem_tools`** 访问包内 references/scripts/assets。
 - **Web 管理**：HTTP `/api/skills/*` 仍用于列表、编辑、上传包内文件（实现为 `internal/skillpackage`，非 MCP）。
-- **运行时**：多代理（DeepAgent）会话内由 ADK **`skill`** 工具渐进加载；单代理 MCP 循环不含 Skills，需开多代理或后续单代理 Eino 路径。
+
+## 权威层级
+
+- `web-attack-methods`、`attack-surface-recon` 等宽 Skill 负责总览、分流和跨类型攻击链。
+- SQLi、SSRF、IDOR、业务逻辑等细分 Skill 是对应漏洞类型的方法、差分、证据和停止条件的权威来源；自动 Skill Router 优先加载细分包。
+- `pentest-verification` 负责证据质量，`pentest-output-standards` 负责弱信号(`upsert_project_fact`)/正式漏洞(`record_vulnerability`)分级、去重 update 与用户可见报告格式；其他 Skill 不维护另一套报告门槛。
+- Skill 只提供方法，工具是否可见以及能否执行仍由角色白名单、RBAC/HITL 和运行时 vulnerability policy 决定。
+
+## 外部工具降级
+
+Burp、Collaborator 或其他外部 MCP 只在当前会话确实可见时使用。不可用时保留单变量差分、基线对照和最小证据方法，改用当前角色已加载的 HTTP/浏览器工具，不自动安装、不绕过权限。

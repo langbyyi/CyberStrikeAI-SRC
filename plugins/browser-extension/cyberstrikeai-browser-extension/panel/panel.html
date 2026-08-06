@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CyberStrikeAI</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div id="ctx-banner" class="ctx-banner hidden" role="alert">
+    Extension updated or context invalidated. Close DevTools and reopen (F12 → CyberStrikeAI panel).
+  </div>
+  <header class="toolbar" id="toolbar">
+    <div class="toolbar-row toolbar-row--conn">
+      <div class="brand">
+        <img src="../icons/icon48.png" alt="" width="24" height="24" class="brand-logo">
+        <span class="brand-name">CyberStrikeAI</span>
+      </div>
+      <span id="conn-summary" class="conn-summary"></span>
+      <button id="btn-conn-toggle" type="button" class="btn btn--ghost" aria-expanded="false">Connection</button>
+      <span id="status" class="status">Not validated</span>
+    </div>
+    <div id="conn-details" class="conn-details">
+      <div class="conn-group">
+        <label class="field">
+          <span class="field-label">Host</span>
+          <input id="host" type="text" size="12" spellcheck="false">
+        </label>
+        <label class="field field--sm">
+          <span class="field-label">Port</span>
+          <input id="port" type="text" size="5" spellcheck="false">
+        </label>
+        <label class="toggle-pill">
+          <input id="https" type="checkbox">
+          <span>HTTPS</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="password" type="password" size="10" autocomplete="off">
+        </label>
+        <button id="btn-validate" type="button" class="btn btn--ghost">Validate</button>
+      </div>
+    </div>
+    <div class="toolbar-row toolbar-row--bottom">
+      <div class="action-group">
+        <button id="btn-send" type="button" class="btn btn--primary" disabled>Send</button>
+        <button id="btn-latest-xhr" type="button" class="btn btn--secondary" disabled>Latest XHR</button>
+        <button id="btn-stop" type="button" class="btn btn--danger">Stop</button>
+        <span class="action-divider"></span>
+        <button id="btn-copy" type="button" class="btn btn--ghost">Copy</button>
+        <button id="btn-clear" type="button" class="btn btn--ghost">Clear Output</button>
+        <span class="action-divider"></span>
+        <button id="btn-capture-toggle" type="button" class="btn btn--capture-on" aria-pressed="true">● Capturing</button>
+      </div>
+      <div class="option-group">
+        <label class="toggle-pill"><input id="filter-api" type="checkbox" checked><span>XHR/Fetch only</span></label>
+        <label class="toggle-pill"><input id="debug-events" type="checkbox"><span>Debug events</span></label>
+        <label class="toggle-pill"><input id="render-md" type="checkbox" checked><span>Markdown</span></label>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-head">
+          <strong>Test History</strong>
+          <button id="btn-clear-runs" type="button" class="link-btn">Clear All</button>
+        </div>
+        <ul id="run-list" class="run-list"></ul>
+      </div>
+      <div class="sidebar-section grow">
+        <div class="sidebar-head">
+          <strong>Captured Requests</strong>
+          <span id="capture-paused-hint" class="capture-paused-hint hidden">Paused</span>
+          <button id="btn-clear-captures" type="button" class="link-btn">Clear</button>
+        </div>
+        <div class="search-wrap">
+          <input id="search" type="search" placeholder="Search URL…">
+        </div>
+        <ul id="request-list" class="request-list"></ul>
+      </div>
+    </aside>
+
+    <section class="main">
+      <div class="tabs">
+        <button class="tab active" data-tab="output">Output</button>
+        <button class="tab" data-tab="request">Request</button>
+        <button class="tab" data-tab="response">Response</button>
+      </div>
+      <div id="tab-output" class="tab-panel active">
+        <div class="split">
+          <div class="pane">
+            <div class="pane-title">Progress</div>
+            <pre id="progress" class="log"></pre>
+          </div>
+          <div class="pane grow">
+            <div class="pane-title">Final Response</div>
+            <pre id="final-raw" class="log"></pre>
+            <iframe id="final-md" class="log md-frame hidden" sandbox=""></iframe>
+          </div>
+        </div>
+      </div>
+      <div id="tab-request" class="tab-panel hidden">
+        <pre id="view-request" class="log full"></pre>
+      </div>
+      <div id="tab-response" class="tab-panel hidden">
+        <pre id="view-response" class="log full"></pre>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="send-dialog">
+    <form method="dialog" id="send-form">
+      <div class="dialog-header">
+        <img src="../icons/icon48.png" alt="" width="32" height="32" class="dialog-logo">
+        <h3>Send to CyberStrikeAI</h3>
+      </div>
+      <div class="send-row">
+        <div class="field block">
+          <span class="field-label">Project</span>
+          <div class="cs-select" data-cs-select="dlg-project">
+            <input type="hidden" id="dlg-project" value="">
+            <button type="button" class="cs-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cs-select-value">Loading…</span>
+              <svg class="cs-select-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <ul class="cs-select-menu" role="listbox" hidden></ul>
+          </div>
+        </div>
+        <div class="field block">
+          <span class="field-label">Role</span>
+          <div class="cs-select" data-cs-select="dlg-role">
+            <input type="hidden" id="dlg-role" value="">
+            <button type="button" class="cs-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cs-select-value">Loading…</span>
+              <svg class="cs-select-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <ul class="cs-select-menu" role="listbox" hidden></ul>
+          </div>
+        </div>
+        <div class="field block">
+          <span class="field-label">Agent</span>
+          <div class="cs-select" data-cs-select="dlg-agent">
+            <input type="hidden" id="dlg-agent" value="">
+            <button type="button" class="cs-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cs-select-value">Eino Single (ADK)</span>
+              <svg class="cs-select-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <ul class="cs-select-menu" role="listbox" hidden></ul>
+          </div>
+        </div>
+      </div>
+      <label class="field block">Test instruction (editable for this request)
+        <textarea id="dlg-instruction" rows="6"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="dlg-cancel" class="btn btn--ghost">Cancel</button>
+        <button type="submit" value="ok" class="btn btn--primary">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="../lib/constants.js"></script>
+  <script src="../lib/auth-session.js"></script>
+  <script src="../lib/storage.js"></script>
+  <script src="../lib/http-normalize.js"></script>
+  <script src="../lib/formatter.js"></script>
+  <script src="../lib/markdown.js"></script>
+  <script src="../lib/api.js"></script>
+  <script src="../lib/catalog-cache.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

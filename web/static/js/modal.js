@@ -13,6 +13,8 @@
         'agent-md-modal',
         'batch-manage-modal',
         'create-group-modal',
+        'workflow-meta-modal',
+        'workflow-dry-run-modal',
         'login-overlay',
     ]);
 
@@ -32,6 +34,9 @@
             return 'flex';
         }
         if (el.classList.contains('info-collect-cell-modal')) {
+            return 'flex';
+        }
+        if (el.classList.contains('chat-files-form-modal')) {
             return 'flex';
         }
         if (FLEX_MODAL_IDS.has(el.id)) {

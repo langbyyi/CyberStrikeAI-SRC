@@ -17,6 +17,155 @@ function _t(key, opts) {
     return key;
 }
 
+const ROLE_MODAL_SELECT_IDS = ['role-workflow-id', 'role-workflow-policy'];
+const roleModalSelectMap = {};
+let roleModalSelectDocBound = false;
+const ROLE_FORM_SELECT_CARET = '<svg class="role-form-select-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function closeAllRoleModalSelects() {
+    Object.keys(roleModalSelectMap).forEach(function (id) {
+        const reg = roleModalSelectMap[id];
+        if (!reg || !reg.wrapper) return;
+        reg.wrapper.classList.remove('open');
+        if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function syncRoleModalSelect(selectId) {
+    const reg = roleModalSelectMap[selectId];
+    if (!reg) return;
+    const select = reg.select;
+    const dropdown = reg.dropdown;
+    const trigger = reg.trigger;
+    const valueSpan = trigger.querySelector('.role-form-select-value');
+
+    dropdown.innerHTML = '';
+    Array.prototype.forEach.call(select.options, function (opt) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'role-form-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        if (opt.value === select.value) {
+            item.classList.add('is-selected');
+            item.setAttribute('aria-selected', 'true');
+        } else {
+            item.setAttribute('aria-selected', 'false');
+        }
+        const check = document.createElement('span');
+        check.className = 'role-form-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'role-form-select-label';
+        label.textContent = opt.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        dropdown.appendChild(item);
+    });
+
+    const selectedOpt = select.options[select.selectedIndex];
+    if (valueSpan) {
+        valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+    }
+    trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+}
+
+function syncAllRoleModalSelects() {
+    ROLE_MODAL_SELECT_IDS.forEach(syncRoleModalSelect);
+}
+
+function enhanceRoleModalSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const existing = roleModalSelectMap[selectId];
+    if (existing && existing.select !== select) {
+        delete roleModalSelectMap[selectId];
+    }
+    if (select.dataset.roleFormCustom === '1') {
+        syncRoleModalSelect(selectId);
+        return;
+    }
+    select.dataset.roleFormCustom = '1';
+    select.classList.add('role-form-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'role-form-select-ui';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'role-form-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'role-form-select-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', ROLE_FORM_SELECT_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'role-form-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    roleModalSelectMap[selectId] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        const open = wrapper.classList.contains('open');
+        closeAllRoleModalSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+        }
+    });
+
+    dropdown.addEventListener('click', function (e) {
+        const opt = e.target.closest('.role-form-select-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        syncRoleModalSelect(selectId);
+    });
+
+    select.addEventListener('change', function () {
+        syncRoleModalSelect(selectId);
+    });
+
+    syncRoleModalSelect(selectId);
+}
+
+function refreshRoleModalSelects() {
+    const modal = document.getElementById('role-modal');
+    if (!modal) return;
+    Object.keys(roleModalSelectMap).forEach(function (id) {
+        if (!document.getElementById(id)) delete roleModalSelectMap[id];
+    });
+    ROLE_MODAL_SELECT_IDS.forEach(enhanceRoleModalSelect);
+    if (!roleModalSelectDocBound) {
+        roleModalSelectDocBound = true;
+        document.addEventListener('click', closeAllRoleModalSelects);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllRoleModalSelects();
+        });
+    }
+}
+
 /** 角色配置中的描述：trim，并把误存为 i18n key 的字面量视为空 */
 function rolePlainDescription(role) {
     const raw = typeof role.description === 'string' ? role.description.trim() : '';
@@ -24,6 +173,79 @@ function rolePlainDescription(role) {
     if (raw === 'roles.noDescription' || raw === 'roles.noDescriptionShort') return '';
     return raw;
 }
+
+function initSelectionDetailTooltip() {
+    if (window.__selectionDetailTooltipReady) return;
+    window.__selectionDetailTooltipReady = true;
+
+    const tooltip = document.createElement('div');
+    tooltip.className = 'selection-detail-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tooltip);
+
+    let activeEl = null;
+
+    function hideTooltip() {
+        activeEl = null;
+        tooltip.classList.remove('visible', 'placement-left');
+    }
+
+    function positionTooltip(el) {
+        const text = el && el.getAttribute('data-selection-detail');
+        if (!text) {
+            hideTooltip();
+            return;
+        }
+        activeEl = el;
+        tooltip.textContent = text;
+        tooltip.classList.add('visible');
+
+        const rect = el.getBoundingClientRect();
+        const tipRect = tooltip.getBoundingClientRect();
+        const gap = 12;
+        const margin = 12;
+        const rightSpace = window.innerWidth - rect.right - gap - margin;
+        const placeLeft = rightSpace < tipRect.width && rect.left > tipRect.width + gap + margin;
+        const left = placeLeft ? rect.left - tipRect.width - gap : rect.right + gap;
+        const top = Math.max(margin, Math.min(rect.top + rect.height / 2 - tipRect.height / 2, window.innerHeight - tipRect.height - margin));
+
+        tooltip.classList.toggle('placement-left', placeLeft);
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
+    }
+
+    document.addEventListener('mouseover', function (event) {
+        const el = event.target && event.target.closest && event.target.closest('[data-selection-detail]');
+        if (!el || (event.relatedTarget && el.contains(event.relatedTarget))) return;
+        positionTooltip(el);
+    });
+    document.addEventListener('mouseout', function (event) {
+        const el = event.target && event.target.closest && event.target.closest('[data-selection-detail]');
+        if (!el || (event.relatedTarget && el.contains(event.relatedTarget))) return;
+        hideTooltip();
+    });
+    document.addEventListener('focusin', function (event) {
+        const el = event.target && event.target.closest && event.target.closest('[data-selection-detail]');
+        if (el) positionTooltip(el);
+    });
+    document.addEventListener('focusout', function (event) {
+        const el = event.target && event.target.closest && event.target.closest('[data-selection-detail]');
+        if (el) hideTooltip();
+    });
+    window.addEventListener('scroll', hideTooltip, true);
+    window.addEventListener('resize', function () {
+        if (activeEl) positionTooltip(activeEl);
+    });
+}
+
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initSelectionDetailTooltip);
+    } else {
+        initSelectionDetailTooltip();
+    }
+}
+
 let currentRole = localStorage.getItem('currentRole') || '';
 let roles = [];
 let rolesSearchKeyword = ''; // 角色搜索关键词
@@ -209,9 +431,17 @@ function renderRoleSelectionSidebar() {
         const isSelected = isDefaultRole ? (currentRole === '' || currentRole === '默认') : (currentRole === role.name);
         const roleItem = document.createElement('div');
         roleItem.className = 'role-selection-item-main' + (isSelected ? ' selected' : '');
+        roleItem.setAttribute('role', 'option');
+        roleItem.tabIndex = 0;
         roleItem.onclick = () => {
             selectRole(role.name);
             closeRoleSelectionPanel(); // 选择后自动关闭面板
+        };
+        roleItem.onkeydown = (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                roleItem.click();
+            }
         };
         const icon = getRoleIcon(role);
         
@@ -221,6 +451,7 @@ function renderRoleSelectionSidebar() {
         if (isDefaultRole && !plainDesc) {
             description = _t('roles.defaultRoleDescription');
         }
+        roleItem.setAttribute('data-selection-detail', description);
         
         roleItem.innerHTML = `
             <div class="role-selection-item-icon-main">${icon}</div>
@@ -1048,6 +1279,7 @@ function setSelectedRoleTools(selectedToolKeys) {
 
 // 显示添加角色模态框
 async function showAddRoleModal() {
+    if (typeof requirePermission === 'function' && !requirePermission('roles:write')) return;
     const modal = document.getElementById('role-modal');
     if (!modal) return;
 
@@ -1058,6 +1290,13 @@ async function showAddRoleModal() {
     document.getElementById('role-icon').value = '';
     document.getElementById('role-user-prompt').value = '';
     document.getElementById('role-enabled').checked = true;
+    if (typeof loadWorkflowOptionsForRoleModal === 'function') {
+        await loadWorkflowOptionsForRoleModal('');
+    }
+    const workflowPolicy = document.getElementById('role-workflow-policy');
+    if (workflowPolicy) {
+        workflowPolicy.value = 'auto';
+    }
 
     // 添加角色时：显示工具选择界面，隐藏默认角色提示
     const toolsSection = document.getElementById('role-tools-section');
@@ -1112,6 +1351,7 @@ async function showAddRoleModal() {
     // 确保统计信息正确更新（显示0/108）
     updateRoleToolsStats();
 
+    refreshRoleModalSelects();
     openAppModal('role-modal');
 }
 
@@ -1144,6 +1384,13 @@ async function editRole(roleName) {
     document.getElementById('role-icon').value = iconValue;
     document.getElementById('role-user-prompt').value = role.user_prompt || '';
     document.getElementById('role-enabled').checked = role.enabled !== false;
+    if (typeof loadWorkflowOptionsForRoleModal === 'function') {
+        await loadWorkflowOptionsForRoleModal(role.workflow_id || '');
+    }
+    const workflowPolicy = document.getElementById('role-workflow-policy');
+    if (workflowPolicy) {
+        workflowPolicy.value = role.workflow_policy || 'auto';
+    }
 
     // 检查是否为默认角色
     const isDefaultRole = roleName === '默认';
@@ -1274,11 +1521,13 @@ async function editRole(roleName) {
         }
     }
 
+    refreshRoleModalSelects();
     openAppModal('role-modal');
 }
 
 // 关闭角色模态框
 function closeRoleModal() {
+    closeAllRoleModalSelects();
     closeAppModal('role-modal');
 }
 
@@ -1379,6 +1628,7 @@ async function loadAllToolsToStateMap() {
 
 // 保存角色
 async function saveRole() {
+    if (typeof requirePermission === 'function' && !requirePermission('roles:write')) return;
     const name = document.getElementById('role-name').value.trim();
     if (!name) {
         showNotification(_t('roleModal.roleNameRequired'), 'error');
@@ -1398,6 +1648,10 @@ async function saveRole() {
     }
     const userPrompt = document.getElementById('role-user-prompt').value.trim();
     const enabled = document.getElementById('role-enabled').checked;
+    const workflowIdEl = document.getElementById('role-workflow-id');
+    const workflowPolicyEl = document.getElementById('role-workflow-policy');
+    const workflowId = workflowIdEl ? workflowIdEl.value.trim() : '';
+    const workflowPolicy = workflowPolicyEl ? workflowPolicyEl.value.trim() : 'auto';
 
     const isEdit = document.getElementById('role-name').disabled;
     
@@ -1504,7 +1758,10 @@ async function saveRole() {
         icon: icon || undefined, // 如果为空字符串，则不发送该字段
         user_prompt: userPrompt,
         tools: tools, // 默认角色为空数组，表示使用所有工具
-        enabled: enabled
+        enabled: enabled,
+        workflow_id: workflowId || undefined,
+        workflow_version: workflowId ? 'latest' : undefined,
+        workflow_policy: workflowId ? (workflowPolicy || 'auto') : undefined
     };
     const url = isEdit ? `/api/roles/${encodeURIComponent(name)}` : '/api/roles';
     const method = isEdit ? 'PUT' : 'POST';
@@ -1617,12 +1874,14 @@ document.addEventListener('click', (e) => {
 document.addEventListener('DOMContentLoaded', () => {
     loadRoles();
     updateRoleSelectorDisplay();
+    refreshRoleModalSelects();
 });
 
 // 语言切换后刷新角色选择器与「选择角色」列表文案
 document.addEventListener('languagechange', () => {
     updateRoleSelectorDisplay();
     renderRoleSelectionSidebar();
+    syncAllRoleModalSelects();
 });
 
 // 获取当前选中的角色（供chat.js使用）
@@ -1633,10 +1892,12 @@ function getCurrentRole() {
 // 暴露函数到全局作用域
 if (typeof window !== 'undefined') {
     window.getCurrentRole = getCurrentRole;
+    window.setCurrentRole = handleRoleChange;
     window.toggleRoleSelectionPanel = toggleRoleSelectionPanel;
     window.closeRoleSelectionPanel = closeRoleSelectionPanel;
     window.closeRoleSelectModal = closeRoleSelectModal;
     window.filterRoleToolsByStatus = filterRoleToolsByStatus;
+    window.refreshRoleModalSelects = refreshRoleModalSelects;
     window.currentSelectedRole = getCurrentRole();
     
     // 监听角色变化，更新全局变量
@@ -1645,6 +1906,7 @@ if (typeof window !== 'undefined') {
         originalHandleRoleChange(roleName);
         if (typeof window !== 'undefined') {
             window.currentSelectedRole = getCurrentRole();
+            window.setCurrentRole = handleRoleChange;
         }
     };
 }

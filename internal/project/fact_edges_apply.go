@@ -1,8 +1,6 @@
 package project
 
 import (
-	"strings"
-
 	"cyberstrike-ai/internal/database"
 )
 
@@ -59,19 +57,7 @@ func PersistFactLinksFromParsed(db *database.DB, projectID, factKey, sourceConve
 	if parsed == nil || parsed.Incoming == nil {
 		return nil
 	}
-	// 过滤自环边：from 指向当前 fact 自身无意义（根 fact 如 target/* 误套 discovered_on 规则时常见），
-	// 跳过而非让整批入库失败（此时 fact 主体已保存）。
-	filtered := make([]database.ProjectFactEdgeFromInput, 0, len(parsed.Incoming))
-	for _, l := range parsed.Incoming {
-		if strings.TrimSpace(l.From) == strings.TrimSpace(factKey) {
-			continue
-		}
-		filtered = append(filtered, l)
-	}
-	if len(filtered) == 0 {
-		return nil
-	}
-	return PersistFactIncomingLinks(db, projectID, factKey, filtered, syncBody)
+	return PersistFactIncomingLinks(db, projectID, factKey, parsed.Incoming, syncBody)
 }
 
 // PersistFactOutgoingLinks 写入出边（图连线等低层 API；body 同步请用 PersistFactIncomingLinks）。

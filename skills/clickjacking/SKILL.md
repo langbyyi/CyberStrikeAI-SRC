@@ -190,13 +190,9 @@ Page has sensitive action (delete account, change email, admin)?
     └── Use subdomain XSS as same-origin staging point
 ```
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `browser_agent_inspect` | Inspect target pages for X-Frame-Options and CSP frame-ancestors headers |
-| `http_framework_test` | Craft custom HTTP requests to test framing behavior and header configurations |
-| `http_repeater` | Replay requests to verify header responses across different endpoints |
+Use visible `http-framework-test` to compare framing headers across endpoints. Build a minimal local iframe PoC with visible file/command tools; browser verification is optional and only applies when a browser capability is actually visible.
 
 ## TESTING CHECKLIST
 
@@ -213,7 +209,7 @@ Page has sensitive action (delete account, change email, admin)?
 
 ## RELATED ROUTING
 
-- [csrf](../csrf/SKILL.md) — CSRF and clickjacking both exploit victim browser sessions
-- [xss](../xss/SKILL.md) — XSS can inject iframe content and chain with clickjacking
-- [cors](../cors/SKILL.md) — CORS misconfiguration can complement framing attacks
-- [authbypass](../authentication-bypass/SKILL.md) — Auth bypass determines which actions are exploitable
+- [csrf](../csrf-cross-site-request-forgery/SKILL.md) — CSRF and clickjacking both exploit victim browser sessions
+- [xss](../xss-cross-site-scripting/SKILL.md) — XSS can inject iframe content and chain with clickjacking
+- [cors](../cors-cross-origin-misconfiguration/SKILL.md) — CORS misconfiguration can complement framing attacks
+- [authbypass](../authbypass-authentication-flaws/SKILL.md) — Auth bypass determines which actions are exploitable

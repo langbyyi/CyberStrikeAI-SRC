@@ -11,19 +11,10 @@ import (
 	"github.com/cloudwego/eino/components"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
-	"go.uber.org/zap"
 )
 
 // VectorEinoRetriever implements [retriever.Retriever] on top of SQLite-stored embeddings + cosine similarity.
-//
-// Options:
-//   - [retriever.WithTopK]
-//   - [retriever.WithDSLInfo] with [DSLRiskType] (string), [DSLSimilarityThreshold] (float, cosine 0–1), [DSLSubIndexFilter] (string)
-//
-// Document scores are cosine similarity; [retriever.WithScoreThreshold] is not mapped to a different metric.
-//
-// After vector search: optional [DocumentReranker] (see [Retriever.SetDocumentReranker]), then
-// [ApplyPostRetrieve] (normalized-text dedupe, context budget, final Top-K) using [config.PostRetrieveConfig].
+// It returns prefetch-sized vector candidates only; rerank and post-process run in [knowledgePipelineRetriever].
 type VectorEinoRetriever struct {
 	inner *Retriever
 }
@@ -119,26 +110,6 @@ func (h *VectorEinoRetriever) Retrieve(ctx context.Context, query string, opts .
 		return nil, err
 	}
 	out = retrievalResultsToDocuments(results)
-
-	if rr := h.inner.documentReranker(); rr != nil && len(out) > 1 {
-		reranked, rerr := rr.Rerank(ctx, q, out)
-		if rerr != nil {
-			if h.inner.logger != nil {
-				h.inner.logger.Warn("知识检索重排失败，已使用向量序", zap.Error(rerr))
-			}
-		} else if len(reranked) > 0 {
-			out = reranked
-		}
-	}
-
-	tokenModel := ""
-	if h.inner.embedder != nil {
-		tokenModel = h.inner.embedder.EmbeddingModelName()
-	}
-	out, err = ApplyPostRetrieve(out, postPO, tokenModel, finalTopK)
-	if err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 

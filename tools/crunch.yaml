@@ -1,0 +1,41 @@
+name: crunch
+command: crunch
+enabled: true
+short_description: 字典生成器（按规则生成密码字典）
+description: '字典生成工具，按字符集/长度规则生成密码字典。
+
+  **使用场景：** 自定义密码字典生成、爆破前准备。
+
+
+  **安装：** `apt install crunch`（若不可用先安装）。'
+parameters:
+  - name: min
+    type: int
+    required: true
+    position: 0
+    format: positional
+    description: 最小长度
+  - name: max
+    type: int
+    required: true
+    position: 1
+    format: positional
+    description: 最大长度
+  - name: charset
+    type: string
+    required: false
+    position: 2
+    format: positional
+    description: 字符集，如 `abc123`（默认 a-z）
+  - name: output
+    type: string
+    required: false
+    flag: -o
+    format: flag
+    description: 输出文件路径
+  - name: pattern
+    type: string
+    required: false
+    flag: -t
+    format: flag
+    description: 模式，如 `@@@`（@=小写字母，%数字）

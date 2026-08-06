@@ -231,8 +231,64 @@ async function fetchHitlConversationConfig(conversationId) {
     if (!data || !data.hitl) return null;
     return {
         hitl: data.hitl,
+        defaultReviewer: hitlReviewerNormalize(data.defaultReviewer || 'human'),
         hitlGlobalToolWhitelist: Array.isArray(data.hitlGlobalToolWhitelist) ? data.hitlGlobalToolWhitelist : []
     };
+}
+
+function applyHitlDefaultReviewerFromServer(reviewer) {
+    const v = hitlReviewerNormalize(reviewer);
+    if (typeof window !== 'undefined') {
+        window.csaiHitlDefaultReviewer = v;
+    }
+    if (typeof window.saveHitlLastGlobalConfig === 'function' && typeof window.getHitlLastGlobalConfig === 'function') {
+        const gl = window.getHitlLastGlobalConfig();
+        const base = gl && typeof gl === 'object'
+            ? gl
+            : { mode: 'off', sensitiveTools: '', updatedAt: '' };
+        window.saveHitlLastGlobalConfig(Object.assign({}, base, {
+            reviewer: v,
+            updatedAt: new Date().toISOString()
+        }));
+    }
+    return v;
+}
+
+async function fetchHitlDefaultReviewer() {
+    const resp = await hitlApiFetch('/api/hitl/default-reviewer', { credentials: 'same-origin' });
+    if (!resp.ok) {
+        return applyHitlDefaultReviewerFromServer('human');
+    }
+    const data = await resp.json();
+    return applyHitlDefaultReviewerFromServer(data && data.defaultReviewer);
+}
+
+async function putHitlDefaultReviewer(reviewer) {
+    const normalized = hitlReviewerNormalize(reviewer);
+    const resp = await hitlApiFetch('/api/hitl/default-reviewer', {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewer: normalized })
+    });
+    if (!resp.ok) {
+        const msg = await readHitlApiError(resp);
+        throw new Error(msg || ('HTTP ' + resp.status));
+    }
+    const data = await resp.json();
+    return applyHitlDefaultReviewerFromServer(data && data.defaultReviewer);
+}
+
+async function initHitlDefaultReviewerFromServer() {
+    try {
+        await fetchHitlDefaultReviewer();
+        if (!getCurrentConversationIdForHitl() && typeof window.refreshHitlConfigByCurrentConversation === 'function') {
+            window.refreshHitlConfigByCurrentConversation();
+        }
+        refreshHitlPageReviewerBar();
+    } catch (e) {
+        console.warn('initHitlDefaultReviewerFromServer', e);
+    }
 }
 
 /** 无会话时：将免审批工具合并进服务端 config.yaml，返回更新后的全局白名单数组 */
@@ -462,6 +518,9 @@ async function syncHitlConfigFromServer(conversationId) {
     const pack = await fetchHitlConversationConfig(conversationId);
     if (!pack || !pack.hitl) return;
     const cfg = pack.hitl;
+    if (pack.defaultReviewer) {
+        applyHitlDefaultReviewerFromServer(pack.defaultReviewer);
+    }
     const globalWL = pack.hitlGlobalToolWhitelist || [];
     if (typeof window !== 'undefined') {
         window.csaiHitlGlobalToolWhitelist = globalWL;
@@ -556,6 +615,28 @@ function reconcileHitlUiState() {
 
 let hitlFollowRunSeq = 0;
 
+function hitlAutoResizeTextarea(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.max(textarea.scrollHeight, textarea.offsetHeight || 0) + 'px';
+}
+
+function bindHitlAutoResizeTextareas(root) {
+    const scope = root || document;
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('.hitl-edit-args').forEach(function (textarea) {
+        if (textarea.__hitlAutoResizeBound) {
+            hitlAutoResizeTextarea(textarea);
+            return;
+        }
+        textarea.__hitlAutoResizeBound = true;
+        hitlAutoResizeTextarea(textarea);
+        textarea.addEventListener('input', function () {
+            hitlAutoResizeTextarea(textarea);
+        });
+    });
+}
+
 /**
  * 审批提交后原 SSE 已断开：轮询任务列表，运行中则拉取过程详情；任务结束后再整页加载会话以对齐终态。
  */
@@ -619,14 +700,9 @@ async function followAgentRunAfterHitlDecision(conversationId) {
 }
 
 function renderHitlPendingList(items) {
-    const container = document.getElementById('hitl-pending-list');
-    if (!container) return;
     const list = Array.isArray(items) ? items : [];
-    if (!list.length) {
-        container.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('emptyState', 'No pending approvals')) + '</div>';
-        return;
-    }
-    container.innerHTML = list.map(function (item) {
+    if (!list.length) return '';
+    return list.map(function (item) {
             const payloadObj = hitlParsePayloadObject(item.payload || '');
             const payload = String(item.payload || '');
             const contextHtml = hitlRenderContextBlocks(payloadObj);
@@ -663,6 +739,86 @@ function renderHitlPendingList(items) {
         }).join('');
 }
 
+function hitlWorkflowPendingLabel(run) {
+    const pending = hitlParsePayloadObject(run.pending_hitl_json || run.pendingHitlJson || '');
+    const pendingHitl = pending.pendingHitl && typeof pending.pendingHitl === 'object' ? pending.pendingHitl : pending;
+    return pendingHitl.label || pendingHitl.nodeId || run.pending_hitl_node_id || run.pendingHitlNodeId || run.workflow_id || run.workflowId || run.id || '-';
+}
+
+function renderWorkflowHitlPendingList(runs) {
+    const list = Array.isArray(runs) ? runs : [];
+    if (!list.length) return '';
+    return list.map(function (run) {
+        const runId = String(run.id || '').trim();
+        const pending = hitlParsePayloadObject(run.pending_hitl_json || run.pendingHitlJson || '');
+        const pendingHitl = pending.pendingHitl && typeof pending.pendingHitl === 'object' ? pending.pendingHitl : pending;
+        const label = hitlWorkflowPendingLabel(run);
+        const prompt = String(pendingHitl.prompt || '').trim();
+        const convId = String(run.conversation_id || run.conversationId || '').trim();
+        const qRun = JSON.stringify(runId).replace(/"/g, '&quot;');
+        const qConv = JSON.stringify(convId).replace(/"/g, '&quot;');
+        const workflowLabel = hitlT('workflowPendingTitle', 'Workflow approval');
+        const openChatLabel = hitlT('openConversation', 'Open conversation');
+        return (
+            '<div class="hitl-pending-item hitl-pending-item--workflow">' +
+            '<div class="hitl-pending-item-header">' +
+            '<div class="hitl-pending-item-title">' +
+            '<span class="hitl-tool-badge">' + escapeHtml(workflowLabel) + '</span>' +
+            '<span class="hitl-mode-tag hitl-mode-tag--approval">' + escapeHtml(label) + '</span>' +
+            '</div>' +
+            '</div>' +
+            '<div class="hitl-pending-meta">' + escapeHtml(hitlT('conversationLabel', 'Conversation:')) + ' ' + escapeHtml(convId || '-') + '</div>' +
+            (prompt ? ('<div class="hitl-input-help">' + escapeHtml(prompt) + '</div>') : '') +
+            '<div class="hitl-input-help">' + escapeHtml(hitlT('commentHelp', 'Comment (optional): briefly note the approval reason.')) + '</div>' +
+            '<input id="workflow-hitl-comment-' + escapeHtml(runId) + '" class="hitl-config-input hitl-inline-comment" type="text" placeholder="' + escapeHtml(hitlT('commentPlaceholder', 'e.g. allow read-only command')) + '">' +
+            '<div class="hitl-pending-actions">' +
+            (convId ? ('<button class="btn-secondary" onclick="openHitlConversation(' + qConv + ')">' + escapeHtml(openChatLabel) + '</button>') : '') +
+            '<button class="btn-secondary" onclick="submitWorkflowHitlDecisionFromPage(' + qRun + ', false, ' + qConv + ')">' + escapeHtml(hitlT('reject', 'Reject')) + '</button>' +
+            '<button class="btn-primary" onclick="submitWorkflowHitlDecisionFromPage(' + qRun + ', true, ' + qConv + ')">' + escapeHtml(hitlT('approve', 'Approve')) + '</button>' +
+            '</div>' +
+            '</div>'
+        );
+    }).join('');
+}
+
+async function submitWorkflowHitlDecisionFromPage(runId, approved, conversationId) {
+    const rid = String(runId || '').trim();
+    if (!rid) return;
+    const commentEl = document.getElementById('workflow-hitl-comment-' + rid);
+    const comment = commentEl ? String(commentEl.value || '').trim() : '';
+    try {
+        if (typeof window.submitWorkflowHitlDecision === 'function') {
+            await window.submitWorkflowHitlDecision(rid, approved, comment);
+        } else {
+            const resp = await hitlApiFetch('/api/workflows/runs/' + encodeURIComponent(rid) + '/resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ approved: !!approved, comment: comment })
+            });
+            const body = await resp.json().catch(function () { return {}; });
+            if (!resp.ok) throw new Error((body && body.error) ? body.error : 'submit failed');
+        }
+        if (conversationId && typeof followAgentRunAfterHitlDecision === 'function') {
+            await followAgentRunAfterHitlDecision(conversationId);
+        }
+        await refreshHitlPending();
+    } catch (e) {
+        alert((e && e.message) ? e.message : hitlT('submitFailed', 'Submit failed'));
+    }
+}
+
+function openHitlConversation(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+    if (typeof switchPage === 'function') {
+        switchPage('chat');
+    }
+    if (typeof loadConversation === 'function') {
+        loadConversation(cid);
+    }
+}
+
 async function refreshHitlPending() {
     const container = document.getElementById('hitl-pending-list');
     if (!container) return;
@@ -680,7 +836,27 @@ async function refreshHitlPending() {
         }
         const data = await resp.json();
         const items = Array.isArray(data.items) ? data.items : [];
-        hitlPendingTotal = typeof data.total === 'number' ? data.total : items.length;
+        let workflowRuns = [];
+        try {
+            const wfResp = await hitlApiFetch('/api/workflows/runs/pending', { credentials: 'same-origin' });
+            if (wfResp.ok) {
+                const wfData = await wfResp.json().catch(function () { return {}; });
+                workflowRuns = Array.isArray(wfData.runs) ? wfData.runs : [];
+            }
+        } catch (wfErr) {
+            console.warn('fetch workflow pending runs failed', wfErr);
+        }
+        const searchQ = q && q.value.trim() ? q.value.trim().toLowerCase() : '';
+        if (searchQ) {
+            workflowRuns = workflowRuns.filter(function (run) {
+                const conv = String(run.conversation_id || run.conversationId || '').toLowerCase();
+                const wfId = String(run.workflow_id || run.workflowId || '').toLowerCase();
+                const runId = String(run.id || '').toLowerCase();
+                const label = hitlWorkflowPendingLabel(run).toLowerCase();
+                return conv.indexOf(searchQ) >= 0 || wfId.indexOf(searchQ) >= 0 || runId.indexOf(searchQ) >= 0 || label.indexOf(searchQ) >= 0;
+            });
+        }
+        hitlPendingTotal = (typeof data.total === 'number' ? data.total : items.length) + workflowRuns.length;
         const maxPage = Math.max(1, Math.ceil(hitlPendingTotal / hitlPendingPageSize));
         if (hitlPendingPage > maxPage) {
             hitlPendingPage = maxPage;
@@ -694,7 +870,14 @@ async function refreshHitlPending() {
         }
         hitlPendingCache = items;
         hitlPendingLoaded = true;
-        renderHitlPendingList(items);
+        const workflowHtml = renderWorkflowHitlPendingList(workflowRuns);
+        const toolHtml = items.length ? renderHitlPendingList(items) : '';
+        if (!workflowHtml && !toolHtml) {
+            container.innerHTML = '<div class="empty-state">' + escapeHtml(hitlT('emptyState', 'No pending approvals')) + '</div>';
+        } else {
+            container.innerHTML = workflowHtml + (workflowHtml && toolHtml ? '<div class="hitl-pending-section-divider"></div>' : '') + (toolHtml || '');
+        }
+        bindHitlAutoResizeTextareas(container);
         renderHitlPendingPagination();
     } catch (e) {
         hitlPendingLoaded = false;
@@ -985,6 +1168,158 @@ function hitlFormatTime(v) {
     }
 }
 
+const HITL_LOG_FILTER_SELECT_IDS = ['hitl-logs-decision-filter', 'hitl-logs-decidedby-filter'];
+const hitlLogFilterSelectMap = {};
+let hitlLogFilterSelectDocBound = false;
+
+const HITL_FILTER_SELECT_CARET = '<svg class="hitl-filter-select-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function closeAllHitlLogFilterSelects() {
+    Object.keys(hitlLogFilterSelectMap).forEach(function (id) {
+        const reg = hitlLogFilterSelectMap[id];
+        if (!reg || !reg.wrapper) return;
+        reg.wrapper.classList.remove('open');
+        if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function syncHitlLogFilterSelect(selectId) {
+    const reg = hitlLogFilterSelectMap[selectId];
+    if (!reg) return;
+    const select = reg.select;
+    const dropdown = reg.dropdown;
+    const trigger = reg.trigger;
+    const valueSpan = trigger.querySelector('.hitl-filter-select-value');
+
+    dropdown.innerHTML = '';
+    Array.prototype.forEach.call(select.options, function (opt) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'hitl-filter-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        if (opt.value === select.value) {
+            item.classList.add('is-selected');
+            item.setAttribute('aria-selected', 'true');
+        } else {
+            item.setAttribute('aria-selected', 'false');
+        }
+        const check = document.createElement('span');
+        check.className = 'hitl-filter-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'hitl-filter-select-label';
+        label.textContent = opt.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        dropdown.appendChild(item);
+    });
+
+    const selectedOpt = select.options[select.selectedIndex];
+    if (valueSpan) {
+        valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+    }
+    trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+}
+
+function syncAllHitlLogFilterSelects() {
+    HITL_LOG_FILTER_SELECT_IDS.forEach(syncHitlLogFilterSelect);
+}
+
+function enhanceHitlLogFilterSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    if (select.dataset.hitlCustomSelect === '1') {
+        syncHitlLogFilterSelect(selectId);
+        return;
+    }
+    select.dataset.hitlCustomSelect = '1';
+    select.classList.add('hitl-filter-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'hitl-filter-select-ui';
+    if (selectId === 'hitl-logs-decision-filter') {
+        wrapper.classList.add('hitl-filter-select-ui--decision');
+    } else if (selectId === 'hitl-logs-decidedby-filter') {
+        wrapper.classList.add('hitl-filter-select-ui--decidedby');
+    }
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'hitl-filter-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'hitl-filter-select-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', HITL_FILTER_SELECT_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'hitl-filter-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    hitlLogFilterSelectMap[selectId] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        const open = wrapper.classList.contains('open');
+        closeAllHitlLogFilterSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+        }
+    });
+
+    dropdown.addEventListener('click', function (e) {
+        const opt = e.target.closest('.hitl-filter-select-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        syncHitlLogFilterSelect(selectId);
+    });
+
+    select.addEventListener('change', function () {
+        syncHitlLogFilterSelect(selectId);
+    });
+}
+
+function initHitlLogFilterSelects() {
+    if (!hitlLogFilterSelectDocBound) {
+        document.addEventListener('click', closeAllHitlLogFilterSelects);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllHitlLogFilterSelects();
+        });
+        hitlLogFilterSelectDocBound = true;
+    }
+    HITL_LOG_FILTER_SELECT_IDS.forEach(function (id) {
+        enhanceHitlLogFilterSelect(id);
+        const select = document.getElementById(id);
+        if (select && !select.dataset.hitlFilterBound) {
+            select.dataset.hitlFilterBound = '1';
+            select.addEventListener('change', filterHitlLogs);
+        }
+    });
+    syncAllHitlLogFilterSelects();
+}
+
 function hitlLogsHasActiveFilters() {
     const qEl = document.getElementById('hitl-logs-search');
     const decEl = document.getElementById('hitl-logs-decision-filter');
@@ -1266,12 +1601,13 @@ function refreshHitlLogsI18n() {
 
 function refreshHitlPendingI18n() {
     if (!document.getElementById('hitl-pending-list') || !hitlPendingLoaded) return;
-    renderHitlPendingList(hitlPendingCache);
+    refreshHitlPending();
 }
 
 function refreshHitlI18n() {
     refreshHitlLogsI18n();
     refreshHitlPendingI18n();
+    syncAllHitlLogFilterSelects();
     renderHitlLogsPagination();
     renderHitlPendingPagination();
 }
@@ -1442,6 +1778,8 @@ window.onHitlLogsPageSizeChange = onHitlLogsPageSizeChange;
 window.onHitlPendingPageSizeChange = onHitlPendingPageSizeChange;
 window.submitHitlDecision = submitHitlDecision;
 window.submitHitlDecisionWithPayload = submitHitlDecisionWithPayload;
+window.submitWorkflowHitlDecisionFromPage = submitWorkflowHitlDecisionFromPage;
+window.openHitlConversation = openHitlConversation;
 window.dismissHitlItem = dismissHitlItem;
 window.followAgentRunAfterHitlDecision = followAgentRunAfterHitlDecision;
 
@@ -1457,9 +1795,11 @@ window.addEventListener('pageshow', function () {
 document.addEventListener('DOMContentLoaded', function () {
     initHitlPageSizeFromStorage(HITL_LOGS_PAGE_SIZE_KEY, 20, function (n) { hitlLogsPageSize = n; });
     initHitlPageSizeFromStorage(HITL_PENDING_PAGE_SIZE_KEY, 20, function (n) { hitlPendingPageSize = n; });
+    initHitlLogFilterSelects();
     if (typeof window.bindHitlReviewerToggleListeners === 'function') {
         window.bindHitlReviewerToggleListeners();
     }
+    initHitlDefaultReviewerFromServer();
     setTimeout(reconcileHitlUiState, 0);
 });
 
@@ -1478,3 +1818,5 @@ window.mergeHitlGlobalToolWhitelist = mergeHitlGlobalToolWhitelist;
 
 // 由 chat.js 在 loadConversation 内 await 调用；挂到 window 供其它入口显式触发
 window.syncHitlConfigFromServer = syncHitlConfigFromServer;
+window.fetchHitlDefaultReviewer = fetchHitlDefaultReviewer;
+window.putHitlDefaultReviewer = putHitlDefaultReviewer;

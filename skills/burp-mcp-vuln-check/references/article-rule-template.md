@@ -38,3 +38,5 @@ Call the issue confirmed only when at least one of these is true:
 - The application exposes a non-sensitive, deterministic file/object/marker that should be unreachable and is specific to the documented bug.
 
 Otherwise classify as likely or inconclusive and explain what is missing.
+
+

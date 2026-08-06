@@ -289,3 +289,11 @@ Unserialize user input into objects whose `__toString` or properties feed into `
 ---
 
 **Safety & scope**: Use only on **authorized** targets (CTF, lab, written permission). This skill explains **language semantics** for defense and assessment — not a license to attack systems without consent.
+
+---
+
+## Related Routing
+
+- Auth bypass via loose comparison → [authbypass-authentication-flaws](../authbypass-authentication-flaws/SKILL.md)
+- JWT/HMAC weak compare → [jwt-oauth-token-attacks](../jwt-oauth-token-attacks/SKILL.md)
+- PHP deserialization after auth bypass → [deserialization-insecure](../deserialization-insecure/SKILL.md)

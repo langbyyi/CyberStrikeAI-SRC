@@ -1,0 +1,73 @@
+name: ddddocr
+command: python3
+args:
+  - -c
+  - "import sys, json, base64, os\ntry:\n    import requests\nexcept Exception:\n    requests = None\nimport ddddocr\n\ndef load_image(src):\n    s = (src or \"\").strip()\n    if not s:\n        raise ValueError(\"image 参数为空\")\n    if s.startswith(\"http://\") or s.startswith(\"https://\"):\n        if requests is None:\n            raise RuntimeError(\"URL 输入需要 requests 库\")\n        r = requests.get(s, timeout=25)\n        r.raise_for_status()\n        return r.content\n    if s.startswith(\"data:\"):\n        s = s.split(\",\", 1)[-1]\n        return base64.b64decode(s)\n    if os.path.exists(s):\n        with open(s, \"rb\") as f:\n            return f.read()\n    try:\n        return base64.b64decode(s)\n    except Exception:\n        raise ValueError(\"无法解析 image（应为本地路径/URL/base64）: \" + s[:80])\n\nargv = sys.argv[1:]\nif len(argv) < 1 or not argv[0]:\n    print(json.dumps({\"status\": \"error\", \"message\": \"缺少 image 参数（本地路径/URL/base64）\"}, ensure_ascii=False))\n    sys.exit(1)\ntry:\n    img = load_image(argv[0])\nexcept Exception as e:\n    print(json.dumps({\"status\": \"error\", \"message\": \"读取图片失败: \" + str(e)}, ensure_ascii=False))\n    sys.exit(1)\n\nmode = (argv[1] if len(argv) > 1 and argv[1] else \"ocr\").lower()\ncharset = argv[3] if len(argv) > 3 and argv[3] else \"\"\n\ntry:\n    if mode == \"detect\":\n        det = ddddocr.DdddOcr(det=True, show_ad=False)\n        boxes = det.detection(img)\n        print(json.dumps({\"status\": \"success\", \"mode\": \"detect\", \"boxes\": boxes, \"count\": len(boxes)}, ensure_ascii=False))\n    elif mode == \"slide\":\n        if len(argv) < 3 or not argv[2]:\n            print(json.dumps({\"status\": \"error\", \"message\": \"slide 模式需要 target 背景图参数\"}, ensure_ascii=False))\n            sys.exit(1)\n        bg = load_image(argv[2])\n        sl = ddddocr.DdddOcr(show_ad=False)\n        res = sl.slide_match(img, bg)\n        print(json.dumps({\"status\": \"success\", \"mode\": \"slide\", \"target\": res}, ensure_ascii=False))\n    else:\n        ocr = ddddocr.DdddOcr(show_ad=False)\n        if charset:\n            try:\n                ocr.set_ranges(charset)\n            except Exception:\n                pass\n        text = ocr.classification(img)\n        print(json.dumps({\"status\": \"success\", \"mode\": \"ocr\", \"result\": str(text)}, ensure_ascii=False))\nexcept Exception as e:\n    print(json.dumps({\"status\": \"error\", \"message\": \"识别失败: \" + str(e), \"mode\": mode}, ensure_ascii=False))\n    sys.exit(1)\n"
+enabled: true
+short_description: 验证码识别（OCR/点选/滑块），用于登录爆破、注册绕过等需绕过图形验证码场景
+description: "基于 ddddocr 的验证码识别工具，支持三类常见图形验证码。渗透测试中，登录爆破、密码重置、\n注册接口、防刷接口常被图形验证码拦截，本工具提供识别能力以推进自动化测试。\n\n**三种模式（mode 参数）：**\n- `ocr`（默认）：文字/数字/字母验证码识别。返回识别字符串。\n- `detect`：点选验证码目标检测。返回目标坐标列表 boxes（[[x1,y1,x2,y2],...]）。\n- `slide`：滑块缺口定位。需提供 target 背景大图，image 为滑块小块图，返回缺口坐标。\n\n**输入格式（image 参数）：** 本地文件路径 / http(s) URL / base64 字符串 / data:URI。\n\n**字符集限制（charset 参数，仅 ocr 模式）：** 提升已知类型验证码准确率。\n- `digit`：纯数字 0-9\n- `lower`：纯小写字母\n- `upper`：纯大写字母\n- `m`：大小写字母+数字混合\n\n**典型用法：**\n1. 登录/注册爆破被验证码拦：先抓验证码图片（http-framework-test 或 exec curl 下载），\n   本工具 ocr 模式识别，再用识别结果配合 hydra/exec 完成爆破。\n2. 密码重置/短信接口防刷：识别验证码后重放，测短信轰炸/重置逻辑。\n3. 点选/滑块验证码：detect/slide 模式取坐标/缺口，配合请求脚本提交。\n\n**注意：** 验证码识别准确率受图片扭曲程度影响，复杂验证码\n可能需要多次取样；滑块/点选需结合具体前端提交逻辑。\n"
+parameters:
+  - name: image
+    type: string
+    description: '验证码图片输入。支持四种格式：
+
+      - 本地文件路径（如 /tmp/captcha.png，先 exec 下载或 http-framework-test 的 download 参数保存）
+
+      - http/https URL（工具直接下载）
+
+      - base64 字符串（图片的 base64 编码）
+
+      - data:URI（data:image/png;base64,...）
+
+
+      ocr/detect 模式：本参数即验证码图。
+
+      slide 模式：本参数为滑块小块图（缺口图），target 参数为背景大图。
+
+'
+    required: true
+    position: 0
+    format: positional
+  - name: mode
+    type: string
+    description: '识别模式：
+
+      - `ocr`：文字/数字/字母验证码识别（默认）
+
+      - `detect`：点选验证码目标检测，返回坐标列表
+
+      - `slide`：滑块缺口定位（需配合 target 参数）
+
+'
+    required: false
+    position: 1
+    format: positional
+    default: ocr
+  - name: target
+    type: string
+    description: '背景大图（仅 slide 模式必填）。格式同 image 参数。
+
+      slide 模式下 image=滑块小块图、target=背景大图，返回缺口在背景中的坐标。
+
+'
+    required: false
+    position: 2
+    format: positional
+    default: ''
+  - name: charset
+    type: string
+    description: '字符集限制（仅 ocr 模式，可选）。已知验证码类型时指定可提升准确率：
+
+      - `digit`：纯数字
+
+      - `lower`：纯小写
+
+      - `upper`：纯大写
+
+      - `m`：大小写+数字混合
+
+'
+    required: false
+    position: 3
+    format: positional
+    default: ''

@@ -1,10 +1,8 @@
 ---
 name: unauthorized-access-common-services
-description: >-
-  Common exposed service and unauthorized access triage covering admin panels,
-  databases, caches, message queues, cloud consoles, dev tools, reverse proxy
-  mistakes, Nginx off-by-slash, X-Forwarded-For trust, Java middleware exposure,
-  and cloud storage misconfigurations.
+description: Unauthorized access triage for exposed common services. Use when testing
+  admin panels, databases, caches, message queues, cloud consoles, dev tools, reverse-proxy
+  misconfigurations, Nginx off-by-slash, X-Forwarded-For trust, or cloud storage misconfigurations.
 ---
 
 # SKILL: Unauthorized Access — Common Services — Expert Attack Playbook
@@ -351,23 +349,16 @@ Port scan reveals exposed services?
 
 ---
 
-## MCP TOOLS
+## TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `nmap_scan` | Port scanning and service detection |
-| `nmap_advanced_scan` | Version detection and script scanning |
-| `rustscan_fast_scan` | Ultra-fast port discovery |
-| `httpx_probe` | Fast HTTP probing of discovered services |
-| `browser_agent_inspect` | Inspect admin panels in browser |
-| `http_framework_test` | Send crafted requests to services |
-| `nuclei_scan` | Automated vulnerability scanning |
+Use only scanners and HTTP tools visible in the current role. A service banner or template hit is an L1 signal; record a formal vulnerability only after a read-only request proves unauthorized access and concrete impact.
 
 ---
 
 ## RELATED ROUTING
 
-- [SSRF](../ssrf/SKILL.md) — when internal services are reachable via SSRF
-- [Insecure Source Code Management](../source-code-exposure/SKILL.md) — when VCS/exposure found
-- [Deserialization](../deserialization/SKILL.md) — when Java middleware uses deserialization
-- [Burp MCP Vuln Check](../burp-mcp/SKILL.md) — for detailed HTTP-based verification
+- [SSRF](../ssrf-server-side-request-forgery/SKILL.md) — when internal services are reachable via SSRF
+- [Insecure Source Code Management](../insecure-source-code-management/SKILL.md) — when VCS/exposure is found
+- [Deserialization](../deserialization-insecure/SKILL.md) — when Java middleware uses deserialization
+- [Burp MCP Vuln Check](../burp-mcp-vuln-check/SKILL.md) — when the corresponding external MCP is available
+

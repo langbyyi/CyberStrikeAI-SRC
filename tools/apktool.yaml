@@ -1,0 +1,38 @@
+name: apktool
+command: apktool
+enabled: true
+short_description: APK 解包/重打包（资源+Smali）
+description: 'APK 反编译/重打包工具，解出资源与 Smali 代码。
+
+  **使用场景：** 移动 APP 静态分析、重打包测试。
+
+
+  **安装：** `apt install apktool` 或官网下载（若不可用先安装）。'
+parameters:
+  - name: action
+    type: string
+    required: true
+    position: 0
+    format: positional
+    options:
+      - d
+      - b
+      - f
+    description: 操作：d(解包)/b(重打包)/f(空框架)
+  - name: apk_file
+    type: string
+    required: true
+    position: 1
+    format: positional
+    description: APK 文件路径
+  - name: output
+    type: string
+    required: false
+    flag: -o
+    format: flag
+    description: 输出目录
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-s`(仅解资源) `-f`(覆盖)

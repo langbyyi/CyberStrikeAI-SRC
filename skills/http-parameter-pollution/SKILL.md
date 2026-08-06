@@ -219,20 +219,15 @@ Pair with **race conditions** or **server-side rounding** for higher impact; HPP
 - [ ] Test array-style parameters: `id[]=1&id[]=2`, `user[name]=a&user[role]=admin`
 - [ ] Verify findings by comparing raw query strings logged at the app layer vs what the WAF/proxy reports
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests with duplicate parameters (`a=1&a=2`) in query strings, POST bodies, and multipart forms to test parser differentials |
-| `http_repeater` | Replay HPP payloads with parameter ordering variations to compare how front-end (WAF/CDN) vs back-end (app framework) interpret duplicate keys |
-| `burpsuite_alternative_scan` | Comprehensive web scanning that can detect HPP-related anomalies by sending duplicate parameters during spidering and comparing responses |
-| `browser_agent_inspect` | Inspect application pages to identify parameter handling behavior and verify HPP exploitation results in browser-rendered contexts |
+Use visible `http-framework-test` for ordered duplicate-key requests and response differentials, and `execute-python-script` when exact serialization is required. Browser/proxy verification is optional and only applies when those capabilities are visible; do not invent MCP calls.
 
 **Safety & scope**: HPP testing can change server state (payments, account settings). Run only where **explicitly authorized**, with scoped accounts, and document parser behavior before high-impact requests.
 
 ## RELATED ROUTING
 
-- [csrf](../csrf/SKILL.md) — HPP can bypass CSRF token validation
-- [xss](../xss/SKILL.md) — HPP can evade WAF XSS filters
-- [sqli](../sqli/SKILL.md) — HPP can bypass SQL injection WAF rules
+- [csrf](../csrf-cross-site-request-forgery/SKILL.md) — HPP can bypass CSRF token validation
+- [xss](../xss-cross-site-scripting/SKILL.md) — HPP can evade WAF XSS filters
+- [sqli](../sqli-sql-injection/SKILL.md) — HPP can bypass SQL injection WAF rules
 - [open-redirect](../open-redirect/SKILL.md) — Duplicate URL parameters can confuse redirect filters

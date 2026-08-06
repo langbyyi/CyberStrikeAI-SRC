@@ -35,6 +35,17 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 		scheme = "https"
 	}
 
+	finalizationRequestSchema := map[string]interface{}{
+		"type":        "object",
+		"description": "最终回复交付策略。后端不会从自然语言内容推断执行意图；执行入口应显式声明是否要求 completed 工具证据。",
+		"properties": map[string]interface{}{
+			"requireExecutionEvidence": map[string]interface{}{
+				"type":        "boolean",
+				"description": "为 true 时，缺少 completed 工具执行记录会触发无注入续跑或最终阻断；普通聊天可省略或设为 false。",
+			},
+		},
+	}
+
 	spec := map[string]interface{}{
 		"openapi": "3.0.0",
 		"info": map[string]interface{}{
@@ -84,6 +95,70 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 					},
 					"required": []string{"projectId"},
+				},
+				"AgentChatResponse": map[string]interface{}{
+					"type":        "object",
+					"description": "Agent 非流式响应。response 只是交付文本；是否为成功最终回复必须以 finalized/finalizable/status 为准。",
+					"properties": map[string]interface{}{
+						"response": map[string]interface{}{
+							"type":        "string",
+							"description": "交付给用户的文本。finalized=false 时为阻断/未完成说明，不是成功结论。",
+						},
+						"conversationId": map[string]interface{}{
+							"type":        "string",
+							"description": "对话 ID",
+						},
+						"assistantMessageId": map[string]interface{}{
+							"type":        "string",
+							"description": "助手消息 ID（部分接口返回）",
+						},
+						"mcpExecutionIds": map[string]interface{}{
+							"type":        "array",
+							"description": "本轮关联的 MCP 工具执行 ID",
+							"items":       map[string]interface{}{"type": "string"},
+						},
+						"agentMode": map[string]interface{}{
+							"type":        "string",
+							"description": "agent 模式，例如 eino_single、eino_deep、workflow",
+						},
+						"finalized": map[string]interface{}{
+							"type":        "boolean",
+							"description": "是否已经通过最终回复检查。只有 true 才能当成功最终回复。",
+						},
+						"finalizable": map[string]interface{}{
+							"type":        "boolean",
+							"description": "候选输出是否可提升为最终回复。",
+						},
+						"status": map[string]interface{}{
+							"type":        "string",
+							"description": "最终化状态",
+							"enum":        []string{"completed", "in_progress", "blocked", "failed", "cancelled", "awaiting_hitl"},
+						},
+						"completionReason": map[string]interface{}{
+							"type":        "string",
+							"description": "最终化或阻断原因，例如 verified、pending_tool_executions、missing_execution_evidence",
+						},
+						"evidenceVerified": map[string]interface{}{
+							"type":        "boolean",
+							"description": "证据是否满足最终化要求",
+						},
+						"evidenceRefs": map[string]interface{}{
+							"type":        "array",
+							"description": "证据引用，例如 mcp_execution:<id>",
+							"items":       map[string]interface{}{"type": "string"},
+						},
+						"pendingExecutionIds": map[string]interface{}{
+							"type":        "array",
+							"description": "仍处于 queued/running 的工具执行 ID",
+							"items":       map[string]interface{}{"type": "string"},
+						},
+						"missingChecks": map[string]interface{}{
+							"type":        "array",
+							"description": "未通过最终化检查的原因列表",
+							"items":       map[string]interface{}{"type": "string"},
+						},
+					},
+					"required": []string{"response", "conversationId", "finalized", "finalizable", "status", "evidenceVerified"},
 				},
 				"Conversation": map[string]interface{}{
 					"type": "object",
@@ -241,6 +316,58 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 					},
 				},
+				"AssetImportItem": map[string]interface{}{
+					"type":        "object",
+					"description": "待导入资产；host、ip、domain 至少一项非空",
+					"properties": map[string]interface{}{
+						"project_id":         map[string]interface{}{"type": "string", "description": "所属项目 ID；调用者必须有权访问"},
+						"host":               map[string]interface{}{"type": "string", "maxLength": 500, "example": "https://app.example.com:443"},
+						"ip":                 map[string]interface{}{"type": "string", "example": "192.0.2.10"},
+						"port":               map[string]interface{}{"type": "integer", "minimum": 0, "maximum": 65535, "example": 443},
+						"domain":             map[string]interface{}{"type": "string", "example": "app.example.com"},
+						"protocol":           map[string]interface{}{"type": "string", "example": "https"},
+						"title":              map[string]interface{}{"type": "string", "maxLength": 500},
+						"server":             map[string]interface{}{"type": "string", "maxLength": 255, "example": "nginx"},
+						"country":            map[string]interface{}{"type": "string"},
+						"province":           map[string]interface{}{"type": "string"},
+						"city":               map[string]interface{}{"type": "string"},
+						"responsible_person": map[string]interface{}{"type": "string", "maxLength": 255, "description": "资产负责人"},
+						"department":         map[string]interface{}{"type": "string", "maxLength": 255, "description": "所属部门"},
+						"business_system":    map[string]interface{}{"type": "string", "maxLength": 255, "description": "所属业务系统"},
+						"environment":        map[string]interface{}{"type": "string", "enum": []string{"production", "staging", "testing", "development", "other"}},
+						"criticality":        map[string]interface{}{"type": "string", "enum": []string{"critical", "high", "medium", "low"}},
+						"source":             map[string]interface{}{"type": "string"},
+						"source_query":       map[string]interface{}{"type": "string"},
+						"status":             map[string]interface{}{"type": "string", "enum": []string{"active", "inactive"}, "default": "active"},
+						"tags": map[string]interface{}{
+							"type":     "array",
+							"maxItems": 30,
+							"items":    map[string]interface{}{"type": "string", "maxLength": 64},
+						},
+					},
+				},
+				"AssetImportRequest": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"assets"},
+					"properties": map[string]interface{}{
+						"assets": map[string]interface{}{
+							"type":     "array",
+							"minItems": 1,
+							"maxItems": 100000,
+							"items":    map[string]interface{}{"$ref": "#/components/schemas/AssetImportItem"},
+						},
+						"source":       map[string]interface{}{"type": "string", "description": "未在资产中填写来源时使用的默认来源"},
+						"source_query": map[string]interface{}{"type": "string", "description": "默认来源查询或导入文件名"},
+					},
+				},
+				"AssetImportResult": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"created": map[string]interface{}{"type": "integer", "description": "新建数量", "example": 120},
+						"updated": map[string]interface{}{"type": "integer", "description": "去重合并数量", "example": 8},
+						"skipped": map[string]interface{}{"type": "integer", "description": "跳过数量", "example": 2},
+					},
+				},
 				"ExecutionResult": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -255,7 +382,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"status": map[string]interface{}{
 							"type":        "string",
 							"description": "执行状态",
-							"enum":        []string{"success", "failed", "running"},
+							"enum":        []string{"queued", "running", "completed", "failed", "cancelled", "hard_timeout", "orphaned"},
 						},
 						"result": map[string]interface{}{
 							"type":        "string",
@@ -506,7 +633,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				},
 				"CreateVulnerabilityRequest": map[string]interface{}{
 					"type":     "object",
-					"required": []string{"conversation_id", "title", "severity"},
+					"required": []string{"conversation_id", "title", "description", "severity", "type", "target", "reproduction_steps", "evidence", "impact", "recommendation"},
 					"properties": map[string]interface{}{
 						"conversation_id": map[string]interface{}{
 							"type":        "string",
@@ -538,10 +665,9 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "受影响的目标",
 						},
-						"proof": map[string]interface{}{
-							"type":        "string",
-							"description": "漏洞证明",
-						},
+						"preconditions":      map[string]interface{}{"type": "string", "description": "前置条件"},
+						"reproduction_steps": map[string]interface{}{"type": "string", "description": "复现步骤"},
+						"evidence":           map[string]interface{}{"type": "string", "description": "证据/POC，包含请求响应、命令输出、截图说明、日志等"},
 						"impact": map[string]interface{}{
 							"type":        "string",
 							"description": "影响",
@@ -550,6 +676,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "修复建议",
 						},
+						"retest_notes": map[string]interface{}{"type": "string", "description": "复测方式"},
 					},
 				},
 				"UpdateVulnerabilityRequest": map[string]interface{}{
@@ -581,10 +708,9 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "受影响的目标",
 						},
-						"proof": map[string]interface{}{
-							"type":        "string",
-							"description": "漏洞证明",
-						},
+						"preconditions":      map[string]interface{}{"type": "string", "description": "前置条件"},
+						"reproduction_steps": map[string]interface{}{"type": "string", "description": "复现步骤"},
+						"evidence":           map[string]interface{}{"type": "string", "description": "证据/POC，包含请求响应、命令输出、截图说明、日志等"},
 						"impact": map[string]interface{}{
 							"type":        "string",
 							"description": "影响",
@@ -593,6 +719,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "修复建议",
 						},
+						"retest_notes": map[string]interface{}{"type": "string", "description": "复测方式"},
 					},
 				},
 				"ListVulnerabilitiesResponse": map[string]interface{}{
@@ -726,7 +853,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"status": map[string]interface{}{
 							"type":        "string",
 							"description": "执行状态",
-							"enum":        []string{"success", "failed", "running"},
+							"enum":        []string{"queued", "running", "completed", "failed", "cancelled", "hard_timeout", "orphaned"},
 						},
 						"createdAt": map[string]interface{}{
 							"type":        "string",
@@ -787,6 +914,9 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"type":        "object",
 					"description": "配置信息（含 openai、vision、multi_agent 等）",
 					"properties": map[string]interface{}{
+						"agent": map[string]interface{}{
+							"$ref": "#/components/schemas/AgentConfig",
+						},
 						"vision": map[string]interface{}{
 							"$ref": "#/components/schemas/VisionConfig",
 						},
@@ -796,27 +926,46 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"type":        "object",
 					"description": "更新配置请求",
 					"properties": map[string]interface{}{
+						"agent": map[string]interface{}{
+							"$ref": "#/components/schemas/AgentConfig",
+						},
 						"vision": map[string]interface{}{
 							"$ref": "#/components/schemas/VisionConfig",
 						},
+					},
+				},
+				"AgentConfig": map[string]interface{}{
+					"type":        "object",
+					"description": "Agent 运行与外部 MCP 防卡死保护配置",
+					"properties": map[string]interface{}{
+						"max_iterations":                         map[string]interface{}{"type": "integer", "description": "最大迭代次数"},
+						"tool_timeout_minutes":                   map[string]interface{}{"type": "integer", "description": "单次工具执行硬超时（分钟）"},
+						"tool_wait_timeout_seconds":              map[string]interface{}{"type": "integer", "description": "工具单轮等待秒数；到时返回 execution_id，worker 继续后台执行"},
+						"external_mcp_max_concurrent_per_server": map[string]interface{}{"type": "integer", "description": "单个外部 MCP server 并发上限；0=默认2；负数=不限制"},
+						"external_mcp_max_concurrent_total":      map[string]interface{}{"type": "integer", "description": "外部 MCP 全局并发上限；0=默认16；负数=不限制"},
+						"external_mcp_circuit_failure_threshold": map[string]interface{}{"type": "integer", "description": "连续失败熔断阈值；0=默认3；负数=关闭熔断"},
+						"external_mcp_circuit_cooldown_seconds":  map[string]interface{}{"type": "integer", "description": "熔断冷却秒数；0=默认60"},
+						"shell_no_output_timeout_seconds":        map[string]interface{}{"type": "integer", "description": "execute/exec 连续无输出终止秒数"},
+						"workspace_root_dir":                     map[string]interface{}{"type": "string", "description": "会话工作目录根路径"},
+						"system_prompt_path":                     map[string]interface{}{"type": "string", "description": "单代理系统提示文件路径"},
 					},
 				},
 				"VisionConfig": map[string]interface{}{
 					"type":        "object",
 					"description": "视觉分析（analyze_image MCP 工具）；enabled 且 model 非空时注册工具",
 					"properties": map[string]interface{}{
-						"enabled":                      map[string]interface{}{"type": "boolean", "description": "是否启用 analyze_image"},
-						"model":                        map[string]interface{}{"type": "string", "description": "视觉模型名（必填）", "example": "qwen-vl-max"},
-						"api_key":                      map[string]interface{}{"type": "string", "description": "API Key；留空复用 openai.api_key"},
-						"base_url":                     map[string]interface{}{"type": "string", "description": "Base URL；留空复用 openai.base_url"},
-						"provider":                     map[string]interface{}{"type": "string", "description": "提供商；留空复用 openai.provider"},
-						"timeout_seconds":              map[string]interface{}{"type": "integer", "description": "VL 调用超时（秒）"},
-						"max_image_bytes":              map[string]interface{}{"type": "integer", "description": "原始文件大小上限（字节）"},
-						"max_dimension":                map[string]interface{}{"type": "integer", "description": "长边缩放像素"},
-						"jpeg_quality":                 map[string]interface{}{"type": "integer", "description": "JPEG 质量 60-100"},
-						"max_payload_bytes":            map[string]interface{}{"type": "integer", "description": "送 API 体积上限（字节）"},
-						"skip_preprocess_below_bytes":  map[string]interface{}{"type": "integer", "description": "低于该字节且尺寸合规时可原图直传；0=始终压缩"},
-						"detail": map[string]interface{}{"type": "string", "enum": []string{"low", "high", "auto"}, "description": "OpenAI 兼容 image detail"},
+						"enabled":                     map[string]interface{}{"type": "boolean", "description": "是否启用 analyze_image"},
+						"model":                       map[string]interface{}{"type": "string", "description": "视觉模型名（必填）", "example": "qwen-vl-max"},
+						"api_key":                     map[string]interface{}{"type": "string", "description": "API Key；留空复用 openai.api_key"},
+						"base_url":                    map[string]interface{}{"type": "string", "description": "Base URL；留空复用 openai.base_url"},
+						"provider":                    map[string]interface{}{"type": "string", "description": "提供商；留空复用 openai.provider"},
+						"timeout_seconds":             map[string]interface{}{"type": "integer", "description": "VL 调用超时（秒）"},
+						"max_image_bytes":             map[string]interface{}{"type": "integer", "description": "原始文件大小上限（字节）"},
+						"max_dimension":               map[string]interface{}{"type": "integer", "description": "长边缩放像素"},
+						"jpeg_quality":                map[string]interface{}{"type": "integer", "description": "JPEG 质量 60-100"},
+						"max_payload_bytes":           map[string]interface{}{"type": "integer", "description": "送 API 体积上限（字节）"},
+						"skip_preprocess_below_bytes": map[string]interface{}{"type": "integer", "description": "低于该字节且尺寸合规时可原图直传；0=始终压缩"},
+						"detail":                      map[string]interface{}{"type": "string", "enum": []string{"low", "high", "auto"}, "description": "OpenAI 兼容 image detail"},
 					},
 				},
 				"AnalyzeImageToolCall": map[string]interface{}{
@@ -1432,7 +1581,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						{
 							"name": "id", "in": "path", "required": true,
 							"description": "对话ID",
-							"schema": map[string]interface{}{"type": "string"},
+							"schema":      map[string]interface{}{"type": "string"},
 						},
 					},
 					"requestBody": map[string]interface{}{
@@ -1507,6 +1656,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"conversationId":       map[string]interface{}{"type": "string"},
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
+										"finalization":         finalizationRequestSchema,
 									},
 									"required": []string{"message"},
 								},
@@ -1514,7 +1664,14 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 					},
 					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "成功，响应格式同 /api/eino-agent"},
+						"200": map[string]interface{}{
+							"description": "成功。只有 finalized=true 表示成功最终回复；finalized=false 时 response 为未完成/阻断说明。",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{"$ref": "#/components/schemas/AgentChatResponse"},
+								},
+							},
+						},
 						"400": map[string]interface{}{"description": "参数错误"},
 						"401": map[string]interface{}{"description": "未授权"},
 						"500": map[string]interface{}{"description": "执行失败"},
@@ -1525,7 +1682,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "发送消息并获取 AI 回复（Eino ADK 单代理，SSE）",
-					"description": "向 AI 发送消息并获取流式回复（SSE）。由 Eino **单代理** ADK 执行；事件类型与多代理流式一致（含 `tool_call` / `response_delta` / `thinking` 等）。**不依赖** `multi_agent.enabled`。",
+					"description": "向 AI 发送消息并获取流式回复（SSE）。由 Eino **单代理** ADK 执行；事件类型与多代理流式一致（含 `tool_call` / `response_delta` / `thinking` 等）。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 无注入续跑。`data.finalized=false` 时 message 为未完成/阻断说明。**不依赖** `multi_agent.enabled`。",
 					"operationId": "sendMessageEinoSingleAgentStream",
 					"requestBody": map[string]interface{}{
 						"required": true,
@@ -1538,6 +1695,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"conversationId":       map[string]interface{}{"type": "string"},
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
+										"finalization":         finalizationRequestSchema,
 									},
 									"required": []string{"message"},
 								},
@@ -1551,7 +1709,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 								"text/event-stream": map[string]interface{}{
 									"schema": map[string]interface{}{
 										"type":        "string",
-										"description": "SSE 流",
+										"description": "SSE 流。终态 response 事件 data 包含 finalized、finalizable、status、completionReason、evidenceVerified、evidenceRefs、pendingExecutionIds、missingChecks；过程事件可能包含 finalization_auto_continue。",
 									},
 								},
 							},
@@ -1589,6 +1747,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 											"type":        "string",
 											"description": "WebShell 连接 ID（可选，与 Eino 单/多代理流式行为一致）",
 										},
+										"finalization": finalizationRequestSchema,
 										"orchestration": map[string]interface{}{
 											"type":        "string",
 											"description": "Eino 预置编排：deep | plan_execute | supervisor；缺省 deep",
@@ -1602,7 +1761,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "成功，响应格式同 /api/eino-agent",
+							"description": "成功。只有 finalized=true 表示成功最终回复；finalized=false 时 response 为未完成/阻断说明。",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{"$ref": "#/components/schemas/AgentChatResponse"},
+								},
+							},
 						},
 						"400": map[string]interface{}{"description": "参数错误"},
 						"401": map[string]interface{}{"description": "未授权"},
@@ -1615,7 +1779,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "发送消息并获取 AI 回复（Eino 多代理，SSE）",
-					"description": "与 `POST /api/eino-agent/stream` 类似；由 Eino 多代理执行。`orchestration` 指定 deep / plan_execute / supervisor，缺省 deep。**前提**：`multi_agent.enabled: true`；未启用时 SSE 内首条为 `type: error` 后接 `done`。支持 `webshellConnectionId`。",
+					"description": "与 `POST /api/eino-agent/stream` 类似；由 Eino 多代理执行。`orchestration` 指定 deep / plan_execute / supervisor，缺省 deep。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 无注入续跑。**前提**：`multi_agent.enabled: true`；未启用时 SSE 内首条为 `type: error` 后接 `done`。支持 `webshellConnectionId`。",
 					"operationId": "sendMessageMultiAgentStream",
 					"requestBody": map[string]interface{}{
 						"required": true,
@@ -1628,6 +1792,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"conversationId":       map[string]interface{}{"type": "string"},
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
+										"finalization":         finalizationRequestSchema,
 										"orchestration": map[string]interface{}{
 											"type":        "string",
 											"description": "deep | plan_execute | supervisor；缺省 deep",
@@ -1646,7 +1811,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 								"text/event-stream": map[string]interface{}{
 									"schema": map[string]interface{}{
 										"type":        "string",
-										"description": "SSE 流",
+										"description": "SSE 流。终态 response 事件 data 包含 finalized、finalizable、status、completionReason、evidenceVerified、evidenceRefs、pendingExecutionIds、missingChecks；过程事件可能包含 finalization_auto_continue。",
 									},
 								},
 							},
@@ -1655,12 +1820,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-tasks/cancel": map[string]interface{}{
+			"/api/agent-loop/cancel": map[string]interface{}{
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "取消任务",
-					"description": "取消正在执行的代理任务（Eino 单/多代理）。与 /api/agent-loop/cancel 等价（历史路径）。",
-					"operationId": "cancelAgentTask",
+					"description": "取消正在执行的Agent Loop任务",
+					"operationId": "cancelAgentLoop",
 					"requestBody": map[string]interface{}{
 						"required": true,
 						"content": map[string]interface{}{
@@ -1705,36 +1870,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-loop/cancel": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"对话交互"},
-					"summary":     "取消任务（历史路径）",
-					"description": "与 /api/agent-tasks/cancel 相同；保留兼容旧客户端与 Burp 插件。",
-					"operationId": "cancelAgentLoop",
-					"deprecated":  true,
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"$ref": "#/components/schemas/CancelAgentLoopRequest",
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "取消请求已提交"},
-						"404": map[string]interface{}{"description": "未找到正在执行的任务"},
-						"401": map[string]interface{}{"description": "未授权"},
-					},
-				},
-			},
-			"/api/agent-tasks/tasks": map[string]interface{}{
+			"/api/agent-loop/tasks": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "列出运行中的任务",
-					"description": "获取所有正在运行的代理任务。与 /api/agent-loop/tasks 等价（历史路径）。",
-					"operationId": "listAgentTasksPreferred",
+					"description": "获取所有正在运行的Agent Loop任务",
+					"operationId": "listAgentTasks",
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
 							"description": "获取成功",
@@ -1761,25 +1902,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/api/agent-loop/tasks": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"对话交互"},
-					"summary":     "列出运行中的任务（历史路径）",
-					"description": "与 /api/agent-tasks/tasks 相同。",
-					"operationId": "listAgentTasks",
-					"deprecated":  true,
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "获取成功"},
-						"401": map[string]interface{}{"description": "未授权"},
-					},
-				},
-			},
-			"/api/agent-tasks/tasks/completed": map[string]interface{}{
+			"/api/agent-loop/tasks/completed": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "列出已完成的任务",
-					"description": "获取最近完成的代理任务历史。与 /api/agent-loop/tasks/completed 等价。",
-					"operationId": "listCompletedTasksPreferred",
+					"description": "获取最近完成的Agent Loop任务历史",
+					"operationId": "listCompletedTasks",
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
 							"description": "获取成功",
@@ -1803,19 +1931,6 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"401": map[string]interface{}{
 							"description": "未授权",
 						},
-					},
-				},
-			},
-			"/api/agent-loop/tasks/completed": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"对话交互"},
-					"summary":     "列出已完成的任务（历史路径）",
-					"description": "与 /api/agent-tasks/tasks/completed 相同。",
-					"operationId": "listCompletedTasks",
-					"deprecated":  true,
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "获取成功"},
-						"401": map[string]interface{}{"description": "未授权"},
 					},
 				},
 			},
@@ -2484,6 +2599,36 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
+			"/api/assets/import": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"资产管理"},
+					"summary":     "批量导入资产",
+					"description": "新增或按“目标 + 端口 + 协议”去重更新资产。接收 JSON，不直接接收 XLSX/CSV 文件；单次最多 100000 条，需要 asset:write 权限。",
+					"operationId": "importAssets",
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{"$ref": "#/components/schemas/AssetImportRequest"},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "导入完成",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{"$ref": "#/components/schemas/AssetImportResult"},
+								},
+							},
+						},
+						"400": map[string]interface{}{"description": "数量或资产字段校验失败"},
+						"401": map[string]interface{}{"description": "未授权"},
+						"403": map[string]interface{}{"description": "缺少 asset:write 权限或无权访问指定项目"},
+						"500": map[string]interface{}{"description": "导入事务失败"},
+					},
+				},
+			},
 			"/api/projects": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"项目管理"},
@@ -2620,7 +2765,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"content": map[string]interface{}{
 							"application/json": map[string]interface{}{
 								"schema": map[string]interface{}{
-									"type": "object",
+									"type":     "object",
 									"required": []string{"source_fact_key", "target_fact_key", "edge_type"},
 									"properties": map[string]interface{}{
 										"source_fact_key": map[string]interface{}{"type": "string"},
@@ -3451,7 +3596,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"description": "状态筛选",
 							"schema": map[string]interface{}{
 								"type": "string",
-								"enum": []string{"success", "failed", "running"},
+								"enum": []string{"queued", "running", "completed", "failed", "cancelled", "hard_timeout", "orphaned"},
 							},
 						},
 						{
@@ -4466,15 +4611,34 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 			"/api/knowledge/index": map[string]interface{}{
 				"post": map[string]interface{}{
 					"tags":        []string{"知识库"},
-					"summary":     "重建索引",
-					"description": "重新构建知识库索引",
-					"operationId": "rebuildIndex",
+					"summary":     "构建索引",
+					"description": "构建知识库向量索引。默认仅处理尚无向量的知识项；mode=full 时全量重建。",
+					"operationId": "startKnowledgeIndex",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "mode",
+							"in":          "query",
+							"required":    false,
+							"description": "索引模式：missing（默认，补齐缺失向量）或 full（全量重建）",
+							"schema": map[string]interface{}{
+								"type":    "string",
+								"enum":    []string{"missing", "full"},
+								"default": "missing",
+							},
+						},
+					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "重建索引任务已启动",
+							"description": "索引任务已启动",
+						},
+						"400": map[string]interface{}{
+							"description": "无效的 mode 参数",
 						},
 						"401": map[string]interface{}{
 							"description": "未授权",
+						},
+						"409": map[string]interface{}{
+							"description": "已有索引任务正在进行",
 						},
 					},
 				},
@@ -4766,7 +4930,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"get": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "获取消息过程详情",
-					"description": "按需加载指定消息的执行过程详情，包括工具调用、思考过程等事件。",
+					"description": "按需分页加载指定消息的执行过程详情，包括工具调用、思考过程等事件。默认返回 50 条；导出或旧集成需要全量时可显式传 full=1。",
 					"operationId": "getMessageProcessDetails",
 					"parameters": []map[string]interface{}{
 						{
@@ -4775,6 +4939,34 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"required":    true,
 							"description": "消息ID",
 							"schema":      map[string]interface{}{"type": "string"},
+						},
+						{
+							"name":        "summary",
+							"in":          "query",
+							"required":    false,
+							"description": "仅返回过程详情摘要（total / iterationCount / maxIteration）",
+							"schema":      map[string]interface{}{"type": "boolean"},
+						},
+						{
+							"name":        "limit",
+							"in":          "query",
+							"required":    false,
+							"description": "分页大小，默认 50，最大 500",
+							"schema":      map[string]interface{}{"type": "integer", "default": 50, "maximum": 500},
+						},
+						{
+							"name":        "offset",
+							"in":          "query",
+							"required":    false,
+							"description": "分页偏移量，默认 0",
+							"schema":      map[string]interface{}{"type": "integer", "default": 0},
+						},
+						{
+							"name":        "full",
+							"in":          "query",
+							"required":    false,
+							"description": "显式返回全量过程详情；仅建议导出/兼容旧集成使用",
+							"schema":      map[string]interface{}{"type": "boolean"},
 						},
 					},
 					"responses": map[string]interface{}{
@@ -4799,6 +4991,14 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 														"createdAt":      map[string]interface{}{"type": "string", "format": "date-time", "description": "创建时间"},
 													},
 												},
+											},
+											"total":   map[string]interface{}{"type": "integer", "description": "过程详情总数"},
+											"offset":  map[string]interface{}{"type": "integer", "description": "当前分页偏移量"},
+											"limit":   map[string]interface{}{"type": "integer", "description": "当前分页大小"},
+											"hasMore": map[string]interface{}{"type": "boolean", "description": "是否还有更多过程详情"},
+											"summary": map[string]interface{}{
+												"type":        "object",
+												"description": "summary=1 时返回的摘要",
 											},
 										},
 									},
@@ -5042,6 +5242,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 									"required": []string{"query"},
 									"properties": map[string]interface{}{
 										"query":  map[string]interface{}{"type": "string", "description": "FOFA查询语法", "example": "domain=\"example.com\""},
+										"provider": map[string]interface{}{"type": "string", "description": "空间测绘引擎：fofa（默认）/zoomeye/quake/shodan", "default": "fofa"},
 										"size":   map[string]interface{}{"type": "integer", "description": "返回数量（默认100，最大10000）", "default": 100},
 										"page":   map[string]interface{}{"type": "integer", "description": "页码（默认1）", "default": 1},
 										"fields": map[string]interface{}{"type": "string", "description": "返回字段，逗号分隔", "example": "host,ip,port,title"},
@@ -5091,6 +5292,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 									"required": []string{"text"},
 									"properties": map[string]interface{}{
 										"text": map[string]interface{}{"type": "string", "description": "自然语言描述", "example": "查找使用WordPress的网站"},
+										"provider": map[string]interface{}{"type": "string", "description": "空间测绘引擎：fofa（默认）/zoomeye/quake/shodan", "default": "fofa"},
 									},
 								},
 							},
@@ -5689,10 +5891,15 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"get": map[string]interface{}{
 					"tags":        []string{"对话附件"},
 					"summary":     "列出附件",
-					"description": "获取对话附件文件列表，可按对话ID过滤。",
+					"description": "获取对话文件列表，包含手动上传附件、工具输出和会话产物，可按会话、项目、来源、文件名搜索和分页过滤。",
 					"operationId": "listChatUploads",
 					"parameters": []map[string]interface{}{
 						{"name": "conversation", "in": "query", "required": false, "description": "按对话ID过滤", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "project", "in": "query", "required": false, "description": "按项目ID过滤", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "source", "in": "query", "required": false, "description": "按来源过滤：upload/reduction/workspace/conversation_artifact/all", "schema": map[string]interface{}{"type": "string", "enum": []string{"all", "upload", "reduction", "workspace", "conversation_artifact"}}},
+						{"name": "search", "in": "query", "required": false, "description": "按文件名或子路径搜索", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "page", "in": "query", "required": false, "description": "页码，从1开始", "schema": map[string]interface{}{"type": "integer", "default": 1}},
+						{"name": "pageSize", "in": "query", "required": false, "description": "每页数量，传 all 返回全部", "schema": map[string]interface{}{"oneOf": []map[string]interface{}{{"type": "integer"}, {"type": "string", "enum": []string{"all"}}}}},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
@@ -5707,18 +5914,27 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 												"items": map[string]interface{}{
 													"type": "object",
 													"properties": map[string]interface{}{
-														"relativePath":   map[string]interface{}{"type": "string"},
-														"absolutePath":   map[string]interface{}{"type": "string"},
-														"name":           map[string]interface{}{"type": "string"},
-														"size":           map[string]interface{}{"type": "integer"},
-														"modifiedUnix":   map[string]interface{}{"type": "integer"},
-														"date":           map[string]interface{}{"type": "string"},
-														"conversationId": map[string]interface{}{"type": "string"},
-														"subPath":        map[string]interface{}{"type": "string"},
+														"relativePath":      map[string]interface{}{"type": "string"},
+														"absolutePath":      map[string]interface{}{"type": "string"},
+														"name":              map[string]interface{}{"type": "string"},
+														"size":              map[string]interface{}{"type": "integer"},
+														"modifiedUnix":      map[string]interface{}{"type": "integer"},
+														"date":              map[string]interface{}{"type": "string"},
+														"conversationId":    map[string]interface{}{"type": "string"},
+														"conversationTitle": map[string]interface{}{"type": "string"},
+														"projectId":         map[string]interface{}{"type": "string"},
+														"projectName":       map[string]interface{}{"type": "string"},
+														"subPath":           map[string]interface{}{"type": "string"},
+														"source":            map[string]interface{}{"type": "string", "description": "upload/reduction/workspace/conversation_artifact"},
 													},
 												},
 											},
 											"folders": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+											"total":   map[string]interface{}{"type": "integer"},
+											"page":    map[string]interface{}{"type": "integer"},
+											"pageSize": map[string]interface{}{
+												"type": "integer",
+											},
 										},
 									},
 								},
@@ -5793,6 +6009,31 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
+			"/api/chat-uploads/export": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"对话附件"},
+					"summary":     "导出附件",
+					"description": "按当前过滤条件导出对话文件 ZIP，包含 manifest.json。",
+					"operationId": "exportChatUploads",
+					"parameters": []map[string]interface{}{
+						{"name": "conversation", "in": "query", "required": false, "description": "按对话ID过滤", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "project", "in": "query", "required": false, "description": "按项目ID过滤", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "source", "in": "query", "required": false, "description": "按来源过滤：upload/reduction/workspace/conversation_artifact/all", "schema": map[string]interface{}{"type": "string", "enum": []string{"all", "upload", "reduction", "workspace", "conversation_artifact"}}},
+						{"name": "search", "in": "query", "required": false, "description": "按文件名或子路径搜索", "schema": map[string]interface{}{"type": "string"}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "ZIP文件下载",
+							"content": map[string]interface{}{
+								"application/zip": map[string]interface{}{
+									"schema": map[string]interface{}{"type": "string", "format": "binary"},
+								},
+							},
+						},
+						"401": map[string]interface{}{"description": "未授权"},
+					},
+				},
+			},
 			"/api/chat-uploads/download": map[string]interface{}{
 				"get": map[string]interface{}{
 					"tags":        []string{"对话附件"},
@@ -5813,6 +6054,37 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 						"401": map[string]interface{}{"description": "未授权"},
 						"404": map[string]interface{}{"description": "文件不存在"},
+					},
+				},
+			},
+			"/api/chat-uploads/path": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"对话附件"},
+					"summary":     "解析附件路径",
+					"description": "将文件管理中的相对路径或内部虚拟路径解析为服务器绝对路径，用于复制文件/目录路径。",
+					"operationId": "resolveChatUploadPath",
+					"parameters": []map[string]interface{}{
+						{"name": "path", "in": "query", "required": true, "description": "相对路径或虚拟路径（如 __workspace__/projects/<id>/csv）", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "kind", "in": "query", "required": false, "description": "路径类型：file/directory，默认 file", "schema": map[string]interface{}{"type": "string", "enum": []string{"file", "directory"}}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "解析成功",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"absolutePath": map[string]interface{}{"type": "string"},
+											"isDir":        map[string]interface{}{"type": "boolean"},
+										},
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{"description": "未授权"},
+						"403": map[string]interface{}{"description": "无权访问"},
+						"404": map[string]interface{}{"description": "路径不存在"},
 					},
 				},
 			},

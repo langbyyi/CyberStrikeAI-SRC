@@ -98,8 +98,8 @@ type BatchTaskManager struct {
 	logger         *zap.Logger
 	queues         map[string]*BatchTaskQueue
 	taskCancels    map[string]map[string]context.CancelFunc // queueID -> taskID -> 取消函数
-	singleRunTasks map[string]string             // queueID -> taskID，单条执行完成后暂停队列
-	queueExecutors map[string]struct{}           // executeBatchQueue 协程活跃标记（与队列 status 解耦）
+	singleRunTasks map[string]string                        // queueID -> taskID，单条执行完成后暂停队列
+	queueExecutors map[string]struct{}                      // executeBatchQueue 协程活跃标记（与队列 status 解耦）
 	mu             sync.RWMutex
 }
 
@@ -426,20 +426,24 @@ func (m *BatchTaskManager) GetAllQueues() []*BatchTaskQueue {
 
 // ListQueues 列出队列（支持筛选和分页）
 func (m *BatchTaskManager) ListQueues(limit, offset int, status, keyword string) ([]*BatchTaskQueue, int, error) {
+	return m.ListQueuesForAccess(limit, offset, status, keyword, "", "")
+}
+
+func (m *BatchTaskManager) ListQueuesForAccess(limit, offset int, status, keyword, userID, scope string) ([]*BatchTaskQueue, int, error) {
 	var queues []*BatchTaskQueue
 	var total int
 
 	// 如果数据库可用，从数据库查询
 	if m.db != nil {
 		// 获取总数
-		count, err := m.db.CountBatchQueues(status, keyword)
+		count, err := m.db.CountBatchQueuesForAccess(status, keyword, userID, scope)
 		if err != nil {
 			return nil, 0, fmt.Errorf("统计队列总数失败: %w", err)
 		}
 		total = count
 
 		// 获取队列列表（只获取ID）
-		queueRows, err := m.db.ListBatchQueues(limit, offset, status, keyword)
+		queueRows, err := m.db.ListBatchQueuesForAccess(limit, offset, status, keyword, userID, scope)
 		if err != nil {
 			return nil, 0, fmt.Errorf("查询队列列表失败: %w", err)
 		}

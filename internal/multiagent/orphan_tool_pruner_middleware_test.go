@@ -220,3 +220,19 @@ func newTestToolCall(id, name, arguments string) schema.ToolCall {
 		},
 	}
 }
+
+// assistantToolCallsMsg 构造带 tool_calls 的 assistant 消息（共享测试 helper，context_budget_test 等引用）。
+func assistantToolCallsMsg(content string, callIDs ...string) *schema.Message {
+	tcs := make([]schema.ToolCall, 0, len(callIDs))
+	for _, id := range callIDs {
+		tcs = append(tcs, schema.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "stub_tool",
+				Arguments: `{}`,
+			},
+		})
+	}
+	return schema.AssistantMessage(content, tcs)
+}

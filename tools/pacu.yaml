@@ -1,6 +1,6 @@
 name: "pacu"
 command: "pacu"
-enabled: true
+enabled: false
 short_description: "AWS渗透测试框架"
 description: |
   Pacu是一个AWS渗透测试框架，用于测试AWS环境的安全性。
@@ -42,7 +42,8 @@ parameters:
       额外的pacu参数。用于传递未在参数列表中定义的pacu选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - --set-region us-east-1（区域）
+      - whoami（执行模块）
 
       **注意事项：**
       - 多个参数用空格分隔

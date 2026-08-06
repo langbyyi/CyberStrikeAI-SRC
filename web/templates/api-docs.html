@@ -6,6 +6,7 @@
     <title data-i18n="apiDocs.pageTitle">API 文档 - CyberStrikeAI</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/theme.js"></script>
     <style>
         /* 覆盖主CSS的overflow限制，允许API文档页面滚动 */
         body {
@@ -25,7 +26,22 @@
             position: relative;
             margin-bottom: 32px;
             padding-bottom: 24px;
+            padding-right: 280px;
             border-bottom: 2px solid var(--border-color);
+        }
+
+        .api-docs-header-actions {
+            position: absolute;
+            top: 0;
+            right: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .api-docs-header-actions .theme-toggle-btn,
+        .api-docs-header-actions .lang-switcher-btn {
+            min-height: 36px;
         }
         
         .api-docs-header h1 {
@@ -822,6 +838,114 @@
         .empty-state p {
             font-size: 0.875rem;
         }
+
+        html[data-theme="dark"] body {
+            background: var(--bg-secondary);
+        }
+
+        html[data-theme="dark"] .api-docs-container {
+            background: var(--bg-secondary);
+        }
+
+        html[data-theme="dark"] .api-docs-sidebar,
+        html[data-theme="dark"] .auth-info-section,
+        html[data-theme="dark"] .api-endpoint,
+        html[data-theme="dark"] .api-endpoint-header,
+        html[data-theme="dark"] .api-test-form,
+        html[data-theme="dark"] .api-response-example,
+        html[data-theme="dark"] .api-description pre,
+        html[data-theme="dark"] .api-description-detail .code-block,
+        html[data-theme="dark"] .api-description-detail .inline-code,
+        html[data-theme="dark"] .api-description code {
+            background: #111827;
+            border-color: #263244;
+        }
+
+        html[data-theme="dark"] .api-endpoint:hover {
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+        }
+
+        html[data-theme="dark"] .api-group-link:hover {
+            background: rgba(96, 165, 250, 0.1);
+            color: var(--accent-hover);
+        }
+
+        html[data-theme="dark"] .api-group-link.active {
+            background: rgba(96, 165, 250, 0.16);
+            color: var(--accent-hover);
+        }
+
+        html[data-theme="dark"] .api-params-table th {
+            background: #0f172a;
+        }
+
+        html[data-theme="dark"] .api-test-input-group input,
+        html[data-theme="dark"] .api-test-input-group textarea {
+            background: #0f172a;
+            border-color: #2b374b;
+            color: var(--text-primary);
+        }
+
+        html[data-theme="dark"] .api-test-input-group input:focus,
+        html[data-theme="dark"] .api-test-input-group textarea:focus {
+            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
+        }
+
+        html[data-theme="dark"] .api-test-result.success {
+            background: rgba(52, 211, 153, 0.14);
+            color: #6ee7b7;
+            border-color: rgba(52, 211, 153, 0.28);
+        }
+
+        html[data-theme="dark"] .api-test-result.error {
+            background: rgba(248, 113, 113, 0.14);
+            color: #fca5a5;
+            border-color: rgba(248, 113, 113, 0.28);
+        }
+
+        html[data-theme="dark"] .api-test-btn.secondary {
+            background: #111827;
+            border-color: #2b374b;
+            color: var(--text-primary);
+        }
+
+        html[data-theme="dark"] .api-test-btn.secondary:hover {
+            background: #1f2937;
+            border-color: var(--accent-color);
+        }
+
+        html[data-theme="dark"] .api-docs-header-actions .theme-toggle-btn,
+        html[data-theme="dark"] .api-docs-header-actions .lang-switcher-btn {
+            background: #111827;
+            border-color: #2b374b;
+            color: var(--text-primary);
+        }
+
+        html[data-theme="dark"] .api-docs-header-actions .theme-toggle-btn:hover,
+        html[data-theme="dark"] .api-docs-header-actions .lang-switcher-btn:hover {
+            background: #1f2937;
+            border-color: var(--accent-color);
+        }
+
+        html[data-theme="dark"] #token-status {
+            background: rgba(96, 165, 250, 0.12) !important;
+            border-left-color: var(--accent-color) !important;
+        }
+
+        @media (max-width: 768px) {
+            .api-docs-header {
+                padding-right: 0;
+                padding-bottom: 72px;
+            }
+
+            .api-docs-header-actions {
+                top: auto;
+                bottom: 16px;
+                left: 0;
+                right: 0;
+                justify-content: flex-end;
+            }
+        }
     </style>
 </head>
 <body>
@@ -837,7 +961,21 @@
                 <span data-i18n="apiDocs.title">API 文档</span>
             </h1>
             <p data-i18n="apiDocs.subtitle">CyberStrikeAI 平台 API 接口文档，支持在线测试</p>
-            <div class="api-docs-lang-switcher" style="position: absolute; top: 24px; right: 24px;">
+            <div class="api-docs-header-actions">
+                <button id="theme-toggle-btn" class="theme-toggle-btn btn-secondary" type="button" onclick="window.cycleThemePreference && window.cycleThemePreference()" data-i18n="theme.toggle" data-i18n-attr="title" title="切换主题" aria-label="切换主题">
+                    <svg class="theme-toggle-icon theme-toggle-icon--system" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="3" y="4" width="18" height="13" rx="2" stroke="currentColor" stroke-width="2"/>
+                        <path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <svg class="theme-toggle-icon theme-toggle-icon--light" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <svg class="theme-toggle-icon theme-toggle-icon--dark" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    </svg>
+                    <span id="theme-toggle-label">跟随系统</span>
+                </button>
                 <div class="lang-switcher">
                     <button type="button" class="btn-secondary lang-switcher-btn" onclick="typeof toggleLangDropdown === 'function' && toggleLangDropdown()" title="界面语言">
                         <span class="lang-switcher-icon">🌐</span>

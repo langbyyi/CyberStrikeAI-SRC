@@ -1,6 +1,8 @@
 ---
 name: ldap-injection-testing
-description: Professional skills and methodology for LDAP injection vulnerability testing
+description: LDAP injection vulnerability testing. Use when user input may reach LDAP
+  query filters, directory authentication logic, or AD/LDAP search bases — including
+  blind LDAP injection and filter-bypass scenarios.
 ---
 
 # LDAP Injection Vulnerability Testing
@@ -350,14 +352,9 @@ LDAP search input point found (login, directory lookup, access control)?
 - [ ] Test across different LDAP server implementations (OpenLDAP, Active Directory, 389 Directory) for syntax differences
 - [ ] Verify fix with proper LDAP escaping, parameterized queries, or whitelist input validation
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests with LDAP injection payloads (`*)(|`, `*)(cn=*`) in login forms, search parameters, and directory query endpoints |
-| `http_repeater` | Replay and modify LDAP injection payloads to test authentication bypass, user enumeration, and attribute extraction across different input points |
-| `nuclei_scan` | Run LDAP-injection-specific Nuclei templates to automate detection of LDAP injection vulnerabilities in authentication and directory lookup endpoints |
-| `api_fuzzer` | Fuzz API parameters with LDAP injection strings to discover endpoints where user input reaches LDAP query construction |
+Use visible `http-framework-test` for baseline/probe comparison, `nuclei` only with a narrowly selected relevant template, and `execute-python-script` for controlled mutation when necessary. Do not assume a repeater or API-fuzzer MCP exists.
 
 ## Notes
 
@@ -368,7 +365,7 @@ LDAP search input point found (login, directory lookup, access control)?
 
 ## RELATED ROUTING
 
-- [authentication-bypass](../authentication-bypass/SKILL.md) — LDAP auth bypass is a direct authentication flaw
-- [sqli](../sqli/SKILL.md) — SQL injection shares analogous injection methodology with LDAP injection
-- [xpath-injection](../xpath-injection/SKILL.md) — XPath injection shares query-construction abuse patterns with LDAP injection
-- [xxe](../xxe/SKILL.md) — XML-related attacks that can target LDAP backends via external entity injection
+- [authentication-bypass](../authbypass-authentication-flaws/SKILL.md) — LDAP auth bypass is a direct authentication flaw
+- [sqli](../sqli-sql-injection/SKILL.md) — SQL injection shares analogous injection methodology with LDAP injection
+- [xpath-injection](../xpath-injection-testing/SKILL.md) — XPath injection shares query-construction abuse patterns with LDAP injection
+- [xxe](../xxe-xml-external-entity/SKILL.md) — XML-related attacks that can target LDAP backends via external entity injection

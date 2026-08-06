@@ -1,0 +1,35 @@
+name: netdiscover
+command: netdiscover
+enabled: true
+short_description: ARP 网络主机发现（被动/主动）
+description: 'ARP 网络发现工具，发现局域网存活主机与 MAC。
+
+  **使用场景：** 内网主机发现、资产测绘。
+
+
+  **安装：** `apt install netdiscover`（若不可用先安装）。'
+parameters:
+  - name: range
+    type: string
+    required: false
+    flag: -r
+    format: flag
+    description: 扫描网段，如 `192.168.1.0/24`
+  - name: interface
+    type: string
+    required: false
+    flag: -i
+    format: flag
+    description: 网卡接口
+  - name: passive
+    type: bool
+    required: false
+    flag: -p
+    format: flag
+    default: false
+    description: 被动模式（只监听不发送）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-t`(超时) `-l`(忽略范围) `-F`(自定义频率)

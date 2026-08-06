@@ -1,0 +1,42 @@
+name: cewl
+command: cewl
+enabled: true
+short_description: 从网站内容生成密码字典（爬取关键词）
+description: '爬取网站页面内容生成定制密码字典。
+
+  **使用场景：** 针对目标站点生成专属密码字典、信息收集。
+
+
+  **安装：** `apt install cewl`（若不可用先安装）。'
+parameters:
+  - name: url
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 目标 URL
+  - name: depth
+    type: int
+    required: false
+    flag: -d
+    format: flag
+    default: 2
+    description: 爬取深度
+  - name: min_word_length
+    type: int
+    required: false
+    flag: -m
+    format: flag
+    default: 8
+    description: 最小单词长度
+  - name: output
+    type: string
+    required: false
+    flag: -w
+    format: flag
+    description: 输出字典文件
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-c`(计数) `-a`(包含元数据)

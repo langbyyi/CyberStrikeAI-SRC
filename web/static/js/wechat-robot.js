@@ -170,6 +170,9 @@ function showWechatBoundUI(wechat) {
     if (btn) {
         btn.textContent = wechatT('settings.robots.wechat.rebindButton', '重新绑定');
     }
+    if (typeof refreshRobotManager === 'function') {
+        refreshRobotManager();
+    }
 }
 
 function escapeHtml(text) {
@@ -342,6 +345,9 @@ async function pollWechatBindStatus() {
                         bound: true
                     });
                 }
+                if (typeof refreshRobotManager === 'function') {
+                    refreshRobotManager();
+                }
                 return;
             case 'need_verifycode':
                 updateWechatSteps('scan');
@@ -404,6 +410,9 @@ function refreshWechatRobotBoundUI(wechat) {
         const btn = document.getElementById('robot-wechat-bind-btn');
         if (btn) {
             btn.textContent = wechatT('settings.robots.wechat.bindButton', '生成二维码并绑定');
+        }
+        if (typeof refreshRobotManager === 'function') {
+            refreshRobotManager();
         }
     }
 }

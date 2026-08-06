@@ -1,8 +1,5 @@
 name: "nikto"
 command: "nikto"
-# 默认护栏：请求超时 60s + 总扫描上限 900s（15min），防止 nikto 常规 20-40 分钟慢扫描拖死并行批次。
-# 调优（-Tuning）、绕过等通过 additional_args 显式控制。
-args: ["-timeout", "60", "-maxtime", "900"]
 enabled: true
 # 允许的退出码列表：nikto在找到漏洞时会返回退出码1，这是正常的成功状态
 allowed_exit_codes: [1]
@@ -29,7 +26,6 @@ description: |
   **注意事项：**
   - 扫描可能产生大量日志，注意日志管理
   - 某些扫描可能触发WAF或IDS告警
-  - 建议在授权范围内使用
   - 扫描结果需要人工验证
 # 参数定义
 parameters:
@@ -63,7 +59,10 @@ parameters:
       额外的nikto参数。用于传递未在参数列表中定义的nikto选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - -Tuning x（调谐级别）
+      - -evasion 1（IDS绕过）
+      - -maxtime 60（最大时间）
+      - -Format json（输出格式）
 
       **注意事项：**
       - 多个参数用空格分隔

@@ -10,13 +10,15 @@ import (
 
 func auditFilterFromQuery(c *gin.Context) database.ListAuditLogsFilter {
 	filter := database.ListAuditLogsFilter{
-		Level:        c.Query("level"),
-		Category:     c.Query("category"),
-		Action:       c.Query("action"),
-		Result:       c.Query("result"),
-		Query:        c.Query("q"),
-		ResourceType: c.Query("resource_type"),
-		ResourceID:   c.Query("resource_id"),
+		Actor:         c.Query("actor"),
+		Level:         c.Query("level"),
+		Category:      c.Query("category"),
+		Action:        c.Query("action"),
+		Result:        c.Query("result"),
+		Query:         c.Query("q"),
+		ResourceType:  c.Query("resource_type"),
+		ResourceID:    c.Query("resource_id"),
+		RelatedUserID: c.Query("related_user_id"),
 	}
 	if since := c.Query("since"); since != "" {
 		if t, err := database.ParseRFC3339Time(since); err == nil {

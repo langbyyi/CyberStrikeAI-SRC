@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,23 +17,24 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai/internal/openai"
 
 	"go.uber.org/zap"
 )
 
-// Agent 是 MCP 工具网关（列工具、按会话执行工具、监控落库），不是 Eino ADK 编排循环。
-// 对话/多代理编排在 internal/multiagent，经 einomcp 调用本结构体。
+// Agent AI代理
 type Agent struct {
-	config                *config.OpenAIConfig // 热更新保留；Eino ChatModel 由 multiagent 按 app 配置构建
-	agentConfig           *config.AgentConfig  // 通常为共享的 &config.Agent（工具超时、system_prompt 等）
-	mcpServer             *mcp.Server
-	externalMCPMgr        *mcp.ExternalMCPManager // 外部MCP管理器
-	logger                *zap.Logger
-	mu                    sync.RWMutex      // 添加互斥锁以支持并发更新
-	toolNameMapping       map[string]string // 工具名称映射：OpenAI格式 -> 原始格式（用于外部MCP工具）
-	currentConversationID string            // 当前对话ID（用于自动传递给工具）
-	promptBaseDir         string            // 解析 system_prompt_path 时相对路径的基准目录（通常为 config.yaml 所在目录）
-	toolDescriptionMode   string            // 工具描述模式: "short" | "full"，默认 short
+	openAIClient        *openai.Client
+	config              *config.OpenAIConfig
+	agentConfig         *config.AgentConfig
+	mcpServer           *mcp.Server
+	externalMCPMgr      *mcp.ExternalMCPManager // 外部MCP管理器
+	logger              *zap.Logger
+	maxIterations       int
+	mu                  sync.RWMutex      // 添加互斥锁以支持并发更新
+	toolNameMapping     map[string]string // 工具名称映射：OpenAI格式 -> 原始格式（用于外部MCP工具）
+	promptBaseDir       string            // 解析 system_prompt_path 时相对路径的基准目录（通常为 config.yaml 所在目录）
+	toolDescriptionMode string            // 工具描述模式: "short" | "full"，默认 short
 }
 
 type agentConversationIDKey struct{}
@@ -57,18 +60,43 @@ func ConversationIDFromContext(ctx context.Context) string {
 	return agentConversationIDFromContext(ctx)
 }
 
-// NewAgent 创建 MCP 工具网关。
-// maxIterations 为历史兼容参数：编排迭代上限以 config.Agent.MaxIterations 为准
-//（multiagent.agentMaxIterations），本结构体不再缓存独立 maxIterations 字段。
+// NewAgent 创建新的Agent
 func NewAgent(cfg *config.OpenAIConfig, agentCfg *config.AgentConfig, mcpServer *mcp.Server, externalMCPMgr *mcp.ExternalMCPManager, logger *zap.Logger, maxIterations int) *Agent {
-	_ = maxIterations
+	// 如果 maxIterations 为 0 或负数，使用默认值 30
+	if maxIterations <= 0 {
+		maxIterations = 30
+	}
+
+	// 配置HTTP Transport，优化连接管理和超时设置
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   300 * time.Second,
+			KeepAlive: 300 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Minute, // 响应头超时：增加到15分钟，应对大响应
+		DisableKeepAlives:     false,            // 启用连接复用
+	}
+
+	// 增加超时时间到30分钟，以支持长时间运行的AI推理
+	// 特别是当使用流式响应或处理复杂任务时
+	httpClient := &http.Client{
+		Timeout:   30 * time.Minute, // 从5分钟增加到30分钟
+		Transport: transport,
+	}
+	llmClient := openai.NewClient(cfg, httpClient, logger)
 
 	return &Agent{
+		openAIClient:        llmClient,
 		config:              cfg,
 		agentConfig:         agentCfg,
 		mcpServer:           mcpServer,
 		externalMCPMgr:      externalMCPMgr,
 		logger:              logger,
+		maxIterations:       maxIterations,
 		toolNameMapping:     make(map[string]string), // 初始化工具名称映射
 		toolDescriptionMode: "short",
 	}
@@ -91,6 +119,9 @@ type ChatMessage struct {
 	ToolName string `json:"tool_name,omitempty"`
 	// ReasoningContent 对应 OpenAI/DeepSeek 的 reasoning_content；思考模式 + 工具调用后续跑须回传（见 DeepSeek 文档）。
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ModelFacingTrace is runtime-only metadata: true means Content was already the exact
+	// payload seen at the model boundary and must be restored byte-for-byte.
+	ModelFacingTrace bool `json:"-"`
 }
 
 // MarshalJSON 自定义JSON序列化，将tool_calls中的arguments转换为JSON字符串
@@ -483,6 +514,14 @@ type ToolExecutionResult struct {
 	IsError     bool
 }
 
+func buildToolFailureMessage(toolName, detail string, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "工具调用失败\n\n")
+	fmt.Fprintf(&b, "工具名称: %s\n", toolName)
+	fmt.Fprintf(&b, "错误详情: %s", detail)
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // executeToolViaMCP 通过MCP执行工具
 // 即使工具执行失败，也返回结果而不是错误，让AI能够处理错误情况
 func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map[string]interface{}) (*ToolExecutionResult, error) {
@@ -491,15 +530,9 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 		zap.Any("args", args),
 	)
 
-	conversationID := agentConversationIDFromContext(ctx)
-	if conversationID == "" {
-		a.mu.RLock()
-		conversationID = a.currentConversationID
-		a.mu.RUnlock()
-	}
-
 	// 如果是record_vulnerability工具，自动添加conversation_id
 	if toolName == builtin.ToolRecordVulnerability {
+		conversationID := agentConversationIDFromContext(ctx)
 		if conversationID != "" {
 			args["conversation_id"] = conversationID
 			a.logger.Debug("自动添加conversation_id到record_vulnerability工具",
@@ -509,7 +542,6 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 			a.logger.Warn("record_vulnerability工具调用时conversation_id为空")
 		}
 	}
-	// exec 是否用未加载扫描器：仅系统/角色提示词约束，不做硬拦截。
 
 	var result *mcp.ToolResult
 	var executionID string
@@ -549,32 +581,16 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	// 如果调用失败（如工具不存在、超时），返回友好的错误信息而不是抛出异常
 	if err != nil {
 		detail := err.Error()
+		timeoutMinutes := 10
+		if a.agentConfig != nil && a.agentConfig.ToolTimeoutMinutes > 0 {
+			timeoutMinutes = a.agentConfig.ToolTimeoutMinutes
+		}
 		if errors.Is(err, context.Canceled) {
 			detail = "工具调用已被手动终止（MCP 监控页）。智能体将携带此结果继续后续步骤，整条任务不会因此被停止。"
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			min := 10
-			if a.agentConfig != nil && a.agentConfig.ToolTimeoutMinutes > 0 {
-				min = a.agentConfig.ToolTimeoutMinutes
-			}
-			detail = fmt.Sprintf("工具执行超过 %d 分钟被自动终止（可在 config.yaml 的 agent.tool_timeout_minutes 中调整）", min)
+			detail = fmt.Sprintf("工具执行超过 %d 分钟被自动终止（可在 config.yaml 的 agent.tool_timeout_minutes 中调整）", timeoutMinutes)
 		}
-		errorMsg := fmt.Sprintf(`工具调用失败
-
-工具名称: %s
-错误类型: 系统错误
-错误详情: %s
-
-可能的原因：
-- 工具 "%s" 不存在或未启用
-- 单次执行超时（agent.tool_timeout_minutes）
-- 系统配置问题
-- 网络或权限问题
-
-建议：
-- 检查工具名称是否正确
-- 若需更长执行时间，可适当增大 agent.tool_timeout_minutes
-- 尝试使用其他替代工具
-- 如果这是必需的工具，请向用户说明情况`, toolName, detail, toolName)
+		errorMsg := buildToolFailureMessage(toolName, detail, err)
 
 		return &ToolExecutionResult{
 			Result:      errorMsg,
@@ -599,38 +615,26 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}, nil
 }
 
-// UpdateConfig 更新 OpenAI 配置指针（Eino 路径每次 Run 从 app 配置建 ChatModel；
-// 此处保留以便与配置热更新接口一致，并供仍读 a.config 的诊断/扩展使用）。
+// UpdateConfig 更新OpenAI配置
 func (a *Agent) UpdateConfig(cfg *config.OpenAIConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.config = cfg
-	if cfg == nil {
-		a.logger.Info("Agent OpenAI 配置已清空")
-		return
-	}
+
 	a.logger.Info("Agent配置已更新",
 		zap.String("base_url", cfg.BaseURL),
 		zap.String("model", cfg.Model),
 	)
 }
 
-// UpdateMaxIterations 将上限写入共享的 agentConfig.MaxIterations。
-// Eino 编排通过 multiagent.agentMaxIterations 读取 config.Agent.MaxIterations；
-// 当 NewAgent 传入 &cfg.Agent 时，本方法与配置热更新对同一字段生效。
+// UpdateMaxIterations 更新最大迭代次数
 func (a *Agent) UpdateMaxIterations(maxIterations int) {
-	if maxIterations <= 0 {
-		return
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.agentConfig == nil {
-		a.logger.Warn("UpdateMaxIterations: agentConfig 为空，跳过",
-			zap.Int("max_iterations", maxIterations))
-		return
+	if maxIterations > 0 {
+		a.maxIterations = maxIterations
+		a.logger.Info("Agent最大迭代次数已更新", zap.Int("max_iterations", maxIterations))
 	}
-	a.agentConfig.MaxIterations = maxIterations
-	a.logger.Info("Agent最大迭代次数已更新", zap.Int("max_iterations", maxIterations))
 }
 
 // UpdateToolDescriptionMode 更新工具描述模式（short/full）
@@ -642,7 +646,7 @@ func (a *Agent) UpdateToolDescriptionMode(mode string) {
 		mode = "short"
 	}
 	a.toolDescriptionMode = mode
-	a.logger.Info("Agent工具描述模式已更新", zap.String("tool_description_mode", mode))
+	a.logger.Debug("Agent工具描述模式已更新", zap.String("tool_description_mode", mode))
 }
 
 // RepairOrphanToolMessages 清理失去配对的tool消息和未完成的tool_calls，避免OpenAI报错
@@ -750,39 +754,53 @@ func (a *Agent) ToolsForRole(roleTools []string) []Tool {
 
 // ExecuteMCPToolForConversation 在指定会话上下文中执行 MCP 工具（行为与主 Agent 循环中的工具调用一致，如自动注入 conversation_id）。
 func (a *Agent) ExecuteMCPToolForConversation(ctx context.Context, conversationID, toolName string, args map[string]interface{}) (*ToolExecutionResult, error) {
-	a.mu.Lock()
-	prev := a.currentConversationID
-	a.currentConversationID = conversationID
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		a.currentConversationID = prev
-		a.mu.Unlock()
-	}()
 	ctx = withAgentConversationID(ctx, conversationID)
+	ctx = mcp.WithMCPConversationID(ctx, conversationID)
 	return a.executeToolViaMCP(ctx, toolName, args)
 }
 
 // BeginLocalToolExecution 在非 CallTool 路径工具开始时写入 running 状态，供 MCP 监控页展示「执行中」。
-func (a *Agent) BeginLocalToolExecution(toolName string, args map[string]interface{}) string {
+func (a *Agent) BeginLocalToolExecution(ctx context.Context, toolName string, args map[string]interface{}) string {
 	if a == nil || a.mcpServer == nil {
 		return ""
 	}
-	return a.mcpServer.BeginToolExecution(toolName, args)
+	return a.mcpServer.BeginToolExecution(ctx, toolName, args)
 }
 
 // FinishLocalToolExecution 完成 BeginLocalToolExecution 创建的记录；executionID 为空时一次性写入已完成记录。
-func (a *Agent) FinishLocalToolExecution(executionID, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+func (a *Agent) FinishLocalToolExecution(ctx context.Context, executionID, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
 	if a == nil || a.mcpServer == nil {
 		return ""
 	}
-	return a.mcpServer.FinishToolExecution(executionID, toolName, args, resultText, invokeErr)
+	return a.mcpServer.FinishToolExecution(ctx, executionID, toolName, args, resultText, invokeErr)
+}
+
+// AppendLocalToolExecutionPartialOutput records a bounded live-output preview for a running local tool.
+func (a *Agent) AppendLocalToolExecutionPartialOutput(executionID, chunk string) {
+	if a == nil || a.mcpServer == nil {
+		return
+	}
+	a.mcpServer.AppendToolExecutionPartialOutput(executionID, chunk)
+}
+
+func (a *Agent) RegisterLocalToolExecutionCancel(executionID string, cancel context.CancelFunc) {
+	if a == nil || a.mcpServer == nil {
+		return
+	}
+	a.mcpServer.RegisterToolExecutionCancel(executionID, cancel)
+}
+
+func (a *Agent) UnregisterLocalToolExecutionCancel(executionID string) {
+	if a == nil || a.mcpServer == nil {
+		return
+	}
+	a.mcpServer.UnregisterToolExecutionCancel(executionID)
 }
 
 // RecordLocalToolExecution 将非 CallTool 路径完成的工具调用写入 MCP 监控库（与 CallTool 落库一致），返回 executionId。
 // 用于 Eino filesystem execute 等场景，使助手气泡「渗透测试详情」与常规 MCP 一致可点进监控。
-func (a *Agent) RecordLocalToolExecution(toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
-	return a.FinishLocalToolExecution("", toolName, args, resultText, invokeErr)
+func (a *Agent) RecordLocalToolExecution(ctx context.Context, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
+	return a.FinishLocalToolExecution(ctx, "", toolName, args, resultText, invokeErr)
 }
 
 // UpdateMCPExecutionDisplayResult 将监控库中的工具结果更新为送入模型的展示正文（reduction 后）。
@@ -816,6 +834,46 @@ func (a *Agent) CancelMCPToolExecutionWithNote(executionID, note string) bool {
 		return true
 	}
 	return false
+}
+
+// CancelRunningMCPToolsForConversation cancels all currently running internal/external MCP executions
+// owned by the conversation. It is used when a session ends or the user stops a task.
+func (a *Agent) CancelRunningMCPToolsForConversation(conversationID, note string) int {
+	conversationID = strings.TrimSpace(conversationID)
+	if a == nil || conversationID == "" {
+		return 0
+	}
+	note = strings.TrimSpace(note)
+	seen := make(map[string]struct{})
+	cancelled := 0
+	cancelIfConversationMatches := func(execID string, get func(string) (*mcp.ToolExecution, bool), cancel func(string, string) bool) {
+		execID = strings.TrimSpace(execID)
+		if execID == "" {
+			return
+		}
+		if _, ok := seen[execID]; ok {
+			return
+		}
+		seen[execID] = struct{}{}
+		exec, ok := get(execID)
+		if !ok || exec == nil || strings.TrimSpace(exec.ConversationID) != conversationID {
+			return
+		}
+		if cancel(execID, note) {
+			cancelled++
+		}
+	}
+	if a.mcpServer != nil {
+		for execID := range a.mcpServer.ActiveRunningExecutionIDs() {
+			cancelIfConversationMatches(execID, a.mcpServer.GetExecution, a.mcpServer.CancelToolExecutionWithNote)
+		}
+	}
+	if a.externalMCPMgr != nil {
+		for execID := range a.externalMCPMgr.ActiveRunningExecutionIDs() {
+			cancelIfConversationMatches(execID, a.externalMCPMgr.GetExecution, a.externalMCPMgr.CancelToolExecutionWithNote)
+		}
+	}
+	return cancelled
 }
 
 // extractQuotedToolName 尝试从错误信息中提取被引用的工具名称

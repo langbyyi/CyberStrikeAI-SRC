@@ -301,3 +301,4 @@ shell.php\x0a     → Bypasses regex but Apache still executes as PHP
 /uploads/image.jpg/anything.php → PHP processes image.jpg as PHP!
 # Upload legitimate-looking JPG with PHP code embedded
 ```
+

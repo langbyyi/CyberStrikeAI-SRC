@@ -1,0 +1,32 @@
+name: dig
+command: dig
+enabled: true
+short_description: DNS 查询（A/AAAA/MX/NS/TXT/ANY）
+description: 'DNS 查询工具，支持多种记录类型。
+
+  **使用场景：** DNS 记录收集、子域名解析验证、区域传送测试。'
+parameters:
+  - name: target
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 要查询的域名
+  - name: type
+    type: string
+    required: false
+    position: 1
+    format: positional
+    default: A
+    description: 记录类型：A/AAAA/MX/NS/TXT/CNAME/ANY
+  - name: server
+    type: string
+    required: false
+    flag: '@'
+    format: flag
+    description: 指定 DNS 服务器，如 `8.8.8.8`（生成 `@8.8.8.8`）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `+short`(简短) `+trace`(追踪) `+recurse`

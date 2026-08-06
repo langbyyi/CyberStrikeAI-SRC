@@ -1,0 +1,40 @@
+name: hping3
+command: hping3
+enabled: true
+short_description: 定制 TCP/IP 包生成与扫描
+description: '定制 TCP/UDP/ICMP 包生成工具，支持半开扫描、防火墙探测、DoS 测试。
+
+  **使用场景：** 端口扫描、防火墙规则探测、协议分析。
+
+
+  **安装：** `apt install hping3`（若不可用先安装）。'
+parameters:
+  - name: target
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 目标 IP/域名
+  - name: mode
+    type: string
+    required: false
+    flag: -S
+    format: flag
+    description: SYN 模式（半开扫描）
+  - name: port
+    type: int
+    required: false
+    flag: -p
+    format: flag
+    description: 目标端口
+  - name: count
+    type: int
+    required: false
+    flag: -c
+    format: flag
+    description: 包数量
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-F`(FIN) `-A`(ACK) `-U`(UDP) `--tcp-timestamp`

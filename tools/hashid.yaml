@@ -1,0 +1,22 @@
+name: hashid
+command: hashid
+enabled: true
+short_description: 哈希类型识别（判断加密算法）
+description: '识别哈希类型（MD5/SHA/NTLM/bcrypt 等），辅助选择破解模式。
+
+  **使用场景：** 密码哈希识别、hashcat 模式选择前置。
+
+
+  **安装：** `apt install hashid`（若不可用先安装）。'
+parameters:
+  - name: hash
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 哈希值
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-m`(显示 hashcat 模式号)

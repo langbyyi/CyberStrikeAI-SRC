@@ -1,0 +1,34 @@
+name: ldapsearch
+command: ldapsearch
+enabled: true
+short_description: LDAP 目录查询（AD 枚举）
+description: 'LDAP 目录查询工具，枚举 AD 用户、组、对象。
+
+  **使用场景：** AD 域信息枚举、用户/组发现。
+
+
+  **安装：** `apt install ldap-utils`（若不可用先安装）。'
+parameters:
+  - name: host
+    type: string
+    required: true
+    flag: -h
+    format: flag
+    description: LDAP 服务器
+  - name: base
+    type: string
+    required: true
+    flag: -b
+    format: flag
+    description: Base DN，如 `DC=example,DC=com`
+  - name: filter
+    type: string
+    required: false
+    flag: -x
+    format: combined
+    description: 查询过滤器（与 -x 组合）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-LLL`(简洁) `"(objectClass=user)"`(搜索过滤器)

@@ -34,12 +34,13 @@ func ApplyPlanExecutePlannerModelConfig(cfg *einoopenai.ChatModelConfig, oa *con
 	if cfg == nil || oa == nil {
 		return
 	}
-	offOA := *oa
-	offReasoning := oa.Reasoning
-	offReasoning.Mode = "off"
-	offOA.Reasoning = offReasoning
-	ApplyToEinoChatModelConfig(cfg, &offOA, nil)
+	mergeExtraRequestFields(cfg, oa.Reasoning.ExtraRequestFields)
 	clearReasoningFromChatModelConfig(cfg)
+	if resolveWireProfile(oa, &oa.Reasoning) == wireDeepseek {
+		// DeepSeek enables thinking by default, so omission would not actually
+		// disable it for the planner's forced tool-choice requests.
+		applyThinkingDisabled(cfg)
+	}
 }
 
 func clearReasoningFromChatModelConfig(cfg *einoopenai.ChatModelConfig) {
@@ -51,8 +52,22 @@ func clearReasoningFromChatModelConfig(cfg *einoopenai.ChatModelConfig) {
 		for _, key := range []string{"thinking", "reasoning_effort", "output_config", "reasoning"} {
 			delete(cfg.ExtraFields, key)
 		}
+		if len(cfg.ExtraFields) == 0 {
+			cfg.ExtraFields = nil
+		}
 	}
-	applyThinkingDisabled(cfg)
+}
+
+func mergeExtraRequestFields(cfg *einoopenai.ChatModelConfig, fields map[string]interface{}) {
+	if cfg == nil || len(fields) == 0 {
+		return
+	}
+	if cfg.ExtraFields == nil {
+		cfg.ExtraFields = make(map[string]any, len(fields))
+	}
+	for k, v := range fields {
+		cfg.ExtraFields[k] = v
+	}
 }
 
 // ApplyToEinoChatModelConfig merges reasoning-related options into cfg.
@@ -65,41 +80,31 @@ func ApplyToEinoChatModelConfig(cfg *einoopenai.ChatModelConfig, oa *config.Open
 	allowClient := sr.AllowClientReasoningEffective()
 	mode := effectiveMode(sr, client, allowClient)
 
+	// Admin-defined root fields are independent of the selected reasoning wire
+	// profile. Merge them first so mode=off can remove only reasoning controls
+	// while preserving unrelated gateway options.
+	mergeExtraRequestFields(cfg, sr.ExtraRequestFields)
+	if mode == "off" {
+		clearReasoningFromChatModelConfig(cfg)
+		// Strict OpenAI endpoints reject unknown `thinking` fields, whereas the
+		// DeepSeek API enables thinking by default and requires an explicit
+		// thinking.type=disabled switch. Keep that wire difference profile-scoped.
+		if resolveWireProfile(oa, sr) == wireDeepseek {
+			applyThinkingDisabled(cfg)
+		}
+		return
+	}
+
 	// Claude (Anthropic): merge admin extras first; optional extended thinking maps to top-level `thinking`
 	// (see internal/openai convertOpenAIToClaude). DeepSeek/OpenAI-style fields are not sent.
 	if strings.EqualFold(strings.TrimSpace(oa.Provider), "claude") ||
 		strings.EqualFold(strings.TrimSpace(oa.Provider), "anthropic") {
-		if len(sr.ExtraRequestFields) > 0 {
-			if cfg.ExtraFields == nil {
-				cfg.ExtraFields = make(map[string]any)
-			}
-			for k, v := range sr.ExtraRequestFields {
-				cfg.ExtraFields[k] = v
-			}
-		}
-		if mode == "off" {
-			return
-		}
 		applyClaudeExtendedThinking(cfg, mode, effectiveEffort(sr, client, allowClient), oa.Model)
 		return
 	}
 
-	if mode == "off" {
-		applyThinkingDisabled(cfg)
-		return
-	}
 	effort := effectiveEffort(sr, client, allowClient)
 	prof := resolveWireProfile(oa, sr)
-
-	// Admin-defined extra root fields (merged first; automatic keys may follow).
-	if len(sr.ExtraRequestFields) > 0 {
-		if cfg.ExtraFields == nil {
-			cfg.ExtraFields = make(map[string]any)
-		}
-		for k, v := range sr.ExtraRequestFields {
-			cfg.ExtraFields[k] = v
-		}
-	}
 
 	switch prof {
 	case wireClaude, wireNone:
@@ -222,7 +227,8 @@ func usesExtraFieldsReasoningEffort(e string) bool {
 }
 
 func resolveWireProfile(oa *config.OpenAIConfig, sr *config.OpenAIReasoningConfig) wireProfile {
-	if strings.EqualFold(strings.TrimSpace(oa.Provider), "claude") {
+	provider := strings.TrimSpace(oa.Provider)
+	if strings.EqualFold(provider, "claude") || strings.EqualFold(provider, "anthropic") {
 		return wireClaude
 	}
 	p := strings.ToLower(strings.TrimSpace(sr.ProfileEffective()))
@@ -251,9 +257,6 @@ func applyThinkingDisabled(cfg *einoopenai.ChatModelConfig) {
 	}
 	if cfg.ExtraFields == nil {
 		cfg.ExtraFields = make(map[string]any)
-	}
-	if _, exists := cfg.ExtraFields["thinking"]; exists {
-		return
 	}
 	cfg.ExtraFields["thinking"] = map[string]any{"type": "disabled"}
 }

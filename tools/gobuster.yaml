@@ -1,33 +1,31 @@
 name: "gobuster"
 command: "gobuster"
 enabled: true
-short_description: "Web内容扫描工具，用于发现目录、文件和子域名"
+short_description: "Web 目录/子域名/虚拟主机枚举工具（dir/dns/fuzz/vhost 模式）"
 description: |
-  Gobuster是一个快速的内容发现工具，用于Web应用程序的目录、文件和子域名枚举。
+  Gobuster 是快速的内容发现工具，用于 Web 应用目录、文件和子域名枚举。
 
   **主要功能：**
-  - 目录和文件发现
-  - DNS子域名枚举
-  - 虚拟主机发现
-  - 支持多种模式（dir, dns, fuzz, vhost）
+  - `dir`：目录/文件枚举（默认）
+  - `dns`：DNS 子域名枚举
+  - `vhost`：虚拟主机发现
+  - `fuzz`：模板 FUZZ 扫描
 
   **使用场景：**
-  - Web应用安全测试
-  - 目录枚举和文件发现
+  - Web 目录/文件枚举
   - 子域名发现
-  - 渗透测试信息收集
+  - 虚拟主机爆破
+  - 参数/路径 FUZZ
+
+  **注意事项：**
+  - 第一个参数为模式子命令（positional）
+  - `dir` 模式需 `url`；`dns` 模式需 `domain`
+  - 建议 `additional_args` 加 `--timeout 10s`、`-q`（安静模式）、`--exclude-length 0`
 parameters:
   - name: "mode"
     type: "string"
     description: |
-      扫描模式（Gobuster子命令），对应以下取值：
-      - `dir`: 目录/文件枚举
-      - `dns`: DNS子域名枚举
-      - `fuzz`: 模板FUZZ扫描
-      - `vhost`: 虚拟主机发现
-
-      **注意：**
-      Gobuster要求第一个参数为模式子命令，因此这里作为位置参数传递。
+      扫描模式（Gobuster 子命令）：`dir`（目录枚举，默认）/`dns`（子域名）/`fuzz`（FUZZ 扫描）/`vhost`（虚拟主机）
     required: false
     default: "dir"
     position: 0
@@ -35,19 +33,34 @@ parameters:
     options: ["dir", "dns", "fuzz", "vhost"]
   - name: "url"
     type: "string"
-    description: "目标URL"
-    required: true
+    description: |
+      目标 URL（`dir` 模式必填）。示例：`https://example.com`
+    required: false
     flag: "-u"
+    format: "flag"
+  - name: "domain"
+    type: "string"
+    description: |
+      目标域名（`dns` 模式用）。示例：`example.com`
+    required: false
+    flag: "-d"
     format: "flag"
   - name: "wordlist"
     type: "string"
-    description: "字典文件路径"
+    description: |
+      字典文件路径。默认 `/usr/share/wordlists/dirb/common.txt`。
     required: false
     default: "/usr/share/wordlists/dirb/common.txt"
     flag: "-w"
     format: "flag"
   - name: "additional_args"
     type: "string"
-    description: "额外的Gobuster参数"
+    description: |
+      额外参数追加到命令末尾。常用：
+      - `-q`（安静模式，仅输出结果）
+      - `--exclude-length 0`（过滤空响应）
+      - `-t 20`（线程数）
+      - `-k`（忽略证书校验）
+      - `-m GET`（HTTP 方法）
     required: false
     format: "positional"

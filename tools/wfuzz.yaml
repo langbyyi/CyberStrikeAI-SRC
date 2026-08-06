@@ -1,0 +1,34 @@
+name: wfuzz
+command: wfuzz
+enabled: true
+short_description: Web 模糊测试（参数/路径/Header 暴力枚举）
+description: 'Web 应用模糊测试工具，支持参数、目录、子域名、Header 模糊测试。
+
+  **使用场景：** 目录枚举、参数爆破、隐藏端点发现。
+
+
+  **安装：** `apt install wfuzz`（若不可用先安装）。'
+parameters:
+  - name: url
+    type: string
+    required: true
+    flag: -u
+    format: flag
+    description: 目标 URL，FUZZ 关键字表示爆破点，如 `http://target/FUZZ`
+  - name: wordlist
+    type: string
+    required: false
+    flag: -w
+    format: flag
+    description: 字典路径，如 `-w /usr/share/wordlists/dirb/common.txt`
+  - name: hc
+    type: string
+    required: false
+    flag: --hc
+    format: flag
+    description: 隐藏响应码，如 `404`（`--hc 404`）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-t 20`(线程) `-c`(彩色) `--hw 0`(隐藏字节)

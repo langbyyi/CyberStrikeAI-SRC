@@ -1,0 +1,32 @@
+name: weevely
+command: weevely
+enabled: true
+short_description: PHP WebShell 生成与管理（后渗透）
+description: 'PHP WebShell 生成与连接管理工具。
+
+  **使用场景：** 上传 PHP 后门后建立持久化控制。
+
+
+  **安装：** `apt install weevely`（若不可用先安装）。'
+parameters:
+  - name: mode
+    type: string
+    required: true
+    position: 0
+    format: positional
+    options:
+      - generate
+      - session
+    description: generate(生成)/session(连接)
+  - name: target
+    type: string
+    required: true
+    position: 1
+    format: positional
+    description: 'generate: 输出路径 / session: WebShell URL'
+  - name: password
+    type: string
+    required: false
+    position: 2
+    format: positional
+    description: 连接密码

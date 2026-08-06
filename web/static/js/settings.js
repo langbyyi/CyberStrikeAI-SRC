@@ -1,11 +1,476 @@
 // 设置相关功能
 let currentConfig = null;
+let selectedAIChannelId = '';
+const AI_CHANNEL_PROBE_CONCURRENCY = 2;
+const selectedAIChannelBulkIds = new Set();
+const aiChannelProbeResults = {};
 let allTools = [];
 let alwaysVisibleToolNames = new Set();
 let alwaysVisibleBuiltinToolNames = new Set();
 // 全局工具状态映射，用于保存用户在所有页面的修改
 // key: 唯一工具标识符（toolKey），value: { enabled: boolean, is_external: boolean, external_mcp: string }
 let toolStateMap = new Map();
+let activeRobotEditor = '';
+let robotAuthDrafts = {};
+
+function settingsT(key, fallback) {
+    if (typeof window.t === 'function') {
+        const translated = window.t(key);
+        if (translated && translated !== key) return translated;
+    }
+    return fallback;
+}
+
+const settingsCustomSelects = new Map();
+let settingsCustomSelectsDocBound = false;
+
+function shouldEnhanceSettingsSelect(select) {
+    if (!select || select.dataset.settingsCustomSelect === '1') return false;
+    if (select.classList.contains('model-pick-native')) return false;
+    if (select.id && select.id.indexOf('audit-filter-') === 0) return false;
+    if (select.getAttribute('aria-hidden') === 'true') return false;
+    if (select.style && select.style.display === 'none') return false;
+    return true;
+}
+
+function closeSettingsCustomSelect(select) {
+    const reg = settingsCustomSelects.get(select);
+    if (reg) {
+        reg.wrapper.classList.remove('open');
+        reg.trigger.setAttribute('aria-expanded', 'false');
+        if (reg.menu.parentNode !== reg.wrapper) {
+            reg.wrapper.appendChild(reg.menu);
+        }
+        reg.menu.classList.remove('settings-custom-select-menu--floating');
+        reg.menu.style.left = '';
+        reg.menu.style.right = '';
+        reg.menu.style.top = '';
+        reg.menu.style.bottom = '';
+        reg.menu.style.width = '';
+        reg.menu.style.maxHeight = '';
+    }
+}
+
+function closeAllSettingsCustomSelects() {
+    settingsCustomSelects.forEach((reg) => {
+        reg.wrapper.classList.remove('open');
+        reg.trigger.setAttribute('aria-expanded', 'false');
+        if (reg.menu.parentNode !== reg.wrapper) {
+            reg.wrapper.appendChild(reg.menu);
+        }
+        reg.menu.classList.remove('settings-custom-select-menu--floating');
+        reg.menu.style.left = '';
+        reg.menu.style.right = '';
+        reg.menu.style.top = '';
+        reg.menu.style.bottom = '';
+        reg.menu.style.width = '';
+        reg.menu.style.maxHeight = '';
+    });
+}
+
+function positionSettingsCustomSelectMenu(reg) {
+    if (!reg || !reg.wrapper.classList.contains('open')) return;
+    const rect = reg.trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const gap = 6;
+    const edgePadding = 12;
+    const desiredWidth = Math.max(rect.width, 150);
+    const width = Math.min(desiredWidth, Math.max(160, viewportWidth - edgePadding * 2));
+    const left = Math.min(Math.max(edgePadding, rect.left), Math.max(edgePadding, viewportWidth - width - edgePadding));
+    const spaceBelow = viewportHeight - rect.bottom - gap - edgePadding;
+    const spaceAbove = rect.top - gap - edgePadding;
+    const openAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(120, Math.floor((openAbove ? spaceAbove : spaceBelow) || 180));
+
+    reg.menu.style.left = `${Math.round(left)}px`;
+    reg.menu.style.right = 'auto';
+    reg.menu.style.width = `${Math.round(width)}px`;
+    reg.menu.style.maxHeight = `${maxHeight}px`;
+    if (openAbove) {
+        reg.menu.style.top = 'auto';
+        reg.menu.style.bottom = `${Math.round(viewportHeight - rect.top + gap)}px`;
+    } else {
+        reg.menu.style.top = `${Math.round(rect.bottom + gap)}px`;
+        reg.menu.style.bottom = 'auto';
+    }
+}
+
+function openSettingsCustomSelect(select) {
+    const reg = settingsCustomSelects.get(select);
+    if (!reg || select.disabled) return;
+    closeAllSettingsCustomSelects();
+    reg.wrapper.classList.add('open');
+    reg.trigger.setAttribute('aria-expanded', 'true');
+    reg.menu.classList.add('settings-custom-select-menu--floating');
+    document.body.appendChild(reg.menu);
+    positionSettingsCustomSelectMenu(reg);
+}
+
+function repositionOpenSettingsCustomSelects() {
+    settingsCustomSelects.forEach((reg) => positionSettingsCustomSelectMenu(reg));
+}
+
+function syncSettingsCustomSelect(select) {
+    const reg = settingsCustomSelects.get(select);
+    if (!reg) return;
+    const selected = select.options[select.selectedIndex];
+    reg.value.textContent = selected ? selected.textContent : '';
+    reg.trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+    reg.menu.innerHTML = '';
+
+    Array.prototype.forEach.call(select.options, (option, index) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'settings-custom-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-index', String(index));
+        item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+        item.disabled = !!option.disabled;
+        item.classList.toggle('is-selected', option.selected);
+        item.classList.toggle('is-disabled', !!option.disabled);
+
+        const check = document.createElement('span');
+        check.className = 'settings-custom-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+
+        const label = document.createElement('span');
+        label.className = 'settings-custom-select-label';
+        label.textContent = option.textContent;
+
+        item.appendChild(check);
+        item.appendChild(label);
+
+        if (select.id === 'ai-channel-select') {
+            const probeStatus = option.dataset.probeStatus || '';
+            const probeMessage = option.dataset.probeMessage || '';
+            if (probeStatus) {
+                item.classList.add('settings-custom-select-option--probe', `probe-${probeStatus}`);
+                const status = document.createElement('span');
+                status.className = `settings-custom-select-status ${probeStatus}`;
+                status.innerHTML = `<span class="settings-custom-select-status-dot" aria-hidden="true"></span><span class="settings-custom-select-status-text"></span>`;
+                status.querySelector('.settings-custom-select-status-text').textContent = probeMessage || probeStatus;
+                item.appendChild(status);
+            }
+        }
+        reg.menu.appendChild(item);
+    });
+}
+
+function refreshSettingsCustomSelects() {
+    settingsCustomSelects.forEach((_reg, select) => syncSettingsCustomSelect(select));
+}
+
+function enhanceSettingsSelect(select) {
+    if (!shouldEnhanceSettingsSelect(select)) {
+        if (select && select.dataset.settingsCustomSelect === '1') {
+            syncSettingsCustomSelect(select);
+        }
+        return;
+    }
+
+    select.dataset.settingsCustomSelect = '1';
+    select.classList.add('settings-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'settings-custom-select';
+    if (select.id && select.id.indexOf('openai-reasoning-') === 0) {
+        wrapper.classList.add('settings-custom-select--compact');
+    }
+    if (select.style.width) wrapper.style.width = select.style.width;
+    if (select.style.minWidth) wrapper.style.minWidth = select.style.minWidth;
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'settings-custom-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const value = document.createElement('span');
+    value.className = 'settings-custom-select-value';
+    const caret = document.createElement('span');
+    caret.className = 'settings-custom-select-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '▾';
+    trigger.appendChild(value);
+    trigger.appendChild(caret);
+
+    const menu = document.createElement('div');
+    menu.className = 'settings-custom-select-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    wrapper.appendChild(select);
+
+    settingsCustomSelects.set(select, { wrapper, trigger, value, menu });
+
+    trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (select.disabled) return;
+        const willOpen = !wrapper.classList.contains('open');
+        if (willOpen) openSettingsCustomSelect(select);
+        else closeSettingsCustomSelect(select);
+    });
+
+    trigger.addEventListener('keydown', (event) => {
+        if (select.disabled) return;
+        const enabledOptions = Array.prototype.filter.call(select.options, (option) => !option.disabled);
+        if (!enabledOptions.length) return;
+        const current = Math.max(0, enabledOptions.indexOf(select.options[select.selectedIndex]));
+        let next = current;
+        if (event.key === 'ArrowDown') next = Math.min(enabledOptions.length - 1, current + 1);
+        else if (event.key === 'ArrowUp') next = Math.max(0, current - 1);
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = enabledOptions.length - 1;
+        else if (event.key === 'Escape') {
+            closeSettingsCustomSelect(select);
+            return;
+        } else if (event.key === 'Enter' || event.key === ' ') {
+            openSettingsCustomSelect(select);
+            event.preventDefault();
+            return;
+        } else {
+            return;
+        }
+        event.preventDefault();
+        const nextOption = enabledOptions[next];
+        if (nextOption && select.value !== nextOption.value) {
+            select.value = nextOption.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncSettingsCustomSelect(select);
+    });
+
+    menu.addEventListener('click', (event) => {
+        const item = event.target.closest('.settings-custom-select-option');
+        if (!item || item.disabled) return;
+        event.stopPropagation();
+        const option = select.options[Number(item.dataset.index)];
+        if (option && !option.disabled && select.value !== option.value) {
+            select.value = option.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncSettingsCustomSelect(select);
+        closeSettingsCustomSelect(select);
+    });
+
+    select.addEventListener('change', () => syncSettingsCustomSelect(select));
+    syncSettingsCustomSelect(select);
+}
+
+function initSettingsCustomSelects(root) {
+    const scope = root || document.getElementById('page-settings');
+    if (!scope) return;
+    scope.querySelectorAll('select').forEach(enhanceSettingsSelect);
+    if (!settingsCustomSelectsDocBound) {
+        document.addEventListener('click', closeAllSettingsCustomSelects);
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeAllSettingsCustomSelects();
+        });
+        document.addEventListener('scroll', repositionOpenSettingsCustomSelects, true);
+        window.addEventListener('resize', repositionOpenSettingsCustomSelects);
+        settingsCustomSelectsDocBound = true;
+    }
+    refreshSettingsCustomSelects();
+}
+
+function getRobotStatus(type) {
+    const value = (id) => document.getElementById(id)?.value?.trim() || '';
+    const checked = (id) => document.getElementById(id)?.checked === true;
+    let configured = false;
+    let enabled = false;
+
+    if (type === 'wechat') {
+        configured = !!value('robot-wechat-ilink-bot-id');
+        enabled = checked('robot-wechat-enabled');
+    } else if (type === 'wecom') {
+        const agentId = parseInt(value('robot-wecom-agent-id'), 10);
+        configured = !!(value('robot-wecom-token') && value('robot-wecom-corp-id') && value('robot-wecom-secret') && agentId > 0);
+        enabled = checked('robot-wecom-enabled');
+    } else if (type === 'dingtalk') {
+        configured = !!(value('robot-dingtalk-client-id') && value('robot-dingtalk-client-secret'));
+        enabled = checked('robot-dingtalk-enabled');
+    } else if (type === 'lark') {
+        configured = !!(value('robot-lark-app-id') && value('robot-lark-app-secret'));
+        enabled = checked('robot-lark-enabled');
+    } else if (type === 'telegram') {
+        configured = !!value('robot-telegram-bot-token');
+        enabled = checked('robot-telegram-enabled');
+    } else if (type === 'slack') {
+        configured = !!(value('robot-slack-bot-token') && value('robot-slack-app-token'));
+        enabled = checked('robot-slack-enabled');
+    } else if (type === 'discord') {
+        configured = !!value('robot-discord-bot-token');
+        enabled = checked('robot-discord-enabled');
+    } else if (type === 'qq') {
+        configured = !!(value('robot-qq-app-id') && value('robot-qq-client-secret'));
+        enabled = checked('robot-qq-enabled');
+    }
+
+    if (enabled) {
+        return { state: 'enabled', text: settingsT('settings.robots.statusEnabled', '已启用') };
+    }
+    if (configured) {
+        return { state: 'ready', text: settingsT('settings.robots.statusConfigured', '已配置') };
+    }
+    return { state: 'idle', text: settingsT('settings.robots.statusNotConfigured', '未配置') };
+}
+
+function refreshRobotManager() {
+    ['wechat', 'wecom', 'dingtalk', 'lark', 'telegram', 'slack', 'discord', 'qq'].forEach((type) => {
+        const status = getRobotStatus(type);
+        const pill = document.getElementById(`robot-card-${type}-status`);
+        if (pill) {
+            pill.className = `robot-status-pill robot-status-pill--${status.state}`;
+            pill.textContent = status.text;
+        }
+        const card = document.querySelector(`[data-robot-card="${type}"]`);
+        if (card) {
+            card.classList.toggle('is-active', activeRobotEditor === type);
+        }
+    });
+}
+
+function openRobotEditor(type) {
+	if (activeRobotEditor && activeRobotEditor !== type) {
+		robotAuthDrafts[activeRobotEditor] = readRobotAuthPolicyEditor();
+	}
+    activeRobotEditor = type;
+    const empty = document.getElementById('robot-editor-empty');
+    if (empty) empty.hidden = true;
+    document.querySelectorAll('[data-robot-editor]').forEach((panel) => {
+        panel.hidden = panel.dataset.robotEditor !== type;
+    });
+    refreshRobotManager();
+    const panel = document.querySelector(`[data-robot-editor="${type}"]`);
+    if (panel) {
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    loadRobotAuthPolicyEditor(type);
+}
+
+function loadRobotAuthPolicyEditor(type) {
+    const panel = document.getElementById('robot-auth-policy-panel');
+    if (!panel) return;
+    panel.hidden = !type;
+    const auth = robotAuthDrafts[type] || (currentConfig?.robots?.[type]?.auth) || {};
+    const mode = auth.mode === 'service_account' ? 'service_account' : 'user_binding';
+    const modeInput = document.getElementById('robot-auth-mode');
+    const serviceUserInput = document.getElementById('robot-service-user-id');
+    const allowlistInput = document.getElementById('robot-allowed-external-users');
+    if (modeInput) modeInput.value = mode;
+    if (serviceUserInput) serviceUserInput.value = auth.service_user_id || '';
+    if (allowlistInput) allowlistInput.value = Array.isArray(auth.allowed_external_users) ? auth.allowed_external_users.join('\n') : '';
+    onRobotAuthModeChange();
+}
+
+function onRobotAuthModeChange() {
+    const serviceFields = document.getElementById('robot-service-account-fields');
+    if (serviceFields) serviceFields.hidden = document.getElementById('robot-auth-mode')?.value !== 'service_account';
+    updateRobotServiceAccountWarning();
+}
+
+function updateRobotServiceAccountWarning() {
+    const warning = document.getElementById('robot-service-admin-warning');
+    if (!warning) return;
+    const isServiceMode = document.getElementById('robot-auth-mode')?.value === 'service_account';
+    const userID = document.getElementById('robot-service-user-id')?.value.trim().toLowerCase() || '';
+    warning.hidden = !(isServiceMode && userID === 'admin');
+}
+
+function readRobotAuthPolicyEditor() {
+    const mode = document.getElementById('robot-auth-mode')?.value === 'service_account' ? 'service_account' : 'user_binding';
+    if (mode === 'user_binding') return { mode };
+    const allowed = (document.getElementById('robot-allowed-external-users')?.value || '')
+        .split(/[\n,，]/).map(value => value.trim()).filter(Boolean);
+    return {
+        mode,
+        service_user_id: document.getElementById('robot-service-user-id')?.value.trim() || '',
+        allowed_external_users: Array.from(new Set(allowed))
+    };
+}
+
+function robotAuthPayload(type, prevRobots) {
+    if (type === activeRobotEditor) return readRobotAuthPolicyEditor();
+    return robotAuthDrafts[type] || (prevRobots[type] && prevRobots[type].auth) || { mode: 'user_binding' };
+}
+
+function openRobotCreateModal() {
+    const modal = document.getElementById('robot-create-modal');
+    if (modal) modal.style.display = 'block';
+}
+
+function closeRobotCreateModal() {
+    const modal = document.getElementById('robot-create-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function openRobotCommandsModal() {
+    if (typeof openAppModal === 'function') {
+        openAppModal('robot-commands-modal', { focus: false });
+        return;
+    }
+    const modal = document.getElementById('robot-commands-modal');
+    if (modal) modal.style.display = 'block';
+}
+
+function closeRobotCommandsModal() {
+    if (typeof closeAppModal === 'function') {
+        closeAppModal('robot-commands-modal');
+        return;
+    }
+    const modal = document.getElementById('robot-commands-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function selectRobotType(type) {
+    closeRobotCreateModal();
+    openRobotEditor(type);
+}
+
+function bindRobotManagerEvents() {
+    const robotInputIds = [
+        'robot-wechat-enabled', 'robot-wechat-ilink-bot-id',
+        'robot-wecom-enabled', 'robot-wecom-token', 'robot-wecom-corp-id', 'robot-wecom-secret', 'robot-wecom-agent-id',
+        'robot-dingtalk-enabled', 'robot-dingtalk-client-id', 'robot-dingtalk-client-secret',
+        'robot-lark-enabled', 'robot-lark-app-id', 'robot-lark-app-secret',
+        'robot-telegram-enabled', 'robot-telegram-bot-token', 'robot-telegram-bot-username', 'robot-telegram-allow-group',
+        'robot-slack-enabled', 'robot-slack-bot-token', 'robot-slack-app-token',
+        'robot-discord-enabled', 'robot-discord-bot-token', 'robot-discord-allow-guild',
+        'robot-qq-enabled', 'robot-qq-app-id', 'robot-qq-client-secret', 'robot-qq-sandbox'
+    ];
+    robotInputIds.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.robotManagerBound) {
+            el.addEventListener('input', refreshRobotManager);
+            el.addEventListener('change', refreshRobotManager);
+            el.dataset.robotManagerBound = 'true';
+        }
+    });
+
+    const modal = document.getElementById('robot-create-modal');
+    if (modal && !modal.dataset.robotManagerBound) {
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) closeRobotCreateModal();
+        });
+        modal.dataset.robotManagerBound = 'true';
+    }
+
+    const commandsModal = document.getElementById('robot-commands-modal');
+    if (commandsModal && !commandsModal.dataset.robotManagerBound) {
+        commandsModal.addEventListener('click', (event) => {
+            if (event.target === commandsModal) closeRobotCommandsModal();
+        });
+        commandsModal.dataset.robotManagerBound = 'true';
+    }
+}
 
 // 生成工具的唯一标识符，用于区分同名但来源不同的工具
 function getToolKey(tool) {
@@ -118,6 +583,8 @@ let toolsPagination = {
     total: 0,
     totalPages: 0
 };
+let toolsLoadController = null;
+let toolsLoadSequence = 0;
 
 let c2NavSyncedOnce = false;
 
@@ -132,6 +599,7 @@ function syncRobotAgentModeSelectOptions(multiEnabled) {
     if (!multiEnabled && ['deep', 'plan_execute', 'supervisor'].indexOf(sel.value) >= 0) {
         sel.value = 'eino_single';
     }
+    syncSettingsCustomSelect(sel);
 }
 
 /** 首次进入仪表盘等页面前拉一次配置，隐藏侧栏 C2（避免禁用后仍显示） */
@@ -174,6 +642,13 @@ function syncC2NavFromConfig(cfg) {
 
 // 切换设置分类
 function switchSettingsSection(section) {
+    if (section === 'rbac') {
+        if (typeof switchPage === 'function') {
+            switchPage('platform-rbac');
+        }
+        return;
+    }
+
     // 更新导航项状态
     document.querySelectorAll('.settings-nav-item').forEach(item => {
         item.classList.remove('active');
@@ -190,7 +665,11 @@ function switchSettingsSection(section) {
     const activeContent = document.getElementById(`settings-section-${section}`);
     if (activeContent) {
         activeContent.classList.add('active');
+        initSettingsCustomSelects(activeContent);
     }
+	if (section === 'robots' && typeof window.loadVulnerabilityAlertSubscription === 'function') {
+		window.loadVulnerabilityAlertSubscription();
+	}
     if (section === 'terminal' && typeof initTerminal === 'function') {
         setTimeout(initTerminal, 0);
     }
@@ -211,6 +690,7 @@ async function openSettings() {
     
     // 每次打开时重新加载最新配置（系统设置页面不需要加载工具列表）
     await loadConfig(false);
+    initSettingsCustomSelects();
     
     // 清除之前的验证错误状态
     document.querySelectorAll('.form-group input').forEach(input => {
@@ -240,10 +720,14 @@ window.onclick = function(event) {
 }
 
 // 加载配置
-async function loadConfig(loadTools = true) {
+async function loadConfig(loadTools = true, options = {}) {
+    const silent = options && options.silent === true;
     try {
         const response = await apiFetch('/api/config');
         if (!response.ok) {
+            if (typeof readApiError === 'function') {
+                throw new Error(await readApiError(response, '获取配置失败'));
+            }
             throw new Error('获取配置失败');
         }
         
@@ -264,71 +748,93 @@ async function loadConfig(loadTools = true) {
             });
         }
         
-        // 填充OpenAI配置
-        const providerEl = document.getElementById('openai-provider');
-        if (providerEl) {
-            providerEl.value = currentConfig.openai.provider || 'openai';
-        }
-        document.getElementById('openai-api-key').value = currentConfig.openai.api_key || '';
-        document.getElementById('openai-base-url').value = currentConfig.openai.base_url || '';
-        document.getElementById('openai-model').value = currentConfig.openai.model || '';
-        const maxTokensEl = document.getElementById('openai-max-total-tokens');
-        if (maxTokensEl) {
-            maxTokensEl.value = currentConfig.openai.max_total_tokens || 120000;
-        }
-        const orm = currentConfig.openai && currentConfig.openai.reasoning ? currentConfig.openai.reasoning : {};
-        const orModeEl = document.getElementById('openai-reasoning-mode');
-        if (orModeEl) {
-            const mv = (orm.mode || 'auto').toString().trim().toLowerCase();
-            orModeEl.value = ['auto', 'on', 'off'].includes(mv) ? mv : 'auto';
-        }
-        const orEffEl = document.getElementById('openai-reasoning-effort');
-        if (orEffEl) {
-            const ev = (orm.effort || '').toString().trim().toLowerCase();
-            orEffEl.value = ['', 'low', 'medium', 'high', 'max', 'xhigh'].includes(ev) ? ev : '';
-        }
-        const orProfEl = document.getElementById('openai-reasoning-profile');
-        if (orProfEl) {
-            const pv = (orm.profile || 'auto').toString().trim().toLowerCase();
-            const ok = ['auto', 'deepseek_compat', 'openai_compat', 'output_config_effort'];
-            orProfEl.value = ok.includes(pv) ? pv : 'auto';
-        }
-        const orAllowEl = document.getElementById('openai-reasoning-allow-client');
-        if (orAllowEl) {
-            orAllowEl.checked = orm.allow_client_reasoning !== false;
-        }
+        currentConfig.ai = ensureAIConfigShape(currentConfig);
+        selectedAIChannelId = currentConfig.ai.default_channel;
+        renderAIChannelSelect();
+        writeAIChannelToMainForm(selectedAIChannelId);
 
         fillVisionConfigFromCurrent(currentConfig.vision || {});
         initModelListControls();
 
         // 填充FOFA配置
         const fofa = currentConfig.fofa || {};
-        const fofaEmailEl = document.getElementById('fofa-email');
         const fofaKeyEl = document.getElementById('fofa-api-key');
         const fofaBaseUrlEl = document.getElementById('fofa-base-url');
-        const fofaAuthModeEl = document.getElementById('fofa-auth-mode');
-        const fofaBearerEl = document.getElementById('fofa-bearer-token');
-        const fofaVerifyEl = document.getElementById('fofa-verify-ssl');
-        const fofaFallbackEl = document.getElementById('fofa-fallback-urls');
-        if (fofaEmailEl) fofaEmailEl.value = fofa.email || '';
         if (fofaKeyEl) fofaKeyEl.value = fofa.api_key || '';
         if (fofaBaseUrlEl) fofaBaseUrlEl.value = fofa.base_url || '';
-        if (fofaAuthModeEl) fofaAuthModeEl.value = fofa.auth_mode || 'auto';
-        if (fofaBearerEl) fofaBearerEl.value = fofa.bearer_token || '';
-        if (fofaVerifyEl) {
-            if (fofa.verify_ssl === true || fofa.verify_ssl === false) {
-                fofaVerifyEl.value = String(fofa.verify_ssl);
-            } else {
-                fofaVerifyEl.value = 'auto';
-            }
+        ['zoomeye', 'quake', 'shodan'].forEach((name) => {
+            const cfg = currentConfig[name] || {};
+            const keyEl = document.getElementById(`${name}-api-key`);
+            const baseUrlEl = document.getElementById(`${name}-base-url`);
+            if (keyEl) keyEl.value = cfg.api_key || '';
+            if (baseUrlEl) baseUrlEl.value = cfg.base_url || '';
+        });
+
+        // 填充联网搜索（Tavily）配置
+        const websearch = currentConfig.websearch || {};
+        const wsKeyEl = document.getElementById('websearch-api-key');
+        const wsBaseUrlEl = document.getElementById('websearch-base-url');
+        const wsMaxEl = document.getElementById('websearch-max-results');
+        const wsEnabledEl = document.getElementById('websearch-enabled');
+        if (wsKeyEl) wsKeyEl.value = websearch.api_key || '';
+        if (wsBaseUrlEl) wsBaseUrlEl.value = websearch.base_url || '';
+        if (wsMaxEl) wsMaxEl.value = websearch.max_results || 5;
+        if (wsEnabledEl) wsEnabledEl.checked = websearch.enabled !== false;
+
+        // 填充人机协同配置
+        const hitl = currentConfig.hitl || {};
+        const hitlReviewerEl = document.getElementById('hitl-default-reviewer');
+        if (hitlReviewerEl) {
+            const reviewer = String(hitl.default_reviewer || 'human').trim().toLowerCase();
+            hitlReviewerEl.value = reviewer === 'audit_agent' ? 'audit_agent' : 'human';
         }
-        if (fofaFallbackEl) {
-            const fb = fofa.fallback_base_urls;
-            fofaFallbackEl.value = Array.isArray(fb) ? fb.join(',') : (fb || '');
+        const hitlAuditModel = hitl.audit_model || {};
+        const hitlAuditProviderEl = document.getElementById('hitl-audit-model-provider');
+        if (hitlAuditProviderEl) {
+            const provider = String(hitlAuditModel.provider || '').trim().toLowerCase();
+            hitlAuditProviderEl.value = ['openai', 'claude'].includes(provider) ? provider : '';
+        }
+        const hitlAuditBaseUrlEl = document.getElementById('hitl-audit-model-base-url');
+        if (hitlAuditBaseUrlEl) hitlAuditBaseUrlEl.value = hitlAuditModel.base_url || '';
+        const hitlAuditApiKeyEl = document.getElementById('hitl-audit-model-api-key');
+        if (hitlAuditApiKeyEl) hitlAuditApiKeyEl.value = hitlAuditModel.api_key || '';
+        const hitlAuditModelNameEl = document.getElementById('hitl-audit-model-name');
+        if (hitlAuditModelNameEl) hitlAuditModelNameEl.value = hitlAuditModel.model || '';
+        const hitlRetentionEl = document.getElementById('hitl-retention-days');
+        if (hitlRetentionEl) {
+            hitlRetentionEl.value = (hitl.retention_days === undefined || hitl.retention_days === null) ? '90' : String(hitl.retention_days);
+        }
+        const hitlWhitelistEl = document.getElementById('hitl-tool-whitelist');
+        if (hitlWhitelistEl) {
+            hitlWhitelistEl.value = Array.isArray(hitl.tool_whitelist) ? hitl.tool_whitelist.join('\n') : '';
+        }
+        const hitlApprovalPromptEl = document.getElementById('hitl-audit-agent-prompt-settings');
+        if (hitlApprovalPromptEl) {
+            hitlApprovalPromptEl.value = hitl.audit_agent_prompt || '';
+        }
+        const hitlReviewEditPromptEl = document.getElementById('hitl-audit-agent-prompt-review-edit-settings');
+        if (hitlReviewEditPromptEl) {
+            hitlReviewEditPromptEl.value = hitl.audit_agent_prompt_review_edit || '';
         }
         
         // 填充Agent配置
         document.getElementById('agent-max-iterations').value = currentConfig.agent.max_iterations || 30;
+        const toolWaitTimeoutEl = document.getElementById('agent-tool-wait-timeout-seconds');
+        if (toolWaitTimeoutEl) {
+            const v = currentConfig.agent.tool_wait_timeout_seconds;
+            toolWaitTimeoutEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '60';
+        }
+        [
+            ['agent-external-mcp-concurrency-server', 'external_mcp_max_concurrent_per_server', '2'],
+            ['agent-external-mcp-concurrency-total', 'external_mcp_max_concurrent_total', '16'],
+            ['agent-external-mcp-circuit-threshold', 'external_mcp_circuit_failure_threshold', '3'],
+            ['agent-external-mcp-circuit-cooldown', 'external_mcp_circuit_cooldown_seconds', '60']
+        ].forEach(([id, key, fallback]) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const v = currentConfig.agent[key];
+            el.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : fallback;
+        });
 
         const ma = currentConfig.multi_agent || {};
         const maEn = document.getElementById('multi-agent-enabled');
@@ -351,6 +857,31 @@ async function loadConfig(loadTools = true) {
             let mode = (ma.robot_default_agent_mode || 'eino_single').trim().toLowerCase();
             maRobotMode.value = mode;
             syncRobotAgentModeSelectOptions(ma.enabled === true);
+        }
+        const userLedgerMaxEl = document.getElementById('summarization-user-ledger-max-runes');
+        if (userLedgerMaxEl) {
+            const v = ma.summarization_user_intent_ledger_max_runes;
+            userLedgerMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '96000';
+        }
+        const userLedgerEntryMaxEl = document.getElementById('summarization-user-ledger-entry-max-runes');
+        if (userLedgerEntryMaxEl) {
+            const v = ma.summarization_user_intent_ledger_entry_max_runes;
+            userLedgerEntryMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '16000';
+        }
+        const latestUserMaxEl = document.getElementById('latest-user-message-max-runes');
+        if (latestUserMaxEl) {
+            const v = ma.latest_user_message_max_runes;
+            latestUserMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '48000';
+        }
+        const latestUserHeadEl = document.getElementById('latest-user-message-head-runes');
+        if (latestUserHeadEl) {
+            const v = ma.latest_user_message_head_runes;
+            latestUserHeadEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '24000';
+        }
+        const latestUserTailEl = document.getElementById('latest-user-message-tail-runes');
+        if (latestUserTailEl) {
+            const v = ma.latest_user_message_tail_runes;
+            latestUserTailEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '24000';
         }
         
         // 填充知识库配置
@@ -406,10 +937,35 @@ async function loadConfig(loadTools = true) {
                 subIdxFilterInput.value = knowledge.retrieval?.sub_index_filter || '';
             }
 
+            const mq = knowledge.retrieval?.multi_query || {};
+            const mqMaxInput = document.getElementById('knowledge-multi-query-max-queries');
+            if (mqMaxInput) {
+                const mqVal = parseInt(mq.max_queries, 10);
+                mqMaxInput.value = (!isNaN(mqVal) && mqVal > 0) ? mqVal : 4;
+            }
+            const rr = knowledge.retrieval?.rerank || {};
+            const rerankProviderSelect = document.getElementById('knowledge-rerank-provider');
+            if (rerankProviderSelect) {
+                const p = (rr.provider || '').toLowerCase();
+                rerankProviderSelect.value = (p === 'dashscope' || p === 'cohere') ? p : '';
+            }
+            const rerankModelInput = document.getElementById('knowledge-rerank-model');
+            if (rerankModelInput) {
+                rerankModelInput.value = rr.model || '';
+            }
+            const rerankBaseUrlInput = document.getElementById('knowledge-rerank-base-url');
+            if (rerankBaseUrlInput) {
+                rerankBaseUrlInput.value = rr.base_url || '';
+            }
+            const rerankApiKeyInput = document.getElementById('knowledge-rerank-api-key');
+            if (rerankApiKeyInput) {
+                rerankApiKeyInput.value = rr.api_key || '';
+            }
+
             const post = knowledge.retrieval?.post_retrieve || {};
             const prefetchInput = document.getElementById('knowledge-post-retrieve-prefetch-top-k');
             if (prefetchInput) {
-                prefetchInput.value = post.prefetch_top_k ?? 0;
+                prefetchInput.value = post.prefetch_top_k ?? 20;
             }
             const maxCharsInput = document.getElementById('knowledge-post-retrieve-max-chars');
             if (maxCharsInput) {
@@ -487,11 +1043,16 @@ async function loadConfig(loadTools = true) {
         syncC2NavFromConfig(currentConfig);
 
         // 填充机器人配置
+        robotAuthDrafts = {};
         const robots = currentConfig.robots || {};
         const wechat = robots.wechat || {};
         const wecom = robots.wecom || {};
         const dingtalk = robots.dingtalk || {};
         const lark = robots.lark || {};
+        const telegram = robots.telegram || {};
+        const slack = robots.slack || {};
+        const discord = robots.discord || {};
+        const qq = robots.qq || {};
         const wechatEnabled = document.getElementById('robot-wechat-enabled');
         if (wechatEnabled) wechatEnabled.checked = wechat.enabled === true;
         const wechatBase = document.getElementById('robot-wechat-base-url');
@@ -531,6 +1092,38 @@ async function loadConfig(loadTools = true) {
         if (larkAppSecret) larkAppSecret.value = lark.app_secret || '';
         const larkVerify = document.getElementById('robot-lark-verify-token');
         if (larkVerify) larkVerify.value = lark.verify_token || '';
+        const telegramEnabled = document.getElementById('robot-telegram-enabled');
+        if (telegramEnabled) telegramEnabled.checked = telegram.enabled === true;
+        const telegramToken = document.getElementById('robot-telegram-bot-token');
+        if (telegramToken) telegramToken.value = telegram.bot_token || '';
+        const telegramUsername = document.getElementById('robot-telegram-bot-username');
+        if (telegramUsername) telegramUsername.value = telegram.bot_username || '';
+        const telegramAllowGroup = document.getElementById('robot-telegram-allow-group');
+        if (telegramAllowGroup) telegramAllowGroup.checked = telegram.allow_group_messages === true;
+        const slackEnabled = document.getElementById('robot-slack-enabled');
+        if (slackEnabled) slackEnabled.checked = slack.enabled === true;
+        const slackBotToken = document.getElementById('robot-slack-bot-token');
+        if (slackBotToken) slackBotToken.value = slack.bot_token || '';
+        const slackAppToken = document.getElementById('robot-slack-app-token');
+        if (slackAppToken) slackAppToken.value = slack.app_token || '';
+        const discordEnabled = document.getElementById('robot-discord-enabled');
+        if (discordEnabled) discordEnabled.checked = discord.enabled === true;
+        const discordToken = document.getElementById('robot-discord-bot-token');
+        if (discordToken) discordToken.value = discord.bot_token || '';
+        const discordAllowGuild = document.getElementById('robot-discord-allow-guild');
+        if (discordAllowGuild) discordAllowGuild.checked = discord.allow_guild_messages === true;
+        const qqEnabled = document.getElementById('robot-qq-enabled');
+        if (qqEnabled) qqEnabled.checked = qq.enabled === true;
+        const qqAppId = document.getElementById('robot-qq-app-id');
+        if (qqAppId) qqAppId.value = qq.app_id || '';
+        const qqSecret = document.getElementById('robot-qq-client-secret');
+        if (qqSecret) qqSecret.value = qq.client_secret || '';
+        const qqSandbox = document.getElementById('robot-qq-sandbox');
+        if (qqSandbox) qqSandbox.checked = qq.sandbox === true;
+        bindRobotManagerEvents();
+        refreshRobotManager();
+        initSettingsCustomSelects();
+        refreshSettingsCustomSelects();
         
         // 只有在需要时才加载工具列表（MCP管理页面需要，系统设置页面不需要）
         if (loadTools) {
@@ -544,10 +1137,17 @@ async function loadConfig(loadTools = true) {
         }
     } catch (error) {
         console.error('加载配置失败:', error);
-        const baseMsg = (typeof window !== 'undefined' && typeof window.t === 'function')
-            ? window.t('settings.apply.loadFailed')
-            : '加载配置失败';
-        alert(baseMsg + ': ' + error.message);
+        if (!silent) {
+            const baseMsg = (typeof window !== 'undefined' && typeof window.t === 'function')
+                ? window.t('settings.apply.loadFailed')
+                : '加载配置失败';
+            if (typeof notifyApiError === 'function') {
+                notifyApiError(baseMsg + ': ' + error.message);
+            } else {
+                alert(baseMsg + ': ' + error.message);
+            }
+        }
+        throw error;
     }
 }
 
@@ -565,17 +1165,28 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
     // 等待 i18n 就绪，避免快速刷新时翻译函数未初始化导致显示占位符
     if (window.i18nReady) await window.i18nReady;
     const toolsList = document.getElementById('tools-list');
+    const requestSequence = ++toolsLoadSequence;
 
-    // 显示加载状态
+    // 新请求接管列表，取消仍在进行的旧请求，避免连续筛选/切页时旧响应覆盖新结果。
+    if (toolsLoadController) {
+        toolsLoadController.abort();
+    }
+    const controller = new AbortController();
+    toolsLoadController = controller;
+
+    // 清理 DOM 之前先保留用户尚未保存的勾选状态。
+    saveCurrentPageToolStates();
+
+    // 首次加载才显示占位；后续刷新保留旧列表，避免整块内容闪烁和布局跳动。
     if (toolsList) {
-        // 清空整个容器，包括可能存在的分页控件
-        toolsList.innerHTML = '<div class="tools-list-items"><div class="loading" style="padding: 20px; text-align: center; color: var(--text-muted);">⏳ ' + (typeof window.t === 'function' ? window.t('mcp.loadingTools') : '正在加载工具列表...') + '</div></div>';
+        toolsList.setAttribute('aria-busy', 'true');
+        if (!toolsList.querySelector('.tool-item')) {
+            toolsList.innerHTML = '<div class="tools-list-items"><div class="loading" style="padding: 20px; text-align: center; color: var(--text-muted);">⏳ ' + (typeof window.t === 'function' ? window.t('mcp.loadingTools') : '正在加载工具列表...') + '</div></div>';
+        }
     }
     
+    let timeoutId = null;
     try {
-        // 在加载新页面之前，先保存当前页的状态到全局映射
-        saveCurrentPageToolStates();
-        
         const pageSize = toolsPagination.pageSize;
         let url = `/api/config/tools?page=${page}&page_size=${pageSize}`;
         if (searchKeyword) {
@@ -592,19 +1203,22 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
         }
         
         // 使用较短的超时时间（10秒），避免长时间等待
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        timeoutId = setTimeout(() => controller.abort(), 10000);
         
         const response = await apiFetch(url, {
             signal: controller.signal
         });
-        clearTimeout(timeoutId);
         
         if (!response.ok) {
+            if (typeof readApiError === 'function') {
+                throw new Error(await readApiError(response, '获取工具列表失败'));
+            }
             throw new Error('获取工具列表失败');
         }
         
         const result = await response.json();
+        if (requestSequence !== toolsLoadSequence) return;
+
         allTools = result.tools || [];
         toolsPagination = {
             page: result.page || page,
@@ -632,6 +1246,9 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
         renderExternalMcpFilterChip();
         updateExternalMcpCardSelection();
     } catch (error) {
+        // 被后续请求替代属于正常控制流，不显示错误，也不覆盖新请求的界面。
+        if (controller.signal.aborted && requestSequence !== toolsLoadSequence) return;
+
         console.error('加载工具列表失败:', error);
         if (toolsList) {
             const isTimeout = error.name === 'AbortError' || error.message.includes('timeout');
@@ -639,6 +1256,12 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
                 ? (typeof window.t === 'function' ? window.t('mcp.loadToolsTimeout') : '加载工具列表超时，可能是外部MCP连接较慢。请点击"刷新"按钮重试，或检查外部MCP连接状态。')
                 : (typeof window.t === 'function' ? window.t('mcp.loadToolsFailed') : '加载工具列表失败') + ': ' + escapeHtml(error.message);
             toolsList.innerHTML = `<div class="error" style="padding: 20px; text-align: center;">${errorMsg}</div>`;
+        }
+    } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (requestSequence === toolsLoadSequence) {
+            if (toolsList) toolsList.removeAttribute('aria-busy');
+            if (toolsLoadController === controller) toolsLoadController = null;
         }
     }
 }
@@ -769,13 +1392,13 @@ function renderToolsList() {
         const checkboxId = `tool-${escapeHtml(toolKey).replace(/::/g, '--')}`;
 
         toolItem.innerHTML = `
-            <input type="checkbox" id="${checkboxId}" ${toolState.enabled ? 'checked' : ''} ${toolState.is_external || tool.is_external ? 'data-external="true"' : ''} onchange="handleToolCheckboxChange('${escapeHtml(toolKey)}', this.checked)" />
+            <input type="checkbox" class="theme-checkbox" id="${checkboxId}" ${toolState.enabled ? 'checked' : ''} ${toolState.is_external || tool.is_external ? 'data-external="true"' : ''} onchange="handleToolCheckboxChange('${escapeHtml(toolKey)}', this.checked)" />
             <div class="tool-item-info">
                 <div class="tool-item-name">
                     ${escapeHtml(tool.name)}
                     ${externalBadge}
                     <label class="tool-resident-toggle" title="${typeof window.t === 'function' ? window.t('mcp.alwaysVisibleHint') : '始终常驻在 Tool Search 可见列表'}" onclick="event.stopPropagation()">
-                        <input type="checkbox" ${alwaysVisibleChecked ? 'checked' : ''} ${alwaysVisibleLocked ? 'disabled' : ''} onchange="handleToolAlwaysVisibleChange('${escapeHtml(toolKey)}', this.checked)" />
+                        <input type="checkbox" class="theme-checkbox" ${alwaysVisibleChecked ? 'checked' : ''} ${alwaysVisibleLocked ? 'disabled' : ''} onchange="handleToolAlwaysVisibleChange('${escapeHtml(toolKey)}', this.checked)" />
                         <span>${typeof window.t === 'function' ? window.t('mcp.alwaysVisibleLabel') : '常驻'}</span>
                     </label>
                     ${alwaysVisibleLocked ? `<span class="external-tool-badge" title="${typeof window.t === 'function' ? window.t('mcp.alwaysVisibleBuiltinHint') : '后端内置工具默认常驻，不可关闭'}">${typeof window.t === 'function' ? window.t('mcp.alwaysVisibleBuiltinLabel') : '内置默认'}</span>` : ''}
@@ -1290,8 +1913,25 @@ async function applySettings() {
                     return isNaN(val) ? 0.7 : val;
                 })(),
                 sub_index_filter: document.getElementById('knowledge-retrieval-sub-index-filter')?.value?.trim() || '',
+                multi_query: {
+                    max_queries: (() => {
+                        const v = parseInt(document.getElementById('knowledge-multi-query-max-queries')?.value, 10);
+                        if (isNaN(v) || v <= 0) return 4;
+                        return Math.min(8, v);
+                    })()
+                },
+                rerank: {
+                    provider: document.getElementById('knowledge-rerank-provider')?.value?.trim() || '',
+                    model: document.getElementById('knowledge-rerank-model')?.value?.trim() || '',
+                    base_url: document.getElementById('knowledge-rerank-base-url')?.value?.trim() || '',
+                    api_key: document.getElementById('knowledge-rerank-api-key')?.value?.trim() || ''
+                },
                 post_retrieve: {
-                    prefetch_top_k: parseInt(document.getElementById('knowledge-post-retrieve-prefetch-top-k')?.value, 10) || 0,
+                    prefetch_top_k: (() => {
+                        const raw = document.getElementById('knowledge-post-retrieve-prefetch-top-k')?.value;
+                        const v = parseInt(raw, 10);
+                        return isNaN(v) ? 20 : Math.max(0, v);
+                    })(),
                     max_context_chars: parseInt(document.getElementById('knowledge-post-retrieve-max-chars')?.value, 10) || 0,
                     max_context_tokens: parseInt(document.getElementById('knowledge-post-retrieve-max-tokens')?.value, 10) || 0
                 }
@@ -1319,50 +1959,91 @@ async function applySettings() {
         };
         
         const wecomAgentIdVal = document.getElementById('robot-wecom-agent-id')?.value.trim();
-        const prevOpenai = (currentConfig && currentConfig.openai) ? currentConfig.openai : {};
+        if (!currentConfig) currentConfig = {};
+        currentConfig.ai = ensureAIConfigShape(currentConfig);
+        const activeChannelId = normalizeAIChannelId(selectedAIChannelId || currentConfig.ai.default_channel || 'default');
+        currentConfig.ai.channels[activeChannelId] = readAIChannelFromMainForm(activeChannelId);
+        currentConfig.ai.default_channel = activeChannelId;
+        renderAIChannelSelect();
+        const activeChannel = currentConfig.ai.channels[activeChannelId] || {};
+        const prevOpenai = activeChannel;
         const prevRobots = (currentConfig && currentConfig.robots) ? currentConfig.robots : {};
+        const prevHitl = (currentConfig && currentConfig.hitl) ? currentConfig.hitl : {};
+        const hitlRetentionRaw = document.getElementById('hitl-retention-days')?.value;
+        const hitlRetention = parseInt(hitlRetentionRaw, 10);
+        const hitlWhitelistRaw = document.getElementById('hitl-tool-whitelist')?.value || '';
+        const hitlToolsSplit = (typeof window.hitlToolsSplitToArray === 'function')
+            ? window.hitlToolsSplitToArray
+            : function (s) {
+                return String(s || '').split(/[\n,，]/).map(v => v.trim()).filter(Boolean);
+            };
         const config = {
-            openai: {
-                ...prevOpenai,
-                provider: provider,
-                api_key: apiKey,
-                base_url: baseUrl,
-                model: model,
-                max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value) || 120000,
-                reasoning: {
-                    ...(prevOpenai.reasoning || {}),
-                    mode: document.getElementById('openai-reasoning-mode')?.value || 'auto',
-                    effort: (document.getElementById('openai-reasoning-effort')?.value || '').trim(),
-                    profile: document.getElementById('openai-reasoning-profile')?.value || 'auto',
-                    allow_client_reasoning: document.getElementById('openai-reasoning-allow-client')?.checked !== false
-                }
-            },
+            ai: currentConfig.ai,
             vision: visionPayload,
-            fofa: (() => {
-                const verifySel = document.getElementById('fofa-verify-ssl')?.value || 'auto';
-                const fallbackRaw = document.getElementById('fofa-fallback-urls')?.value.trim() || '';
-                const fallback = fallbackRaw
-                    ? fallbackRaw.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean)
-                    : [];
-                const payload = {
-                    email: document.getElementById('fofa-email')?.value.trim() || '',
-                    api_key: document.getElementById('fofa-api-key')?.value.trim() || '',
-                    base_url: document.getElementById('fofa-base-url')?.value.trim() || '',
-                    auth_mode: document.getElementById('fofa-auth-mode')?.value || 'auto',
-                    bearer_token: document.getElementById('fofa-bearer-token')?.value.trim() || '',
-                    fallback_base_urls: fallback
-                };
-                if (verifySel === 'true') payload.verify_ssl = true;
-                else if (verifySel === 'false') payload.verify_ssl = false;
-                return payload;
-            })(),
+            fofa: {
+                api_key: document.getElementById('fofa-api-key')?.value.trim() || '',
+                base_url: document.getElementById('fofa-base-url')?.value.trim() || ''
+            },
+            websearch: {
+                api_key: document.getElementById('websearch-api-key')?.value.trim() || '',
+                base_url: document.getElementById('websearch-base-url')?.value.trim() || '',
+                max_results: Number(document.getElementById('websearch-max-results')?.value) || 5,
+                enabled: document.getElementById('websearch-enabled')?.checked !== false
+            },
+            zoomeye: {
+                api_key: document.getElementById('zoomeye-api-key')?.value.trim() || '',
+                base_url: document.getElementById('zoomeye-base-url')?.value.trim() || ''
+            },
+            quake: {
+                api_key: document.getElementById('quake-api-key')?.value.trim() || '',
+                base_url: document.getElementById('quake-base-url')?.value.trim() || ''
+            },
+            shodan: {
+                api_key: document.getElementById('shodan-api-key')?.value.trim() || '',
+                base_url: document.getElementById('shodan-base-url')?.value.trim() || ''
+            },
+            hitl: {
+                ...prevHitl,
+                audit_model: {
+                    ...(prevHitl.audit_model || {}),
+                    provider: document.getElementById('hitl-audit-model-provider')?.value || '',
+                    base_url: document.getElementById('hitl-audit-model-base-url')?.value.trim() || '',
+                    api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || '',
+                    model: document.getElementById('hitl-audit-model-name')?.value.trim() || ''
+                },
+                default_reviewer: document.getElementById('hitl-default-reviewer')?.value === 'audit_agent' ? 'audit_agent' : 'human',
+                retention_days: Number.isNaN(hitlRetention) ? 90 : Math.max(0, hitlRetention),
+                tool_whitelist: hitlToolsSplit(hitlWhitelistRaw),
+                audit_agent_prompt: document.getElementById('hitl-audit-agent-prompt-settings')?.value.trim() || '',
+                audit_agent_prompt_review_edit: document.getElementById('hitl-audit-agent-prompt-review-edit-settings')?.value.trim() || ''
+            },
             agent: {
-                max_iterations: parseInt(document.getElementById('agent-max-iterations').value) || 30
+                max_iterations: parseInt(document.getElementById('agent-max-iterations').value) || 30,
+                tool_wait_timeout_seconds: Math.max(0, parseInt(document.getElementById('agent-tool-wait-timeout-seconds')?.value || '60', 10) || 0),
+                external_mcp_max_concurrent_per_server: parseInt(document.getElementById('agent-external-mcp-concurrency-server')?.value || '2', 10) || 0,
+                external_mcp_max_concurrent_total: parseInt(document.getElementById('agent-external-mcp-concurrency-total')?.value || '16', 10) || 0,
+                external_mcp_circuit_failure_threshold: parseInt(document.getElementById('agent-external-mcp-circuit-threshold')?.value || '3', 10) || 0,
+                external_mcp_circuit_cooldown_seconds: Math.max(0, parseInt(document.getElementById('agent-external-mcp-circuit-cooldown')?.value || '60', 10) || 0)
             },
             multi_agent: (function () {
                 const peRaw = document.getElementById('multi-agent-pe-loop')?.value;
                 const peParsed = parseInt(peRaw, 10);
                 const peLoop = Number.isNaN(peParsed) ? 0 : Math.max(0, peParsed);
+                const ledgerRaw = document.getElementById('summarization-user-ledger-max-runes')?.value;
+                const ledgerParsed = parseInt(ledgerRaw, 10);
+                const ledgerMax = Number.isNaN(ledgerParsed) ? 0 : Math.max(0, ledgerParsed);
+                const ledgerEntryRaw = document.getElementById('summarization-user-ledger-entry-max-runes')?.value;
+                const ledgerEntryParsed = parseInt(ledgerEntryRaw, 10);
+                const ledgerEntryMax = Number.isNaN(ledgerEntryParsed) ? 0 : Math.max(0, ledgerEntryParsed);
+                const latestRaw = document.getElementById('latest-user-message-max-runes')?.value;
+                const latestParsed = parseInt(latestRaw, 10);
+                const latestMax = Number.isNaN(latestParsed) ? 0 : Math.max(0, latestParsed);
+                const latestHeadRaw = document.getElementById('latest-user-message-head-runes')?.value;
+                const latestHeadParsed = parseInt(latestHeadRaw, 10);
+                const latestHead = Number.isNaN(latestHeadParsed) ? 0 : Math.max(0, latestHeadParsed);
+                const latestTailRaw = document.getElementById('latest-user-message-tail-runes')?.value;
+                const latestTailParsed = parseInt(latestTailRaw, 10);
+                const latestTail = Number.isNaN(latestTailParsed) ? 0 : Math.max(0, latestTailParsed);
                 const maEnabled = document.getElementById('multi-agent-enabled')?.checked === true;
                 let robotMode = document.getElementById('multi-agent-robot-mode')?.value || 'eino_single';
                 if (!maEnabled && ['deep', 'plan_execute', 'supervisor'].indexOf(robotMode) >= 0) {
@@ -1372,7 +2053,12 @@ async function applySettings() {
                     enabled: maEnabled,
                     robot_default_agent_mode: robotMode,
                     batch_use_multi_agent: currentConfig?.multi_agent?.batch_use_multi_agent === true,
-                    plan_execute_loop_max_iterations: peLoop
+                    plan_execute_loop_max_iterations: peLoop,
+                    summarization_user_intent_ledger_max_runes: ledgerMax,
+                    summarization_user_intent_ledger_entry_max_runes: ledgerEntryMax,
+                    latest_user_message_max_runes: latestMax,
+                    latest_user_message_head_runes: latestHead,
+                    latest_user_message_tail_runes: latestTail
                 };
             })(),
             knowledge: knowledgeConfig,
@@ -1383,6 +2069,7 @@ async function applySettings() {
                 ...(prevRobots.session && typeof prevRobots.session === 'object' ? { session: prevRobots.session } : {}),
                 wechat: {
                     enabled: document.getElementById('robot-wechat-enabled')?.checked === true,
+                    auth: robotAuthPayload('wechat', prevRobots),
                     base_url: document.getElementById('robot-wechat-base-url')?.value.trim() || 'https://ilinkai.weixin.qq.com',
                     bot_type: document.getElementById('robot-wechat-bot-type')?.value.trim() || '3',
                     bot_agent: document.getElementById('robot-wechat-bot-agent')?.value.trim() || 'CyberStrikeAI/1.0',
@@ -1395,6 +2082,7 @@ async function applySettings() {
                 },
                 wecom: {
                     enabled: document.getElementById('robot-wecom-enabled')?.checked === true,
+                    auth: robotAuthPayload('wecom', prevRobots),
                     token: document.getElementById('robot-wecom-token')?.value.trim() || '',
                     encoding_aes_key: document.getElementById('robot-wecom-encoding-aes-key')?.value.trim() || '',
                     corp_id: document.getElementById('robot-wecom-corp-id')?.value.trim() || '',
@@ -1403,16 +2091,47 @@ async function applySettings() {
                 },
                 dingtalk: {
                     enabled: document.getElementById('robot-dingtalk-enabled')?.checked === true,
+                    auth: robotAuthPayload('dingtalk', prevRobots),
                     client_id: document.getElementById('robot-dingtalk-client-id')?.value.trim() || '',
                     client_secret: document.getElementById('robot-dingtalk-client-secret')?.value.trim() || '',
                     allow_conversation_id_fallback: !!(prevRobots.dingtalk && prevRobots.dingtalk.allow_conversation_id_fallback)
                 },
                 lark: {
                     enabled: document.getElementById('robot-lark-enabled')?.checked === true,
+                    auth: robotAuthPayload('lark', prevRobots),
                     app_id: document.getElementById('robot-lark-app-id')?.value.trim() || '',
                     app_secret: document.getElementById('robot-lark-app-secret')?.value.trim() || '',
                     verify_token: document.getElementById('robot-lark-verify-token')?.value.trim() || '',
                     allow_chat_id_fallback: !!(prevRobots.lark && prevRobots.lark.allow_chat_id_fallback)
+                },
+                telegram: {
+                    enabled: document.getElementById('robot-telegram-enabled')?.checked === true,
+                    auth: robotAuthPayload('telegram', prevRobots),
+                    bot_token: document.getElementById('robot-telegram-bot-token')?.value.trim() || '',
+                    bot_username: document.getElementById('robot-telegram-bot-username')?.value.trim() || '',
+                    allow_group_messages: document.getElementById('robot-telegram-allow-group')?.checked === true,
+                    ...(prevRobots.telegram && typeof prevRobots.telegram === 'object' ? {
+                        update_offset: prevRobots.telegram.update_offset || 0
+                    } : {})
+                },
+                slack: {
+                    enabled: document.getElementById('robot-slack-enabled')?.checked === true,
+                    auth: robotAuthPayload('slack', prevRobots),
+                    bot_token: document.getElementById('robot-slack-bot-token')?.value.trim() || '',
+                    app_token: document.getElementById('robot-slack-app-token')?.value.trim() || ''
+                },
+                discord: {
+                    enabled: document.getElementById('robot-discord-enabled')?.checked === true,
+                    auth: robotAuthPayload('discord', prevRobots),
+                    bot_token: document.getElementById('robot-discord-bot-token')?.value.trim() || '',
+                    allow_guild_messages: document.getElementById('robot-discord-allow-guild')?.checked === true
+                },
+                qq: {
+                    enabled: document.getElementById('robot-qq-enabled')?.checked === true,
+                    auth: robotAuthPayload('qq', prevRobots),
+                    app_id: document.getElementById('robot-qq-app-id')?.value.trim() || '',
+                    client_secret: document.getElementById('robot-qq-client-secret')?.value.trim() || '',
+                    sandbox: document.getElementById('robot-qq-sandbox')?.checked === true
                 }
             },
             tools: []
@@ -1780,7 +2499,701 @@ function enhanceModelPickSelect(selectId) {
     syncModelPickDropdown(selectId);
 }
 
+function normalizeAIChannelId(name) {
+    const raw = String(name || '').trim().toLowerCase().replace(/_/g, '-');
+    const id = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return id || 'default';
+}
+
+function escapeAIChannelHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function ensureAIConfigShape(cfg) {
+    const ai = cfg && cfg.ai && typeof cfg.ai === 'object' ? cfg.ai : {};
+    const channels = ai.channels && typeof ai.channels === 'object' ? { ...ai.channels } : {};
+    let def = normalizeAIChannelId(ai.default_channel || '');
+    if (!channels[def]) {
+        const oa = (cfg && cfg.openai) ? cfg.openai : {};
+        channels[def] = {
+            name: def === 'default' ? 'Default' : def,
+            provider: oa.provider || 'openai',
+            api_key: oa.api_key || '',
+            base_url: oa.base_url || '',
+            model: oa.model || '',
+            max_total_tokens: oa.max_total_tokens || 120000,
+            max_completion_tokens: oa.max_completion_tokens || 0,
+            reasoning: oa.reasoning || {}
+        };
+    }
+    return { default_channel: def, channels };
+}
+
+function readAIChannelFromMainForm(id) {
+    const prev = currentConfig?.ai?.channels?.[id] || {};
+    const maxCompletionTokens = parseInt(document.getElementById('openai-max-completion-tokens')?.value, 10) || 32768;
+    return {
+        ...prev,
+        name: (document.getElementById('ai-channel-name')?.value || '').trim() || prev.name || id,
+        provider: document.getElementById('openai-provider')?.value || 'openai',
+        api_key: document.getElementById('openai-api-key')?.value.trim() || '',
+        base_url: document.getElementById('openai-base-url')?.value.trim() || '',
+        model: document.getElementById('openai-model')?.value.trim() || '',
+        max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value, 10) || 120000,
+        max_completion_tokens: maxCompletionTokens,
+        reasoning: {
+            ...(prev.reasoning || {}),
+            mode: document.getElementById('openai-reasoning-mode')?.value || 'auto',
+            effort: (document.getElementById('openai-reasoning-effort')?.value || '').trim(),
+            profile: document.getElementById('openai-reasoning-profile')?.value || 'auto',
+            allow_client_reasoning: document.getElementById('openai-reasoning-allow-client')?.checked !== false
+        }
+    };
+}
+
+function writeAIChannelToMainForm(id) {
+    const ai = ensureAIConfigShape(currentConfig || {});
+    const ch = ai.channels[id] || ai.channels[ai.default_channel] || {};
+    selectedAIChannelId = id || ai.default_channel;
+    const nameEl = document.getElementById('ai-channel-name');
+    if (nameEl) nameEl.value = ch.name || selectedAIChannelId;
+    const providerEl = document.getElementById('openai-provider');
+    if (providerEl) {
+        const provider = (ch.provider === 'openai' || !ch.provider) ? 'openai_compatible' : ch.provider;
+        providerEl.value = provider;
+    }
+    const keyEl = document.getElementById('openai-api-key');
+    if (keyEl) keyEl.value = ch.api_key || '';
+    const baseEl = document.getElementById('openai-base-url');
+    if (baseEl) baseEl.value = ch.base_url || '';
+    const modelEl = document.getElementById('openai-model');
+    if (modelEl) modelEl.value = ch.model || '';
+    const maxTokensEl = document.getElementById('openai-max-total-tokens');
+    if (maxTokensEl) maxTokensEl.value = ch.max_total_tokens || 120000;
+    const maxCompletionTokensEl = document.getElementById('openai-max-completion-tokens');
+    if (maxCompletionTokensEl) maxCompletionTokensEl.value = ch.max_completion_tokens || 32768;
+    const r = ch.reasoning || {};
+    const modeEl = document.getElementById('openai-reasoning-mode');
+    if (modeEl) modeEl.value = ['auto', 'on', 'off'].includes(String(r.mode || '').toLowerCase()) ? String(r.mode).toLowerCase() : 'auto';
+    const effEl = document.getElementById('openai-reasoning-effort');
+    if (effEl) effEl.value = ['', 'low', 'medium', 'high', 'max', 'xhigh'].includes(String(r.effort || '').toLowerCase()) ? String(r.effort || '').toLowerCase() : '';
+    const profileEl = document.getElementById('openai-reasoning-profile');
+    if (profileEl) profileEl.value = ['auto', 'deepseek_compat', 'openai_compat', 'output_config_effort'].includes(String(r.profile || '').toLowerCase()) ? String(r.profile || '').toLowerCase() : 'auto';
+    const allowEl = document.getElementById('openai-reasoning-allow-client');
+    if (allowEl) allowEl.checked = r.allow_client_reasoning !== false;
+    syncModelListFetchButtons();
+    syncAIChannelEditorPreview();
+    syncConnectionTestResultForSelectedAIChannel();
+}
+
+function displayAIChannelName(id, ch) {
+    const name = String(ch?.name || '').trim();
+    if ((name === '新通道' || name === 'New Channel') && !String(ch?.model || '').trim()) {
+        return settingsT('settingsBasic.aiChannelUntitled', name || id);
+    }
+    return name || id;
+}
+
+function aiChannelSelectLabel(id, ch) {
+    const marker = id === currentConfig?.ai?.default_channel ? ' *' : '';
+    return `${displayAIChannelName(id, ch)}${marker} · ${ch?.model || '-'}`;
+}
+
+function aiChannelOptionProbeMeta(id) {
+    const probe = aiChannelProbeResults[id];
+    if (!probe) return null;
+    const status = probe.status || '';
+    if (!['testing', 'ready', 'failed'].includes(status)) return null;
+    return {
+        status,
+        message: probe.message || (status === 'ready'
+            ? settingsT('settingsBasic.aiChannelReady', '可用')
+            : status === 'testing'
+                ? settingsT('settingsBasic.testing', '测试中...')
+                : settingsT('settingsBasic.testFailed', '连接失败'))
+    };
+}
+
+function updateAIChannelSelectOption(id) {
+    const select = document.getElementById('ai-channel-select');
+    if (!select || !currentConfig?.ai?.channels) return;
+    const channelId = normalizeAIChannelId(id || selectedAIChannelId || currentConfig.ai.default_channel || 'default');
+    const ch = currentConfig.ai.channels[channelId];
+    if (!ch) return;
+    const opt = Array.from(select.options).find((option) => option.value === channelId);
+    if (opt) {
+        opt.textContent = aiChannelSelectLabel(channelId, ch);
+        const probeMeta = aiChannelOptionProbeMeta(channelId);
+        if (probeMeta) {
+            opt.dataset.probeStatus = probeMeta.status;
+            opt.dataset.probeMessage = probeMeta.message;
+        } else {
+            delete opt.dataset.probeStatus;
+            delete opt.dataset.probeMessage;
+        }
+        if (channelId === selectedAIChannelId) {
+            select.value = channelId;
+            select.selectedIndex = opt.index;
+        }
+    }
+    if (typeof syncSettingsCustomSelect === 'function') {
+        syncSettingsCustomSelect(select);
+    }
+}
+
+function syncSelectedAIChannelUI() {
+    updateAIChannelSelectOption(selectedAIChannelId);
+    updateAIChannelEditorChrome(selectedAIChannelId);
+    renderAIChannelList();
+    syncConnectionTestResultForSelectedAIChannel();
+}
+
+function syncAIChannelEditorPreview() {
+    if (!currentConfig?.ai?.channels || !selectedAIChannelId || !currentConfig.ai.channels[selectedAIChannelId]) return;
+    const id = normalizeAIChannelId(selectedAIChannelId);
+    const prev = currentConfig.ai.channels[id] || {};
+    const next = readAIChannelFromMainForm(id);
+    const connectionChanged = ['provider', 'base_url', 'api_key', 'model'].some((key) => String(prev[key] || '') !== String(next[key] || ''));
+    if (connectionChanged) {
+        delete aiChannelProbeResults[id];
+    }
+    currentConfig.ai.channels[id] = next;
+    syncSelectedAIChannelUI();
+}
+
+function bindAIChannelEditorPreviewSync() {
+    const ids = [
+        'ai-channel-name',
+        'openai-provider',
+        'openai-api-key',
+        'openai-base-url',
+        'openai-model'
+    ];
+    ids.forEach((fieldId) => {
+        const el = document.getElementById(fieldId);
+        if (!el || el.dataset.aiChannelPreviewBound === '1') return;
+        el.dataset.aiChannelPreviewBound = '1';
+        const eventName = el.tagName === 'SELECT' ? 'change' : 'input';
+        el.addEventListener(eventName, syncAIChannelEditorPreview);
+    });
+}
+
+function renderAIChannelSelect() {
+    if (!currentConfig) return;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const select = document.getElementById('ai-channel-select');
+    if (!select) return;
+    select.innerHTML = '';
+    const ids = Object.keys(currentConfig.ai.channels || {}).sort();
+    ids.forEach((id) => {
+        const ch = currentConfig.ai.channels[id] || {};
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = aiChannelSelectLabel(id, ch);
+        const probeMeta = aiChannelOptionProbeMeta(id);
+        if (probeMeta) {
+            opt.dataset.probeStatus = probeMeta.status;
+            opt.dataset.probeMessage = probeMeta.message;
+        }
+        select.appendChild(opt);
+    });
+    selectedAIChannelId = selectedAIChannelId && currentConfig.ai.channels[selectedAIChannelId]
+        ? selectedAIChannelId
+        : currentConfig.ai.default_channel;
+    select.value = selectedAIChannelId;
+    updateAIChannelSelectOption(selectedAIChannelId);
+    if (typeof syncSettingsCustomSelect === 'function') {
+        syncSettingsCustomSelect(select);
+    }
+    updateAIChannelEditorChrome(selectedAIChannelId);
+    renderAIChannelList(ids);
+    const countLabel = typeof window.t === 'function'
+        ? window.t('settingsBasic.aiChannelCount').replace('{count}', String(ids.length))
+        : `已保存 ${ids.length} 个通道`;
+    showAIChannelSaveHint(countLabel, true);
+}
+
+function channelHostLabel(baseUrl) {
+    const raw = String(baseUrl || '').trim();
+    if (!raw) return '-';
+    try {
+        return new URL(raw).host || raw;
+    } catch (e) {
+        return raw.replace(/^https?:\/\//, '').split('/')[0] || raw;
+    }
+}
+
+function renderAIChannelList(ids) {
+    const list = document.getElementById('ai-channel-list');
+    if (!list || !currentConfig?.ai?.channels) return;
+    list.innerHTML = '';
+    (ids || Object.keys(currentConfig.ai.channels).sort()).forEach((id) => {
+        const ch = currentConfig.ai.channels[id] || {};
+        const isDefault = id === currentConfig.ai.default_channel;
+        const isComplete = !validateSelectedAIChannelPayload(ch);
+        const probe = aiChannelProbeResults[id] || null;
+        const item = document.createElement('div');
+        item.className = 'ai-channel-list-item' + (id === selectedAIChannelId ? ' active' : '') + (selectedAIChannelBulkIds.has(id) ? ' checked' : '');
+        item.setAttribute('role', 'button');
+        item.setAttribute('tabindex', '0');
+        item.setAttribute('aria-current', id === selectedAIChannelId ? 'true' : 'false');
+        item.onclick = () => selectAIChannelForEditing(id);
+        item.onkeydown = (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                selectAIChannelForEditing(id);
+            }
+        };
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'ai-channel-bulk-check';
+        checkbox.checked = selectedAIChannelBulkIds.has(id);
+        checkbox.setAttribute('aria-label', settingsT('settingsBasic.aiChannelSelectAria', '选择 {name}').replace('{name}', displayAIChannelName(id, ch)));
+        checkbox.onclick = (event) => {
+            event.stopPropagation();
+            if (checkbox.checked) {
+                selectedAIChannelBulkIds.add(id);
+            } else {
+                selectedAIChannelBulkIds.delete(id);
+            }
+            item.classList.toggle('checked', checkbox.checked);
+        };
+        const displayName = displayAIChannelName(id, ch);
+        const defaultBadge = isDefault ? `<span class="ai-channel-badge">${escapeAIChannelHtml(settingsT('settingsBasic.aiChannelDefaultBadge', '默认'))}</span>` : '';
+        let statusText = isComplete
+            ? settingsT('settingsBasic.aiChannelComplete', '配置完整')
+            : settingsT('settingsBasic.aiChannelDraft', '待完善');
+        let statusClass = isComplete ? 'complete' : 'draft';
+        if (probe) {
+            statusText = probe.message || statusText;
+            statusClass = probe.status || statusClass;
+        }
+        const body = document.createElement('div');
+        body.className = 'ai-channel-card-body';
+        body.innerHTML = `
+            <div class="ai-channel-list-main">
+                <span class="ai-channel-status-dot ${statusClass}" aria-hidden="true"></span>
+                <strong title="${escapeAIChannelHtml(displayName)}">${escapeAIChannelHtml(displayName)}</strong>
+                ${defaultBadge}
+            </div>
+            <div class="ai-channel-list-meta" title="${escapeAIChannelHtml(ch.model || '-')} · ${escapeAIChannelHtml(channelHostLabel(ch.base_url))}">${escapeAIChannelHtml(ch.model || '-')} · ${escapeAIChannelHtml(channelHostLabel(ch.base_url))}</div>
+            <div class="ai-channel-list-foot">
+                <span class="ai-channel-status-label ${statusClass}" title="${escapeAIChannelHtml(statusText)}">${escapeAIChannelHtml(statusText)}</span>
+                <span title="${escapeAIChannelHtml(id)}">${escapeAIChannelHtml(id)}</span>
+            </div>
+        `;
+        item.appendChild(checkbox);
+        item.appendChild(body);
+        list.appendChild(item);
+    });
+}
+
+function showAIChannelSaveHint(message, ok) {
+    const el = document.getElementById('ai-channel-save-hint');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.toggle('is-error', ok === false);
+    el.classList.toggle('is-success', ok !== false);
+}
+
+function updateAIChannelEditorChrome(id) {
+    const ai = ensureAIConfigShape(currentConfig || {});
+    const channelId = normalizeAIChannelId(id || ai.default_channel || 'default');
+    const ch = ai.channels[channelId] || {};
+    const isDefault = channelId === ai.default_channel;
+    const isComplete = !validateSelectedAIChannelPayload(ch);
+    const probe = aiChannelProbeResults[channelId] || null;
+    const title = document.getElementById('ai-channel-editor-title');
+    const meta = document.getElementById('ai-channel-editor-meta');
+    if (title) {
+        title.textContent = settingsT('settingsBasic.aiChannelFormContextHint', '表单保存后会更新该通道配置。');
+    }
+    if (meta) {
+        const provider = ch.provider === 'claude' ? 'Claude' : settingsT('settingsBasic.aiChannelOpenAICompat', 'OpenAI 兼容');
+        const statusText = probe?.message || (isComplete
+            ? settingsT('settingsBasic.aiChannelComplete', '配置完整')
+            : settingsT('settingsBasic.aiChannelDraft', '待完善'));
+        const statusClass = probe?.status || (isComplete ? 'complete' : 'draft');
+        const chips = [
+            {
+                label: isDefault
+                    ? settingsT('settingsBasic.aiChannelDefaultMeta', '默认通道')
+                    : settingsT('settingsBasic.aiChannelCustomMeta', '自定义通道'),
+                className: isDefault ? 'default' : ''
+            },
+            { label: provider },
+            { label: ch.model || settingsT('settingsBasic.aiChannelModelMissing', '未填写模型') },
+            { label: channelHostLabel(ch.base_url) },
+            { label: statusText, className: statusClass }
+        ].filter((chip) => chip.label);
+        meta.innerHTML = chips.map((chip) => {
+            const className = chip.className ? ` ${escapeAIChannelHtml(chip.className)}` : '';
+            return `<span class="ai-channel-editor-chip${className}" title="${escapeAIChannelHtml(chip.label)}">${escapeAIChannelHtml(chip.label)}</span>`;
+        }).join('');
+    }
+}
+
+function validateSelectedAIChannelPayload(ch) {
+    const missing = [];
+    if (!String(ch.base_url || '').trim()) missing.push('Base URL');
+    if (!String(ch.api_key || '').trim()) missing.push('API Key');
+    if (!String(ch.model || '').trim()) missing.push('模型');
+    if (missing.length) {
+        return missing.join(', ');
+    }
+    return '';
+}
+
+function resolveSavedAIChannelId(ai, preferredId, preferredPayload) {
+    const channels = ai?.channels || {};
+    const normalizedPreferred = normalizeAIChannelId(preferredId || '');
+    if (normalizedPreferred && channels[normalizedPreferred]) return normalizedPreferred;
+
+    const payload = preferredPayload || {};
+    const targetName = String(payload.name || '').trim();
+    const targetModel = String(payload.model || '').trim();
+    const targetBaseUrl = String(payload.base_url || '').trim();
+    const targetProvider = String(payload.provider || '').trim();
+    const ids = Object.keys(channels).sort();
+    const matched = ids.find((id) => {
+        const ch = channels[id] || {};
+        return String(ch.name || '').trim() === targetName
+            && String(ch.model || '').trim() === targetModel
+            && String(ch.base_url || '').trim() === targetBaseUrl
+            && String(ch.provider || '').trim() === targetProvider;
+    });
+    return matched || ai?.default_channel || ids[0] || normalizedPreferred || 'default';
+}
+
+async function refreshAIChannelsFromServer(preferredId, preferredPayload) {
+    const response = await apiFetch('/api/config');
+    if (!response.ok) return false;
+    currentConfig = await response.json();
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    selectedAIChannelId = resolveSavedAIChannelId(currentConfig.ai, preferredId, preferredPayload);
+    renderAIChannelSelect();
+    writeAIChannelToMainForm(selectedAIChannelId);
+    if (typeof populateChatAIChannelSelect === 'function') {
+        populateChatAIChannelSelect(currentConfig.ai);
+    }
+    return true;
+}
+
+async function persistAIChannelsToServer(successMessage, options = {}) {
+    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return false;
+    if (!currentConfig) currentConfig = {};
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const id = normalizeAIChannelId(selectedAIChannelId || currentConfig.ai.default_channel || 'default');
+    const channelPayload = readAIChannelFromMainForm(id);
+    currentConfig.ai.channels[id] = channelPayload;
+    selectedAIChannelId = id;
+    const missing = validateSelectedAIChannelPayload(channelPayload);
+    if (missing) {
+        showAIChannelSaveHint(`请填写：${missing}`, false);
+        alert(`请填写：${missing}`);
+        return false;
+    }
+    renderAIChannelSelect();
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelSaving', '正在保存通道...'), true);
+    try {
+        const shouldMergeLatest = options.mergeLatest !== false;
+        const latestResponse = shouldMergeLatest ? await apiFetch('/api/config') : null;
+        if (latestResponse && latestResponse.ok) {
+            const latest = await latestResponse.json();
+            const latestAI = ensureAIConfigShape(latest || {});
+            currentConfig.ai.channels = {
+                ...(latestAI.channels || {}),
+                ...(currentConfig.ai.channels || {}),
+                [id]: channelPayload
+            };
+            if (!currentConfig.ai.default_channel) {
+                currentConfig.ai.default_channel = latestAI.default_channel || id;
+            }
+        }
+        const updateResponse = await apiFetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ai: currentConfig.ai })
+        });
+        if (!updateResponse.ok) {
+            const error = await updateResponse.json().catch(() => ({}));
+            throw new Error(error.error || '保存通道失败');
+        }
+        const applyResponse = await apiFetch('/api/config/apply', { method: 'POST' });
+        if (!applyResponse.ok) {
+            const error = await applyResponse.json().catch(() => ({}));
+            throw new Error(error.error || '应用通道失败');
+        }
+        await refreshAIChannelsFromServer(id, channelPayload);
+        showAIChannelSaveHint(successMessage || '通道已保存', true);
+        return true;
+    } catch (error) {
+        showAIChannelSaveHint(error.message || '保存通道失败', false);
+        alert(error.message || '保存通道失败');
+        return false;
+    }
+}
+
+async function persistAIConfigOnlyToServer(successMessage) {
+    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return false;
+    if (!currentConfig) return false;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelSaving', '正在保存通道...'), true);
+    try {
+        const updateResponse = await apiFetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ai: currentConfig.ai })
+        });
+        if (!updateResponse.ok) {
+            const error = await updateResponse.json().catch(() => ({}));
+            throw new Error(error.error || '保存通道失败');
+        }
+        const applyResponse = await apiFetch('/api/config/apply', { method: 'POST' });
+        if (!applyResponse.ok) {
+            const error = await applyResponse.json().catch(() => ({}));
+            throw new Error(error.error || '应用通道失败');
+        }
+        await refreshAIChannelsFromServer(selectedAIChannelId);
+        showAIChannelSaveHint(successMessage || '通道已保存', true);
+        return true;
+    } catch (error) {
+        showAIChannelSaveHint(error.message || '保存通道失败', false);
+        alert(error.message || '保存通道失败');
+        return false;
+    }
+}
+
+async function saveSelectedAIChannel() {
+    await persistAIChannelsToServer(typeof window.t === 'function' ? window.t('settingsBasic.aiChannelSaved') : '通道已保存');
+}
+
+async function setSelectedAIChannelDefault() {
+    if (!currentConfig) return;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const id = normalizeAIChannelId(selectedAIChannelId || currentConfig.ai.default_channel || 'default');
+    currentConfig.ai.channels[id] = readAIChannelFromMainForm(id);
+    currentConfig.ai.default_channel = id;
+    await persistAIChannelsToServer(typeof window.t === 'function' ? window.t('settingsBasic.aiChannelDefaultSaved') : '已设为默认通道');
+}
+
+function selectAIChannelForEditing(id) {
+    if (!currentConfig) return;
+    if (selectedAIChannelId && currentConfig.ai?.channels?.[selectedAIChannelId]) {
+        currentConfig.ai.channels[selectedAIChannelId] = readAIChannelFromMainForm(selectedAIChannelId);
+    }
+    const next = normalizeAIChannelId(id || currentConfig.ai?.default_channel || 'default');
+    selectedAIChannelId = next;
+    writeAIChannelToMainForm(next);
+    renderAIChannelSelect();
+}
+
+function uniqueAIChannelId(base) {
+    const ai = ensureAIConfigShape(currentConfig || {});
+    let id = normalizeAIChannelId(base);
+    if (!ai.channels[id]) return id;
+    let i = 2;
+    while (ai.channels[`${id}-${i}`]) i++;
+    return `${id}-${i}`;
+}
+
+function createAIChannelFromForm() {
+    if (!currentConfig) currentConfig = {};
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    if (selectedAIChannelId && currentConfig.ai.channels[selectedAIChannelId]) {
+        currentConfig.ai.channels[selectedAIChannelId] = readAIChannelFromMainForm(selectedAIChannelId);
+    }
+    const baseName = (typeof window.t === 'function' ? window.t('settingsBasic.aiChannelUntitled') : 'New Channel');
+    const id = uniqueAIChannelId(baseName);
+    currentConfig.ai.channels[id] = {
+        name: baseName,
+        provider: 'openai_compatible',
+        api_key: '',
+        base_url: '',
+        model: '',
+        max_total_tokens: 120000,
+        max_completion_tokens: 32768,
+        reasoning: { mode: 'auto', effort: '', profile: 'auto', allow_client_reasoning: true }
+    };
+    selectedAIChannelId = id;
+    renderAIChannelSelect();
+    writeAIChannelToMainForm(id);
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelNewUnsaved', '新通道尚未保存，填写后点击「保存更改」。'), true);
+}
+
+function copyAIChannelFromForm() {
+    if (!currentConfig) return;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const source = readAIChannelFromMainForm(selectedAIChannelId || currentConfig.ai.default_channel);
+    const id = uniqueAIChannelId((source.name || selectedAIChannelId || 'channel') + '-copy');
+    currentConfig.ai.channels[id] = { ...source, name: (source.name || id) + ' Copy' };
+    selectedAIChannelId = id;
+    renderAIChannelSelect();
+    writeAIChannelToMainForm(id);
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelCopyUnsaved', '复制的通道尚未保存，确认后点击「保存更改」。'), true);
+}
+
+async function deleteSelectedAIChannel() {
+    if (!currentConfig) return;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const ids = Object.keys(currentConfig.ai.channels || {});
+    if (ids.length <= 1) {
+        alert('至少保留一个 AI 通道');
+        return;
+    }
+    const id = selectedAIChannelId || currentConfig.ai.default_channel;
+    const ch = currentConfig.ai.channels[id] || {};
+    const name = ch.name || id;
+    const msg = typeof window.t === 'function'
+        ? window.t('settingsBasic.aiChannelDeleteConfirm').replace('{name}', name)
+        : `确定删除 AI 通道「${name}」吗？`;
+    if (!confirm(msg)) {
+        return;
+    }
+    delete currentConfig.ai.channels[id];
+    delete aiChannelProbeResults[id];
+    selectedAIChannelBulkIds.delete(id);
+
+    const remainingIds = Object.keys(currentConfig.ai.channels || {}).sort();
+    if (!currentConfig.ai.channels[currentConfig.ai.default_channel]) {
+        currentConfig.ai.default_channel = remainingIds[0];
+    }
+    selectedAIChannelId = currentConfig.ai.default_channel || remainingIds[0];
+    renderAIChannelSelect();
+    writeAIChannelToMainForm(selectedAIChannelId);
+    const saved = await persistAIConfigOnlyToServer(settingsT('settingsBasic.aiChannelDeleted', '通道已删除'));
+    if (saved) {
+        renderAIChannelSelect();
+        writeAIChannelToMainForm(selectedAIChannelId);
+    }
+}
+
+function selectedOrAllAIChannelIdsForProbe() {
+    if (!currentConfig) return [];
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    if (selectedAIChannelId && currentConfig.ai.channels[selectedAIChannelId]) {
+        currentConfig.ai.channels[selectedAIChannelId] = readAIChannelFromMainForm(selectedAIChannelId);
+    }
+    const checked = Array.from(selectedAIChannelBulkIds).filter((id) => currentConfig.ai.channels[id]);
+    const ids = checked.length ? checked : Object.keys(currentConfig.ai.channels || {}).sort();
+    return ids.filter((id) => !validateSelectedAIChannelPayload(currentConfig.ai.channels[id] || {}));
+}
+
+async function probeSelectedAIChannels() {
+    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return;
+    const ids = selectedOrAllAIChannelIdsForProbe();
+    if (!ids.length) {
+        alert(settingsT('settingsBasic.aiChannelProbeNoComplete', '没有可探活的完整通道，请先填写 Base URL、API Key 和模型'));
+        return;
+    }
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelProbing', '正在探活 {count} 个通道...').replace('{count}', String(ids.length)), true);
+    ids.forEach((id) => {
+        aiChannelProbeResults[id] = { status: 'testing', message: settingsT('settingsBasic.testing', '测试中...') };
+        updateAIChannelSelectOption(id);
+    });
+    renderAIChannelList();
+    let okCount = 0;
+    let nextIndex = 0;
+    async function probeNextAIChannel() {
+        const id = ids[nextIndex++];
+        if (!id) return;
+        const ch = currentConfig.ai.channels[id] || {};
+        try {
+            const response = await apiFetch('/api/config/test-openai', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: ch.provider || 'openai_compatible',
+                    base_url: ch.base_url || '',
+                    api_key: ch.api_key || '',
+                    model: ch.model || ''
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (response.ok && result.success) {
+                okCount += 1;
+                const latency = result.latency_ms ? ` ${result.latency_ms}ms` : '';
+                aiChannelProbeResults[id] = { status: 'ready', message: settingsT('settingsBasic.aiChannelReadyWithLatency', '可用{latency}').replace('{latency}', latency) };
+            } else {
+                aiChannelProbeResults[id] = { status: 'failed', message: formatConnectionTestError(result.error || settingsT('settingsBasic.testFailed', '连接失败')).message };
+            }
+        } catch (error) {
+            aiChannelProbeResults[id] = { status: 'failed', message: formatConnectionTestError(error.message || settingsT('settingsBasic.testError', '测试出错')).message };
+        }
+        updateAIChannelSelectOption(id);
+        renderAIChannelList();
+    }
+    const workers = Array.from({ length: Math.min(AI_CHANNEL_PROBE_CONCURRENCY, ids.length) }, async function () {
+        while (nextIndex < ids.length) {
+            await probeNextAIChannel();
+        }
+    });
+    await Promise.all(workers);
+    showAIChannelSaveHint(settingsT('settingsBasic.aiChannelProbeDone', '探活完成：{ok}/{total} 可用').replace('{ok}', String(okCount)).replace('{total}', String(ids.length)), okCount === ids.length);
+}
+
+async function deleteCheckedAIChannels() {
+    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return;
+    if (!currentConfig) return;
+    currentConfig.ai = ensureAIConfigShape(currentConfig);
+    const ids = Array.from(selectedAIChannelBulkIds).filter((id) => currentConfig.ai.channels[id]);
+    if (!ids.length) {
+        alert('请先勾选要删除的通道');
+        return;
+    }
+    const deletable = ids.filter((id) => id !== currentConfig.ai.default_channel);
+    if (!deletable.length) {
+        alert('默认通道不能批量删除，请先切换默认通道');
+        return;
+    }
+    if (Object.keys(currentConfig.ai.channels || {}).length - deletable.length < 1) {
+        alert('至少保留一个 AI 通道');
+        return;
+    }
+    const names = deletable.map((id) => currentConfig.ai.channels[id]?.name || id).join('、');
+    if (!confirm(`确定删除 ${deletable.length} 个 AI 通道吗？\n${names}`)) {
+        return;
+    }
+    deletable.forEach((id) => {
+        delete currentConfig.ai.channels[id];
+        selectedAIChannelBulkIds.delete(id);
+        delete aiChannelProbeResults[id];
+    });
+    if (!currentConfig.ai.channels[selectedAIChannelId]) {
+        selectedAIChannelId = currentConfig.ai.default_channel;
+    }
+    renderAIChannelSelect();
+    writeAIChannelToMainForm(selectedAIChannelId);
+    await persistAIConfigOnlyToServer(`已删除 ${deletable.length} 个通道`);
+}
+
+if (typeof window !== 'undefined') {
+    window.selectAIChannelForEditing = selectAIChannelForEditing;
+    window.saveSelectedAIChannel = saveSelectedAIChannel;
+    window.setSelectedAIChannelDefault = setSelectedAIChannelDefault;
+    window.createAIChannelFromForm = createAIChannelFromForm;
+    window.copyAIChannelFromForm = copyAIChannelFromForm;
+    window.deleteSelectedAIChannel = deleteSelectedAIChannel;
+    window.probeSelectedAIChannels = probeSelectedAIChannels;
+    window.deleteCheckedAIChannels = deleteCheckedAIChannels;
+}
+
+if (typeof document !== 'undefined' && !document.__aiChannelI18nBound) {
+    document.__aiChannelI18nBound = true;
+    document.addEventListener('languagechange', function () {
+        if (!currentConfig?.ai) return;
+        renderAIChannelSelect();
+        updateAIChannelEditorChrome(selectedAIChannelId || currentConfig.ai.default_channel);
+    });
+}
+
 function initModelListControls() {
+    bindAIChannelEditorPreviewSync();
     const providerEl = document.getElementById('openai-provider');
     if (providerEl && !providerEl.dataset.modelListBound) {
         providerEl.dataset.modelListBound = '1';
@@ -1791,14 +3204,32 @@ function initModelListControls() {
         visionProv.dataset.modelListBound = '1';
         visionProv.addEventListener('change', syncModelListFetchButtons);
     }
+    const hitlAuditProv = document.getElementById('hitl-audit-model-provider');
+    if (hitlAuditProv && !hitlAuditProv.dataset.modelListBound) {
+        hitlAuditProv.dataset.modelListBound = '1';
+        hitlAuditProv.addEventListener('change', syncModelListFetchButtons);
+    }
+    const knowledgeEmbeddingProv = document.getElementById('knowledge-embedding-provider');
+    if (knowledgeEmbeddingProv && !knowledgeEmbeddingProv.dataset.modelListBound) {
+        knowledgeEmbeddingProv.dataset.modelListBound = '1';
+        knowledgeEmbeddingProv.addEventListener('change', syncModelListFetchButtons);
+    }
     bindModelSelect('openai');
     bindModelSelect('vision');
+    bindModelSelect('hitlAudit');
+    bindModelSelect('knowledgeEmbedding');
     syncModelListFetchButtons();
 }
 
 function modelSelectIds(scope) {
     if (scope === 'vision') {
         return { selectId: 'vision-model-select', inputId: 'vision-model' };
+    }
+    if (scope === 'hitlAudit') {
+        return { selectId: 'hitl-audit-model-select', inputId: 'hitl-audit-model-name' };
+    }
+    if (scope === 'knowledgeEmbedding') {
+        return { selectId: 'knowledge-embedding-model-select', inputId: 'knowledge-embedding-model' };
     }
     return { selectId: 'openai-model-select', inputId: 'openai-model' };
 }
@@ -1813,6 +3244,9 @@ function bindModelSelect(scope) {
         if (!select.value) return;
         const input = document.getElementById(inputId);
         if (input) input.value = select.value;
+        if (scope === 'openai') {
+            syncAIChannelEditorPreview();
+        }
     });
 }
 
@@ -1823,6 +3257,24 @@ function resolveModelListCredentials(scope) {
         const baseUrl = (document.getElementById('vision-base-url')?.value || '').trim()
             || (document.getElementById('openai-base-url')?.value || '').trim();
         const apiKey = (document.getElementById('vision-api-key')?.value || '').trim()
+            || (document.getElementById('openai-api-key')?.value || '').trim();
+        return { provider, base_url: baseUrl, api_key: apiKey };
+    }
+    if (scope === 'hitlAudit') {
+        const hp = (document.getElementById('hitl-audit-model-provider')?.value || '').trim();
+        const provider = hp || document.getElementById('openai-provider')?.value || 'openai';
+        const baseUrl = (document.getElementById('hitl-audit-model-base-url')?.value || '').trim()
+            || (document.getElementById('openai-base-url')?.value || '').trim();
+        const apiKey = (document.getElementById('hitl-audit-model-api-key')?.value || '').trim()
+            || (document.getElementById('openai-api-key')?.value || '').trim();
+        return { provider, base_url: baseUrl, api_key: apiKey };
+    }
+    if (scope === 'knowledgeEmbedding') {
+        const kp = (document.getElementById('knowledge-embedding-provider')?.value || '').trim();
+        const provider = kp || document.getElementById('openai-provider')?.value || 'openai';
+        const baseUrl = (document.getElementById('knowledge-embedding-base-url')?.value || '').trim()
+            || (document.getElementById('openai-base-url')?.value || '').trim();
+        const apiKey = (document.getElementById('knowledge-embedding-api-key')?.value || '').trim()
             || (document.getElementById('openai-api-key')?.value || '').trim();
         return { provider, base_url: baseUrl, api_key: apiKey };
     }
@@ -1885,6 +3337,58 @@ function syncModelListFetchButtons() {
             visionHint.style.display = 'none';
         }
     }
+
+    const hp = (document.getElementById('hitl-audit-model-provider')?.value || '').trim();
+    const hitlAuditEffectiveProv = hp || openaiProv;
+    const hitlAuditBtn = document.getElementById('fetch-hitl-audit-models-btn');
+    const hitlAuditHint = document.getElementById('fetch-hitl-audit-models-hint');
+    const hitlAuditSelect = document.getElementById('hitl-audit-model-select');
+    const isClaudeHitlAudit = hitlAuditEffectiveProv === 'claude';
+    if (hitlAuditBtn) {
+        hitlAuditBtn.style.display = isClaudeHitlAudit ? 'none' : '';
+    }
+    if (hitlAuditSelect && isClaudeHitlAudit) {
+        hitlAuditSelect.style.display = 'none';
+        const hitlAuditWrap = modelPickSelectMap['hitl-audit-model-select'];
+        if (hitlAuditWrap) hitlAuditWrap.wrapper.style.display = 'none';
+    } else if (hitlAuditSelect && !isClaudeHitlAudit) {
+        syncModelPickDropdown('hitl-audit-model-select');
+    }
+    if (hitlAuditHint) {
+        if (isClaudeHitlAudit) {
+            hitlAuditHint.textContent = tFn('settingsBasic.modelsListClaudeHint');
+            hitlAuditHint.style.display = '';
+        } else {
+            hitlAuditHint.textContent = '';
+            hitlAuditHint.style.display = 'none';
+        }
+    }
+
+    const kp = (document.getElementById('knowledge-embedding-provider')?.value || '').trim();
+    const knowledgeEmbeddingEffectiveProv = kp || openaiProv;
+    const knowledgeEmbeddingBtn = document.getElementById('fetch-knowledge-embedding-models-btn');
+    const knowledgeEmbeddingHint = document.getElementById('fetch-knowledge-embedding-models-hint');
+    const knowledgeEmbeddingSelect = document.getElementById('knowledge-embedding-model-select');
+    const isClaudeKnowledgeEmbedding = knowledgeEmbeddingEffectiveProv === 'claude';
+    if (knowledgeEmbeddingBtn) {
+        knowledgeEmbeddingBtn.style.display = isClaudeKnowledgeEmbedding ? 'none' : '';
+    }
+    if (knowledgeEmbeddingSelect && isClaudeKnowledgeEmbedding) {
+        knowledgeEmbeddingSelect.style.display = 'none';
+        const knowledgeEmbeddingWrap = modelPickSelectMap['knowledge-embedding-model-select'];
+        if (knowledgeEmbeddingWrap) knowledgeEmbeddingWrap.wrapper.style.display = 'none';
+    } else if (knowledgeEmbeddingSelect && !isClaudeKnowledgeEmbedding) {
+        syncModelPickDropdown('knowledge-embedding-model-select');
+    }
+    if (knowledgeEmbeddingHint) {
+        if (isClaudeKnowledgeEmbedding) {
+            knowledgeEmbeddingHint.textContent = tFn('settingsBasic.modelsListClaudeHint');
+            knowledgeEmbeddingHint.style.display = '';
+        } else {
+            knowledgeEmbeddingHint.textContent = '';
+            knowledgeEmbeddingHint.style.display = 'none';
+        }
+    }
 }
 
 function populateModelSelect(scope, models, currentValue) {
@@ -1924,9 +3428,28 @@ function populateModelSelect(scope, models, currentValue) {
 async function fetchModelList(scope) {
     const tFn = typeof window.t === 'function' ? window.t : (k) => k;
     const creds = resolveModelListCredentials(scope);
-    const btnId = scope === 'vision' ? 'fetch-vision-models-btn' : 'fetch-openai-models-btn';
-    const resultId = scope === 'vision' ? 'fetch-vision-models-result' : 'fetch-openai-models-result';
-    const inputId = scope === 'vision' ? 'vision-model' : 'openai-model';
+    const modelListUiIds = {
+        openai: {
+            btnId: 'fetch-openai-models-btn',
+            resultId: 'fetch-openai-models-result'
+        },
+        vision: {
+            btnId: 'fetch-vision-models-btn',
+            resultId: 'fetch-vision-models-result'
+        },
+        hitlAudit: {
+            btnId: 'fetch-hitl-audit-models-btn',
+            resultId: 'fetch-hitl-audit-models-result'
+        },
+        knowledgeEmbedding: {
+            btnId: 'fetch-knowledge-embedding-models-btn',
+            resultId: 'fetch-knowledge-embedding-models-result'
+        }
+    };
+    const uiIds = modelListUiIds[scope] || modelListUiIds.openai;
+    const btnId = uiIds.btnId;
+    const resultId = uiIds.resultId;
+    const inputId = modelSelectIds(scope).inputId;
     const btn = document.getElementById(btnId);
     const resultEl = document.getElementById(resultId);
     const inputEl = document.getElementById(inputId);
@@ -2037,6 +3560,128 @@ async function testVisionConnection() {
     }
 }
 
+function collectHitlAuditModelEffectiveConfig() {
+    const main = {
+        provider: document.getElementById('openai-provider')?.value || 'openai',
+        api_key: document.getElementById('openai-api-key')?.value.trim() || '',
+        base_url: document.getElementById('openai-base-url')?.value.trim() || '',
+        model: document.getElementById('openai-model')?.value.trim() || ''
+    };
+    return {
+        provider: document.getElementById('hitl-audit-model-provider')?.value || main.provider,
+        base_url: document.getElementById('hitl-audit-model-base-url')?.value.trim() || main.base_url,
+        api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || main.api_key,
+        model: document.getElementById('hitl-audit-model-name')?.value.trim() || main.model
+    };
+}
+
+async function testHitlAuditModelConnection() {
+    const btn = document.getElementById('test-hitl-audit-model-btn');
+    const resultEl = document.getElementById('test-hitl-audit-model-result');
+    const cfg = collectHitlAuditModelEffectiveConfig();
+
+    if (!cfg.base_url || !cfg.api_key || !cfg.model) {
+        if (resultEl) {
+            resultEl.style.color = 'var(--danger-color, #e53e3e)';
+            resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 Base URL、API Key 和模型';
+        }
+        return;
+    }
+
+    if (btn) {
+        btn.style.pointerEvents = 'none';
+        btn.style.opacity = '0.5';
+    }
+    if (resultEl) {
+        resultEl.style.color = 'var(--text-muted, #888)';
+        resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testing') : '测试中...';
+    }
+
+    try {
+        const response = await apiFetch('/api/config/test-openai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg)
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            if (resultEl) {
+                resultEl.style.color = 'var(--success-color, #38a169)';
+                const latency = result.latency_ms ? ` (${result.latency_ms}ms)` : '';
+                const modelInfo = result.model ? ` [${result.model}]` : '';
+                resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testSuccess') : '连接成功') + modelInfo + latency;
+            }
+        } else if (resultEl) {
+            resultEl.style.color = 'var(--danger-color, #e53e3e)';
+            resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testFailed') : '连接失败') + ': ' + (result.error || '未知错误');
+        }
+    } catch (error) {
+        if (resultEl) {
+            resultEl.style.color = 'var(--danger-color, #e53e3e)';
+            resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testError') : '测试出错') + ': ' + error.message;
+        }
+    } finally {
+        if (btn) {
+            btn.style.pointerEvents = '';
+            btn.style.opacity = '';
+        }
+    }
+}
+
+function formatConnectionTestError(errorText) {
+    const raw = String(errorText || '').trim() || settingsT('settingsBasic.testError', '测试出错');
+    return {
+        message: raw,
+        detail: raw
+    };
+}
+
+function setConnectionTestResult(resultEl, state, message, title) {
+    if (!resultEl) return;
+    resultEl.classList.remove('is-error', 'is-success', 'is-muted', 'is-visible');
+    resultEl.style.color = '';
+    resultEl.textContent = message || '';
+    resultEl.title = title || '';
+    if (message) {
+        resultEl.classList.add('is-visible', state || 'is-muted');
+    }
+}
+
+function syncConnectionTestResultForSelectedAIChannel() {
+    const resultEl = document.getElementById('test-openai-result');
+    if (!resultEl) return;
+    const channelId = normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default');
+    const probe = aiChannelProbeResults[channelId];
+    if (!probe) {
+        setConnectionTestResult(resultEl, '', '');
+        return;
+    }
+    const state = probe.status === 'ready'
+        ? 'is-success'
+        : probe.status === 'failed'
+            ? 'is-error'
+            : 'is-muted';
+    let message = probe.message || '';
+    const fillRequiredMessage = settingsT('settingsBasic.testFillRequired', '请先填写 Base URL、API Key 和模型');
+    const failedPrefix = (typeof window.t === 'function' ? window.t('settingsBasic.testFailed') : '连接失败') + ': ';
+    if (probe.status === 'failed' && message && message !== fillRequiredMessage && !message.startsWith(failedPrefix)) {
+        message = failedPrefix + message;
+    }
+    setConnectionTestResult(resultEl, state, message);
+}
+
+function showConnectionTestFailure(resultEl, errorText) {
+    if (!resultEl) return;
+    const formatted = formatConnectionTestError(errorText);
+    setConnectionTestResult(
+        resultEl,
+        'is-error',
+        (typeof window.t === 'function' ? window.t('settingsBasic.testFailed') : '连接失败') + ': ' + formatted.message,
+        formatted.detail || formatted.message
+    );
+}
+
 // 测试OpenAI连接
 async function testOpenAIConnection() {
     const btn = document.getElementById('test-openai-btn');
@@ -2046,17 +3691,29 @@ async function testOpenAIConnection() {
     const baseUrl = document.getElementById('openai-base-url').value.trim();
     const apiKey = document.getElementById('openai-api-key').value.trim();
     const model = document.getElementById('openai-model').value.trim();
+    const channelId = normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default');
+    const isTestingSameChannel = () => normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default') === channelId;
 
-    if (!apiKey || !model) {
-        resultEl.style.color = 'var(--danger-color, #e53e3e)';
-        resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 API Key 和模型';
+    if (!baseUrl || !apiKey || !model) {
+        const message = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 Base URL、API Key 和模型';
+        aiChannelProbeResults[channelId] = { status: 'failed', message };
+        if (isTestingSameChannel()) {
+            setConnectionTestResult(resultEl, 'is-error', message);
+        }
+        syncSelectedAIChannelUI();
         return;
     }
 
-    btn.style.pointerEvents = 'none';
-    btn.style.opacity = '0.5';
-    resultEl.style.color = 'var(--text-muted, #888)';
-    resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testing') : '测试中...';
+    if (btn) {
+        btn.style.pointerEvents = 'none';
+        btn.style.opacity = '0.5';
+    }
+    const testingMessage = settingsT('settingsBasic.testing', '测试中...');
+    aiChannelProbeResults[channelId] = { status: 'testing', message: testingMessage };
+    if (isTestingSameChannel()) {
+        setConnectionTestResult(resultEl, 'is-muted', testingMessage);
+    }
+    syncSelectedAIChannelUI();
 
     try {
         const response = await apiFetch('/api/config/test-openai', {
@@ -2073,25 +3730,39 @@ async function testOpenAIConnection() {
         const result = await response.json();
 
         if (result.success) {
-            resultEl.style.color = 'var(--success-color, #38a169)';
             const latency = result.latency_ms ? ` (${result.latency_ms}ms)` : '';
             const modelInfo = result.model ? ` [${result.model}]` : '';
-            resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testSuccess') : '连接成功') + modelInfo + latency;
+            const message = (typeof window.t === 'function' ? window.t('settingsBasic.testSuccess') : '连接成功') + modelInfo + latency;
+            aiChannelProbeResults[channelId] = { status: 'ready', message };
+            if (isTestingSameChannel()) {
+                setConnectionTestResult(resultEl, 'is-success', message);
+            }
         } else {
-            resultEl.style.color = 'var(--danger-color, #e53e3e)';
-            resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testFailed') : '连接失败') + ': ' + (result.error || '未知错误');
+            const message = formatConnectionTestError(result.error || '未知错误').message;
+            aiChannelProbeResults[channelId] = { status: 'failed', message };
+            if (isTestingSameChannel()) {
+                showConnectionTestFailure(resultEl, message);
+            }
         }
     } catch (error) {
-        resultEl.style.color = 'var(--danger-color, #e53e3e)';
-        resultEl.textContent = (typeof window.t === 'function' ? window.t('settingsBasic.testError') : '测试出错') + ': ' + error.message;
+        const message = formatConnectionTestError(error.message || '测试出错').message;
+        aiChannelProbeResults[channelId] = { status: 'failed', message };
+        if (isTestingSameChannel()) {
+            showConnectionTestFailure(resultEl, message);
+        }
     } finally {
-        btn.style.pointerEvents = '';
-        btn.style.opacity = '';
+        updateAIChannelSelectOption(channelId);
+        syncSelectedAIChannelUI();
+        if (btn) {
+            btn.style.pointerEvents = '';
+            btn.style.opacity = '';
+        }
     }
 }
 
 // 保存工具配置（独立函数，用于MCP管理页面）
 async function saveToolsConfig() {
+    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return;
     try {
         // 先保存当前页的状态到全局映射
         saveCurrentPageToolStates();
@@ -2106,7 +3777,7 @@ async function saveToolsConfig() {
         
         // 构建只包含工具配置的配置对象
         const config = {
-            openai: currentConfig.openai || {},
+            ai: ensureAIConfigShape(currentConfig || {}),
             agent: currentConfig.agent || {},
             multi_agent: {
                 enabled: currentConfig?.multi_agent?.enabled === true,
@@ -2306,13 +3977,35 @@ let currentEditingMCPName = null;
 // 拉取外部MCP列表数据（供轮询使用，返回 { servers, stats }）
 async function fetchExternalMCPs() {
     const response = await apiFetch('/api/external-mcp');
-    if (!response.ok) throw new Error('获取外部MCP列表失败');
+    if (!response.ok) {
+        if (typeof readApiError === 'function') {
+            throw new Error(await readApiError(response, '获取外部MCP列表失败'));
+        }
+        throw new Error('获取外部MCP列表失败');
+    }
     return response.json();
 }
 
 // MCP 管理页定时刷新外部 MCP 状态（感知后台断连/自动重连）
 let externalMcpPollTimer = null;
 const EXTERNAL_MCP_POLL_INTERVAL_MS = 8000;
+let externalMcpRenderSignature = '';
+
+function renderExternalMCPData(data, forceRender = false) {
+    const servers = data.servers || {};
+    const stats = data.stats || {};
+    const signature = JSON.stringify({ servers, stats });
+
+    if (!forceRender && signature === externalMcpRenderSignature) {
+        updateExternalMcpCardSelection();
+        return false;
+    }
+
+    externalMcpRenderSignature = signature;
+    renderExternalMCPList(servers);
+    renderExternalMCPStats(stats);
+    return true;
+}
 
 function startExternalMcpPoll() {
     stopExternalMcpPoll();
@@ -2337,13 +4030,12 @@ function stopExternalMcpPoll() {
 }
 
 // 加载外部MCP列表并渲染
-async function loadExternalMCPs() {
+async function loadExternalMCPs(options = {}) {
     try {
         // 等待 i18n 就绪，避免快速刷新时翻译函数未初始化导致显示占位符
         if (window.i18nReady) await window.i18nReady;
         const data = await fetchExternalMCPs();
-        renderExternalMCPList(data.servers || {});
-        renderExternalMCPStats(data.stats || {});
+        renderExternalMCPData(data, options.forceRender === true);
     } catch (error) {
         console.error('加载外部MCP列表失败:', error);
         const list = document.getElementById('external-mcp-list');
@@ -2369,8 +4061,7 @@ async function pollExternalMCPToolCount(name, maxAttempts = 10) {
         await new Promise(r => setTimeout(r, pollIntervalMs));
         try {
             const data = await fetchExternalMCPs();
-            renderExternalMCPList(data.servers || {});
-            renderExternalMCPStats(data.stats || {});
+            renderExternalMCPData(data);
             if (name != null) {
                 const server = data.servers && data.servers[name];
                 if (server && server.tool_count > 0) break;
@@ -2509,6 +4200,7 @@ function renderExternalMCPStats(stats) {
 
 // 显示添加外部MCP模态框
 function showAddExternalMCPModal() {
+    if (typeof requirePermission === 'function' && !requirePermission('mcp:write')) return;
     currentEditingMCPName = null;
     document.getElementById('external-mcp-modal-title').textContent = (typeof window.t === 'function' ? window.t('mcp.addExternalMCP') : '添加外部MCP');
     document.getElementById('external-mcp-json').value = '';
@@ -2618,6 +4310,7 @@ function loadExternalMCPExample() {
 
 // 保存外部MCP
 async function saveExternalMCP() {
+    if (typeof requirePermission === 'function' && !requirePermission('mcp:write')) return;
     const jsonTextarea = document.getElementById('external-mcp-json');
     const jsonStr = jsonTextarea.value.trim();
     const errorDiv = document.getElementById('external-mcp-json-error');
@@ -2951,10 +4644,15 @@ openSettings = async function() {
 // 语言切换后重新渲染 MCP 管理页中由 JS 写入的区块（innerHTML 不会随 data-i18n 自动更新）
 document.addEventListener('languagechange', function () {
     try {
+        const settingsPage = document.getElementById('page-settings');
+        if (settingsPage) {
+            initSettingsCustomSelects(settingsPage);
+            refreshSettingsCustomSelects();
+        }
         const mcpPage = document.getElementById('page-mcp-management');
         if (mcpPage && mcpPage.classList.contains('active')) {
             if (typeof loadExternalMCPs === 'function') {
-                loadExternalMCPs().catch(function () { /* ignore */ });
+                loadExternalMCPs({ forceRender: true }).catch(function () { /* ignore */ });
             }
             if (typeof updateToolsStats === 'function') {
                 updateToolsStats().catch(function () { /* ignore */ });
@@ -2964,3 +4662,7 @@ document.addEventListener('languagechange', function () {
         console.warn('languagechange MCP refresh failed', e);
     }
 });
+
+window.initSettingsCustomSelects = initSettingsCustomSelects;
+window.refreshSettingsCustomSelects = refreshSettingsCustomSelects;
+window.closeAllSettingsCustomSelects = closeAllSettingsCustomSelects;

@@ -1,0 +1,14 @@
+name: whois
+command: whois
+enabled: true
+short_description: WHOIS 域名/IP 注册信息查询
+description: '查询域名/IP 的 WHOIS 注册信息（注册商、注册人、NS、更新时间）。
+
+  **使用场景：** 域名资产归属、注册信息收集。'
+parameters:
+  - name: target
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 域名或 IP

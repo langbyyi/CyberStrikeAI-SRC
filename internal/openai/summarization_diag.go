@@ -53,14 +53,34 @@ func (rt *summarizationDiagRoundTripper) RoundTrip(req *http.Request) (*http.Res
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 
-	if rt.logger != nil && summarizationResponseEmptyChoices(body) {
+	if rt.logger != nil && resp.StatusCode >= http.StatusBadRequest {
+		rt.logger.Warn("eino summarization: API request rejected",
+			zap.Int("status", resp.StatusCode),
+			zap.String("request_id", responseRequestID(resp)),
+			zap.Int("response_bytes", len(body)),
+			zap.String("raw_body", truncateForLog(string(body), summarizationDiagBodyMaxBytes)),
+		)
+	} else if rt.logger != nil && summarizationResponseEmptyChoices(body) {
 		rt.logger.Warn("eino summarization: API returned empty choices",
 			zap.Int("status", resp.StatusCode),
+			zap.String("request_id", responseRequestID(resp)),
 			zap.Int("response_bytes", len(body)),
 			zap.String("raw_body", truncateForLog(string(body), summarizationDiagBodyMaxBytes)),
 		)
 	}
 	return resp, err
+}
+
+func responseRequestID(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	for _, key := range []string{"x-request-id", "request-id", "x-trace-id"} {
+		if value := strings.TrimSpace(resp.Header.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func isSummarizationRequest(req *http.Request) bool {

@@ -14,9 +14,9 @@ description: |
 
   **CLI 顺序：** `hydra [选项] <target> <service>`（本工具已按此顺序组参，勿把 target 写在选项前）
 
-  **使用场景：** 授权环境下的弱口令检测、密码强度评估
+  **使用场景：** 弱口令检测、密码强度评估
 
-  **注意：** 仅用于已授权目标；对无响应目标请减小 `wait_time` 或缩小字典，避免长时间挂起。
+  **注意：** 对无响应目标请减小 `wait_time` 或缩小字典，避免长时间挂起。
 parameters:
   - name: "username"
     type: "string"

@@ -86,6 +86,7 @@ async function loadMarkdownAgents() {
 }
 
 function showAddMarkdownAgentModal() {
+    if (typeof requirePermission === 'function' && !requirePermission('agents:write')) return;
     markdownAgentsEditingFilename = null;
     markdownAgentsEditingIsOrchestrator = false;
     const modal = document.getElementById('agent-md-modal');
@@ -157,6 +158,7 @@ function parseToolsInput(s) {
 }
 
 async function saveMarkdownAgent() {
+    if (typeof requirePermission === 'function' && !requirePermission('agents:write')) return;
     const name = document.getElementById('agent-md-name').value.trim();
     if (!name) {
         showNotification(_agentsT('agentsPage.nameRequired'), 'error');

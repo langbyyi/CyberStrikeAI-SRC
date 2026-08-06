@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -173,15 +173,16 @@ func (b *PayloadBuilder) BuildBeacon(in PayloadBuilderInput) (*BuildResult, erro
 	}
 
 	// 交叉编译
+	payloadID := "p_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:14]
 	binName := strings.TrimSpace(in.OutputName)
 	if binName == "" {
-		binName = fmt.Sprintf("beacon_%s_%s", goos, goarch)
+		binName = fmt.Sprintf("beacon_%s_%s_%s", goos, goarch, payloadID)
 	}
 	if goos == "windows" && !strings.HasSuffix(binName, ".exe") {
 		binName += ".exe"
 	}
 	binPath := filepath.Join(b.outputDir, binName)
-	
+
 	if err := os.MkdirAll(b.outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir output: %w", err)
 	}
@@ -214,7 +215,6 @@ func (b *PayloadBuilder) BuildBeacon(in PayloadBuilderInput) (*BuildResult, erro
 		return nil, fmt.Errorf("stat output: %w", err)
 	}
 
-	payloadID := "p_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:14]
 	return &BuildResult{
 		PayloadID:    payloadID,
 		ListenerID:   listener.ID,

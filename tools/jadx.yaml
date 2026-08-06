@@ -1,0 +1,28 @@
+name: jadx
+command: jadx
+enabled: true
+short_description: APK/DEX 反编译为 Java 源码
+description: 'APK/DEX 反编译为 Java 源码工具。
+
+  **使用场景：** 移动 APP 源码审计、敏感信息搜索。
+
+
+  **安装：** `apt install jadx` 或官网下载（若不可用先安装）。'
+parameters:
+  - name: apk_file
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: APK/DEX 文件
+  - name: output
+    type: string
+    required: false
+    flag: -d
+    format: flag
+    description: 输出目录
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `--no-res`(不反编译资源) `--show-bad-code`

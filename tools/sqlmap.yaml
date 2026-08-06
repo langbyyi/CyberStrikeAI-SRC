@@ -1,8 +1,5 @@
 name: "sqlmap"
 command: "sqlmap"
-# 默认护栏：HTTP 请求超时 30s + 并发 5 线程；level 默认 1（保守，请求数少、不易触发 WAF）。
-# 深度测试请显式调高 level（1-5）或用 additional_args（如 --risk）。
-args: ["--timeout", "30", "--threads", "5"]
 enabled: true
 # 简短描述（用于工具列表，减少token消耗）
 short_description: "自动化SQL注入检测和利用工具，用于发现和利用SQL注入漏洞"
@@ -24,7 +21,6 @@ description: |
   - 渗透测试和漏洞验证
 
   **注意事项：**
-  - 仅用于授权的安全测试
   - 某些操作可能对目标系统造成影响
   - 建议在测试环境中先验证
   - 使用 --batch 参数避免交互式提示
@@ -84,15 +80,15 @@ parameters:
       - Level 5: 最全面测试，包含所有已知技术
 
       **建议：**
-      - 快速扫描使用1（默认，保守、请求数少、不易触发WAF）
-      - 常规测试使用2-3
+      - 快速扫描使用1-2
+      - 常规测试使用3（默认）
       - 深度测试使用4-5
 
       **注意事项：**
       - 级别越高，请求数量越多，可能被WAF拦截
-      - 默认值为1（保守）
+      - 默认值为3
     required: false
-    default: 1
+    default: 3
     flag: "--level"
     format: "combined" # --level=3
   - name: "data"

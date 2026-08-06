@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/mcp/builtin"
 
 	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
 	"github.com/cloudwego/eino/adk"
@@ -78,6 +79,30 @@ func splitToolsForToolSearchByNames(all []tool.BaseTool, names []string, fallbac
 	return static, dynamic, true
 }
 
+func mergeAlwaysVisibleToolNames(configured []string) []string {
+	merged := make([]string, 0, len(configured)+32)
+	seen := make(map[string]struct{}, len(configured)+32)
+	add := func(name string) {
+		n := strings.TrimSpace(strings.ToLower(name))
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		merged = append(merged, n)
+	}
+	for _, n := range configured {
+		add(n)
+	}
+	// Always include hardcoded backend builtin MCP tools from constants.
+	for _, n := range builtin.GetAllBuiltinTools() {
+		add(n)
+	}
+	return merged
+}
+
 func reductionCacheRootDir(configuredBase, projectID, conversationID string) string {
 	base := strings.TrimSpace(configuredBase)
 	if base == "" {
@@ -93,7 +118,7 @@ func reductionCacheRootDir(configuredBase, projectID, conversationID string) str
 	return filepath.Join(base, "conversations", sanitizeEinoPathSegment(conv))
 }
 
-func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, boundToolNames []string, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
+func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
 	if loc == nil {
 		return nil, fmt.Errorf("reduction: local backend nil")
 	}
@@ -101,8 +126,12 @@ func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddl
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("reduction root: %w", err)
 	}
-	// 不清空：用户配置 + 框架元工具 + 本轮角色绑定工具（禁止硬编码 MCP 工具名）
-	excl := mergeReductionClearExclude(mw.ReductionClearExclude, boundToolNames)
+	excl := append([]string(nil), mw.ReductionClearExclude...)
+	defaultExcl := []string{
+		"task", "transfer_to_agent", "exit", "write_todos", "skill", "tool_search",
+		"TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
+	}
+	excl = append(excl, defaultExcl...)
 	redMW, err := reduction.New(ctx, &reduction.Config{
 		Backend:           loc,
 		RootDir:           root,
@@ -115,11 +144,7 @@ func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddl
 		return nil, err
 	}
 	if logger != nil {
-		logger.Info("eino middleware: reduction enabled",
-			zap.String("root", root),
-			zap.Bool("execution_boost", mw.ExecutionBoostEffective()),
-			zap.Int("bound_tools", len(boundToolNames)),
-			zap.Int("clear_exclude_count", len(excl)))
+		logger.Info("eino middleware: reduction enabled", zap.String("root", root))
 	}
 	return redMW, nil
 }
@@ -142,8 +167,6 @@ func prependEinoMiddlewares(
 		return tools, nil, false, nil
 	}
 	outTools = tools
-	// 本轮已绑定工具名（来自角色 ToolsForRole → ToolsFromDefinitions），编排层禁止再注入硬编码 MCP 名
-	boundNames := collectToolNames(ctx, tools)
 
 	if mw.PatchToolCallsEffective() {
 		patchMW, perr := patchtoolcalls.New(ctx, &patchtoolcalls.Config{})
@@ -157,7 +180,7 @@ func prependEinoMiddlewares(
 		if place == einoMWSub && !mw.ReductionSubAgents {
 			// skip
 		} else {
-			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, boundNames, logger)
+			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, logger)
 			if rerr != nil {
 				return nil, nil, false, rerr
 			}
@@ -173,11 +196,8 @@ func prependEinoMiddlewares(
 	if alwaysVis <= 0 {
 		alwaysVis = 12
 	}
-	boost := mw.ExecutionBoostEffective()
-	// always_visible 仅能来自：配置∩角色绑定 或 角色绑定列表前 N 项
-	alwaysVisibleMerged := resolveAlwaysVisibleToolNames(mw.ToolSearchAlwaysVisibleTools, boundNames, alwaysVis)
 	if mw.ToolSearchEnable && len(tools) >= minTools {
-		static, dynamic, split := splitToolsForToolSearchByNames(tools, alwaysVisibleMerged, alwaysVis)
+		static, dynamic, split := splitToolsForToolSearchByNames(tools, mergeAlwaysVisibleToolNames(mw.ToolSearchAlwaysVisibleTools), alwaysVis)
 		if split && len(dynamic) > 0 {
 			ts, terr := toolsearch.New(ctx, &toolsearch.Config{DynamicTools: dynamic})
 			if terr != nil {
@@ -188,24 +208,10 @@ func prependEinoMiddlewares(
 			toolSearchActive = true
 			if logger != nil {
 				logger.Info("eino middleware: tool_search enabled",
-					zap.Bool("execution_boost", boost),
-					zap.Int("always_visible_merged", len(alwaysVisibleMerged)),
 					zap.Int("static_tools", len(static)),
 					zap.Int("dynamic_tools", len(dynamic)))
 			}
-		} else if logger != nil {
-			logger.Info("eino middleware: tool_search skipped (no dynamic split)",
-				zap.Bool("execution_boost", boost),
-				zap.Int("always_visible_merged", len(alwaysVisibleMerged)),
-				zap.Int("tools", len(tools)))
 		}
-	} else if logger != nil {
-		logger.Info("eino middleware: tool_search disabled or below min_tools",
-			zap.Bool("tool_search_enable", mw.ToolSearchEnable),
-			zap.Bool("execution_boost", boost),
-			zap.Int("tools", len(tools)),
-			zap.Int("min_tools", minTools),
-			zap.Int("always_visible_merged", len(alwaysVisibleMerged)))
 	}
 
 	if place == einoMWMain && mw.PlantaskEnable {

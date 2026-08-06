@@ -1,0 +1,48 @@
+name: medusa
+command: medusa
+enabled: true
+short_description: 并行网络登录爆破（多协议）
+description: '并行网络服务登录爆破工具，支持 SSH/FTP/SMB/HTTP/MYSQL 等。
+
+  **使用场景：** 服务口令爆破。
+
+
+  **安装：** `apt install medusa`（若不可用先安装）。'
+parameters:
+  - name: host
+    type: string
+    required: true
+    flag: -h
+    format: flag
+    description: 目标主机
+  - name: module
+    type: string
+    required: false
+    flag: -M
+    format: flag
+    default: ssh
+    description: 模块：ssh/ftp/smb/http/mysql 等
+  - name: users
+    type: string
+    required: false
+    flag: -U
+    format: flag
+    description: 用户名字典
+  - name: passwords
+    type: string
+    required: false
+    flag: -P
+    format: flag
+    description: 密码字典
+  - name: threads
+    type: int
+    required: false
+    flag: -t
+    format: flag
+    default: 10
+    description: 线程数
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-e ns` `-n 22`(端口) `-O out.txt`(输出)

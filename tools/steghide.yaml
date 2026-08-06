@@ -53,7 +53,9 @@ parameters:
       额外的steghide参数。用于传递未在参数列表中定义的steghide选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - -sf file.jpg（载体文件）
+      - -xf out.txt（提取到文件）
+      - -p password（密码）
 
       **注意事项：**
       - 多个参数用空格分隔

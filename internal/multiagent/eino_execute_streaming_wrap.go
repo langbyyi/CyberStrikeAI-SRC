@@ -63,11 +63,16 @@ type einoStreamingShellWrap struct {
 	outputChunk func(toolName, toolCallID, chunk string)
 	// toolTimeoutMinutes 与 agent.tool_timeout_minutes 对齐；>0 时对单次 execute 套用 context 超时（与 MCP 工具经 executeToolViaMCP 行为一致）。0 表示仅依赖上层 ctx（如整任务 10h 上限）。
 	toolTimeoutMinutes int
+	// toolWaitTimeoutSeconds 与 agent.tool_wait_timeout_seconds 对齐；>0 时本轮等待到期后返回 execution_id，shell 继续后台运行。
+	toolWaitTimeoutSeconds int
 	// shellNoOutputTimeoutSec：无任何输出时的空闲秒数；0=关闭。
 	shellNoOutputTimeoutSec int
 	// beginMonitor 在 execute 开始时写入 running 状态；finishMonitor 在流结束后更新为 completed/failed。
-	beginMonitor func(toolCallID, command string) string
-	finishMonitor func(executionID, toolCallID, command, stdout string, success bool, invokeErr error)
+	beginMonitor            func(toolCallID, command string) string
+	appendPartialMonitor    func(executionID, toolCallID, chunk string)
+	registerCancelMonitor   func(executionID string, cancel context.CancelFunc)
+	unregisterCancelMonitor func(executionID string)
+	finishMonitor           func(executionID, toolCallID, command, stdout string, success bool, invokeErr error)
 }
 
 func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *filesystem.ExecuteRequest) (*schema.StreamReader[*filesystem.ExecuteResponse], error) {
@@ -104,6 +109,9 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 	if w.toolTimeoutMinutes > 0 {
 		execCtx, timeoutCancel = context.WithTimeout(execCtx, time.Duration(w.toolTimeoutMinutes)*time.Minute)
 	}
+	if monitorExecID != "" && w.registerCancelMonitor != nil {
+		w.registerCancelMonitor(monitorExecID, execCancel)
+	}
 	if execReg != nil && convID != "" {
 		execReg.RegisterActiveEinoExecute(convID, execCancel)
 	}
@@ -115,6 +123,9 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		}
 		if execCancel != nil {
 			execCancel()
+		}
+		if monitorExecID != "" && w.unregisterCancelMonitor != nil {
+			w.unregisterCancelMonitor(monitorExecID)
 		}
 		if einoExecuteRecvErrIsToolTimeout(err, execCtx) {
 			hint := "\n\n" + einoExecuteTimeoutUserHint() + "\n"
@@ -146,7 +157,7 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 
 	outR, outW := schema.Pipe[*filesystem.ExecuteResponse](32)
 
-	go func(inner *schema.StreamReader[*filesystem.ExecuteResponse], command string, cancel context.CancelFunc, timeoutCleanup context.CancelFunc, tctx context.Context, conversationID string, reg mcp.EinoExecuteRunRegistry, toolReg mcp.ToolRunRegistry, execID string, toolCallID string, noOutputSec int) {
+	go func(inner *schema.StreamReader[*filesystem.ExecuteResponse], command string, cancel context.CancelFunc, timeoutCleanup context.CancelFunc, tctx context.Context, conversationID string, reg mcp.EinoExecuteRunRegistry, toolReg mcp.ToolRunRegistry, execID string, toolCallID string, noOutputSec int, waitTimeoutSec int) {
 		var innerCloseOnce sync.Once
 		closeInner := func() {
 			innerCloseOnce.Do(func() { inner.Close() })
@@ -163,6 +174,9 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		}
 		if toolReg != nil && conversationID != "" && execID != "" {
 			defer toolReg.UnregisterRunningTool(conversationID, execID)
+		}
+		if w.unregisterCancelMonitor != nil && execID != "" {
+			defer w.unregisterCancelMonitor(execID)
 		}
 
 		// ctx 取消时关闭内层流，避免 amass 等长时间无换行输出时 Recv 永久阻塞。
@@ -181,10 +195,29 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		var invokeErr error
 		exitCode := 0
 		hasExitCode := false
+		softReturned := false
+		var outCloseOnce sync.Once
+		closeOut := func() {
+			outCloseOnce.Do(func() { outW.Close() })
+		}
+		defer closeOut()
+		sendOut := func(resp *filesystem.ExecuteResponse, err error) bool {
+			if softReturned {
+				return false
+			}
+			return outW.Send(resp, err)
+		}
 
 		idleWatch := security.NewShellInactivityWatch(noOutputSec)
 		if idleWatch != nil {
 			defer idleWatch.Stop()
+		}
+		var waitTimeoutCh <-chan time.Time
+		var waitTimer *time.Timer
+		if waitTimeoutSec > 0 {
+			waitTimer = time.NewTimer(time.Duration(waitTimeoutSec) * time.Second)
+			waitTimeoutCh = waitTimer.C
+			defer waitTimer.Stop()
 		}
 
 		type execRecvMsg struct {
@@ -206,8 +239,11 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 			success = false
 			invokeErr = fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
 			msg := security.ShellNoOutputTimeoutMessage(idleWatch.Sec)
-			_ = outW.Send(&filesystem.ExecuteResponse{Output: msg}, nil)
+			_ = sendOut(&filesystem.ExecuteResponse{Output: msg}, nil)
 			sb.WriteString(msg)
+			if w.appendPartialMonitor != nil && execID != "" {
+				w.appendPartialMonitor(execID, toolCallID, msg)
+			}
 			if w.outputChunk != nil && toolCallID != "" {
 				w.outputChunk("execute", toolCallID, msg)
 			}
@@ -227,6 +263,14 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 			case <-idleCh:
 				fireInactivityTimeout()
 				break recvLoop
+			case <-waitTimeoutCh:
+				if execID != "" && !softReturned {
+					msg := einoExecuteSoftWaitTimeoutResult(execID, waitTimeoutSec)
+					_ = outW.Send(&filesystem.ExecuteResponse{Output: msg}, nil)
+					softReturned = true
+					closeOut()
+				}
+				waitTimeoutCh = nil
 			case msg := <-recvCh:
 				rerr := msg.err
 				resp := msg.resp
@@ -244,7 +288,7 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 						invokeErr = context.Canceled
 						break recvLoop
 					}
-					_ = outW.Send(nil, rerr)
+					_ = sendOut(nil, rerr)
 					break recvLoop
 				}
 				if resp != nil {
@@ -263,11 +307,14 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 						}
 						sb.WriteString(resp.Output)
 						appended = resp.Output
+						if w.appendPartialMonitor != nil && execID != "" {
+							w.appendPartialMonitor(execID, toolCallID, appended)
+						}
 					}
 					if w.outputChunk != nil && strings.TrimSpace(appended) != "" {
 						w.outputChunk("execute", toolCallID, appended)
 					}
-					if outW.Send(resp, nil) {
+					if sendOut(resp, nil) {
 						success = false
 						invokeErr = fmt.Errorf("execute stream closed by consumer")
 						break recvLoop
@@ -304,7 +351,10 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		// ADK 从本 Pipe 拼出 tool 消息正文；仅 Notify 尾标不会进入模型上下文。超时句写入流，与 UI 一致。
 		if invokeErr != nil && errors.Is(invokeErr, context.DeadlineExceeded) {
 			hint := "\n\n" + einoExecuteTimeoutUserHint() + "\n"
-			_ = outW.Send(&filesystem.ExecuteResponse{Output: hint}, nil)
+			_ = sendOut(&filesystem.ExecuteResponse{Output: hint}, nil)
+			if w.appendPartialMonitor != nil && execID != "" {
+				w.appendPartialMonitor(execID, toolCallID, hint)
+			}
 			if w.outputChunk != nil && tid != "" {
 				w.outputChunk("execute", tid, hint)
 			}
@@ -313,9 +363,9 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		// 中断时循环内已逐行写入 stdout；此处只追加 USER INTERRUPT NOTE，避免整段输出重复。
 		if invokeErr != nil && errors.Is(invokeErr, context.Canceled) && abortNote != "" {
 			if partialStreamed != "" {
-				_ = outW.Send(&filesystem.ExecuteResponse{Output: "\n\n" + mcp.AbortNoteBannerForModel + "\n" + abortNote}, nil)
+				_ = sendOut(&filesystem.ExecuteResponse{Output: "\n\n" + mcp.AbortNoteBannerForModel + "\n" + abortNote}, nil)
 			} else if text := strings.TrimSpace(sb.String()); text != "" {
-				_ = outW.Send(&filesystem.ExecuteResponse{Output: text + "\n"}, nil)
+				_ = sendOut(&filesystem.ExecuteResponse{Output: text + "\n"}, nil)
 			}
 		}
 		rawOutput := sb.String()
@@ -323,7 +373,10 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 		if !success && hasExitCode && exitCode != 0 {
 			statusLine := security.ExecuteFailureStatusLine(exitCode)
 			if !strings.Contains(rawOutput, "命令执行失败:") {
-				_ = outW.Send(&filesystem.ExecuteResponse{Output: statusLine}, nil)
+				_ = sendOut(&filesystem.ExecuteResponse{Output: statusLine}, nil)
+				if w.appendPartialMonitor != nil && execID != "" {
+					w.appendPartialMonitor(execID, toolCallID, statusLine)
+				}
 				sb.WriteString(statusLine)
 			}
 			fireBody = einomcp.ToolErrorPrefix + security.FormatCommandFailureResult(exitCode, rawOutput)
@@ -332,10 +385,25 @@ func (w *einoStreamingShellWrap) ExecuteStreaming(ctx context.Context, input *fi
 			w.finishMonitor(execID, toolCallID, command, sb.String(), success, invokeErr)
 		}
 		if w.invokeNotify != nil {
-			w.invokeNotify.Fire(toolCallID, "execute", agentTag, success, fireBody, invokeErr)
+			if !softReturned {
+				w.invokeNotify.Fire(toolCallID, "execute", agentTag, success, fireBody, invokeErr)
+			}
 		}
-		outW.Close()
-	}(sr, userCmd, execCancel, timeoutCancel, execCtx, convID, execReg, toolRunReg, monitorExecID, tid, w.shellNoOutputTimeoutSec)
+	}(sr, userCmd, execCancel, timeoutCancel, execCtx, convID, execReg, toolRunReg, monitorExecID, tid, w.shellNoOutputTimeoutSec, w.toolWaitTimeoutSeconds)
 
 	return outR, nil
+}
+
+func einoExecuteSoftWaitTimeoutResult(executionID string, waitTimeoutSec int) string {
+	waitText := "configured wait timeout"
+	if waitTimeoutSec > 0 {
+		waitText = fmt.Sprintf("%ds", waitTimeoutSec)
+	}
+	return fmt.Sprintf(`工具已提交到后台执行，当前仍在运行。
+
+execution_id: %s
+status: running
+wait_timeout: %s
+
+你可以继续推理、改用其他工具，或调用 get_tool_execution / wait_tool_execution 读取 partial_output 并继续等待；也可以调用 cancel_tool_execution 取消。`, executionID, waitText)
 }

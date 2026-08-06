@@ -3,19 +3,193 @@
 let chatFilesCache = [];
 /** 后端 GET /api/chat-uploads 返回的目录相对路径（含空文件夹），与 files 合并成树 */
 let chatFilesFoldersCache = [];
+const chatFilesProjectNameById = {};
+const chatFilesConversationTitleById = {};
 let chatFilesDisplayed = [];
 let chatFilesEditRelativePath = '';
 let chatFilesRenameRelativePath = '';
+let chatFilesTotal = 0;
+let chatFilesPage = 1;
+let chatFilesPageSize = 20;
+let chatFilesSearchDebounceTimer = null;
 
 const CHAT_FILES_GROUP_STORAGE_KEY = 'csai_chat_files_group_by';
 const CHAT_FILES_BROWSE_PATH_KEY = 'csai_chat_files_browse_path';
+const CHAT_FILES_PAGE_SIZE_STORAGE_KEY = 'csai_chat_files_page_size';
+const CHAT_FILES_TREE_UPLOAD_ROOT = 'uploads';
+const CHAT_FILES_TREE_REDUCTION_ROOT = 'tool_outputs';
+const CHAT_FILES_TREE_WORKSPACE_ROOT = 'workspace';
+const CHAT_FILES_TREE_ARTIFACT_ROOT = 'conversation_artifacts';
 
-/** 按文件夹浏览模式下的当前路径（相对 chat_uploads 的段数组），如 ['2024-03-21','uuid'] */
+/** 按文件夹浏览模式下的当前路径（虚拟根段数组），如 ['uploads','2024-03-21','uuid'] */
 let chatFilesBrowsePath = [];
 /** 非空时，下一次上传文件落到此相对路径（chat_uploads 下目录），如 2026-03-21/uuid/sub */
 let chatFilesPendingUploadDir = '';
 /** 文件管理页面向服务器上传进行中，避免重复选择并禁用顶栏按钮 */
 let chatFilesXHRUploadBusy = false;
+
+const CHAT_FILES_FILTER_SELECT_IDS = ['chat-files-filter-source', 'chat-files-group-by'];
+const chatFilesFilterSelectMap = {};
+let chatFilesFilterSelectDocBound = false;
+const CHAT_FILES_FILTER_SELECT_CARET = '<svg class="chat-files-filter-select-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function closeAllChatFilesFilterSelects() {
+    Object.keys(chatFilesFilterSelectMap).forEach(function (id) {
+        const reg = chatFilesFilterSelectMap[id];
+        if (!reg || !reg.wrapper) return;
+        reg.wrapper.classList.remove('open');
+        if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function chatFilesRememberDisplayNames(files) {
+    Object.keys(chatFilesProjectNameById).forEach(function (k) { delete chatFilesProjectNameById[k]; });
+    Object.keys(chatFilesConversationTitleById).forEach(function (k) { delete chatFilesConversationTitleById[k]; });
+    (Array.isArray(files) ? files : []).forEach(function (f) {
+        const pid = String((f && f.projectId) || '').trim();
+        const pname = String((f && f.projectName) || '').trim();
+        if (pid && pname) chatFilesProjectNameById[pid] = pname;
+        const cid = String((f && f.conversationId) || '').trim();
+        const ctitle = String((f && f.conversationTitle) || '').trim();
+        if (cid && ctitle) chatFilesConversationTitleById[cid] = ctitle;
+    });
+}
+
+function syncChatFilesFilterSelect(selectId) {
+    const reg = chatFilesFilterSelectMap[selectId];
+    if (!reg) return;
+    const select = reg.select;
+    const dropdown = reg.dropdown;
+    const trigger = reg.trigger;
+    const valueSpan = trigger.querySelector('.chat-files-filter-select-value');
+
+    dropdown.innerHTML = '';
+    Array.prototype.forEach.call(select.options, function (opt) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'chat-files-filter-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        if (opt.value === select.value) {
+            item.classList.add('is-selected');
+            item.setAttribute('aria-selected', 'true');
+        } else {
+            item.setAttribute('aria-selected', 'false');
+        }
+        const check = document.createElement('span');
+        check.className = 'chat-files-filter-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'chat-files-filter-select-label';
+        label.textContent = opt.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        dropdown.appendChild(item);
+    });
+
+    const selectedOpt = select.options[select.selectedIndex];
+    if (valueSpan) {
+        valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+    }
+    trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+}
+
+function syncAllChatFilesFilterSelects() {
+    CHAT_FILES_FILTER_SELECT_IDS.forEach(syncChatFilesFilterSelect);
+}
+
+function enhanceChatFilesFilterSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const existing = chatFilesFilterSelectMap[selectId];
+    if (existing && existing.select !== select) {
+        delete chatFilesFilterSelectMap[selectId];
+    }
+    if (select.dataset.chatFilesCustomSelect === '1') {
+        syncChatFilesFilterSelect(selectId);
+        return;
+    }
+    select.dataset.chatFilesCustomSelect = '1';
+    select.classList.add('chat-files-filter-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chat-files-filter-select-ui';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'chat-files-filter-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'chat-files-filter-select-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', CHAT_FILES_FILTER_SELECT_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'chat-files-filter-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    chatFilesFilterSelectMap[selectId] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        const open = wrapper.classList.contains('open');
+        closeAllChatFilesFilterSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+        }
+    });
+
+    dropdown.addEventListener('click', function (e) {
+        const opt = e.target.closest('.chat-files-filter-select-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        syncChatFilesFilterSelect(selectId);
+    });
+
+    select.addEventListener('change', function () {
+        syncChatFilesFilterSelect(selectId);
+    });
+
+    if (!select.dataset.chatFilesFilterBound) {
+        select.dataset.chatFilesFilterBound = '1';
+        select.addEventListener('change', chatFilesGroupByChange);
+    }
+
+    syncChatFilesFilterSelect(selectId);
+}
+
+function initChatFilesFilterSelects() {
+    if (!chatFilesFilterSelectDocBound) {
+        document.addEventListener('click', closeAllChatFilesFilterSelects);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllChatFilesFilterSelects();
+        });
+        chatFilesFilterSelectDocBound = true;
+    }
+    CHAT_FILES_FILTER_SELECT_IDS.forEach(enhanceChatFilesFilterSelect);
+    syncAllChatFilesFilterSelects();
+}
 
 function chatFilesLoadBrowsePathFromStorage() {
     try {
@@ -44,6 +218,17 @@ function chatFilesSetBrowsePath(path) {
     }
 }
 
+function chatFilesLoadPageSizeFromStorage() {
+    try {
+        const n = parseInt(localStorage.getItem(CHAT_FILES_PAGE_SIZE_STORAGE_KEY) || '', 10);
+        if ([10, 20, 50, 100].includes(n)) {
+            chatFilesPageSize = n;
+        }
+    } catch (e) {
+        /* ignore */
+    }
+}
+
 function chatFilesResolveTreeNode(root, path) {
     let node = root;
     let i;
@@ -67,6 +252,7 @@ function chatFilesNormalizeBrowsePathForTree(root) {
 
 function initChatFilesPage() {
     chatFilesLoadBrowsePathFromStorage();
+    chatFilesLoadPageSizeFromStorage();
     try {
         localStorage.removeItem('csai_chat_files_synthetic_dirs');
     } catch (e) {
@@ -77,13 +263,15 @@ function initChatFilesPage() {
     if (sel) {
         try {
             const v = localStorage.getItem(CHAT_FILES_GROUP_STORAGE_KEY);
-            if (v === 'none' || v === 'date' || v === 'conversation' || v === 'folder') {
+            if (v === 'none' || v === 'date' || v === 'conversation' || v === 'project' || v === 'folder') {
                 sel.value = v;
             }
         } catch (e) {
             /* ignore */
         }
     }
+    initChatFilesFilterSelects();
+    setupChatFilesDragDrop();
     loadChatFilesPage();
 }
 
@@ -172,6 +360,8 @@ function ensureChatFilesDocClickClose() {
 async function loadChatFilesPage() {
     const wrap = document.getElementById('chat-files-list-wrap');
     if (!wrap) return;
+    const pager = document.getElementById('chat-files-pagination');
+    if (pager) pager.hidden = true;
     wrap.classList.remove('chat-files-table-wrap--grouped');
     wrap.classList.remove('chat-files-table-wrap--tree');
     wrap.innerHTML = '<div class="loading-spinner" data-i18n="common.loading">加载中…</div>';
@@ -181,10 +371,31 @@ async function loadChatFilesPage() {
 
     const conv = document.getElementById('chat-files-filter-conv');
     const convQ = conv ? conv.value.trim() : '';
-    let url = '/api/chat-uploads';
+    const project = document.getElementById('chat-files-filter-project');
+    const projectQ = project ? project.value.trim() : '';
+    const source = document.getElementById('chat-files-filter-source');
+    const sourceQ = source ? source.value : 'all';
+    const search = document.getElementById('chat-files-filter-name');
+    const searchQ = search ? search.value.trim() : '';
+    const groupMode = chatFilesGetGroupByMode();
+    const params = new URLSearchParams();
     if (convQ) {
-        url += '?conversation=' + encodeURIComponent(convQ);
+        params.set('conversation', convQ);
     }
+    if (projectQ) {
+        params.set('project', projectQ);
+    }
+    if (sourceQ && sourceQ !== 'all') {
+        params.set('source', sourceQ);
+    }
+    if (searchQ) {
+        params.set('search', searchQ);
+    }
+    params.set('page', String(chatFilesPage));
+    params.set('pageSize', groupMode === 'folder' ? 'all' : String(chatFilesPageSize));
+    let url = '/api/chat-uploads';
+    const query = params.toString();
+    if (query) url += '?' + query;
 
     try {
         const res = await apiFetch(url);
@@ -194,7 +405,18 @@ async function loadChatFilesPage() {
         }
         const data = await res.json();
         chatFilesCache = Array.isArray(data.files) ? data.files : [];
+        chatFilesRememberDisplayNames(chatFilesCache);
         chatFilesFoldersCache = Array.isArray(data.folders) ? data.folders : [];
+        chatFilesTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : chatFilesCache.length;
+        chatFilesPage = Number.isFinite(Number(data.page)) ? Math.max(1, Number(data.page)) : chatFilesPage;
+        if (Number.isFinite(Number(data.pageSize)) && Number(data.pageSize) > 0) {
+            chatFilesPageSize = Number(data.pageSize);
+        }
+        if (groupMode !== 'folder' && chatFilesTotal > 0 && chatFilesCache.length === 0 && chatFilesPage > chatFilesTotalPages()) {
+            chatFilesPage = chatFilesTotalPages();
+            loadChatFilesPage();
+            return;
+        }
         renderChatFilesTable();
     } catch (e) {
         console.error(e);
@@ -202,24 +424,141 @@ async function loadChatFilesPage() {
         wrap.classList.remove('chat-files-table-wrap--tree');
         const msg = (typeof window.t === 'function') ? window.t('chatFilesPage.errorLoad') : '加载失败';
         wrap.innerHTML = '<div class="error-message">' + escapeHtml(msg + ': ' + (e.message || String(e))) + '</div>';
+        renderChatFilesPagination();
+    }
+}
+
+async function exportChatFiles() {
+    const conv = document.getElementById('chat-files-filter-conv');
+    const project = document.getElementById('chat-files-filter-project');
+    const convQ = conv ? conv.value.trim() : '';
+    const projectQ = project ? project.value.trim() : '';
+    const source = document.getElementById('chat-files-filter-source');
+    const sourceQ = source ? source.value : 'all';
+    const search = document.getElementById('chat-files-filter-name');
+    const searchQ = search ? search.value.trim() : '';
+    const params = new URLSearchParams();
+    if (convQ) params.set('conversation', convQ);
+    if (projectQ) params.set('project', projectQ);
+    if (sourceQ && sourceQ !== 'all') params.set('source', sourceQ);
+    if (searchQ) params.set('search', searchQ);
+    const url = '/api/chat-uploads/export' + (params.toString() ? ('?' + params.toString()) : '');
+    try {
+        const res = await apiFetch(url);
+        if (!res.ok) {
+            const raw = await res.text();
+            let msg = raw;
+            try {
+                const j = JSON.parse(raw);
+                if (j && j.error) msg = j.error;
+            } catch (e) {
+                /* keep raw */
+            }
+            if (res.status === 404) {
+                msg = (typeof window.t === 'function') ? window.t('chatFilesPage.exportEmpty') : '没有可导出的文件';
+            }
+            throw new Error(msg || String(res.status));
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let filename = 'chat-files-export.zip';
+        const m = disposition.match(/filename="?([^"]+)"?/i);
+        if (m && m[1]) filename = m[1];
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        const ok = (typeof window.t === 'function') ? window.t('chatFilesPage.exportStarted') : '已开始导出';
+        chatFilesShowToast(ok);
+    } catch (e) {
+        alert((e && e.message) ? e.message : String(e));
     }
 }
 
 function chatFilesNameFilter(files) {
-    const el = document.getElementById('chat-files-filter-name');
-    const q = el ? el.value.trim().toLowerCase() : '';
-    if (!q) return files;
-    return files.filter(function (f) {
-        const name = (f.name || '').toLowerCase();
-        const sub = (f.subPath || '').toLowerCase();
-        return name.includes(q) || sub.includes(q);
-    });
+    return Array.isArray(files) ? files : [];
 }
 
-/** 仅前端按文件名筛选，不重新请求 */
+function chatFilesResetToFirstPageAndLoad() {
+    chatFilesPage = 1;
+    loadChatFilesPage();
+}
+
 function chatFilesFilterNameOnInput() {
-    if (!chatFilesCache.length && !chatFilesFoldersCache.length && chatFilesGetGroupByMode() !== 'folder') return;
-    renderChatFilesTable();
+    if (chatFilesSearchDebounceTimer) clearTimeout(chatFilesSearchDebounceTimer);
+    chatFilesSearchDebounceTimer = setTimeout(function () {
+        chatFilesSearchDebounceTimer = null;
+        chatFilesResetToFirstPageAndLoad();
+    }, 250);
+}
+
+function chatFilesTotalPages() {
+    if (chatFilesGetGroupByMode() === 'folder') return 1;
+    return Math.max(1, Math.ceil((chatFilesTotal || 0) / Math.max(1, chatFilesPageSize)));
+}
+
+function renderChatFilesPagination() {
+    const pager = document.getElementById('chat-files-pagination');
+    if (!pager) return;
+    const groupMode = chatFilesGetGroupByMode();
+    if (groupMode === 'folder' || chatFilesTotal <= 0) {
+        pager.hidden = true;
+        pager.innerHTML = '';
+        return;
+    }
+    const totalPages = chatFilesTotalPages();
+    if (chatFilesPage > totalPages) {
+        chatFilesPage = totalPages;
+    }
+    const start = (chatFilesPage - 1) * chatFilesPageSize + 1;
+    const end = Math.min(chatFilesTotal, chatFilesPage * chatFilesPageSize);
+    const info = (typeof window.t === 'function')
+        ? window.t('chatFilesPage.paginationInfo', { start: start, end: end, total: chatFilesTotal })
+        : ('显示 ' + start + '-' + end + ' / ' + chatFilesTotal);
+    const pageText = (typeof window.t === 'function')
+        ? window.t('chatFilesPage.paginationPage', { page: chatFilesPage, totalPages: totalPages })
+        : ('第 ' + chatFilesPage + ' / ' + totalPages + ' 页');
+    const pageSizeLabel = (typeof window.t === 'function') ? window.t('chatFilesPage.pageSize') : '每页';
+    const prevLabel = (typeof window.t === 'function') ? window.t('chatFilesPage.prevPage') : '上一页';
+    const nextLabel = (typeof window.t === 'function') ? window.t('chatFilesPage.nextPage') : '下一页';
+    const sizes = [10, 20, 50, 100].map(function (n) {
+        return '<option value="' + n + '"' + (n === chatFilesPageSize ? ' selected' : '') + '>' + n + '</option>';
+    }).join('');
+    pager.innerHTML = `
+        <div class="pagination-info">
+            <span>${escapeHtml(info)}</span>
+            <label class="pagination-page-size">${escapeHtml(pageSizeLabel)}
+                <select onchange="changeChatFilesPageSize(this.value)">${sizes}</select>
+            </label>
+        </div>
+        <div class="pagination-controls">
+            <button type="button" class="btn-secondary" ${chatFilesPage <= 1 ? 'disabled' : ''} onclick="changeChatFilesPage(${chatFilesPage - 1})">${escapeHtml(prevLabel)}</button>
+            <span class="pagination-page">${escapeHtml(pageText)}</span>
+            <button type="button" class="btn-secondary" ${chatFilesPage >= totalPages ? 'disabled' : ''} onclick="changeChatFilesPage(${chatFilesPage + 1})">${escapeHtml(nextLabel)}</button>
+        </div>`;
+    pager.hidden = false;
+}
+
+function changeChatFilesPage(page) {
+    const totalPages = chatFilesTotalPages();
+    const next = Math.min(totalPages, Math.max(1, parseInt(page, 10) || 1));
+    if (next === chatFilesPage) return;
+    chatFilesPage = next;
+    loadChatFilesPage();
+}
+
+function changeChatFilesPageSize(value) {
+    const n = parseInt(value, 10);
+    if (![10, 20, 50, 100].includes(n)) return;
+    chatFilesPageSize = n;
+    chatFilesPage = 1;
+    try {
+        localStorage.setItem(CHAT_FILES_PAGE_SIZE_STORAGE_KEY, String(n));
+    } catch (e) {
+        /* ignore */
+    }
+    loadChatFilesPage();
 }
 
 function formatChatFileBytes(n) {
@@ -325,7 +664,7 @@ function chatFilesAlertMessage(raw) {
 function chatFilesGetGroupByMode() {
     const sel = document.getElementById('chat-files-group-by');
     const v = sel ? sel.value : 'none';
-    if (v === 'date' || v === 'conversation' || v === 'folder') return v;
+    if (v === 'date' || v === 'conversation' || v === 'project' || v === 'folder') return v;
     return 'none';
 }
 
@@ -338,7 +677,7 @@ function chatFilesGroupByChange() {
             /* ignore */
         }
     }
-    renderChatFilesTable();
+    chatFilesResetToFirstPageAndLoad();
 }
 
 function chatFilesCompareDateKeysDesc(a, b) {
@@ -355,7 +694,7 @@ function chatFilesTreeMakeNode() {
 }
 
 function chatFilesTreeInsertFile(root, f, idx) {
-    const rp = String(f.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const rp = chatFilesTreePathForFile(f);
     if (!rp) return;
     const parts = rp.split('/').filter(function (p) {
         return p.length > 0;
@@ -378,6 +717,25 @@ function chatFilesBuildTree(files) {
     return root;
 }
 
+function chatFilesTreePathForFile(f) {
+    const source = f && f.source;
+    let rp = String((f && f.relativePath) || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!rp) return '';
+    if (source === 'reduction') {
+        rp = rp.replace(/^__reduction__\//, '');
+        return CHAT_FILES_TREE_REDUCTION_ROOT + '/' + rp;
+    }
+    if (source === 'workspace') {
+        rp = rp.replace(/^__workspace__\//, '');
+        return CHAT_FILES_TREE_WORKSPACE_ROOT + '/' + rp;
+    }
+    if (source === 'conversation_artifact') {
+        rp = rp.replace(/^__conversation_artifact__\//, '');
+        return CHAT_FILES_TREE_ARTIFACT_ROOT + '/' + rp;
+    }
+    return CHAT_FILES_TREE_UPLOAD_ROOT + '/' + rp;
+}
+
 /** 将后端返回的目录相对路径（如 a/b/c）并入树，便于展示空文件夹 */
 function chatFilesTreeInsertFolderPath(root, relSlash) {
     const rp = String(relSlash || '').replace(/\\/g, '/').replace(/^\/+/, '');
@@ -397,16 +755,150 @@ function chatFilesTreeInsertFolderPath(root, relSlash) {
 
 function chatFilesMergeFoldersIntoTree(root, folderPaths) {
     if (!Array.isArray(folderPaths)) return;
+    if (!chatFilesShouldMergeUploadFolders()) return;
     let i;
     for (i = 0; i < folderPaths.length; i++) {
-        chatFilesTreeInsertFolderPath(root, folderPaths[i]);
+        chatFilesTreeInsertFolderPath(root, CHAT_FILES_TREE_UPLOAD_ROOT + '/' + folderPaths[i]);
     }
 }
 
 function chatFilesTreeRootMerged() {
     const root = chatFilesBuildTree(chatFilesDisplayed);
     chatFilesMergeFoldersIntoTree(root, chatFilesFoldersCache);
+    chatFilesEnsureSourceRoots(root);
     return root;
+}
+
+function chatFilesCurrentSourceFilter() {
+    const el = document.getElementById('chat-files-filter-source');
+    return el ? (el.value || 'all') : 'all';
+}
+
+function chatFilesCurrentSearchQuery() {
+    const el = document.getElementById('chat-files-filter-name');
+    return el ? String(el.value || '').trim() : '';
+}
+
+function chatFilesShouldMergeUploadFolders() {
+    const source = chatFilesCurrentSourceFilter();
+    return (source === 'all' || source === 'upload') && !chatFilesCurrentSearchQuery();
+}
+
+function chatFilesEnsureSourceRoots(root) {
+    const source = chatFilesCurrentSourceFilter();
+    const roots = [];
+    if (source === 'all' || source === 'upload') roots.push(CHAT_FILES_TREE_UPLOAD_ROOT);
+    if (source === 'all' || source === 'reduction') roots.push(CHAT_FILES_TREE_REDUCTION_ROOT);
+    if (source === 'all' || source === 'workspace') roots.push(CHAT_FILES_TREE_WORKSPACE_ROOT);
+    if (source === 'all' || source === 'conversation_artifact') roots.push(CHAT_FILES_TREE_ARTIFACT_ROOT);
+    roots.forEach(function (name) {
+        if (!root.dirs[name]) root.dirs[name] = chatFilesTreeMakeNode();
+    });
+}
+
+function chatFilesIsInternalSource(f) {
+    const source = f && f.source;
+    return source === 'reduction' || source === 'workspace' || source === 'conversation_artifact';
+}
+
+function chatFilesSourceLabel(source) {
+    if (source === 'reduction') {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.sourceReduction') : '工具输出';
+    }
+    if (source === 'workspace') {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.sourceWorkspace') : '工作目录';
+    }
+    if (source === 'conversation_artifact') {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.sourceConversationArtifact') : '会话产物';
+    }
+    return (typeof window.t === 'function') ? window.t('chatFilesPage.sourceUpload') : '对话附件';
+}
+
+function chatFilesBrowseCanMutateCurrentPath() {
+    return chatFilesBrowsePath[0] === CHAT_FILES_TREE_UPLOAD_ROOT;
+}
+
+function chatFilesBrowseCanUploadToPath(path) {
+    return Array.isArray(path) && path[0] === CHAT_FILES_TREE_UPLOAD_ROOT;
+}
+
+function chatFilesBrowseCanDeleteFolderPath(path) {
+    return Array.isArray(path) && path[0] === CHAT_FILES_TREE_UPLOAD_ROOT && path.length > 1;
+}
+
+function chatFilesTreeDisplayName(name) {
+    if (name === CHAT_FILES_TREE_UPLOAD_ROOT) {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.treeUploadsRoot') : '对话附件';
+    }
+    if (name === CHAT_FILES_TREE_REDUCTION_ROOT) {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.treeReductionRoot') : '工具输出';
+    }
+    if (name === CHAT_FILES_TREE_WORKSPACE_ROOT) {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.treeWorkspaceRoot') : '工作目录';
+    }
+    if (name === CHAT_FILES_TREE_ARTIFACT_ROOT) {
+        return (typeof window.t === 'function') ? window.t('chatFilesPage.treeArtifactsRoot') : '会话产物';
+    }
+    return name;
+}
+
+function chatFilesIDDisplay(id, labelMap, emptyLabel) {
+    const raw = id == null ? '' : String(id);
+    if (!raw || raw === '—') {
+        return { text: emptyLabel || '—', title: '' };
+    }
+    const label = String((labelMap && labelMap[raw]) || '').trim();
+    if (label) {
+        return { text: label, title: label + ' (' + raw + ')' };
+    }
+    if (raw.length > 36) {
+        return { text: raw.slice(0, 8) + '…' + raw.slice(-6), title: raw };
+    }
+    return { text: raw, title: raw };
+}
+
+function chatFilesConversationDisplay(id) {
+    const c = id == null ? '' : String(id);
+    if (typeof window.t === 'function') {
+        if (c === '_manual') {
+            return { text: window.t('chatFilesPage.convManual'), title: '_manual' };
+        }
+        if (c === '_new') {
+            return { text: window.t('chatFilesPage.convNew'), title: '_new' };
+        }
+    }
+    return chatFilesIDDisplay(c, chatFilesConversationTitleById);
+}
+
+function chatFilesProjectDisplay(id) {
+    const empty = (typeof window.t === 'function') ? window.t('chatFilesPage.projectUnbound') : '未绑定项目';
+    return chatFilesIDDisplay(id, chatFilesProjectNameById, empty);
+}
+
+function chatFilesTreePathDisplayName(pathParts) {
+    const parts = Array.isArray(pathParts) ? pathParts : [];
+    const name = parts.length ? parts[parts.length - 1] : '';
+    const root = parts[0] || '';
+    if ((root === CHAT_FILES_TREE_WORKSPACE_ROOT || root === CHAT_FILES_TREE_REDUCTION_ROOT) && parts.length === 3) {
+        if (parts[1] === 'projects') return chatFilesProjectDisplay(name);
+        if (parts[1] === 'conversations') return chatFilesConversationDisplay(name);
+    }
+    if (root === CHAT_FILES_TREE_ARTIFACT_ROOT && parts.length === 2) {
+        return chatFilesConversationDisplay(name);
+    }
+    if (root === CHAT_FILES_TREE_UPLOAD_ROOT && parts.length === 3) {
+        return chatFilesConversationDisplay(name);
+    }
+    const text = chatFilesTreeDisplayName(name);
+    return { text: text, title: String(name || '') };
+}
+
+function chatFilesUploadRelativeDirFromBrowsePath(path) {
+    const parts = Array.isArray(path) ? path.slice() : [];
+    if (parts[0] === CHAT_FILES_TREE_UPLOAD_ROOT) {
+        parts.shift();
+    }
+    return parts.join('/');
 }
 
 function chatFilesTreeNodeMaxMod(node) {
@@ -435,7 +927,14 @@ function chatFilesTreeSortDirKeys(node, keys) {
 function chatFilesBuildGroups(files, mode) {
     const map = new Map();
     files.forEach(function (f, idx) {
-        const key = mode === 'date' ? (f.date || '—') : (f.conversationId || '—');
+        let key;
+        if (mode === 'date') {
+            key = f.date || '—';
+        } else if (mode === 'project') {
+            key = f.projectId || '—';
+        } else {
+            key = f.conversationId || '—';
+        }
         if (!map.has(key)) {
             map.set(key, { key: key, items: [] });
         }
@@ -471,24 +970,17 @@ function chatFilesBuildGroups(files, mode) {
     return groups;
 }
 
-/** 分组标题：会话 ID 过长时缩短展示，完整值放在 title */
+/** 分组标题：长 ID 缩短展示，完整值放在 title */
+function chatFilesGroupHeadingID(key, emptyLabel) {
+    return chatFilesIDDisplay(key, null, emptyLabel);
+}
+
 function chatFilesGroupHeadingConversation(key) {
-    const c = key == null ? '' : String(key);
-    if (c === '' || c === '—') {
-        return { text: '—', title: '' };
-    }
-    if (typeof window.t === 'function') {
-        if (c === '_manual') {
-            return { text: window.t('chatFilesPage.convManual'), title: '_manual' };
-        }
-        if (c === '_new') {
-            return { text: window.t('chatFilesPage.convNew'), title: '_new' };
-        }
-    }
-    if (c.length > 36) {
-        return { text: c.slice(0, 8) + '…' + c.slice(-6), title: c };
-    }
-    return { text: c, title: c };
+    return chatFilesConversationDisplay(key);
+}
+
+function chatFilesGroupHeadingProject(key) {
+    return chatFilesProjectDisplay(key);
 }
 
 function renderChatFilesTable() {
@@ -506,6 +998,7 @@ function renderChatFilesTable() {
         if (typeof window.applyTranslations === 'function') {
             window.applyTranslations(wrap);
         }
+        renderChatFilesPagination();
         return;
     }
 
@@ -531,8 +1024,12 @@ function renderChatFilesTable() {
         const rp = f.relativePath || '';
         const pathForTitle = (f.absolutePath && String(f.absolutePath).trim()) ? String(f.absolutePath).trim() : rp;
         const nameEsc = escapeHtml(f.name || '');
+        const isInternal = chatFilesIsInternalSource(f);
+        const sourceBadge = isInternal ? '<span class="chat-files-source-badge">' + escapeHtml(chatFilesSourceLabel(f.source)) + '</span>' : '';
         const conv = f.conversationId || '';
-        const convEsc = escapeHtml(conv);
+        const convDisplay = chatFilesConversationDisplay(conv);
+        const convEsc = escapeHtml(convDisplay.text || conv);
+        const convTitleEsc = escapeHtml(convDisplay.title || conv);
         const dt = f.modifiedUnix ? new Date(f.modifiedUnix * 1000).toLocaleString() : '—';
         const canOpenChat = conv && conv !== '_manual' && conv !== '_new';
 
@@ -548,13 +1045,17 @@ function renderChatFilesTable() {
         if (canOpenChat) {
             menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesConversationIdx(${idx});">${tOpenChat}</button>`);
         }
-        if (!bin) {
+        if (isInternal) {
+            menuParts.push(`<div class="chat-files-dropdown-item is-disabled">${escapeHtml(chatFilesSourceLabel(f.source))}</div>`);
+        } else if (!bin) {
             menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesEditIdx(${idx});">${tEdit}</button>`);
         } else {
             menuParts.push(`<div class="chat-files-dropdown-item is-disabled" title="${editHint}">${editUnavailable}</div>`);
         }
-        menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesRenameIdx(${idx});">${tRename}</button>`);
-        menuParts.push(`<button type="button" class="chat-files-dropdown-item is-danger" onclick="chatFilesCloseAllMenus(); deleteChatFileIdx(${idx});">${tDelete}</button>`);
+        if (!isInternal) {
+            menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesRenameIdx(${idx});">${tRename}</button>`);
+            menuParts.push(`<button type="button" class="chat-files-dropdown-item is-danger" onclick="chatFilesCloseAllMenus(); deleteChatFileIdx(${idx});">${tDelete}</button>`);
+        }
         const menuHtml = menuParts.join('');
 
         const subRaw = (f.subPath && String(f.subPath).trim()) ? String(f.subPath).trim() : '';
@@ -574,9 +1075,9 @@ function renderChatFilesTable() {
 
         return `<tr>
             <td>${escapeHtml(f.date || '—')}</td>
-            <td class="chat-files-cell-conv"><code title="${convEsc}">${convEsc}</code></td>
+            <td class="chat-files-cell-conv"><code title="${convTitleEsc}">${convEsc}</code></td>
             <td class="chat-files-cell-subpath" title="${escapeHtml(subRaw || '')}">${subCellInner}</td>
-            <td class="chat-files-cell-name" title="${escapeHtml(pathForTitle)}">${nameEsc}</td>
+            <td class="chat-files-cell-name" title="${escapeHtml(pathForTitle)}">${nameEsc}${sourceBadge}</td>
             <td>${formatChatFileBytes(f.size || 0)}</td>
             <td>${escapeHtml(dt)}</td>
             <td class="chat-files-actions">
@@ -622,11 +1123,11 @@ function renderChatFilesTable() {
             return (chatFilesDisplayed[b.idx].modifiedUnix || 0) - (chatFilesDisplayed[a.idx].modifiedUnix || 0);
         });
 
-        const tRoot = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.browseRoot') : 'chat_uploads');
+        const tRoot = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.browseRoot') : '文件');
         const tUp = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.browseUp') : '上级');
         const tMkdir = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.newFolderButton') : '新建文件夹');
         const tEmpty = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.folderEmpty') : '此文件夹为空');
-        const tCopyFolder = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.copyFolderPathTitle') : '复制 chat_uploads 下相对路径');
+        const tCopyFolder = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.copyFolderPathTitle') : '复制目录路径');
         const tEnter = escapeHtml((typeof window.t === 'function') ? window.t('chatFilesPage.enterFolderTitle') : '进入');
 
         let breadcrumbHtml = '<nav class="chat-files-breadcrumb" aria-label="breadcrumb">';
@@ -635,18 +1136,25 @@ function renderChatFilesTable() {
         for (bi = 0; bi < chatFilesBrowsePath.length; bi++) {
             const seg = chatFilesBrowsePath[bi];
             const isLast = bi === chatFilesBrowsePath.length - 1;
+            const display = chatFilesTreePathDisplayName(chatFilesBrowsePath.slice(0, bi + 1));
+            const displayText = escapeHtml(display.text);
+            const displayTitle = display.title ? ' title="' + escapeHtml(display.title) + '"' : '';
             breadcrumbHtml += '<span class="chat-files-breadcrumb-sep">/</span>';
             if (isLast) {
-                breadcrumbHtml += '<span class="chat-files-breadcrumb-current">' + escapeHtml(seg) + '</span>';
+                breadcrumbHtml += '<span class="chat-files-breadcrumb-current"' + displayTitle + '>' + displayText + '</span>';
             } else {
-                breadcrumbHtml += '<button type="button" class="chat-files-breadcrumb-link" onclick="chatFilesNavigateBreadcrumb(' + bi + ')">' + escapeHtml(seg) + '</button>';
+                breadcrumbHtml += '<button type="button" class="chat-files-breadcrumb-link" onclick="chatFilesNavigateBreadcrumb(' + bi + ')"' + displayTitle + '>' + displayText + '</button>';
             }
         }
         breadcrumbHtml += '</nav>';
 
+        const canMutateCurrentPath = chatFilesBrowseCanMutateCurrentPath();
         const upDisabled = chatFilesBrowsePath.length === 0 ? ' disabled' : '';
+        const mkdirButton = canMutateCurrentPath
+            ? '<button type="button" class="btn-secondary chat-files-mkdir-btn" onclick="openChatFilesMkdirModal()">' + tMkdir + '</button>'
+            : '';
         const toolbarHtml = '<div class="chat-files-browse-toolbar">' + breadcrumbHtml +
-            '<button type="button" class="btn-secondary chat-files-mkdir-btn" onclick="openChatFilesMkdirModal()">' + tMkdir + '</button>' +
+            mkdirButton +
             '<button type="button" class="btn-secondary chat-files-browse-up"' + upDisabled + ' onclick="chatFilesNavigateUp()">' + tUp + '</button></div>';
 
         const svgTrash = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
@@ -656,19 +1164,30 @@ function renderChatFilesTable() {
 
         function rowHtmlBrowseFolder(name) {
             const nameAttr = encodeURIComponent(String(name));
-            const relToFolder = chatFilesBrowsePath.concat([name]).join('/');
+            const folderPath = chatFilesBrowsePath.concat([name]);
+            const folderDisplay = chatFilesTreePathDisplayName(folderPath);
+            const folderTitle = folderDisplay.title || tEnter;
+            const relToFolder = folderPath.join('/');
             const uploadDirAttr = encodeURIComponent(relToFolder);
+            const canUploadFolder = chatFilesBrowseCanUploadToPath(folderPath);
+            const canDeleteFolder = chatFilesBrowseCanDeleteFolderPath(folderPath);
+            const uploadBtn = canUploadFolder
+                ? `<button type="button" class="btn-icon" title="${tUploadToFolder}" data-upload-dir="${uploadDirAttr}" onclick="chatFilesUploadToFolderClick(event, this)">${svgUploadToFolder}</button>`
+                : '';
+            const deleteBtn = canDeleteFolder
+                ? `<button type="button" class="btn-icon btn-danger" title="${tDeleteFolder}" data-chat-folder-name="${nameAttr}" onclick="chatFilesDeleteFolderFromBtn(event, this)">${svgTrash}</button>`
+                : '';
             return `<tr class="chat-files-tr-folder chat-files-tr-folder--nav" role="button" tabindex="0" data-chat-folder-name="${nameAttr}" onclick="chatFilesOnFolderRowClick(event)" onkeydown="chatFilesOnFolderRowKeydown(event)">
-                <td class="chat-files-tree-name-cell chat-files-tree-name-cell--folder" title="${tEnter}">
-                    <span class="chat-files-tree-name-inner">${svgFolder}<span class="chat-files-tree-name-text">${escapeHtml(name)}</span></span>
+                <td class="chat-files-tree-name-cell chat-files-tree-name-cell--folder" title="${escapeHtml(folderTitle)}">
+                    <span class="chat-files-tree-name-inner">${svgFolder}<span class="chat-files-tree-name-text">${escapeHtml(folderDisplay.text)}</span></span>
                 </td>
                 <td class="chat-files-tree-muted">—</td>
                 <td class="chat-files-tree-muted">—</td>
                 <td class="chat-files-actions" data-chat-files-stop="true" onclick="event.stopPropagation()">
                     <div class="chat-files-action-bar">
-                        <button type="button" class="btn-icon" title="${tUploadToFolder}" data-upload-dir="${uploadDirAttr}" onclick="chatFilesUploadToFolderClick(event, this)">${svgUploadToFolder}</button>
+                        ${uploadBtn}
                         <button type="button" class="btn-icon" title="${tCopyFolder}" data-chat-folder-name="${nameAttr}" onclick="chatFilesCopyFolderPathFromBtn(event, this)">${svgCopy}</button>
-                        <button type="button" class="btn-icon btn-danger" title="${tDeleteFolder}" data-chat-folder-name="${nameAttr}" onclick="chatFilesDeleteFolderFromBtn(event, this)">${svgTrash}</button>
+                        ${deleteBtn}
                     </div>
                 </td>
             </tr>`;
@@ -677,6 +1196,8 @@ function renderChatFilesTable() {
         function rowHtmlTreeFile(f, idx) {
             const pathForTitle = (f.absolutePath && String(f.absolutePath).trim()) ? String(f.absolutePath).trim() : (f.relativePath || '');
             const nameEsc = escapeHtml(f.name || '');
+            const isInternal = chatFilesIsInternalSource(f);
+            const sourceBadge = isInternal ? '<span class="chat-files-source-badge">' + escapeHtml(chatFilesSourceLabel(f.source)) + '</span>' : '';
             const dt = f.modifiedUnix ? new Date(f.modifiedUnix * 1000).toLocaleString() : '—';
             const conv = f.conversationId || '';
             const canOpenChat = conv && conv !== '_manual' && conv !== '_new';
@@ -693,18 +1214,22 @@ function renderChatFilesTable() {
             if (canOpenChat) {
                 menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesConversationIdx(${idx});">${tOpenChat}</button>`);
             }
-            if (!bin) {
+            if (isInternal) {
+                menuParts.push(`<div class="chat-files-dropdown-item is-disabled">${escapeHtml(chatFilesSourceLabel(f.source))}</div>`);
+            } else if (!bin) {
                 menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesEditIdx(${idx});">${tEdit}</button>`);
             } else {
                 menuParts.push(`<div class="chat-files-dropdown-item is-disabled" title="${editHint}">${editUnavailable}</div>`);
             }
-            menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesRenameIdx(${idx});">${tRename}</button>`);
-            menuParts.push(`<button type="button" class="chat-files-dropdown-item is-danger" onclick="chatFilesCloseAllMenus(); deleteChatFileIdx(${idx});">${tDelete}</button>`);
+            if (!isInternal) {
+                menuParts.push(`<button type="button" class="chat-files-dropdown-item" onclick="chatFilesCloseAllMenus(); openChatFilesRenameIdx(${idx});">${tRename}</button>`);
+                menuParts.push(`<button type="button" class="chat-files-dropdown-item is-danger" onclick="chatFilesCloseAllMenus(); deleteChatFileIdx(${idx});">${tDelete}</button>`);
+            }
             const menuHtml = menuParts.join('');
 
             return `<tr class="chat-files-tr-file">
                 <td class="chat-files-tree-name-cell" title="${escapeHtml(pathForTitle)}">
-                    <span class="chat-files-tree-name-inner">${svgFile}<span class="chat-files-tree-name-text">${nameEsc}</span></span>
+                    <span class="chat-files-tree-name-inner">${svgFile}<span class="chat-files-tree-name-text">${nameEsc}${sourceBadge}</span></span>
                 </td>
                 <td>${formatChatFileBytes(f.size || 0)}</td>
                 <td>${escapeHtml(dt)}</td>
@@ -747,6 +1272,10 @@ function renderChatFilesTable() {
             let summaryTitleAttr = '';
             if (groupMode === 'date') {
                 summaryMain = escapeHtml(String(g.key));
+            } else if (groupMode === 'project') {
+                const h = chatFilesGroupHeadingProject(g.key);
+                summaryMain = escapeHtml(h.text);
+                summaryTitleAttr = h.title ? ' title="' + escapeHtml(h.title) + '"' : '';
             } else {
                 const h = chatFilesGroupHeadingConversation(g.key);
                 summaryMain = escapeHtml(h.text);
@@ -774,9 +1303,13 @@ function renderChatFilesTable() {
     wrap.innerHTML = innerHtml;
     wrap.classList.toggle('chat-files-table-wrap--grouped', groupMode !== 'none' && groupMode !== 'folder');
     wrap.classList.toggle('chat-files-table-wrap--tree', groupMode === 'folder');
+    renderChatFilesPagination();
 }
 
 window.chatFilesGroupByChange = chatFilesGroupByChange;
+window.changeChatFilesPage = changeChatFilesPage;
+window.changeChatFilesPageSize = changeChatFilesPageSize;
+window.chatFilesResetToFirstPageAndLoad = chatFilesResetToFirstPageAndLoad;
 
 function chatFilesNavigateInto(name) {
     const root = chatFilesTreeRootMerged();
@@ -837,7 +1370,8 @@ function chatFilesCopyFolderPathFromBtn(ev, btn) {
 
 async function deleteChatFolderFromBrowse(folderName) {
     const segs = chatFilesBrowsePath.concat([folderName]);
-    const rel = segs.join('/');
+    if (!chatFilesBrowseCanDeleteFolderPath(segs)) return;
+    const rel = chatFilesUploadRelativeDirFromBrowsePath(segs);
     const q = (typeof window.t === 'function') ? window.t('chatFilesPage.confirmDeleteFolder') : '确定删除该文件夹及其中的全部文件？';
     if (!confirm(q)) return;
     try {
@@ -886,8 +1420,25 @@ function chatFilesDeleteFolderFromBtn(ev, btn) {
 
 async function copyChatFolderPathFromBrowse(folderName) {
     const segs = chatFilesBrowsePath.concat([folderName]);
-    const rel = segs.join('/');
-    const text = rel ? ('chat_uploads/' + rel.replace(/^\/+/, '')) : 'chat_uploads';
+    const relativePath = chatFilesRelativePathFromTreeSegments(segs);
+    let text = '';
+    if (relativePath) {
+        try {
+            const res = await apiFetch('/api/chat-uploads/path?kind=directory&path=' + encodeURIComponent(relativePath));
+            if (!res.ok) {
+                const raw = await res.text();
+                throw new Error(raw || String(res.status));
+            }
+            const data = await res.json();
+            text = String((data && data.absolutePath) || '').trim();
+        } catch (e) {
+            alert((e && e.message) ? e.message : String(e));
+            return;
+        }
+    }
+    if (!text) {
+        text = chatFilesClipboardFolderPath(segs);
+    }
     const ok = await chatFilesCopyText(text);
     if (ok) {
         const msg = (typeof window.t === 'function') ? window.t('chatFilesPage.folderPathCopied') : '目录路径已复制';
@@ -896,6 +1447,41 @@ async function copyChatFolderPathFromBrowse(folderName) {
         const fail = (typeof window.t === 'function') ? window.t('common.copyFailed') : '复制失败';
         alert(fail);
     }
+}
+
+function chatFilesRelativePathFromTreeSegments(segs) {
+    const parts = Array.isArray(segs) ? segs.slice() : [];
+    if (!parts.length) return '';
+    const root = parts.shift();
+    if (root === CHAT_FILES_TREE_UPLOAD_ROOT) {
+        return parts.length ? parts.join('/') : '.';
+    }
+    if (root === CHAT_FILES_TREE_REDUCTION_ROOT) {
+        return '__reduction__/' + parts.join('/');
+    }
+    if (root === CHAT_FILES_TREE_WORKSPACE_ROOT) {
+        return '__workspace__/' + parts.join('/');
+    }
+    if (root === CHAT_FILES_TREE_ARTIFACT_ROOT) {
+        return '__conversation_artifact__/' + parts.join('/');
+    }
+    return [root].concat(parts).join('/');
+}
+
+function chatFilesClipboardFolderPath(segs) {
+    const parts = Array.isArray(segs) ? segs.slice() : [];
+    if (!parts.length) return '';
+    const root = parts.shift();
+    if (root === CHAT_FILES_TREE_UPLOAD_ROOT) {
+        return ['chat_uploads'].concat(parts).join('/');
+    }
+    if (root === CHAT_FILES_TREE_REDUCTION_ROOT) {
+        return ['tool_outputs'].concat(parts).join('/');
+    }
+    if (root === CHAT_FILES_TREE_ARTIFACT_ROOT) {
+        return ['conversation_artifacts'].concat(parts).join('/');
+    }
+    return [root].concat(parts).map(chatFilesTreeDisplayName).join('/');
 }
 
 window.chatFilesNavigateInto = chatFilesNavigateInto;
@@ -908,6 +1494,7 @@ window.chatFilesCopyFolderPathFromBtn = chatFilesCopyFolderPathFromBtn;
 window.chatFilesDeleteFolderFromBtn = chatFilesDeleteFolderFromBtn;
 window.chatFilesOpenUploadPicker = chatFilesOpenUploadPicker;
 window.chatFilesUploadToFolderClick = chatFilesUploadToFolderClick;
+window.exportChatFiles = exportChatFiles;
 window.openChatFilesMkdirModal = openChatFilesMkdirModal;
 window.closeChatFilesMkdirModal = closeChatFilesMkdirModal;
 window.submitChatFilesMkdir = submitChatFilesMkdir;
@@ -1102,11 +1689,12 @@ async function submitChatFilesRename() {
 
 function openChatFilesMkdirModal() {
     if (chatFilesGetGroupByMode() !== 'folder') return;
+    if (!chatFilesBrowseCanMutateCurrentPath()) return;
     const hint = document.getElementById('chat-files-mkdir-parent-hint');
     const input = document.getElementById('chat-files-mkdir-input');
     const modal = document.getElementById('chat-files-mkdir-modal');
-    const p = chatFilesBrowsePath.join('/');
-    if (hint) hint.textContent = p ? ('chat_uploads/' + p) : 'chat_uploads';
+    const p = chatFilesBrowsePath.map(chatFilesTreeDisplayName).join('/');
+    if (hint) hint.textContent = p || chatFilesTreeDisplayName(CHAT_FILES_TREE_UPLOAD_ROOT);
     if (input) input.value = '';
     if (modal) openAppModal(modal);
     if (modal && typeof window.applyTranslations === 'function') {
@@ -1137,7 +1725,7 @@ async function submitChatFilesMkdir() {
         alert(msg);
         return;
     }
-    const parent = chatFilesBrowsePath.join('/');
+    const parent = chatFilesUploadRelativeDirFromBrowsePath(chatFilesBrowsePath);
     try {
         const res = await apiFetch('/api/chat-uploads/mkdir', {
             method: 'POST',
@@ -1203,7 +1791,8 @@ function chatFilesSetUploadBusy(busy) {
 function chatFilesOpenUploadPicker() {
     if (chatFilesXHRUploadBusy) return;
     if (chatFilesGetGroupByMode() === 'folder') {
-        chatFilesPendingUploadDir = chatFilesBrowsePath.join('/');
+        if (!chatFilesBrowseCanMutateCurrentPath()) return;
+        chatFilesPendingUploadDir = chatFilesUploadRelativeDirFromBrowsePath(chatFilesBrowsePath);
     } else {
         chatFilesPendingUploadDir = '';
     }
@@ -1218,6 +1807,7 @@ function chatFilesUploadToFolderClick(ev, btn) {
     if (!raw) return;
     try {
         chatFilesPendingUploadDir = decodeURIComponent(raw);
+        chatFilesPendingUploadDir = chatFilesUploadRelativeDirFromBrowsePath(chatFilesPendingUploadDir.split('/').filter(Boolean));
     } catch (e) {
         chatFilesPendingUploadDir = '';
         return;
@@ -1226,21 +1816,32 @@ function chatFilesUploadToFolderClick(ev, btn) {
     if (inp) inp.click();
 }
 
-async function onChatFilesUploadPick(ev) {
-    const input = ev.target;
-    const file = input && input.files && input.files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append('file', file);
+function chatFilesResolveUploadTarget() {
     const pendingDir = chatFilesPendingUploadDir;
     chatFilesPendingUploadDir = '';
     if (pendingDir) {
-        form.append('relativeDir', pendingDir);
-    } else {
-        const conv = document.getElementById('chat-files-filter-conv');
-        if (conv && conv.value.trim()) {
-            form.append('conversationId', conv.value.trim());
-        }
+        return { relativeDir: pendingDir };
+    }
+    if (chatFilesGetGroupByMode() === 'folder') {
+        if (!chatFilesBrowseCanMutateCurrentPath()) return {};
+        const relDir = chatFilesUploadRelativeDirFromBrowsePath(chatFilesBrowsePath);
+        return relDir ? { relativeDir: relDir } : {};
+    }
+    const conv = document.getElementById('chat-files-filter-conv');
+    if (conv && conv.value.trim()) {
+        return { conversationId: conv.value.trim() };
+    }
+    return {};
+}
+
+async function chatFilesUploadFile(file, target) {
+    if (!file || chatFilesXHRUploadBusy) return false;
+    const form = new FormData();
+    form.append('file', file);
+    if (target && target.relativeDir) {
+        form.append('relativeDir', target.relativeDir);
+    } else if (target && target.conversationId) {
+        form.append('conversationId', target.conversationId);
     }
     chatFilesSetUploadBusy(true);
     chatFilesSetUploadProgressUI(true, 0, file.name);
@@ -1265,20 +1866,85 @@ async function onChatFilesUploadPick(ev) {
                 : '上传成功。在列表中点击「复制路径」即可粘贴到对话中引用。';
             chatFilesShowToast(msg);
         }
+        return true;
     } catch (e) {
         alert((e && e.message) ? e.message : String(e));
+        return false;
     } finally {
         chatFilesSetUploadBusy(false);
         chatFilesSetUploadProgressUI(false);
+    }
+}
+
+async function chatFilesUploadFiles(fileList) {
+    if (!fileList || !fileList.length || chatFilesXHRUploadBusy) return;
+    const files = Array.from(fileList).filter(function (f) {
+        return f && (f.name || f.size > 0);
+    });
+    if (!files.length) return;
+    const target = chatFilesResolveUploadTarget();
+    for (let i = 0; i < files.length; i++) {
+        const ok = await chatFilesUploadFile(files[i], target);
+        if (!ok) break;
+    }
+}
+
+async function onChatFilesUploadPick(ev) {
+    const input = ev.target;
+    const files = input && input.files;
+    if (!files || !files.length) return;
+    try {
+        await chatFilesUploadFiles(files);
+    } finally {
         input.value = '';
     }
+}
+
+let chatFilesDragDropBound = false;
+
+function setupChatFilesDragDrop() {
+    if (chatFilesDragDropBound) return;
+    const wrap = document.getElementById('chat-files-list-wrap');
+    if (!wrap) return;
+    chatFilesDragDropBound = true;
+
+    wrap.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (chatFilesXHRUploadBusy) return;
+        this.classList.add('drag-over');
+    });
+    wrap.addEventListener('dragleave', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!this.contains(e.relatedTarget)) {
+            this.classList.remove('drag-over');
+        }
+    });
+    wrap.addEventListener('drop', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.classList.remove('drag-over');
+        if (chatFilesXHRUploadBusy) return;
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (files && files.length) {
+            chatFilesUploadFiles(files).catch(function (err) {
+                if (err) alert((err && err.message) ? err.message : String(err));
+            });
+        }
+    });
 }
 
 // 语言切换后重新渲染列表：表头与「更多」菜单由 JS 拼接，无 data-i18n，需用当前语言的 t() 再生成一遍
 document.addEventListener('languagechange', function () {
     if (typeof window.currentPage !== 'function') return;
     if (window.currentPage() !== 'chat-files') return;
+    syncAllChatFilesFilterSelects();
     if (typeof renderChatFilesTable === 'function') {
         renderChatFilesTable();
     }
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+    initChatFilesFilterSelects();
 });

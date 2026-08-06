@@ -61,45 +61,36 @@ show_progress() {
     printf "\r"
 }
 
-echo ""
-echo "=========================================="
-echo "  CyberStrikeAI Deploy & Start Script"
-echo "  (HTTPS with self-signed cert by default; plain HTTP: $0 --http)"
-echo "=========================================="
-echo ""
+print_banner() {
+    local show_mirrors="${1:-1}"
+    echo ""
+    echo "=========================================="
+    echo "  CyberStrikeAI Deploy & Start Script"
+    echo "  (HTTPS with self-signed cert by default; plain HTTP: $0 --http)"
+    echo "=========================================="
+    echo ""
 
-# Show temporary mirror/proxy info
-echo ""
-warning "Note: this script uses temporary mirrors to speed up downloads"
-echo ""
-info "Python pip temporary mirror:"
-echo "  ${PIP_INDEX_URL}"
-info "Go temporary proxy:"
-echo "  ${GOPROXY}"
-echo ""
-note "These settings apply only while this script runs and do not change system config"
-echo ""
-sleep 1
+    if [ "$show_mirrors" -eq 1 ]; then
+        # Show temporary mirror/proxy info
+        echo ""
+        warning "Note: this script uses temporary mirrors to speed up downloads"
+        echo ""
+        info "Python pip temporary mirror:"
+        echo "  ${PIP_INDEX_URL}"
+        info "Go temporary proxy:"
+        echo "  ${GOPROXY}"
+        echo ""
+        note "These settings apply only while this script runs and do not change system config"
+        echo ""
+        sleep 1
+    fi
+}
 
 CONFIG_FILE="$ROOT_DIR/config.yaml"
+EXAMPLE_CONFIG_FILE="$ROOT_DIR/config.example.yaml"
 VENV_DIR="$ROOT_DIR/venv"
 REQUIREMENTS_FILE="$ROOT_DIR/requirements.txt"
 BINARY_NAME="cyberstrike-ai"
-
-# Check config file — auto-copy from example on first run
-if [ ! -f "$CONFIG_FILE" ]; then
-    if [ -f "$ROOT_DIR/config.yaml.example" ]; then
-        cp "$ROOT_DIR/config.yaml.example" "$CONFIG_FILE"
-        warning "config.yaml not found, copied from config.yaml.example"
-        info "Please edit config.yaml and fill in: password / openai.api_key / base_url / model"
-        info "Then re-run: ./run.sh"
-        exit 0
-    else
-        error "Config file config.yaml not found and no config.yaml.example available"
-        info "Make sure you run this script from the project root"
-        exit 1
-    fi
-fi
 
 # Check Python environment
 check_python() {
@@ -148,6 +139,28 @@ check_go() {
     fi
     
     success "Go check passed: $(go version)"
+}
+
+check_go_quiet() {
+    if ! command -v go >/dev/null 2>&1; then
+        error "Go not found"
+        echo ""
+        info "Install Go 1.21 or later first:"
+        echo "  macOS:   brew install go"
+        echo "  Ubuntu:  sudo apt-get install golang-go"
+        echo "  CentOS:  sudo yum install golang"
+        echo "  Or visit: https://go.dev/dl/"
+        exit 1
+    fi
+
+    GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+    GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
+    GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
+
+    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]); then
+        error "Go version too old: $GO_VERSION (requires 1.21+)"
+        exit 1
+    fi
 }
 
 # Set up Python virtual environment
@@ -345,6 +358,34 @@ build_go_project() {
     fi
 }
 
+build_go_project_quiet() {
+    info "Building $BINARY_NAME..."
+
+    GO_DOWNLOAD_LOG=$(mktemp)
+    if ! GOPROXY="$GOPROXY" go mod download >"$GO_DOWNLOAD_LOG" 2>&1; then
+        error "Go dependency download failed"
+        echo ""
+        info "Download error details:"
+        cat "$GO_DOWNLOAD_LOG" | sed 's/^/  /'
+        echo ""
+        rm -f "$GO_DOWNLOAD_LOG"
+        exit 1
+    fi
+    rm -f "$GO_DOWNLOAD_LOG"
+
+    GO_BUILD_LOG=$(mktemp)
+    if ! GOPROXY="$GOPROXY" go build -o "$BINARY_NAME" cmd/server/main.go >"$GO_BUILD_LOG" 2>&1; then
+        error "Build failed"
+        echo ""
+        info "Build error details:"
+        cat "$GO_BUILD_LOG" | sed 's/^/  /'
+        echo ""
+        rm -f "$GO_BUILD_LOG"
+        exit 1
+    fi
+    rm -f "$GO_BUILD_LOG"
+}
+
 # Check whether a rebuild is needed
 need_rebuild() {
     if [ ! -f "$BINARY_NAME" ]; then
@@ -362,21 +403,55 @@ need_rebuild() {
 }
 
 # Main flow
-# Default: HTTPS (--https passed to binary); --http uses plain HTTP.
+# Default: HTTPS (--https passed to binary); --http forces plain HTTP even if config.yaml enables TLS.
 main() {
     USE_HTTPS=1
+    RESET_ADMIN_PASSWORD=0
     FORWARD_ARGS=()
     for arg in "$@"; do
         if [ "$arg" = "--http" ]; then
             USE_HTTPS=0
             continue
         fi
+        if [ "$arg" = "--https" ]; then
+            USE_HTTPS=1
+            continue
+        fi
+        if [ "$arg" = "--reset-admin-password" ]; then
+            RESET_ADMIN_PASSWORD=1
+            continue
+        fi
         FORWARD_ARGS+=("$arg")
     done
+
+    if [ "$RESET_ADMIN_PASSWORD" -eq 1 ]; then
+        if [ ! -f "$CONFIG_FILE" ] && [ ! -f "$EXAMPLE_CONFIG_FILE" ]; then
+            error "config.yaml not found, and config.example.yaml is missing"
+            info "The server binary creates config.yaml from config.example.yaml on first start"
+            exit 1
+        fi
+        check_go_quiet
+        if need_rebuild; then
+            build_go_project_quiet
+            echo ""
+        fi
+        if [ "${#FORWARD_ARGS[@]}" -gt 0 ]; then
+            exec "./$BINARY_NAME" -config "$CONFIG_FILE" --reset-admin-password "${FORWARD_ARGS[@]}"
+        else
+            exec "./$BINARY_NAME" -config "$CONFIG_FILE" --reset-admin-password
+        fi
+    fi
+
+    print_banner 1
 
     # Environment checks
     info "Checking runtime environment..."
     check_python
+    if [ ! -f "$CONFIG_FILE" ] && [ ! -f "$EXAMPLE_CONFIG_FILE" ]; then
+        error "config.yaml not found, and config.example.yaml is missing"
+        info "The server binary creates config.yaml from config.example.yaml on first start"
+        exit 1
+    fi
     check_go
     echo ""
     
@@ -415,12 +490,12 @@ main() {
         fi
     else
         if [ "${#FORWARD_ARGS[@]}" -gt 0 ]; then
-            exec "./$BINARY_NAME" -config "$CONFIG_FILE" "${FORWARD_ARGS[@]}"
+            exec "./$BINARY_NAME" -config "$CONFIG_FILE" --http "${FORWARD_ARGS[@]}"
         else
-            exec "./$BINARY_NAME" -config "$CONFIG_FILE"
+            exec "./$BINARY_NAME" -config "$CONFIG_FILE" --http
         fi
     fi
 }
 
-# Run main (supports args, e.g. ./run.sh --http)
+# Run main (supports args, e.g. ./run.sh --http, ./run.sh --reset-admin-password)
 main "$@"

@@ -13,6 +13,8 @@
 var DASHBOARD_POLL_INTERVAL_MS = 60 * 1000;
 var DASHBOARD_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 var DASHBOARD_STALE_CHECK_INTERVAL_MS = 30 * 1000;
+var DASHBOARD_SEVERITY_STATUS_FILTER_STORAGE_KEY = 'cyberstrike.dashboard.severityStatusFilter';
+var DASHBOARD_SEVERITY_STATUS_FILTER_VALUES = ['', 'open', 'confirmed', 'fixed', 'ignored', 'false_positive'];
 
 var dashboardState = {
     currentController: null,    // 当前正在进行的 fetch 的 AbortController
@@ -23,8 +25,19 @@ var dashboardState = {
     lastResources: null,        // 上一轮关键资源快照，用于判断是否首次有数据 / 智能 CTA
     recentFeedTab: 'vulns',     // 最近漏洞 / 近期事实 Tab
     accessTab: 'c2',            // 接入概览 Tab：c2 | webshell
+    severityStatusFilter: null,  // 严重程度分布当前状态筛选：'' | open | confirmed | fixed | false_positive | ignored
     lastProjectSummary: null,   // 最近一次项目仪表盘摘要（供 Tab 切换时重绘）
 };
+
+function dashboardProjectScopedUrl(url) {
+    try {
+        var pid = typeof getActiveProjectId === 'function' ? (getActiveProjectId() || '') : '';
+        if (!pid) return url;
+        return url + (url.indexOf('?') === -1 ? '?' : '&') + 'project_id=' + encodeURIComponent(pid);
+    } catch (e) {
+        return url;
+    }
+}
 
 async function refreshDashboard() {
     const runningEl = document.getElementById('dashboard-running-tasks');
@@ -99,6 +112,7 @@ async function refreshDashboard() {
     };
 
     try {
+        var selectedSeverityStatus = getDashboardSeverityStatusFilter();
         // /api/vulnerabilities/stats 只给出 by_severity 与 by_status 两个独立维度，
         // 无法得到「严重 × 待处理」的交叉计数。这里按四档各拉一次（limit=1，仅取 total），
         // 用真实的「待处理 × 各严重度」数量驱动告警条 / KPI 副标 / 风险概览卡的加权分，
@@ -113,7 +127,7 @@ async function refreshDashboard() {
             hitlPendingRes, notificationsRes, externalMcpStatsRes,
             webshellRes,
             c2ListenersRes, c2SessionsRes, c2TasksRes,
-            projectSummaryRes
+            projectSummaryRes, severityFilteredStatsRes
         ] = await Promise.all([
             fetchJson('/api/agent-loop/tasks'),
             fetchJson('/api/vulnerabilities/stats'),
@@ -139,12 +153,13 @@ async function refreshDashboard() {
             // External MCP 健康度
             fetchJson('/api/external-mcp/stats'),
             // WebShell 已建立的连接（pentest 落地后的 foothold，对运营场景非常关键）
-            fetchJson('/api/webshell/connections'),
+            fetchJson(dashboardProjectScopedUrl('/api/webshell/connections')),
             // C2 仪表盘条：监听器 / 会话 / 待处理任务（任务接口含 pending_queued_count）
-            fetchJson('/api/c2/listeners'),
-            fetchJson('/api/c2/sessions?limit=500'),
-            fetchJson('/api/c2/tasks?page=1&page_size=1'),
-            fetchJson('/api/projects/dashboard-summary?fact_limit=10')
+            fetchJson(dashboardProjectScopedUrl('/api/c2/listeners')),
+            fetchJson(dashboardProjectScopedUrl('/api/c2/sessions?limit=500')),
+            fetchJson(dashboardProjectScopedUrl('/api/c2/tasks?page=1&page_size=1')),
+            fetchJson('/api/projects/dashboard-summary?fact_limit=10'),
+            selectedSeverityStatus ? fetchJson('/api/vulnerabilities/stats?status=' + encodeURIComponent(selectedSeverityStatus)) : Promise.resolve(null)
         ]);
 
         // 如果在 await 期间 controller 已被 abort，说明又有新刷新启动了，丢弃本次结果
@@ -191,6 +206,9 @@ async function refreshDashboard() {
             if (vulnTotalEl) vulnTotalEl.textContent = String(vulnRes.total);
             const bySeverity = vulnRes.by_severity || {};
             const total = vulnRes.total || 0;
+            const severityDisplayRes = selectedSeverityStatus && severityFilteredStatsRes ? severityFilteredStatsRes : vulnRes;
+            const displayBySeverity = severityDisplayRes.by_severity || {};
+            const displayTotal = typeof severityDisplayRes.total === 'number' ? severityDisplayRes.total : total;
             criticalCount = bySeverity.critical || 0;
             highCount = bySeverity.high || 0;
             mediumCount = bySeverity.medium || 0;
@@ -200,17 +218,7 @@ async function refreshDashboard() {
             openHighCount = pickOpenCount(openHighRes, highCount);
             openMediumCount = pickOpenCount(openMediumRes, mediumCount);
             openLowCount = pickOpenCount(openLowRes, lowCount);
-            severityIds.forEach(sev => {
-                const count = bySeverity[sev] || 0;
-                const el = document.getElementById('dashboard-severity-' + sev);
-                if (el) el.textContent = String(count);
-                const pctEl = document.getElementById('dashboard-severity-' + sev + '-pct');
-                if (pctEl) {
-                    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-                    pctEl.textContent = pct + '%';
-                }
-            });
-            renderSeverityDonut(bySeverity, total);
+            renderDashboardSeveritySummary(displayBySeverity, displayTotal, severityIds);
             renderVulnStatusPanel(vulnRes.by_status || {}, total);
             renderSeverityInsights(
                 { critical: openCriticalCount, high: openHighCount, medium: openMediumCount, low: openLowCount },
@@ -297,14 +305,18 @@ async function refreshDashboard() {
             toolsTotalCalls = s.totalCalls || 0;
             toolsFailedCount = s.failedCalls || 0;
             const totalSuccess = s.successCalls || 0;
+            const effectiveToolCalls = totalSuccess + toolsFailedCount;
             setEl('dashboard-kpi-tools-calls', formatNumber(toolsTotalCalls));
             setKpiSubText('dashboard-kpi-tools-sub-text',
                 dt('dashboard.toolsCountLabel', { count: toolsCount }, toolsCount + ' 个工具'));
-            if (toolsTotalCalls > 0) {
-                toolsSuccessRate = (totalSuccess / toolsTotalCalls) * 100;
+            if (effectiveToolCalls > 0) {
+                toolsSuccessRate = (totalSuccess / effectiveToolCalls) * 100;
                 const rateStr = toolsSuccessRate.toFixed(1) + '%';
                 setEl('dashboard-kpi-success-rate', rateStr);
                 setKpiRateBadge('dashboard-kpi-rate-sub-text', toolsSuccessRate, toolsFailedCount);
+            } else if (toolsTotalCalls > 0) {
+                setEl('dashboard-kpi-success-rate', '-');
+                setKpiSubText('dashboard-kpi-rate-sub-text', dt('dashboard.noCompletedYet', null, '暂无有效完成'));
             } else {
                 setEl('dashboard-kpi-success-rate', '-');
                 setKpiSubText('dashboard-kpi-rate-sub-text', dt('dashboard.noCallYet', null, '暂无调用'));
@@ -1483,7 +1495,7 @@ function esc(s) {
 }
 
 // 漏洞处置状态 + 修复进度面板
-// byStatus: { open, confirmed, fixed, false_positive }（任一字段缺失视作 0）
+// byStatus: { open, confirmed, fixed, false_positive, ignored }（任一字段缺失视作 0）
 // total: 漏洞总数（来自 stats.total）
 function renderVulnStatusPanel(byStatus, total) {
     var get = function (k) {
@@ -1494,25 +1506,27 @@ function renderVulnStatusPanel(byStatus, total) {
     var confirmed = get('confirmed');
     var fixed = get('fixed');
     var fp = get('false_positive');
+    var ignored = get('ignored');
 
     setEl('dashboard-status-open', formatNumber(open));
     setEl('dashboard-status-confirmed', formatNumber(confirmed));
     setEl('dashboard-status-fixed', formatNumber(fixed));
     setEl('dashboard-status-fp', formatNumber(fp));
+    setEl('dashboard-status-ignored', formatNumber(ignored));
 
-    // 修复率：fixed / total（不计入 false_positive 时也可，按 total 维持一致）
-    var t = Number(total || 0);
-    var rate = t > 0 ? (fixed / t) * 100 : 0;
-    var rateStr = t > 0 ? rate.toFixed(rate >= 100 ? 0 : 1) + '%' : '-';
+    // 修复率只按需要处置的有效漏洞计算；误报/已忽略属于中性闭环，不拉低修复率。
+    var actionableTotal = open + confirmed + fixed;
+    var rate = actionableTotal > 0 ? (fixed / actionableTotal) * 100 : 0;
+    var rateStr = actionableTotal > 0 ? rate.toFixed(rate >= 100 ? 0 : 1) + '%' : '-';
     setEl('dashboard-fix-rate', rateStr);
 
     var detailEl = document.getElementById('dashboard-fix-detail');
     if (detailEl) {
-        detailEl.textContent = '(' + formatNumber(fixed) + ' / ' + formatNumber(t) + ')';
+        detailEl.textContent = '(' + formatNumber(fixed) + ' / ' + formatNumber(actionableTotal) + ')';
     }
 
-    var fixedPct = t > 0 ? (fixed / t) * 100 : 0;
-    var confirmedPct = t > 0 ? (confirmed / t) * 100 : 0;
+    var fixedPct = actionableTotal > 0 ? (fixed / actionableTotal) * 100 : 0;
+    var confirmedPct = actionableTotal > 0 ? (confirmed / actionableTotal) * 100 : 0;
     var fixedBar = document.getElementById('dashboard-fix-progress-fixed');
     var confirmedBar = document.getElementById('dashboard-fix-progress-confirmed');
     if (fixedBar) fixedBar.style.width = fixedPct.toFixed(2) + '%';
@@ -1705,9 +1719,152 @@ function navigateToVulnerabilitiesWithFilter(opts) {
 }
 window.navigateToVulnerabilitiesWithFilter = navigateToVulnerabilitiesWithFilter;
 
+function normalizeDashboardSeverityStatusFilter(status) {
+    status = String(status || '');
+    return DASHBOARD_SEVERITY_STATUS_FILTER_VALUES.indexOf(status) >= 0 ? status : '';
+}
+
+function readDashboardSeverityStatusFilterFromStorage() {
+    try {
+        return normalizeDashboardSeverityStatusFilter(window.localStorage.getItem(DASHBOARD_SEVERITY_STATUS_FILTER_STORAGE_KEY));
+    } catch (_) {
+        return '';
+    }
+}
+
+function writeDashboardSeverityStatusFilterToStorage(status) {
+    try {
+        if (status) {
+            window.localStorage.setItem(DASHBOARD_SEVERITY_STATUS_FILTER_STORAGE_KEY, status);
+        } else {
+            window.localStorage.removeItem(DASHBOARD_SEVERITY_STATUS_FILTER_STORAGE_KEY);
+        }
+    } catch (_) {
+        // localStorage 可能被浏览器隐私设置禁用，筛选本身仍可在当前页面生效。
+    }
+}
+
+function dashboardSeverityStatusFilterLabel(status) {
+    status = normalizeDashboardSeverityStatusFilter(status);
+    if (!status) return dt('dashboard.allStatuses', null, '全部状态');
+    return statusShortLabel(status);
+}
+
+function getDashboardSeverityStatusFilter() {
+    if (dashboardState.severityStatusFilter === null) {
+        dashboardState.severityStatusFilter = readDashboardSeverityStatusFilterFromStorage();
+    }
+    syncDashboardSeverityStatusFilterUI();
+    return dashboardState.severityStatusFilter || '';
+}
+
+function updateDashboardSeverityStatusFilter(status) {
+    dashboardState.severityStatusFilter = normalizeDashboardSeverityStatusFilter(status);
+    writeDashboardSeverityStatusFilterToStorage(dashboardState.severityStatusFilter);
+    syncDashboardSeverityStatusFilterUI();
+    refreshDashboard();
+}
+window.updateDashboardSeverityStatusFilter = updateDashboardSeverityStatusFilter;
+
+function selectDashboardSeverityStatusFilter(status, ev) {
+    if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+    }
+    closeDashboardSeverityStatusFilterMenu();
+    updateDashboardSeverityStatusFilter(status);
+}
+window.selectDashboardSeverityStatusFilter = selectDashboardSeverityStatusFilter;
+
+function syncDashboardSeverityStatusFilterUI() {
+    var status = dashboardState.severityStatusFilter;
+    if (status === null) status = readDashboardSeverityStatusFilterFromStorage();
+    status = normalizeDashboardSeverityStatusFilter(status);
+
+    var root = document.getElementById('dashboard-severity-status-filter');
+    var textEl = document.getElementById('dashboard-severity-status-filter-text');
+    if (root) root.setAttribute('data-value', status);
+    if (textEl) textEl.textContent = dashboardSeverityStatusFilterLabel(status);
+
+    document.querySelectorAll('.dashboard-severity-status-filter-option[data-status]').forEach(function (item) {
+        var active = item.getAttribute('data-status') === status;
+        item.classList.toggle('is-active', active);
+        item.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+}
+
+function toggleDashboardSeverityStatusFilterMenu(ev) {
+    if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+    }
+    syncDashboardSeverityStatusFilterUI();
+    var root = document.getElementById('dashboard-severity-status-filter');
+    var btn = document.getElementById('dashboard-severity-status-filter-btn');
+    var menu = document.getElementById('dashboard-severity-status-filter-menu');
+    if (!root || !btn || !menu) return;
+    var willOpen = menu.hasAttribute('hidden');
+    menu.toggleAttribute('hidden', !willOpen);
+    root.classList.toggle('is-open', willOpen);
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    ensureDashboardSeverityStatusFilterOutsideListener();
+}
+window.toggleDashboardSeverityStatusFilterMenu = toggleDashboardSeverityStatusFilterMenu;
+
+function closeDashboardSeverityStatusFilterMenu() {
+    var root = document.getElementById('dashboard-severity-status-filter');
+    var btn = document.getElementById('dashboard-severity-status-filter-btn');
+    var menu = document.getElementById('dashboard-severity-status-filter-menu');
+    if (menu) menu.setAttribute('hidden', '');
+    if (root) root.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function ensureDashboardSeverityStatusFilterOutsideListener() {
+    if (dashboardState.severityStatusFilterOutsideBound) return;
+    dashboardState.severityStatusFilterOutsideBound = true;
+    document.addEventListener('click', function (ev) {
+        var root = document.getElementById('dashboard-severity-status-filter');
+        if (root && root.contains(ev.target)) return;
+        closeDashboardSeverityStatusFilterMenu();
+    });
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') closeDashboardSeverityStatusFilterMenu();
+    });
+}
+
+function openDashboardSeverityVulnerabilities() {
+    navigateToVulnerabilitiesWithFilter({ status: getDashboardSeverityStatusFilter() });
+}
+window.openDashboardSeverityVulnerabilities = openDashboardSeverityVulnerabilities;
+
+function navigateToSeverityWithDashboardStatus(severity) {
+    navigateToVulnerabilitiesWithFilter({
+        severity: severity,
+        status: getDashboardSeverityStatusFilter()
+    });
+}
+
+function renderDashboardSeveritySummary(bySeverity, total, severityIds) {
+    severityIds = Array.isArray(severityIds) && severityIds.length ? severityIds : ['critical', 'high', 'medium', 'low', 'info'];
+    total = Number(total || 0);
+    bySeverity = bySeverity && typeof bySeverity === 'object' ? bySeverity : {};
+    severityIds.forEach(function (sev) {
+        var count = Number(bySeverity[sev] || 0) || 0;
+        var el = document.getElementById('dashboard-severity-' + sev);
+        if (el) el.textContent = String(count);
+        var pctEl = document.getElementById('dashboard-severity-' + sev + '-pct');
+        if (pctEl) {
+            var pct = total > 0 ? Math.round((count / total) * 100) : 0;
+            pctEl.textContent = pct + '%';
+        }
+    });
+    renderSeverityDonut(bySeverity, total);
+}
+
 // 漏洞严重程度分布：半环形（donut）渲染
 // 几何参数固定，便于配合 viewBox 0 0 560 320 的 SVG 容器
-// 段间分隔由 CSS 的白色 stroke 完成，不再使用 gapRad
+// 段间分隔由 gapRad 几何间隙完成，不使用描边，避免浅色/暗色下白边或黑边过重
 var SEVERITY_DONUT_CFG = {
     // viewBox 0 0 480 260：整体保持紧凑，但环厚回到「黄金比例」附近，
     // 让弧带本身有视觉分量，又不像最早那版那样占太多空间。
@@ -1717,7 +1874,7 @@ var SEVERITY_DONUT_CFG = {
     rOuter: 165,
     rInner: 115,    // 环厚 = 50（介于原 90 和上一版 35 之间，自然且有质感）
     labelOffset: 14,
-    gapRad: 0.012
+    gapRad: 0.022
 };
 
 // 三段渐变：[高光浅调, 中段饱和色, 深色边缘] —— 做出类似 3D 釉面的层次
@@ -1759,28 +1916,66 @@ function severityLabel(id) {
     return SEVERITY_DEFAULT_LABELS[id] || id;
 }
 
+function isDashboardDarkTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
+function ensureSeverityDonutThemeObserver() {
+    if (severityDonutState.themeObserver) return;
+    severityDonutState.themeObserver = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            if (mutations[i].attributeName === 'data-theme') {
+                renderSeverityDonut(severityDonutState.bySeverity, severityDonutState.total);
+                break;
+            }
+        }
+    });
+    severityDonutState.themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme']
+    });
+}
+
 function ensureSeverityDonutDefs() {
     var defsEl = document.getElementById('dashboard-severity-donut-defs');
-    if (!defsEl || defsEl.hasChildNodes()) return;
+    if (!defsEl) return;
+    var dark = isDashboardDarkTheme();
     var html = '';
     html += '<linearGradient id="donut-track-face" x1="0%" y1="0%" x2="0%" y2="100%">';
-    html += '<stop offset="0%" stop-color="#f8fafc"/>';
-    html += '<stop offset="55%" stop-color="#e8eef5"/>';
-    html += '<stop offset="100%" stop-color="#dce5ef"/>';
+    if (dark) {
+        html += '<stop offset="0%" stop-color="#334155"/>';
+        html += '<stop offset="55%" stop-color="#1e293b"/>';
+        html += '<stop offset="100%" stop-color="#172033"/>';
+    } else {
+        html += '<stop offset="0%" stop-color="#f8fafc"/>';
+        html += '<stop offset="55%" stop-color="#e8eef5"/>';
+        html += '<stop offset="100%" stop-color="#dce5ef"/>';
+    }
     html += '</linearGradient>';
     html += '<radialGradient id="donut-track-vignette" cx="50%" cy="85%" r="75%" fx="50%" fy="85%">';
-    html += '<stop offset="0%" stop-color="#ffffff" stop-opacity="0.35"/>';
-    html += '<stop offset="70%" stop-color="#ffffff" stop-opacity="0"/>';
+    if (dark) {
+        html += '<stop offset="0%" stop-color="#0f172a" stop-opacity="0.55"/>';
+        html += '<stop offset="70%" stop-color="#0f172a" stop-opacity="0"/>';
+    } else {
+        html += '<stop offset="0%" stop-color="#ffffff" stop-opacity="0.35"/>';
+        html += '<stop offset="70%" stop-color="#ffffff" stop-opacity="0"/>';
+    }
     html += '</radialGradient>';
     html += '<radialGradient id="donut-inner-gloss" cx="35%" cy="75%" r="55%">';
-    html += '<stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>';
-    html += '<stop offset="55%" stop-color="#ffffff" stop-opacity="0.08"/>';
-    html += '<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>';
+    if (dark) {
+        html += '<stop offset="0%" stop-color="#94a3b8" stop-opacity="0.10"/>';
+        html += '<stop offset="55%" stop-color="#94a3b8" stop-opacity="0.03"/>';
+        html += '<stop offset="100%" stop-color="#94a3b8" stop-opacity="0"/>';
+    } else {
+        html += '<stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>';
+        html += '<stop offset="55%" stop-color="#ffffff" stop-opacity="0.08"/>';
+        html += '<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>';
+    }
     html += '</radialGradient>';
     html += '<filter id="donut-segment-soften" x="-18%" y="-18%" width="136%" height="136%" color-interpolation-filters="sRGB">';
     html += '<feGaussianBlur in="SourceAlpha" stdDeviation="0.8" result="blur"/>';
     html += '<feOffset dx="0" dy="1.5" in="blur" result="off"/>';
-    html += '<feFlood flood-color="#0f172a" flood-opacity="0.13" result="flood"/>';
+    html += '<feFlood flood-color="' + (dark ? '#000000' : '#0f172a') + '" flood-opacity="' + (dark ? '0.28' : '0.13') + '" result="flood"/>';
     html += '<feComposite in="flood" in2="off" operator="in" result="shadow"/>';
     html += '<feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>';
     html += '</filter>';
@@ -1808,17 +2003,17 @@ function renderSeverityDonut(bySeverity, total) {
     severityDonutState.total = total || 0;
     severityDonutState.hoverId = null;
 
+    ensureSeverityDonutThemeObserver();
+
     var cfg = SEVERITY_DONUT_CFG;
     ensureSeverityDonutDefs();
 
     // 背景轨迹（完整半环）：双层填充营造凹槽 + 高光
-    if (!trackEl.hasChildNodes()) {
-        var trackPath = halfRingPath(cfg.cx, cfg.cy, cfg.rOuter, cfg.rInner);
-        trackEl.innerHTML =
-            '<path class="donut-track-shadow" d="' + trackPath + '"/>' +
-            '<path class="donut-track" fill="url(#donut-track-face)" d="' + trackPath + '"/>' +
-            '<path class="donut-track-vignette" fill="url(#donut-track-vignette)" d="' + trackPath + '"/>';
-    }
+    var trackPath = halfRingPath(cfg.cx, cfg.cy, cfg.rOuter, cfg.rInner);
+    trackEl.innerHTML =
+        '<path class="donut-track-shadow" d="' + trackPath + '"/>' +
+        '<path class="donut-track" fill="url(#donut-track-face)" d="' + trackPath + '"/>' +
+        '<path class="donut-track-vignette" fill="url(#donut-track-vignette)" d="' + trackPath + '"/>';
 
     var ids = ['critical', 'high', 'medium', 'low', 'info'];
     var severities = ids.map(function (id) {
@@ -2163,7 +2358,7 @@ function severityDonutClick(ev) {
     var id = target.getAttribute('data-severity');
     if (!id) return;
     ev.preventDefault();
-    navigateToVulnerabilitiesWithFilter({ severity: id });
+    navigateToSeverityWithDashboardStatus(id);
 }
 
 function severityDonutKeydown(ev) {
@@ -2172,7 +2367,7 @@ function severityDonutKeydown(ev) {
     if (!target) return;
     ev.preventDefault();
     var id = target.getAttribute('data-severity');
-    if (id) navigateToVulnerabilitiesWithFilter({ severity: id });
+    if (id) navigateToSeverityWithDashboardStatus(id);
 }
 
 function severityLegendPointerOver(ev) {
@@ -2198,7 +2393,7 @@ function severityLegendClick(ev) {
     var id = item.getAttribute('data-severity');
     if (!id) return;
     ev.preventDefault();
-    navigateToVulnerabilitiesWithFilter({ severity: id });
+    navigateToSeverityWithDashboardStatus(id);
 }
 
 function severityLegendKeydown(ev) {
@@ -2207,7 +2402,7 @@ function severityLegendKeydown(ev) {
     if (!item) return;
     ev.preventDefault();
     var id = item.getAttribute('data-severity');
-    if (id) navigateToVulnerabilitiesWithFilter({ severity: id });
+    if (id) navigateToSeverityWithDashboardStatus(id);
 }
 
 // SVG 半环（背景轨迹）路径
@@ -2287,4 +2482,3 @@ document.addEventListener('click', function (ev) {
     var banner = document.getElementById('dashboard-alert-banner');
     if (banner) banner.hidden = true;
 });
-

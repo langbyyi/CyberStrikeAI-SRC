@@ -167,18 +167,29 @@ function renderSkillsList() {
         const fc = typeof skill.file_count === 'number' && skill.file_count > 0
             ? _t('skills.cardFiles', { count: skill.file_count })
             : '';
-        const meta = [ver, fc, sc].filter(Boolean).join(' · ');
+        const metaItems = [ver, fc, sc].filter(Boolean);
+        const tags = Array.isArray(skill.tags) ? skill.tags.filter(Boolean) : [];
+        const visibleTags = tags.slice(0, 4);
+        const hiddenTagCount = Math.max(0, tags.length - visibleTags.length);
+        const tagsHtml = visibleTags.length
+            ? `<div class="skill-card-tags">${visibleTags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}${hiddenTagCount ? `<span>+${hiddenTagCount}</span>` : ''}</div>`
+            : '';
         return `
             <div class="skill-card">
-                <div class="skill-card-header">
-                    <h3 class="skill-card-title">${escapeHtml(skill.name || sid)}</h3>
-                    ${meta ? `<div class="skill-card-meta" style="opacity:0.85;font-size:12px;margin-top:4px;">${escapeHtml(meta)}</div>` : ''}
-                    <div class="skill-card-description">${escapeHtml(skill.description || _t('skills.noDescription'))}</div>
-                </div>
-                <div class="skill-card-actions">
-                    <button type="button" class="btn-secondary btn-small" data-skill-view="${escapeHtml(sid)}">${_t('common.view')}</button>
-                    <button type="button" class="btn-secondary btn-small" data-skill-edit="${escapeHtml(sid)}">${_t('common.edit')}</button>
-                    <button type="button" class="btn-secondary btn-small btn-danger" data-skill-delete="${escapeHtml(sid)}">${_t('common.delete')}</button>
+                <div class="skill-card-body">
+                    <div class="skill-card-header">
+                        <div class="skill-card-title-row">
+                            <h3 class="skill-card-title">${escapeHtml(skill.name || sid)}</h3>
+                            ${metaItems.length ? `<div class="skill-card-meta">${metaItems.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}
+                        </div>
+                        <div class="skill-card-description">${escapeHtml(skill.description || _t('skills.noDescription'))}</div>
+                        ${tagsHtml}
+                    </div>
+                    <div class="skill-card-actions">
+                        <button type="button" class="btn-secondary btn-small" data-skill-view="${escapeHtml(sid)}">${_t('common.view')}</button>
+                        <button type="button" class="btn-secondary btn-small" data-skill-edit="${escapeHtml(sid)}">${_t('common.edit')}</button>
+                        <button type="button" class="btn-secondary btn-small btn-danger" data-skill-delete="${escapeHtml(sid)}">${_t('common.delete')}</button>
+                    </div>
                 </div>
             </div>
         `;
@@ -347,6 +358,27 @@ function updateSkillsManagementStats() {
     if (totalEl) {
         totalEl.textContent = skillsPagination.total;
     }
+
+    const currentCountEl = document.getElementById('skills-current-count');
+    if (currentCountEl) {
+        currentCountEl.textContent = skillsList.length;
+    }
+
+    const fileCountEl = document.getElementById('skills-file-count');
+    if (fileCountEl) {
+        const fileCount = skillsList.reduce((sum, skill) => {
+            return sum + (typeof skill.file_count === 'number' ? skill.file_count : 0);
+        }, 0);
+        fileCountEl.textContent = fileCount;
+    }
+
+    const scriptCountEl = document.getElementById('skills-script-count');
+    if (scriptCountEl) {
+        const scriptCount = skillsList.reduce((sum, skill) => {
+            return sum + (typeof skill.script_count === 'number' ? skill.script_count : 0);
+        }, 0);
+        scriptCountEl.textContent = scriptCount;
+    }
 }
 
 // 搜索skills
@@ -445,6 +477,7 @@ function wireSkillModalOnce() {
 }
 
 function showAddSkillModal() {
+    if (typeof requirePermission === 'function' && !requirePermission('skills:write')) return;
     wireSkillModalOnce();
     const modal = document.getElementById('skill-modal');
     if (!modal) return;
@@ -650,7 +683,7 @@ async function viewSkill(skillId) {
                     <div style="margin-bottom: 8px;"><strong>${escapeHtml(pathLabel)}</strong> ${escapeHtml(sumSkill.path || '')}</div>
                     <div style="margin-bottom: 16px;"><strong>${escapeHtml(modTimeLabel)}</strong> ${escapeHtml(sumSkill.mod_time || '')}</div>
                     <div style="margin-bottom: 8px;"><strong>${escapeHtml(contentLabel)}</strong> <span style="opacity:0.8;font-size:12px;">${escapeHtml(_t('skills.summaryHint'))}</span></div>
-                    <pre id="skill-view-body" style="background: #f5f5f5; padding: 16px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;">${escapeHtml(sumSkill.content || '')}</pre>
+                    <pre id="skill-view-body" style="padding: 16px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--border-color);">${escapeHtml(sumSkill.content || '')}</pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn-secondary" data-skill-load-full>${escapeHtml(loadFullLabel)}</button>
@@ -712,6 +745,7 @@ function closeSkillModal() {
 
 // 保存skill
 async function saveSkill() {
+    if (typeof requirePermission === 'function' && !requirePermission('skills:write')) return;
     if (isSavingSkill) return;
 
     const name = document.getElementById('skill-name').value.trim();
@@ -920,23 +954,23 @@ function renderSkillsMonitor() {
             : '0.0';
         
         statsEl.innerHTML = `
-            <div class="monitor-stat-card">
+            <div class="monitor-stat-card skills-stat-card skills-stat-card--total">
                 <div class="monitor-stat-label">${_t('skills.totalSkillsCount')}</div>
                 <div class="monitor-stat-value">${skillsStats.total}</div>
             </div>
-            <div class="monitor-stat-card">
+            <div class="monitor-stat-card skills-stat-card skills-stat-card--calls">
                 <div class="monitor-stat-label">${_t('skills.totalCallsCount')}</div>
                 <div class="monitor-stat-value">${skillsStats.totalCalls}</div>
             </div>
-            <div class="monitor-stat-card">
+            <div class="monitor-stat-card skills-stat-card skills-stat-card--success">
                 <div class="monitor-stat-label">${_t('skills.successfulCalls')}</div>
-                <div class="monitor-stat-value" style="color: #28a745;">${skillsStats.totalSuccess}</div>
+                <div class="monitor-stat-value is-success">${skillsStats.totalSuccess}</div>
             </div>
-            <div class="monitor-stat-card">
+            <div class="monitor-stat-card skills-stat-card skills-stat-card--failed">
                 <div class="monitor-stat-label">${_t('skills.failedCalls')}</div>
-                <div class="monitor-stat-value" style="color: #dc3545;">${skillsStats.totalFailed}</div>
+                <div class="monitor-stat-value is-danger">${skillsStats.totalFailed}</div>
             </div>
-            <div class="monitor-stat-card">
+            <div class="monitor-stat-card skills-stat-card skills-stat-card--rate">
                 <div class="monitor-stat-label">${_t('skills.successRate')}</div>
                 <div class="monitor-stat-value">${successRate}%</div>
             </div>
@@ -966,15 +1000,15 @@ function renderSkillsMonitor() {
     });
 
     monitorListEl.innerHTML = `
-        <table class="monitor-table">
+        <table class="monitor-table skills-monitor-table">
             <thead>
                 <tr>
-                    <th style="text-align: left !important;">${_t('skills.skillName')}</th>
-                    <th style="text-align: center;">${_t('skills.totalCalls')}</th>
-                    <th style="text-align: center;">${_t('skills.success')}</th>
-                    <th style="text-align: center;">${_t('skills.failure')}</th>
-                    <th style="text-align: center;">${_t('skills.successRate')}</th>
-                    <th style="text-align: left;">${_t('skills.lastCallTime')}</th>
+                    <th>${_t('skills.skillName')}</th>
+                    <th>${_t('skills.totalCalls')}</th>
+                    <th>${_t('skills.success')}</th>
+                    <th>${_t('skills.failure')}</th>
+                    <th>${_t('skills.successRate')}</th>
+                    <th>${_t('skills.lastCallTime')}</th>
                 </tr>
             </thead>
             <tbody>
@@ -984,15 +1018,21 @@ function renderSkillsMonitor() {
                     const failedCalls = stat.failed_calls || 0;
                     const successRate = totalCalls > 0 ? ((successCalls / totalCalls) * 100).toFixed(1) : '0.0';
                     const lastCallTime = stat.last_call_time && stat.last_call_time !== '-' ? stat.last_call_time : '-';
+                    const rateValue = Math.max(0, Math.min(100, Number(successRate) || 0));
                     
                     return `
                         <tr>
-                            <td style="text-align: left !important;"><strong>${escapeHtml(stat.skill_name || '')}</strong></td>
-                            <td style="text-align: center;">${totalCalls}</td>
-                            <td style="text-align: center; color: #28a745; font-weight: 500;">${successCalls}</td>
-                            <td style="text-align: center; color: #dc3545; font-weight: 500;">${failedCalls}</td>
-                            <td style="text-align: center;">${successRate}%</td>
-                            <td style="color: var(--text-secondary);">${escapeHtml(lastCallTime)}</td>
+                            <td><strong>${escapeHtml(stat.skill_name || '')}</strong></td>
+                            <td><span class="skills-table-pill">${totalCalls}</span></td>
+                            <td><span class="skills-table-number is-success">${successCalls}</span></td>
+                            <td><span class="skills-table-number is-danger">${failedCalls}</span></td>
+                            <td>
+                                <div class="skills-rate-cell">
+                                    <span>${successRate}%</span>
+                                    <span class="skills-rate-track"><span style="width: ${rateValue}%;"></span></span>
+                                </div>
+                            </td>
+                            <td class="skills-last-call">${escapeHtml(lastCallTime)}</td>
                         </tr>
                     `;
                 }).join('')}

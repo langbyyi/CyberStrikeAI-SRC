@@ -41,19 +41,19 @@ curl -s -H "Authorization: Bearer $TOKEN" https://target/api/users/2/profile
 ## Skill Map
 
 - This skill covers quick routing for API asset discovery (OpenAPI, Swagger, version drift, hidden docs)
-- [API Authorization and BOLA](../idor/SKILL.md): BOLA, BFLA, method abuse, hidden writable fields
-- [API Auth and JWT Abuse](../jwt-attacks/SKILL.md): Bearer token, Header trust, Claim abuse, rate limit bypass
-- [GraphQL and Hidden Parameters](../graphql/SKILL.md): introspection, batching, undocumented fields, hidden parameters
+- [API Authorization and BOLA](../idor-broken-object-authorization/SKILL.md): BOLA, BFLA, method abuse, hidden writable fields
+- [API Auth and JWT Abuse](../jwt-oauth-token-attacks/SKILL.md): Bearer token, Header trust, Claim abuse, rate limit bypass
+- [GraphQL and Hidden Parameters](../graphql-and-hidden-parameters/SKILL.md): introspection, batching, undocumented fields, hidden parameters
 
 ## Quick Triage
 
 | Observation | Route |
 |---|---|
 | Swagger or OpenAPI present | See Skill Map above |
-| IDs appear in URL, JSON, Header, or GraphQL args | [api-authorization-and-bola](../idor/SKILL.md) |
-| JWT token visible in traffic | [api-auth-and-jwt-abuse](../jwt-attacks/SKILL.md) |
-| `/graphql` or batched JSON arrays present | [graphql](../graphql/SKILL.md) |
-| Registration, login, profile update accepts extra fields | [api-authorization-and-bola](../idor/SKILL.md) then [api-auth-and-jwt-abuse](../jwt-attacks/SKILL.md) |
+| IDs appear in URL, JSON, Header, or GraphQL args | [api-authorization-and-bola](../idor-broken-object-authorization/SKILL.md) |
+| JWT token visible in traffic | [api-auth-and-jwt-abuse](../jwt-oauth-token-attacks/SKILL.md) |
+| `/graphql` or batched JSON arrays present | [graphql](../graphql-and-hidden-parameters/SKILL.md) |
+| Registration, login, profile update accepts extra fields | [api-authorization-and-bola](../idor-broken-object-authorization/SKILL.md) then [api-auth-and-jwt-abuse](../jwt-oauth-token-attacks/SKILL.md) |
 
 ## Recommended Flow
 
@@ -166,18 +166,12 @@ API endpoint discovered?
 - [ ] Test input validation: send unexpected types, oversized payloads, negative IDs, special characters
 - [ ] Route to specialized skills based on findings (see Skill Map above)
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `api_fuzzer` | Fuzz API endpoints with parameter mutations, unexpected HTTP methods, and edge-case payloads to discover hidden endpoints and authorization flaws |
-| `api_schema_analyzer` | Analyze OpenAPI/Swagger/GraphQL schemas to identify undocumented endpoints, excessive permissions, and security issues in API definitions |
-| `http_framework_test` | Send crafted HTTP requests to test BOLA/BFLA authorization, token abuse, and hidden writable fields across API endpoints |
-| `http_repeater` | Replay and modify API requests to test IDOR, privilege escalation, JWT claim manipulation, and rate-limit bypass scenarios |
-| `graphql_scanner` | Test GraphQL endpoints for introspection exposure, query depth abuse, mutation security, and batching attack vectors |
+Prefer the currently visible `api-schema-analyzer`, `graphql-scanner`, `http-framework-test`, `arjun`, `x8`, `ffuf`, and `execute-python-script` tools as appropriate. Tool visibility, RBAC and HITL are authoritative; if a named tool is unavailable, preserve the method and use an equivalent visible request/replay tool instead of inventing an MCP call.
 
 ## RELATED ROUTING
 
-- [auth-sec](../authentication-bypass/SKILL.md)
-- [business-logic-vuln](../business-logic/SKILL.md)
+- [auth-sec](../authbypass-authentication-flaws/SKILL.md)
+- [business-logic-vuln](../business-logic-vulnerabilities/SKILL.md)
 - [recon-for-sec](../recon-and-methodology/SKILL.md)

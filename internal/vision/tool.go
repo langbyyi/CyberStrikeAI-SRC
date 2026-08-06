@@ -89,7 +89,7 @@ func RegisterAnalyzeImageTool(mcpServer *mcp.Server, cfg *config.Config, logger 
 
 	mcpServer.RegisterTool(tool, handler)
 	if logger != nil {
-		logger.Info("vision: analyze_image 工具已注册", zap.String("model", cfg.Vision.Model))
+		logger.Debug("vision: analyze_image 工具已注册", zap.String("model", cfg.Vision.Model))
 	}
 }
 

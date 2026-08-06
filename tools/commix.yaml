@@ -1,0 +1,38 @@
+name: commix
+command: commix
+enabled: true
+short_description: 命令注入自动化检测与利用
+description: '自动化命令注入检测与利用工具。
+
+  **使用场景：** 参数命令注入检测、Bash/Python/Perl 多种注入技术。
+
+
+  **安装：** `apt install commix` 或 git clone（若不可用先安装）。'
+parameters:
+  - name: url
+    type: string
+    required: true
+    flag: -u
+    format: flag
+    description: 目标 URL
+  - name: data
+    type: string
+    required: false
+    flag: --data
+    format: flag
+    description: POST 数据，如 `cmd=test`
+  - name: os
+    type: string
+    required: false
+    flag: --os
+    format: flag
+    options:
+      - linux
+      - windows
+      - unix
+    description: 目标操作系统
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `--cookie=...` `--level=2` `--batch`

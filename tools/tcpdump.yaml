@@ -1,0 +1,41 @@
+name: tcpdump
+command: tcpdump
+enabled: true
+short_description: 网络流量捕获与分析
+description: '命令行网络抓包工具。
+
+  **使用场景：** 流量分析、协议调试、凭据嗅探。
+
+
+  **安装：** `apt install tcpdump`（需 root；若不可用先安装）。'
+parameters:
+  - name: interface
+    type: string
+    required: false
+    flag: -i
+    format: flag
+    default: any
+    description: 网卡接口，如 `eth0` `any`
+  - name: filter
+    type: string
+    required: false
+    flag: -c
+    format: combined
+    description: BPF 过滤器（与 -c 组合传入过滤器表达式），如 `port 80` `host 1.2.3.4`
+  - name: count
+    type: int
+    required: false
+    flag: -c
+    format: flag
+    description: 捕获包数量限制
+  - name: output
+    type: string
+    required: false
+    flag: -w
+    format: flag
+    description: 保存 pcap 文件
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-A`(ASCII) `-XX`(hex) `-n`(不解析域名)

@@ -1,0 +1,36 @@
+name: theHarvester
+command: theHarvester
+enabled: true
+short_description: OSINT 邮箱/子域/主机收集（多数据源）
+description: 'OSINT 信息收集工具，从搜索引擎与公开数据源收集邮箱、子域名、主机、员工信息。
+
+  **使用场景：** 目标资产信息收集、钓鱼前期情报、子域名发现。
+
+
+  **安装：** `apt install theHarvester` 或 `pipx install theHarvester`（若不可用先安装）。'
+parameters:
+  - name: domain
+    type: string
+    required: true
+    flag: -d
+    format: flag
+    description: 目标域名
+  - name: sources
+    type: string
+    required: false
+    flag: -b
+    format: flag
+    default: all
+    description: 数据源，如 `all`(全部)/`baidu,google,linkedin`
+  - name: limit
+    type: int
+    required: false
+    flag: -l
+    format: flag
+    default: 500
+    description: 结果数量限制
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数

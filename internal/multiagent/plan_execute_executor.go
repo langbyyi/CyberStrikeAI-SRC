@@ -8,7 +8,15 @@ import (
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 )
 
-// newPlanExecuteExecutor 与 planexecute.NewExecutor 行为一致，但可为执行器注入 Handlers（例如 summarization 中间件）。
+// newPlanExecuteExecutor builds the Plan-Execute Executor as an Eino ChatModelAgent.
+//
+// Eino's planexecute.Config accepts any adk.Agent as Executor; this implementation
+// keeps the official Executor contract (Plan/UserInput/ExecutedSteps session keys
+// and ExecutedStepSessionKey output) while using ChatModelAgentConfig.Handlers so
+// the executor can run the same ADK middleware stack as Deep/Supervisor. As of
+// Eino v0.9.12/v0.10.0-alpha.10, planexecute.NewExecutor still does not expose a
+// Handlers field, so this custom Executor is the best-practice extension point
+// that preserves middleware without forking the whole planexecute loop.
 func newPlanExecuteExecutor(ctx context.Context, cfg *planexecute.ExecutorConfig, handlers []adk.ChatModelAgentMiddleware) (adk.Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("plan_execute: ExecutorConfig 为空")
@@ -25,18 +33,27 @@ func newPlanExecuteExecutor(ctx context.Context, cfg *planexecute.ExecutorConfig
 		if !ok {
 			return nil, fmt.Errorf("plan_execute executor: session value %q missing (possible session corruption)", planexecute.PlanSessionKey)
 		}
-		plan_ := plan.(planexecute.Plan)
+		plan_, ok := plan.(planexecute.Plan)
+		if !ok {
+			return nil, fmt.Errorf("plan_execute executor: session value %q has invalid type %T", planexecute.PlanSessionKey, plan)
+		}
 
 		userInput, ok := adk.GetSessionValue(ctx, planexecute.UserInputSessionKey)
 		if !ok {
 			return nil, fmt.Errorf("plan_execute executor: session value %q missing (possible session corruption)", planexecute.UserInputSessionKey)
 		}
-		userInput_ := userInput.([]adk.Message)
+		userInput_, ok := userInput.([]adk.Message)
+		if !ok {
+			return nil, fmt.Errorf("plan_execute executor: session value %q has invalid type %T", planexecute.UserInputSessionKey, userInput)
+		}
 
 		var executedSteps_ []planexecute.ExecutedStep
 		executedStep, ok := adk.GetSessionValue(ctx, planexecute.ExecutedStepsSessionKey)
 		if ok {
-			executedSteps_ = executedStep.([]planexecute.ExecutedStep)
+			executedSteps_, ok = executedStep.([]planexecute.ExecutedStep)
+			if !ok {
+				return nil, fmt.Errorf("plan_execute executor: session value %q has invalid type %T", planexecute.ExecutedStepsSessionKey, executedStep)
+			}
 		}
 
 		in := &planexecute.ExecutionContext{

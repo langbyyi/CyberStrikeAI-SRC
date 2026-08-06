@@ -336,23 +336,13 @@ func sensitiveHTTPConfirmed(args map[string]interface{}, method, target, token s
 	if gotToken != "" && strings.EqualFold(gotToken, token) {
 		return true
 	}
-	// confirmed may carry the token or a matching URL (legacy).
+	// confirmed 仅作为 confirm_token 的历史别名，必须精确等于 method+target 绑定的 token；
+	// 不再做子串/URL 包含匹配——否则传单字符即可匹配几乎所有 target，绕过绑定。
 	confirmed := strings.TrimSpace(strFromArgs(args, "confirmed"))
 	if confirmed == "" {
 		return false
 	}
-	if strings.EqualFold(confirmed, token) {
-		return true
-	}
-	ct := strings.ToLower(confirmed)
-	tg := strings.ToLower(target)
-	nt := normalizeSensitiveTarget(target)
-	nc := normalizeSensitiveTarget(confirmed)
-	if strings.Contains(tg, ct) || strings.Contains(ct, tg) ||
-		(nt != "" && nc != "" && (strings.Contains(nt, nc) || strings.Contains(nc, nt))) {
-		return true
-	}
-	return false
+	return strings.EqualFold(confirmed, token)
 }
 
 func normalizeSensitiveTarget(t string) string {

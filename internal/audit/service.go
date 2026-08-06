@@ -63,7 +63,12 @@ func (s *Service) Record(c *gin.Context, e Entry) {
 		}
 	}
 	if strings.TrimSpace(e.Actor) == "" {
-		e.Actor = "admin"
+		if c != nil {
+			e.Actor = strings.TrimSpace(c.GetString(security.ContextUsernameKey))
+		}
+		if e.Actor == "" {
+			e.Actor = "admin"
+		}
 	}
 	maxDetail := s.cfg.Audit.MaxDetailBytesEffective()
 	detail := SanitizeDetail(e.Detail, maxDetail)

@@ -12,6 +12,7 @@ type RobotSessionBinding struct {
 	SessionKey     string
 	ConversationID string
 	RoleName       string
+	AgentMode      string
 	UpdatedAt      time.Time
 }
 
@@ -24,9 +25,9 @@ func (db *DB) GetRobotSessionBinding(sessionKey string) (*RobotSessionBinding, e
 	var b RobotSessionBinding
 	var updatedAt string
 	err := db.QueryRow(
-		"SELECT session_key, conversation_id, role_name, updated_at FROM robot_user_sessions WHERE session_key = ?",
+		"SELECT session_key, conversation_id, role_name, agent_mode, updated_at FROM robot_user_sessions WHERE session_key = ?",
 		sessionKey,
-	).Scan(&b.SessionKey, &b.ConversationID, &b.RoleName, &updatedAt)
+	).Scan(&b.SessionKey, &b.ConversationID, &b.RoleName, &b.AgentMode, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -43,28 +44,36 @@ func (db *DB) GetRobotSessionBinding(sessionKey string) (*RobotSessionBinding, e
 	if strings.TrimSpace(b.RoleName) == "" {
 		b.RoleName = "默认"
 	}
+	if strings.TrimSpace(b.AgentMode) == "" {
+		b.AgentMode = "eino_single"
+	}
 	return &b, nil
 }
 
 // UpsertRobotSessionBinding 写入或更新机器人会话绑定（包含角色）。
-func (db *DB) UpsertRobotSessionBinding(sessionKey, conversationID, roleName string) error {
+func (db *DB) UpsertRobotSessionBinding(sessionKey, conversationID, roleName, agentMode string) error {
 	sessionKey = strings.TrimSpace(sessionKey)
 	conversationID = strings.TrimSpace(conversationID)
 	roleName = strings.TrimSpace(roleName)
+	agentMode = strings.TrimSpace(agentMode)
 	if sessionKey == "" || conversationID == "" {
 		return nil
 	}
 	if roleName == "" {
 		roleName = "默认"
 	}
+	if agentMode == "" {
+		agentMode = "eino_single"
+	}
 	_, err := db.Exec(`
-		INSERT INTO robot_user_sessions (session_key, conversation_id, role_name, updated_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO robot_user_sessions (session_key, conversation_id, role_name, agent_mode, updated_at)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(session_key) DO UPDATE SET
 			conversation_id = excluded.conversation_id,
 			role_name = excluded.role_name,
+			agent_mode = excluded.agent_mode,
 			updated_at = excluded.updated_at
-	`, sessionKey, conversationID, roleName, time.Now())
+	`, sessionKey, conversationID, roleName, agentMode, time.Now())
 	if err != nil {
 		return fmt.Errorf("写入机器人会话绑定失败: %w", err)
 	}

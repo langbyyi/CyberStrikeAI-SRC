@@ -110,3 +110,5 @@ When OOB HTTP exfiltration is blocked, use error-based exfiltration:
 ```
 
 The parser tries to open `file:///nonexistent/root:x:0:0:...` → error message contains file contents.
+
+

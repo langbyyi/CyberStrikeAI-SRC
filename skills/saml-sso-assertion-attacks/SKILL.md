@@ -1,9 +1,9 @@
 ---
 name: saml-sso-assertion-attacks
-description: >-
-  SAML SSO assertion attack playbook for signature validation bypass, assertion
-  wrapping, audience restriction evasion, ACS handling flaws, XML parser attacks,
-  certificate confusion, and IdP/SP trust boundary exploitation.
+description: SAML SSO assertion attacks. Use when testing SAML-based single sign-on,
+  assertion signature validation, assertion wrapping, audience restriction evasion,
+  ACS endpoint handling, XML parser attacks, or certificate confusion — including
+  IdP/SP trust boundary exploitation.
 ---
 
 # SKILL: SAML SSO Assertion Attacks — Expert Attack Playbook
@@ -343,20 +343,15 @@ Found SAML endpoint (SAMLRequest/SAMLResponse)?
 
 ---
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted SAML assertions to ACS endpoint |
-| `http_repeater` | Replay and modify SAML responses |
-| `browser_agent_inspect` | Observe SAML flow in browser |
-| `burpsuite_alternative_scan` | Automated SAML testing |
+Use visible `http-framework-test`, `execute-python-script`, or `exec` tools for low-impact assertion decoding and controlled ACS replay. Browser or proxy-assisted observation is optional and only applies when that capability is actually visible; do not assume a Burp or browser MCP exists.
 
 ---
 
 ## RELATED ROUTING
 
-- [XXE Attacks](../xxe/SKILL.md) — when XML parser in SAML endpoint is vulnerable to XXE
-- [OAuth/OIDC Misconfiguration](../oauth-oidc/SKILL.md) — when OAuth-based SSO is in use instead of SAML
-- [JWT/OAuth Token Attacks](../jwt-attacks/SKILL.md) — when JWT tokens are used alongside SAML
-- [Auth Bypass](../authentication-bypass/SKILL.md) — general authentication bypass patterns
+- [XXE Attacks](../xxe-xml-external-entity/SKILL.md) — when XML parser in SAML endpoint is vulnerable to XXE
+- [OAuth/OIDC Misconfiguration](../oauth-oidc-misconfiguration/SKILL.md) — when OAuth-based SSO is in use instead of SAML
+- [JWT/OAuth Token Attacks](../jwt-oauth-token-attacks/SKILL.md) — when JWT tokens are used alongside SAML
+- [Auth Bypass](../authbypass-authentication-flaws/SKILL.md) — general authentication bypass patterns

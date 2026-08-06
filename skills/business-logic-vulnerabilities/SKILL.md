@@ -337,3 +337,14 @@ For each business process:
 □ Free trial ≠ time-limited (no enforcement after trial)
 □ Direct API call to premium endpoint without subscription check
 ```
+
+---
+
+## Related Routing
+
+- Race condition / TOCTOU details → [race-condition](../race-condition/SKILL.md)
+- IDOR / object ownership → [idor-broken-object-authorization](../idor-broken-object-authorization/SKILL.md)
+- Coupon/price via type confusion → [nosql-injection](../nosql-injection/SKILL.md)
+- Auth flow logic → [authbypass-authentication-flaws](../authbypass-authentication-flaws/SKILL.md)
+- Upload workflow logic → [upload-insecure-files](../upload-insecure-files/SKILL.md)
+- API workflow / GraphQL → [api-sec](../api-sec/SKILL.md) / [graphql-and-hidden-parameters](../graphql-and-hidden-parameters/SKILL.md)

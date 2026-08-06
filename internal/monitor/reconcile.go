@@ -14,7 +14,7 @@ const (
 	staleRunningReconcileGap = 2 * time.Minute
 )
 
-// ExecutionReconciler 在启动或运行期将无对应协程的 running 执行记录收尾为 cancelled。
+// ExecutionReconciler 在启动或运行期将无对应协程的 running 执行记录收尾为 orphaned。
 type ExecutionReconciler struct {
 	db          *database.DB
 	mcpServer   *mcp.Server
@@ -32,7 +32,7 @@ func NewExecutionReconciler(db *database.DB, mcpServer *mcp.Server, externalMgr 
 	}
 }
 
-// ReconcileOnStartup marks every persisted running row as cancelled (safe right after process start).
+// ReconcileOnStartup marks every persisted running row as orphaned (safe right after process start).
 func (r *ExecutionReconciler) ReconcileOnStartup() {
 	if r == nil || r.db == nil {
 		return
