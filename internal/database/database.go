@@ -58,6 +58,7 @@ type DB struct {
 	checkpointDone           chan struct{}
 	closeOnce                sync.Once
 	closeErr                 error
+	vulnerabilityCreatedHook func(*Vulnerability)
 }
 
 // startPassiveCheckpointLoop 启动后台 PASSIVE checkpoint 循环。
@@ -113,10 +114,10 @@ func (db *DB) runPassiveCheckpoint(trigger string) {
 		return
 	}
 	if busy > 0 {
-		db.logger.Info("SQLite PASSIVE checkpoint 完成（部分推进）", fields...)
+		db.logger.Debug("SQLite PASSIVE checkpoint 完成（部分推进）", fields...)
 		return
 	}
-	db.logger.Info("SQLite PASSIVE checkpoint 完成（成功）", fields...)
+	db.logger.Debug("SQLite PASSIVE checkpoint 完成（成功）", fields...)
 }
 
 // NewDB 创建数据库连接
@@ -182,6 +183,8 @@ func (db *DB) initTables() error {
 		title TEXT NOT NULL,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
+		role_name TEXT NOT NULL DEFAULT '默认',
+		agent_mode TEXT NOT NULL DEFAULT 'eino_single',
 		last_react_input TEXT,
 		last_react_output TEXT
 	);`
@@ -225,8 +228,12 @@ func (db *DB) initTables() error {
 		start_time DATETIME NOT NULL,
 		end_time DATETIME,
 		duration_ms INTEGER,
+		partial_output TEXT,
+		partial_output_bytes INTEGER NOT NULL DEFAULT 0,
+		partial_output_truncated INTEGER NOT NULL DEFAULT 0,
+		partial_output_updated_at DATETIME,
+		owner_user_id TEXT,
 		conversation_id TEXT,
-		semantic_outcome TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);`
 
@@ -302,6 +309,7 @@ func (db *DB) initTables() error {
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		icon TEXT,
+		owner_user_id TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);`
@@ -324,6 +332,7 @@ func (db *DB) initTables() error {
 		session_key TEXT PRIMARY KEY,
 		conversation_id TEXT NOT NULL,
 		role_name TEXT NOT NULL DEFAULT '默认',
+		agent_mode TEXT NOT NULL DEFAULT 'eino_single',
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 	);`
@@ -336,7 +345,6 @@ func (db *DB) initTables() error {
 		description TEXT,
 		scope_json TEXT,
 		status TEXT NOT NULL DEFAULT 'active',
-		report_type TEXT NOT NULL DEFAULT 'enterprise',
 		pinned INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
@@ -391,20 +399,68 @@ func (db *DB) initTables() error {
 		status TEXT NOT NULL DEFAULT 'open',
 		vulnerability_type TEXT,
 		target TEXT,
-		proof TEXT,
+		preconditions TEXT,
+		reproduction_steps TEXT,
+		evidence TEXT,
 		impact TEXT,
 		recommendation TEXT,
+		retest_notes TEXT,
 		category TEXT,
-		network_segment TEXT,
 		auth_required TEXT,
-		vuln_urls TEXT,
-		developer TEXT,
 		test_account TEXT,
 		test_password TEXT,
+		vuln_urls TEXT,
+		network_segment TEXT,
+		developer TEXT,
+		poc_script TEXT,
+		tool_call_id TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
 		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+	);`
+
+	createAssetsTable := `
+	CREATE TABLE IF NOT EXISTS assets (
+		id TEXT PRIMARY KEY,
+		dedup_key TEXT NOT NULL UNIQUE, project_id TEXT,
+		host TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '', port INTEGER NOT NULL DEFAULT 0,
+		domain TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+		server TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', province TEXT NOT NULL DEFAULT '', city TEXT NOT NULL DEFAULT '',
+		responsible_person TEXT NOT NULL DEFAULT '', department TEXT NOT NULL DEFAULT '', business_system TEXT NOT NULL DEFAULT '',
+		environment TEXT NOT NULL DEFAULT '', criticality TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT 'manual', source_query TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+		vulnerability_count INTEGER NOT NULL DEFAULT 0, risk_score INTEGER NOT NULL DEFAULT 0, risk_level TEXT NOT NULL DEFAULT 'unassessed',
+		tags_json TEXT NOT NULL DEFAULT '[]', first_seen_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, owner_user_id TEXT,
+		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+	);`
+
+	createVulnerabilityAlertSubscriptionsTable := `
+	CREATE TABLE IF NOT EXISTS vulnerability_alert_subscriptions (
+		user_id TEXT PRIMARY KEY,
+		enabled INTEGER NOT NULL DEFAULT 0,
+		min_severity TEXT NOT NULL DEFAULT 'high',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES rbac_users(id) ON DELETE CASCADE
+	);`
+	createVulnerabilityAlertDeliveriesTable := `
+	CREATE TABLE IF NOT EXISTS vulnerability_alert_deliveries (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		vulnerability_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		platform TEXT NOT NULL,
+		external_user_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		attempts INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(vulnerability_id, platform, external_user_id),
+		FOREIGN KEY (vulnerability_id) REFERENCES vulnerabilities(id) ON DELETE CASCADE,
+		FOREIGN KEY (user_id) REFERENCES rbac_users(id) ON DELETE CASCADE
 	);`
 
 	// 创建批量任务队列表
@@ -449,6 +505,7 @@ func (db *DB) initTables() error {
 	createWebshellConnectionsTable := `
 	CREATE TABLE IF NOT EXISTS webshell_connections (
 		id TEXT PRIMARY KEY,
+		project_id TEXT,
 		url TEXT NOT NULL,
 		password TEXT NOT NULL DEFAULT '',
 		type TEXT NOT NULL DEFAULT 'php',
@@ -475,6 +532,7 @@ func (db *DB) initTables() error {
 	createC2ListenersTable := `
 	CREATE TABLE IF NOT EXISTS c2_listeners (
 		id TEXT PRIMARY KEY,
+		project_id TEXT,
 		name TEXT NOT NULL,
 		type TEXT NOT NULL,
 		bind_host TEXT NOT NULL DEFAULT '127.0.0.1',
@@ -485,6 +543,7 @@ func (db *DB) initTables() error {
 		status TEXT NOT NULL DEFAULT 'stopped',
 		config_json TEXT NOT NULL DEFAULT '{}',
 		remark TEXT NOT NULL DEFAULT '',
+		owner_user_id TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		started_at DATETIME,
 		last_error TEXT
@@ -594,6 +653,75 @@ func (db *DB) initTables() error {
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);`
 
+	createWorkflowDefinitionsTable := `
+	CREATE TABLE IF NOT EXISTS workflow_definitions (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT,
+		version INTEGER NOT NULL DEFAULT 1,
+		graph_json TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);`
+
+	createWorkflowRunsTable := `
+	CREATE TABLE IF NOT EXISTS workflow_runs (
+		id TEXT PRIMARY KEY,
+		workflow_id TEXT NOT NULL,
+		workflow_version INTEGER NOT NULL DEFAULT 1,
+		conversation_id TEXT,
+		project_id TEXT,
+		role_id TEXT,
+		status TEXT NOT NULL,
+		input_json TEXT,
+		output_json TEXT,
+		error TEXT,
+		pending_hitl_node_id TEXT,
+		pending_hitl_json TEXT,
+		started_at DATETIME NOT NULL,
+		finished_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+	);`
+
+	createWorkflowNodeRunsTable := `
+	CREATE TABLE IF NOT EXISTS workflow_node_runs (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		input_json TEXT,
+		output_json TEXT,
+		error TEXT,
+		started_at DATETIME NOT NULL,
+		finished_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+	);`
+
+	createWorkflowPackageInspectionsTable := `
+	CREATE TABLE IF NOT EXISTS workflow_package_inspections (
+		id TEXT PRIMARY KEY, package_hash TEXT NOT NULL, manifest_json TEXT NOT NULL,
+		workflow_payload_json TEXT NOT NULL, inspection_json TEXT NOT NULL,
+		source_workflow_id TEXT NOT NULL, source_revision INTEGER NOT NULL,
+		source_content_hash TEXT NOT NULL, source_graph_hash TEXT NOT NULL,
+		local_conflict_state TEXT NOT NULL CHECK (local_conflict_state IN ('none','identical','id_conflict')),
+		local_workflow_id TEXT, local_content_hash TEXT, local_graph_hash TEXT,
+		created_by TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','consumed','expired')),
+		created_at DATETIME NOT NULL, expires_at DATETIME NOT NULL, consumed_at DATETIME
+	);`
+	createWorkflowPackageImportsTable := `
+	CREATE TABLE IF NOT EXISTS workflow_package_imports (
+		id TEXT PRIMARY KEY, inspection_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL, actor_user_id TEXT NOT NULL,
+		action TEXT NOT NULL CHECK (action IN ('create','keep_existing','overwrite','rename')),
+		source_workflow_id TEXT NOT NULL, target_workflow_id TEXT NOT NULL, resulting_workflow_id TEXT,
+		result TEXT NOT NULL CHECK (result IN ('created','overwritten','renamed','kept_existing','skipped_identical','failed')),
+		error_code TEXT, error_message TEXT, created_at DATETIME NOT NULL, applied_at DATETIME,
+		FOREIGN KEY (inspection_id) REFERENCES workflow_package_inspections(id)
+	);`
+
 	// 创建索引
 	createIndexes := `
 	CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
@@ -620,6 +748,16 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);
 	CREATE INDEX IF NOT EXISTS idx_vulnerabilities_status ON vulnerabilities(status);
 	CREATE INDEX IF NOT EXISTS idx_vulnerabilities_created_at ON vulnerabilities(created_at);
+	CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen_at);
+	CREATE INDEX IF NOT EXISTS idx_assets_last_scan ON assets(last_scan_at);
+	CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets(ip);
+	CREATE INDEX IF NOT EXISTS idx_assets_domain ON assets(domain);
+	CREATE INDEX IF NOT EXISTS idx_assets_status ON assets(status);
+	CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_user_id);
+	CREATE INDEX IF NOT EXISTS idx_assets_project ON assets(project_id);
+	CREATE INDEX IF NOT EXISTS idx_assets_vulnerability_count ON assets(vulnerability_count);
+	CREATE INDEX IF NOT EXISTS idx_assets_risk_score ON assets(risk_score);
+	CREATE INDEX IF NOT EXISTS idx_assets_risk_level ON assets(risk_level);
 	CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 	CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_project_facts_project_id ON project_facts(project_id);
@@ -634,8 +772,10 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_batch_task_queues_created_at ON batch_task_queues(created_at);
 	CREATE INDEX IF NOT EXISTS idx_batch_task_queues_title ON batch_task_queues(title);
 	CREATE INDEX IF NOT EXISTS idx_webshell_connections_created_at ON webshell_connections(created_at);
+	CREATE INDEX IF NOT EXISTS idx_webshell_connections_project_id ON webshell_connections(project_id);
 	CREATE INDEX IF NOT EXISTS idx_webshell_connection_states_updated_at ON webshell_connection_states(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_c2_listeners_created_at ON c2_listeners(created_at);
+	CREATE INDEX IF NOT EXISTS idx_c2_listeners_project_id ON c2_listeners(project_id);
 	CREATE INDEX IF NOT EXISTS idx_c2_listeners_status ON c2_listeners(status);
 	CREATE INDEX IF NOT EXISTS idx_c2_sessions_listener ON c2_sessions(listener_id);
 	CREATE INDEX IF NOT EXISTS idx_c2_sessions_status ON c2_sessions(status);
@@ -652,6 +792,15 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category);
 	CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
 	CREATE INDEX IF NOT EXISTS idx_audit_logs_result ON audit_logs(result);
+	CREATE INDEX IF NOT EXISTS idx_workflow_definitions_updated_at ON workflow_definitions(updated_at);
+	CREATE INDEX IF NOT EXISTS idx_workflow_definitions_enabled ON workflow_definitions(enabled);
+	CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
+	CREATE INDEX IF NOT EXISTS idx_workflow_runs_conversation ON workflow_runs(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+	CREATE INDEX IF NOT EXISTS idx_workflow_node_runs_run ON workflow_node_runs(run_id);
+	CREATE INDEX IF NOT EXISTS idx_workflow_package_inspections_creator_expiry ON workflow_package_inspections(created_by, expires_at);
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_package_imports_actor_key ON workflow_package_imports(actor_user_id, idempotency_key);
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_package_imports_inspection_success ON workflow_package_imports(inspection_id) WHERE result IN ('created','overwritten','renamed','kept_existing','skipped_identical');
 	`
 
 	if _, err := db.Exec(createConversationsTable); err != nil {
@@ -700,6 +849,9 @@ func (db *DB) initTables() error {
 	if _, err := db.Exec(createRobotUserSessionsTable); err != nil {
 		return fmt.Errorf("创建robot_user_sessions表失败: %w", err)
 	}
+	if err := db.migrateRobotUserSessionsTable(); err != nil {
+		return fmt.Errorf("迁移robot_user_sessions表失败: %w", err)
+	}
 
 	if _, err := db.Exec(createProjectsTable); err != nil {
 		return fmt.Errorf("创建projects表失败: %w", err)
@@ -715,6 +867,12 @@ func (db *DB) initTables() error {
 
 	if _, err := db.Exec(createVulnerabilitiesTable); err != nil {
 		return fmt.Errorf("创建vulnerabilities表失败: %w", err)
+	}
+	if _, err := db.Exec(createAssetsTable); err != nil {
+		return fmt.Errorf("创建assets表失败: %w", err)
+	}
+	if err := db.migrateAssetsTable(); err != nil {
+		return fmt.Errorf("迁移assets表失败: %w", err)
 	}
 
 	if _, err := db.Exec(createBatchTaskQueuesTable); err != nil {
@@ -735,6 +893,28 @@ func (db *DB) initTables() error {
 
 	if _, err := db.Exec(createAuditLogsTable); err != nil {
 		return fmt.Errorf("创建audit_logs表失败: %w", err)
+	}
+
+	if err := db.initRBACTables(); err != nil {
+		return fmt.Errorf("创建RBAC表失败: %w", err)
+	}
+	if _, err := db.Exec(createVulnerabilityAlertSubscriptionsTable); err != nil {
+		return fmt.Errorf("创建漏洞提醒订阅表失败: %w", err)
+	}
+	if _, err := db.Exec(createVulnerabilityAlertDeliveriesTable); err != nil {
+		return fmt.Errorf("创建漏洞提醒投递表失败: %w", err)
+	}
+
+	for tableName, ddl := range map[string]string{
+		"workflow_definitions":         createWorkflowDefinitionsTable,
+		"workflow_runs":                createWorkflowRunsTable,
+		"workflow_node_runs":           createWorkflowNodeRunsTable,
+		"workflow_package_inspections": createWorkflowPackageInspectionsTable,
+		"workflow_package_imports":     createWorkflowPackageImportsTable,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("创建%s表失败: %w", tableName, err)
+		}
 	}
 
 	for tableName, ddl := range map[string]string{
@@ -759,9 +939,6 @@ func (db *DB) initTables() error {
 	if err := db.migrateMessagesTable(); err != nil {
 		db.logger.Warn("迁移messages表失败", zap.Error(err))
 		// 不返回错误，允许继续运行
-	}
-	if err := db.migrateToolExecutionsTable(); err != nil {
-		db.logger.Warn("迁移tool_executions表失败", zap.Error(err))
 	}
 
 	if err := db.migrateConversationGroupsTable(); err != nil {
@@ -797,71 +974,87 @@ func (db *DB) initTables() error {
 		db.logger.Warn("迁移webshell_connections表失败", zap.Error(err))
 		// 不返回错误，允许继续运行
 	}
+	if err := db.migrateC2ListenersTable(); err != nil {
+		db.logger.Warn("迁移c2_listeners表失败", zap.Error(err))
+	}
+	if err := db.migrateWorkflowRunsTable(); err != nil {
+		db.logger.Warn("迁移workflow_runs表失败", zap.Error(err))
+	}
+	if err := db.migrateToolExecutionsPartialOutputColumns(); err != nil {
+		db.logger.Warn("迁移tool_executions partial output字段失败", zap.Error(err))
+	}
+	if err := db.migrateRBACOwnershipColumns(); err != nil {
+		db.logger.Warn("迁移RBAC资源归属字段失败", zap.Error(err))
+	}
 
 	if _, err := db.Exec(createIndexes); err != nil {
 		return fmt.Errorf("创建索引失败: %w", err)
 	}
-
-	db.logger.Info("数据库表初始化完成")
+	db.logger.Debug("数据库表初始化完成")
 	return nil
 }
 
-func (db *DB) migrateToolExecutionsTable() error {
-	for _, column := range []struct {
+func (db *DB) migrateRobotUserSessionsTable() error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('robot_user_sessions') WHERE name='agent_mode'").Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		_, err := db.Exec("ALTER TABLE robot_user_sessions ADD COLUMN agent_mode TEXT NOT NULL DEFAULT 'eino_single'")
+		return err
+	}
+	return nil
+}
+
+func (db *DB) migrateToolExecutionsPartialOutputColumns() error {
+	for _, col := range []struct {
 		name string
 		stmt string
 	}{
-		{name: "conversation_id", stmt: "ALTER TABLE tool_executions ADD COLUMN conversation_id TEXT"},
-		{name: "semantic_outcome", stmt: "ALTER TABLE tool_executions ADD COLUMN semantic_outcome TEXT"},
+		{"partial_output", "ALTER TABLE tool_executions ADD COLUMN partial_output TEXT"},
+		{"partial_output_bytes", "ALTER TABLE tool_executions ADD COLUMN partial_output_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"partial_output_truncated", "ALTER TABLE tool_executions ADD COLUMN partial_output_truncated INTEGER NOT NULL DEFAULT 0"},
+		{"partial_output_updated_at", "ALTER TABLE tool_executions ADD COLUMN partial_output_updated_at DATETIME"},
 	} {
+		if err := db.addColumnIfMissing("tool_executions", col.name, col.stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateAssetsTable keeps databases created by the first asset-management release compatible.
+func (db *DB) migrateAssetsTable() error {
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"project_id", "ALTER TABLE assets ADD COLUMN project_id TEXT"},
+		{"last_scan_at", "ALTER TABLE assets ADD COLUMN last_scan_at DATETIME"},
+		{"last_scan_conversation_id", "ALTER TABLE assets ADD COLUMN last_scan_conversation_id TEXT NOT NULL DEFAULT ''"},
+		{"last_scan_queue_id", "ALTER TABLE assets ADD COLUMN last_scan_queue_id TEXT NOT NULL DEFAULT ''"},
+		{"last_scan_task_id", "ALTER TABLE assets ADD COLUMN last_scan_task_id TEXT NOT NULL DEFAULT ''"},
+		{"responsible_person", "ALTER TABLE assets ADD COLUMN responsible_person TEXT NOT NULL DEFAULT ''"},
+		{"department", "ALTER TABLE assets ADD COLUMN department TEXT NOT NULL DEFAULT ''"},
+		{"business_system", "ALTER TABLE assets ADD COLUMN business_system TEXT NOT NULL DEFAULT ''"},
+		{"environment", "ALTER TABLE assets ADD COLUMN environment TEXT NOT NULL DEFAULT ''"},
+		{"criticality", "ALTER TABLE assets ADD COLUMN criticality TEXT NOT NULL DEFAULT ''"},
+		{"vulnerability_count", "ALTER TABLE assets ADD COLUMN vulnerability_count INTEGER NOT NULL DEFAULT 0"},
+		{"risk_score", "ALTER TABLE assets ADD COLUMN risk_score INTEGER NOT NULL DEFAULT 0"},
+		{"risk_level", "ALTER TABLE assets ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'unassessed'"},
+	}
+	for _, column := range columns {
 		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tool_executions') WHERE name=?", column.name).Scan(&count); err != nil {
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('assets') WHERE name=?", column.name).Scan(&count); err != nil {
 			return err
 		}
 		if count == 0 {
-			if _, err := db.Exec(column.stmt); err != nil {
+			if _, err := db.Exec(column.ddl); err != nil {
 				return err
 			}
 		}
 	}
-	// Backfill existing monitor records once so historical transport-level
-	// "success" can be distinguished from target-negative and framework outcomes.
-	_, err := db.Exec(`
-		UPDATE tool_executions
-		SET semantic_outcome = CASE
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%[framework_tool_outcome]%'
-				AND LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%code=policy_rejected%'
-				THEN 'policy_rejected'
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%[framework_tool_outcome]%'
-				THEN 'framework_dropped'
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%policy_rejected%'
-				OR COALESCE(error, '') LIKE '%硬拒绝%'
-				OR COALESCE(result, '') LIKE '%硬拒绝%'
-				THEN 'policy_rejected'
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%invalid argument%'
-				OR COALESCE(error, '') LIKE '%须为数组%'
-				OR COALESCE(result, '') LIKE '%须为数组%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%validation failed%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%missing required%'
-				THEN 'invocation_error'
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%connection reset by peer%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%unexpected eof%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http 429%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 5%'
-				THEN 'external_transient'
-			WHEN LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 404%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 405%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 410%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%http/1.1 412%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%connection refused%'
-				OR LOWER(COALESCE(error, '') || CHAR(10) || COALESCE(result, '')) LIKE '%no route to host%'
-				THEN 'target_negative'
-			WHEN status IN ('failed', 'cancelled') THEN 'invocation_error'
-			ELSE 'completed'
-		END
-		WHERE status <> 'running' AND TRIM(COALESCE(semantic_outcome, '')) = ''
-	`)
-	return err
+	return nil
 }
 
 // migrateMessagesTable 迁移 messages 表，补充 updated_at 字段。
@@ -979,6 +1172,36 @@ func (db *DB) migrateConversationsTable() error {
 	} else if count == 0 {
 		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN webshell_connection_id TEXT"); err != nil {
 			db.logger.Warn("添加webshell_connection_id字段失败", zap.Error(err))
+		}
+	}
+
+	// 检查 role_name 字段是否存在（对话绑定的业务角色，用于历史任务切换时恢复角色上下文）
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='role_name'").Scan(&count)
+	if err != nil {
+		if _, addErr := db.Exec("ALTER TABLE conversations ADD COLUMN role_name TEXT NOT NULL DEFAULT '默认'"); addErr != nil {
+			errMsg := strings.ToLower(addErr.Error())
+			if !strings.Contains(errMsg, "duplicate column") && !strings.Contains(errMsg, "already exists") {
+				db.logger.Warn("添加role_name字段失败", zap.Error(addErr))
+			}
+		}
+	} else if count == 0 {
+		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN role_name TEXT NOT NULL DEFAULT '默认'"); err != nil {
+			db.logger.Warn("添加role_name字段失败", zap.Error(err))
+		}
+	}
+
+	// 检查 agent_mode 字段是否存在（对话绑定的执行模式，用于历史任务切换时恢复对话模式）
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='agent_mode'").Scan(&count)
+	if err != nil {
+		if _, addErr := db.Exec("ALTER TABLE conversations ADD COLUMN agent_mode TEXT NOT NULL DEFAULT 'eino_single'"); addErr != nil {
+			errMsg := strings.ToLower(addErr.Error())
+			if !strings.Contains(errMsg, "duplicate column") && !strings.Contains(errMsg, "already exists") {
+				db.logger.Warn("添加agent_mode字段失败", zap.Error(addErr))
+			}
+		}
+	} else if count == 0 {
+		if _, err := db.Exec("ALTER TABLE conversations ADD COLUMN agent_mode TEXT NOT NULL DEFAULT 'eino_single'"); err != nil {
+			db.logger.Warn("添加agent_mode字段失败", zap.Error(err))
 		}
 	}
 
@@ -1240,7 +1463,6 @@ func (db *DB) migrateProjectsTable() error {
 	}{
 		{"conversations", "project_id", "ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL"},
 		{"vulnerabilities", "project_id", "ALTER TABLE vulnerabilities ADD COLUMN project_id TEXT"},
-		{"projects", "report_type", "ALTER TABLE projects ADD COLUMN report_type TEXT NOT NULL DEFAULT 'enterprise'"},
 	} {
 		var count int
 		err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?", col.table, col.name).Scan(&count)
@@ -1296,9 +1518,21 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 		status TEXT NOT NULL DEFAULT 'open',
 		vulnerability_type TEXT,
 		target TEXT,
-		proof TEXT,
+		preconditions TEXT,
+		reproduction_steps TEXT,
+		evidence TEXT,
 		impact TEXT,
 		recommendation TEXT,
+		retest_notes TEXT,
+		category TEXT,
+		auth_required TEXT,
+		test_account TEXT,
+		test_password TEXT,
+		vuln_urls TEXT,
+		network_segment TEXT,
+		developer TEXT,
+		poc_script TEXT,
+		tool_call_id TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -1311,12 +1545,19 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 	const copyRows = `
 	INSERT INTO vulnerabilities_new (
 		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target, proof, impact, recommendation,
+		severity, status, vulnerability_type, target, preconditions, reproduction_steps,
+		evidence, impact, recommendation, retest_notes,
+		category, auth_required, test_account, test_password, vuln_urls, network_segment, developer, poc_script, tool_call_id,
 		created_at, updated_at, project_id
 	)
 	SELECT
 		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target, proof, impact, recommendation,
+		severity, status, vulnerability_type, target,
+		COALESCE(preconditions, ''), COALESCE(reproduction_steps, ''),
+		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''),
+		COALESCE(category, ''), COALESCE(auth_required, ''), COALESCE(test_account, ''), COALESCE(test_password, ''),
+		COALESCE(vuln_urls, ''), COALESCE(network_segment, ''), COALESCE(developer, ''),
+		COALESCE(poc_script, ''), COALESCE(tool_call_id, ''),
 		created_at, updated_at, project_id
 	FROM vulnerabilities;`
 	if _, err := tx.Exec(copyRows); err != nil {
@@ -1378,7 +1619,7 @@ func vulnerabilitiesConversationFKOnDeleteSetNull(db *sql.DB) (bool, error) {
 	return found, nil
 }
 
-// migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签与报告字段
+// migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签字段
 func (db *DB) migrateVulnerabilitiesTable() error {
 	columns := []struct {
 		name string
@@ -1387,13 +1628,19 @@ func (db *DB) migrateVulnerabilitiesTable() error {
 		{name: "conversation_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN conversation_tag TEXT"},
 		{name: "task_tag", stmt: "ALTER TABLE vulnerabilities ADD COLUMN task_tag TEXT"},
 		{name: "project_id", stmt: "ALTER TABLE vulnerabilities ADD COLUMN project_id TEXT"},
+		{name: "preconditions", stmt: "ALTER TABLE vulnerabilities ADD COLUMN preconditions TEXT"},
+		{name: "reproduction_steps", stmt: "ALTER TABLE vulnerabilities ADD COLUMN reproduction_steps TEXT"},
+		{name: "evidence", stmt: "ALTER TABLE vulnerabilities ADD COLUMN evidence TEXT"},
+		{name: "retest_notes", stmt: "ALTER TABLE vulnerabilities ADD COLUMN retest_notes TEXT"},
 		{name: "category", stmt: "ALTER TABLE vulnerabilities ADD COLUMN category TEXT"},
-		{name: "network_segment", stmt: "ALTER TABLE vulnerabilities ADD COLUMN network_segment TEXT"},
 		{name: "auth_required", stmt: "ALTER TABLE vulnerabilities ADD COLUMN auth_required TEXT"},
-		{name: "vuln_urls", stmt: "ALTER TABLE vulnerabilities ADD COLUMN vuln_urls TEXT"},
-		{name: "developer", stmt: "ALTER TABLE vulnerabilities ADD COLUMN developer TEXT"},
 		{name: "test_account", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_account TEXT"},
 		{name: "test_password", stmt: "ALTER TABLE vulnerabilities ADD COLUMN test_password TEXT"},
+		{name: "vuln_urls", stmt: "ALTER TABLE vulnerabilities ADD COLUMN vuln_urls TEXT"},
+		{name: "network_segment", stmt: "ALTER TABLE vulnerabilities ADD COLUMN network_segment TEXT"},
+		{name: "developer", stmt: "ALTER TABLE vulnerabilities ADD COLUMN developer TEXT"},
+		{name: "poc_script", stmt: "ALTER TABLE vulnerabilities ADD COLUMN poc_script TEXT"},
+		{name: "tool_call_id", stmt: "ALTER TABLE vulnerabilities ADD COLUMN tool_call_id TEXT"},
 	}
 
 	for _, col := range columns {
@@ -1423,6 +1670,7 @@ func (db *DB) migrateWebshellConnectionsTable() error {
 		name string
 		stmt string
 	}{
+		{name: "project_id", stmt: "ALTER TABLE webshell_connections ADD COLUMN project_id TEXT"},
 		{name: "encoding", stmt: "ALTER TABLE webshell_connections ADD COLUMN encoding TEXT NOT NULL DEFAULT ''"},
 		{name: "os", stmt: "ALTER TABLE webshell_connections ADD COLUMN os TEXT NOT NULL DEFAULT ''"},
 	}
@@ -1446,6 +1694,10 @@ func (db *DB) migrateWebshellConnectionsTable() error {
 		}
 	}
 	return nil
+}
+
+func (db *DB) migrateC2ListenersTable() error {
+	return db.addColumnIfMissing("c2_listeners", "project_id", "ALTER TABLE c2_listeners ADD COLUMN project_id TEXT")
 }
 
 // NewKnowledgeDB 创建知识库数据库连接（只包含知识库相关的表）

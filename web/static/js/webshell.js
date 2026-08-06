@@ -223,12 +223,13 @@ function wsRenderRoleList() {
     var html = '';
     // 默认角色
     var defSelected = !cur ? ' selected' : '';
-    html += '<button type="button" class="role-selection-item-main' + defSelected + '" onclick="wsSelectRole(\'\')">' +
+    var defDesc = wsTOr('roles.defaultRoleDescription', '默认角色，不额外携带用户提示词，使用所有工具');
+    html += '<button type="button" class="role-selection-item-main' + defSelected + '" data-selection-detail="' + escapeHtmlAttr(defDesc) + '" onclick="wsSelectRole(\'\')">' +
         '<div class="role-selection-item-icon-main">\ud83d\udd35</div>' +
         '<div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' +
         (wsTOr('chat.defaultRole', '默认')) +
         '</div><div class="role-selection-item-description-main">' +
-        (wsTOr('roles.defaultRoleDescription', '默认角色，不额外携带用户提示词，使用所有工具')) +
+        escapeHtml(defDesc) +
         '</div></div>' +
         (defSelected ? '<div class="role-selection-checkmark-main">\u2713</div>' : '') +
         '</button>';
@@ -238,10 +239,11 @@ function wsRenderRoleList() {
             if (!r.enabled) continue;
             if (r.name === '默认') continue; // 已在上方硬编码默认角色，跳过 API 返回的默认项
             var sel = (r.name === cur) ? ' selected' : '';
-            html += '<button type="button" class="role-selection-item-main' + sel + '" onclick="wsSelectRole(\'' + r.name.replace(/'/g, "\\'") + '\')">' +
-                '<div class="role-selection-item-icon-main">' + (r.icon || '\ud83d\udd35') + '</div>' +
-                '<div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + r.name + '</div>' +
-                '<div class="role-selection-item-description-main">' + (r.description || '').substring(0, 60) + '</div></div>' +
+            var desc = r.description || '';
+            html += '<button type="button" class="role-selection-item-main' + sel + '" data-selection-detail="' + escapeHtmlAttr(desc) + '" onclick="wsSelectRole(\'' + r.name.replace(/'/g, "\\'") + '\')">' +
+                '<div class="role-selection-item-icon-main">' + escapeHtml(r.icon || '\ud83d\udd35') + '</div>' +
+                '<div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + escapeHtml(r.name) + '</div>' +
+                '<div class="role-selection-item-description-main">' + escapeHtml(desc.substring(0, 60)) + '</div></div>' +
                 (sel ? '<div class="role-selection-checkmark-main">\u2713</div>' : '') +
                 '</button>';
         }
@@ -620,7 +622,8 @@ function getWebshellConnections() {
     if (typeof apiFetch === 'undefined') {
         return Promise.resolve([]);
     }
-    return apiFetch('/api/webshell/connections', { method: 'GET' })
+    var url = '/api/webshell/connections';
+    return apiFetch(url, { method: 'GET' })
         .then(function (r) { return r.json(); })
         .then(function (list) { return Array.isArray(list) ? list : []; })
         .catch(function (e) {
@@ -629,11 +632,205 @@ function getWebshellConnections() {
         });
 }
 
+function webshellConnectionProjectId(conn) {
+    return (conn && (conn.project_id || conn.projectId) || '').trim();
+}
+
+function webshellProjectOptionsHtml(selectedId) {
+    var selected = String(selectedId || '').trim();
+    var html = '<option value="">' + escapeHtml(wsT('assets.unboundProject') || '暂不绑定') + '</option>';
+    var entries = [];
+    try {
+        if (typeof projectNameById !== 'undefined') entries = Object.entries(projectNameById);
+    } catch (e) {}
+    entries.sort(function (a, b) {
+        return String(a[1] || '').localeCompare(String(b[1] || ''), undefined, { sensitivity: 'base' });
+    });
+    entries.forEach(function (entry) {
+        var id = entry[0];
+        var name = entry[1] || id;
+        if (!id) return;
+        html += '<option value="' + escapeHtml(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+    });
+    if (selected && !entries.some(function (entry) { return entry[0] === selected; })) {
+        html += '<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + '</option>';
+    }
+    return html;
+}
+
+var webshellFormSelectMap = {};
+var webshellFormSelectDocBound = false;
+var WEBSHELL_FORM_SELECT_CARET = '<span class="webshell-form-select-caret" aria-hidden="true"></span>';
+
+function closeAllWebshellFormSelects() {
+    Object.keys(webshellFormSelectMap).forEach(function (id) {
+        var reg = webshellFormSelectMap[id];
+        if (!reg || !reg.wrapper) return;
+        reg.wrapper.classList.remove('open');
+        if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function syncWebshellFormSelect(select) {
+    if (!select || !select.id) return;
+    var reg = webshellFormSelectMap[select.id];
+    if (!reg) return;
+    var dropdown = reg.dropdown;
+    var trigger = reg.trigger;
+    var valueSpan = trigger.querySelector('.webshell-form-select-value');
+    dropdown.innerHTML = '';
+    Array.prototype.forEach.call(select.options, function (opt) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'webshell-form-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        item.setAttribute('aria-selected', opt.value === select.value ? 'true' : 'false');
+        if (opt.value === select.value) item.classList.add('is-selected');
+
+        var check = document.createElement('span');
+        check.className = 'webshell-form-select-check';
+        check.textContent = '✓';
+        check.setAttribute('aria-hidden', 'true');
+
+        var label = document.createElement('span');
+        label.className = 'webshell-form-select-label';
+        label.textContent = opt.textContent;
+
+        item.appendChild(check);
+        item.appendChild(label);
+        dropdown.appendChild(item);
+    });
+    var selectedOpt = select.options[select.selectedIndex];
+    if (valueSpan) valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+    trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+}
+
+function enhanceWebshellFormSelect(select) {
+    if (!select || !select.id) return;
+    var existing = webshellFormSelectMap[select.id];
+    if (existing && existing.select !== select) delete webshellFormSelectMap[select.id];
+    if (select.dataset.webshellFormCustom === '1') {
+        syncWebshellFormSelect(select);
+        return;
+    }
+
+    select.dataset.webshellFormCustom = '1';
+    select.classList.add('webshell-form-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'webshell-form-select-ui';
+
+    var trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'webshell-form-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    var valueSpan = document.createElement('span');
+    valueSpan.className = 'webshell-form-select-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', WEBSHELL_FORM_SELECT_CARET);
+
+    var dropdown = document.createElement('div');
+    dropdown.className = 'webshell-form-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    var parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    webshellFormSelectMap[select.id] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        var open = wrapper.classList.contains('open');
+        closeAllWebshellFormSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+        }
+    });
+
+    dropdown.addEventListener('click', function (e) {
+        var item = e.target.closest('.webshell-form-select-option');
+        if (!item) return;
+        e.stopPropagation();
+        var value = item.getAttribute('data-value');
+        if (value === null) return;
+        if (select.value !== value) {
+            select.value = value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        syncWebshellFormSelect(select);
+    });
+
+    select.addEventListener('change', function () {
+        syncWebshellFormSelect(select);
+    });
+
+    syncWebshellFormSelect(select);
+}
+
+function refreshWebshellFormSelects(root) {
+    var container = root || document.getElementById('webshell-modal');
+    if (!container) return;
+    Object.keys(webshellFormSelectMap).forEach(function (id) {
+        if (!document.getElementById(id)) delete webshellFormSelectMap[id];
+    });
+    container.querySelectorAll('select').forEach(enhanceWebshellFormSelect);
+    if (!webshellFormSelectDocBound) {
+        webshellFormSelectDocBound = true;
+        document.addEventListener('click', closeAllWebshellFormSelects);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllWebshellFormSelects();
+        });
+    }
+}
+
+function populateWebshellProjectSelect(selectedId) {
+    var sel = document.getElementById('webshell-project-id');
+    if (!sel) return Promise.resolve();
+    var selected = String(selectedId || '').trim();
+    sel.innerHTML = webshellProjectOptionsHtml(selected);
+    sel.value = selected;
+    syncWebshellFormSelect(sel);
+    var loadPromise = Promise.resolve([]);
+    if (typeof ensureProjectsLoaded === 'function') {
+        loadPromise = ensureProjectsLoaded();
+    } else if (typeof fetchAllProjects === 'function') {
+        loadPromise = fetchAllProjects(false).then(function (list) {
+            if (typeof rebuildProjectNameMap === 'function') rebuildProjectNameMap(list || []);
+            return list || [];
+        });
+    }
+    return loadPromise.then(function () {
+        sel.innerHTML = webshellProjectOptionsHtml(selected);
+        sel.value = selected;
+        syncWebshellFormSelect(sel);
+    }).catch(function (e) {
+        console.warn('加载 WebShell 项目选项失败', e);
+    });
+}
+
 // 从服务端刷新连接列表并重绘侧栏
 function refreshWebshellConnectionsFromServer() {
     return getWebshellConnections().then(function (list) {
         webshellConnections = list;
         renderWebshellList();
+        if (typeof ensureProjectsLoaded === 'function') {
+            ensureProjectsLoaded().then(function () {
+                renderWebshellList();
+            }).catch(function () {});
+        }
         return list;
     });
 }
@@ -1046,6 +1243,7 @@ function probeWebshellConnection(conn) {
             cmd_param: conn.cmdParam || '',
             encoding: webshellConnEncoding(conn),
             os: webshellConnOS(conn),
+            connection_id: conn.id || '',
             command: buildWebshellProbeCommand(probeToken)
         })
     })
@@ -1134,6 +1332,59 @@ function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s;
     return div.innerHTML;
+}
+
+function escapeHtmlAttr(s) {
+    return escapeHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function webshellFinalizationReasonLabel(reason, status) {
+    var key = String(reason || status || '').trim();
+    var labels = {
+        pending_tool_executions: '等待工具执行完成',
+        missing_execution_evidence: '缺少完成态证据',
+        awaiting_hitl: '等待人工确认',
+        empty_response: '未捕获到有效回复',
+        missing_finalization_contract: '缺少最终化证明',
+        in_progress: '仍在验证',
+        blocked: '检查未通过',
+        failed: '任务失败',
+        cancelled: '任务已取消',
+        verified: '已验证'
+    };
+    return labels[key] || key || '检查未通过';
+}
+
+function webshellFinalizationMissingCheckLabel(check) {
+    var s = String(check || '').trim();
+    if (!s) return '';
+    if (s.indexOf('tool execution still queued or running') !== -1) return '仍有工具执行未结束';
+    if (s.indexOf('execution evidence is required but no completed tool execution was recorded') !== -1) return '本轮要求执行证据，但没有 completed 工具记录';
+    if (s.indexOf('workflow is awaiting HITL approval') !== -1) return '工作流正在等待人工确认';
+    if (s.indexOf('assistant final text is empty') !== -1) return '未捕获到有效最终文本';
+    if (s.indexOf('agent run status is ') === 0) return '任务状态仍为 ' + s.replace('agent run status is ', '');
+    return s;
+}
+
+function webshellFinalizationNotice(data, eventMessage, hasContract) {
+    var reason = hasContract
+        ? webshellFinalizationReasonLabel(data && data.completionReason, data && data.status)
+        : webshellFinalizationReasonLabel('missing_finalization_contract');
+    var lines = ['仍在验证，暂不生成最终结论', '状态：' + reason];
+    var pending = Array.isArray(data && data.pendingExecutionIds) ? data.pendingExecutionIds.filter(Boolean).map(String) : [];
+    if (pending.length) {
+        lines.push('待完成工具：' + pending.slice(0, 3).join(', ') + (pending.length > 3 ? ' 等' : ''));
+    }
+    var missing = Array.isArray(data && data.missingChecks)
+        ? data.missingChecks.map(webshellFinalizationMissingCheckLabel).filter(Boolean)
+        : [];
+    if (missing.length) {
+        lines.push('待完成检查：' + missing.slice(0, 2).join('；') + (missing.length > 2 ? ' 等' : ''));
+    }
+    if (!hasContract && eventMessage) {
+        lines.push('候选输出已移入过程详情。');
+    }
+    return lines.join('\n');
 }
 
 function escapeSingleQuotedShellArg(value) {
@@ -1940,9 +2191,20 @@ function buildWebshellTimelineItemFromDetail(detail) {
             : ((typeof window.t === 'function') ? window.t('chat.callTool', { name: tn, index: idx, total: total }) : ('调用: ' + tn + (total ? ' (' + idx + '/' + total + ')' : '')));
         title = ap + '🔧 ' + wsCallTitle;
     } else if (eventType === 'tool_result') {
-        var success = data.success !== false;
         var tname = data.toolName || '工具';
-        title = ap + (success ? '✅ ' : '❌ ') + ((typeof window.t === 'function') ? (success ? window.t('chat.toolExecComplete', { name: tname }) : window.t('chat.toolExecFailed', { name: tname })) : (tname + (success ? ' 执行完成' : ' 执行失败')));
+        var wsNoResultText = (typeof window.t === 'function') ? window.t('timeline.noResult') : '无结果';
+        var wsResult = data.result != null ? data.result : (data.error != null ? data.error : (data.resultPreview != null ? data.resultPreview : wsNoResultText));
+        var wsResultStr = (typeof wsResult === 'string') ? wsResult : JSON.stringify(wsResult);
+        var wsDisplayState = (typeof window.getToolResultDisplayState === 'function')
+            ? window.getToolResultDisplayState(data, { rawText: wsResultStr })
+            : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
+        var wsBackgroundRunning = wsDisplayState.kind === 'background_running';
+        var success = !wsDisplayState.isError && !wsBackgroundRunning;
+        var wsIcon = wsBackgroundRunning ? '⏳ ' : (success ? '✅ ' : '❌ ');
+        var wsLabel = wsBackgroundRunning
+            ? (((typeof window.getBackgroundRunningToolLabel === 'function') ? window.getBackgroundRunningToolLabel() : '后台执行中') + ': ' + tname)
+            : ((typeof window.t === 'function') ? (success ? window.t('chat.toolExecComplete', { name: tname }) : window.t('chat.toolExecFailed', { name: tname })) : (tname + (success ? ' 执行完成' : ' 执行失败')));
+        title = ap + wsIcon + wsLabel;
     } else if (eventType === 'eino_agent_reply') {
         title = ap + '💬 ' + ((typeof window.t === 'function') ? window.t('chat.einoAgentReplyTitle') : '子代理回复');
     } else if (eventType === 'progress') {
@@ -1971,13 +2233,16 @@ function buildWebshellTimelineItemFromDetail(detail) {
     if (eventType === 'tool_call' && data && data._mergedResult && typeof window.buildToolResultSectionHtml === 'function') {
         html += '<div class="webshell-ai-timeline-msg tool-result-slot">' + window.buildToolResultSectionHtml(data._mergedResult) + '</div>';
     } else if (eventType === 'tool_result' && data) {
-        var isError = data.isError || data.success === false;
         var noResultText = (typeof window.t === 'function') ? window.t('timeline.noResult') : '无结果';
-        var result = data.result != null ? data.result : (data.error != null ? data.error : noResultText);
+        var result = data.result != null ? data.result : (data.error != null ? data.error : (data.resultPreview != null ? data.resultPreview : noResultText));
         var resultStr = (typeof result === 'string') ? result : JSON.stringify(result);
+        var displayState = (typeof window.getToolResultDisplayState === 'function')
+            ? window.getToolResultDisplayState(data, { rawText: resultStr })
+            : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
         var execResultLabel = (typeof window.t === 'function') ? window.t('timeline.executionResult') : '执行结果:';
         var execIdLabel = (typeof window.t === 'function') ? window.t('timeline.executionId') : '执行ID:';
-        html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' + (isError ? 'error' : 'success') + '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' + escapeHtml(resultStr) + '</pre>' + (data.executionId ? '<div class="tool-execution-id"><span>' + escapeHtml(execIdLabel) + '</span> <code>' + escapeHtml(String(data.executionId)) + '</code></div>' : '') + '</div></div>';
+        var sectionClass = displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success');
+        html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' + sectionClass + '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' + escapeHtml(resultStr) + '</pre>' + (data.executionId ? '<div class="tool-execution-id"><span>' + escapeHtml(execIdLabel) + '</span> <code>' + escapeHtml(String(data.executionId)) + '</code></div>' : '') + '</div></div>';
     } else if (detail.message && detail.message !== title) {
         html += '<div class="webshell-ai-timeline-msg">' + escapeHtml(detail.message) + '</div>';
     }
@@ -1996,7 +2261,7 @@ function renderWebshellProcessDetailsBlock(processDetails, defaultCollapsed) {
     }
     var expandLabel = (typeof window.t === 'function') ? window.t('chat.expandDetail') : '展开详情';
     var collapseLabel = (typeof window.t === 'function') ? window.t('tasks.collapseDetail') : '收起详情';
-    var headerLabel = (typeof window.t === 'function') ? (window.t('chat.penetrationTestDetail') || '执行过程及调用工具') : '执行过程及调用工具';
+    var headerLabel = (typeof window.t === 'function') ? (window.t('chat.penetrationTestDetail') || '任务执行详情') : '任务执行详情';
     var wrapper = document.createElement('div');
     wrapper.className = 'process-details-container webshell-ai-process-block';
     var collapsed = defaultCollapsed !== false;
@@ -2233,10 +2498,13 @@ function selectWebshell(id, stateReady) {
         '</div>' +
         '<div id="ws-project-list" class="role-selection-list-main"></div>' +
         '<div class="chat-project-panel-footer">' +
-        '<button type="button" class="role-selection-item-main chat-project-panel-create-btn" onclick="showNewProjectModalFromWebshellAi()">' +
-        '<span class="chat-project-panel-create-icon" aria-hidden="true">+</span>' +
-        '<span class="chat-project-panel-create-label">' + escapeHtml(wsProjectT('projects.newProject', '新建项目')) + '</span>' +
-        '</button></div></div></div></div>' +
+        ((typeof hasPermission === 'function' && hasPermission('project:write'))
+            ? ('<button type="button" class="role-selection-item-main chat-project-panel-create-btn" onclick="showNewProjectModalFromWebshellAi()">' +
+                '<span class="chat-project-panel-create-icon" aria-hidden="true">+</span>' +
+                '<span class="chat-project-panel-create-label">' + escapeHtml(wsProjectT('projects.newProject', '新建项目')) + '</span>' +
+                '</button>')
+            : '') +
+        '</div></div></div></div>' +
         '<div class="ws-role-selector-wrapper">' +
         '<button type="button" class="role-selector-btn ws-role-selector-btn" id="ws-role-selector-btn" onclick="wsToggleRolePanel()">' +
         '<span id="ws-role-selector-icon" class="role-selector-icon">\ud83d\udd35</span>' +
@@ -2260,10 +2528,10 @@ function selectWebshell(id, stateReady) {
         '<button type="button" class="role-selection-panel-close" onclick="wsCloseAgentModePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
         '</div>' +
         '<div class="agent-mode-options">' +
-        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="eino_single" role="option" onclick="wsSelectAgentMode(\'eino_single\')"><div class="role-selection-item-icon-main">\u26a1</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeEinoSingle') || 'Eino 单代理（ADK）') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeEinoSingleHint') || 'Eino ChatModelAgent + Runner') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="eino_single">\u2713</div></button>' +
-        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="deep" role="option" onclick="wsSelectAgentMode(\'deep\')"><div class="role-selection-item-icon-main">\ud83e\udde9</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeDeep') || 'Deep（DeepAgent）') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeDeepHint') || 'Eino DeepAgent，task 调度子代理') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="deep">\u2713</div></button>' +
-        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="plan_execute" role="option" onclick="wsSelectAgentMode(\'plan_execute\')"><div class="role-selection-item-icon-main">\ud83d\udccb</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModePlanExecuteLabel') || 'Plan-Execute') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModePlanExecuteHint') || '规划 → 执行 → 重规划') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="plan_execute">\u2713</div></button>' +
-        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="supervisor" role="option" onclick="wsSelectAgentMode(\'supervisor\')"><div class="role-selection-item-icon-main">\ud83c\udfaf</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeSupervisorLabel') || 'Supervisor') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeSupervisorHint') || '监督者协调，transfer 委派子代理') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="supervisor">\u2713</div></button>' +
+        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="eino_single" role="option" onclick="wsSelectAgentMode(\'eino_single\')" data-agent-mode-detail="' + escapeHtmlAttr(wsT('chat.agentModeEinoSingleHint') || 'Eino ChatModelAgent + Runner') + '"><div class="role-selection-item-icon-main">\u26a1</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeEinoSingle') || 'Eino 单代理（ADK）') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeEinoSingleHint') || 'Eino ChatModelAgent + Runner') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="eino_single">\u2713</div></button>' +
+        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="deep" role="option" onclick="wsSelectAgentMode(\'deep\')" data-agent-mode-detail="' + escapeHtmlAttr(wsT('chat.agentModeDeepHint') || 'Eino DeepAgent，适合复杂安全测试、多阶段 task 子代理委派与汇总') + '"><div class="role-selection-item-icon-main">\ud83e\udde9</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeDeep') || 'Deep（DeepAgent）') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeDeepHint') || 'Eino DeepAgent，适合复杂安全测试、多阶段 task 子代理委派与汇总') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="deep">\u2713</div></button>' +
+        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="plan_execute" role="option" onclick="wsSelectAgentMode(\'plan_execute\')" data-agent-mode-detail="' + escapeHtmlAttr(wsT('chat.agentModePlanExecuteHint') || '规划 → 执行 → 重规划') + '"><div class="role-selection-item-icon-main">\ud83d\udccb</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModePlanExecuteLabel') || 'Plan-Execute') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModePlanExecuteHint') || '规划 → 执行 → 重规划') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="plan_execute">\u2713</div></button>' +
+        '<button type="button" class="role-selection-item-main agent-mode-option ws-agent-mode-option" data-value="supervisor" role="option" onclick="wsSelectAgentMode(\'supervisor\')" data-agent-mode-detail="' + escapeHtmlAttr(wsT('chat.agentModeSupervisorHint') || '专家路由场景：监督者通过 transfer 动态分派多个专业子代理') + '"><div class="role-selection-item-icon-main">\ud83c\udfaf</div><div class="role-selection-item-content-main"><div class="role-selection-item-name-main">' + (wsT('chat.agentModeSupervisorLabel') || 'Supervisor（专家路由）') + '</div><div class="role-selection-item-description-main">' + (wsT('chat.agentModeSupervisorHint') || '专家路由场景：监督者通过 transfer 动态分派多个专业子代理') + '</div></div><div class="role-selection-checkmark-main agent-mode-check" data-agent-mode-check="supervisor">\u2713</div></button>' +
         '</div></div></div>' +
         '<input type="hidden" id="ws-agent-mode-select" value="eino_single" autocomplete="off" />' +
         '</div>' +
@@ -3130,14 +3398,17 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
             html += '<div class="webshell-ai-timeline-msg"><pre style="white-space:pre-wrap;">' + escapeHtml(message) + '</pre></div>';
         } else if (type === 'tool_result' && data) {
             // 工具调用出参
-            var isError = data.isError || data.success === false;
             var noResultText = (typeof window.t === 'function') ? window.t('timeline.noResult') : '无结果';
-            var result = data.result != null ? data.result : (data.error != null ? data.error : noResultText);
+            var result = data.result != null ? data.result : (data.error != null ? data.error : (data.resultPreview != null ? data.resultPreview : noResultText));
             var resultStr = (typeof result === 'string') ? result : JSON.stringify(result);
+            var displayState = (typeof window.getToolResultDisplayState === 'function')
+                ? window.getToolResultDisplayState(data, { rawText: resultStr })
+                : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
             var execResultLabel = (typeof window.t === 'function') ? window.t('timeline.executionResult') : '执行结果:';
             var execIdLabel = (typeof window.t === 'function') ? window.t('timeline.executionId') : '执行ID:';
+            var sectionClass = displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success');
             html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' +
-                (isError ? 'error' : 'success') +
+                sectionClass +
                 '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' +
                 escapeHtml(resultStr) +
                 '</pre>' +
@@ -3171,7 +3442,10 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
         message: message,
         webshellConnectionId: conn.id,
         conversationId: convId,
-        role: wsRole
+        role: wsRole,
+        finalization: {
+            requireExecutionEvidence: true
+        }
     };
     if (!convId) {
         var wsPid = getWebshellAiProjectSelection(conn);
@@ -3243,6 +3517,8 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         streamingTarget = '';
                         webshellStreamingTypingId += 1;
                         streamingTypingId = webshellStreamingTypingId;
+                        assistantDiv.dataset.finalized = 'false';
+                        assistantDiv.classList.add('webshell-ai-candidate-output');
                         assistantDiv.textContent = '…';
                         messagesContainer.scrollTop = messagesContainer.scrollHeight;
                     } else if (_et === 'response_delta') {
@@ -3263,6 +3539,23 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         }
                     } else if (_et === 'response') {
                         var text = (_em != null && _em !== '') ? _em : (typeof _ed === 'string' ? _ed : '');
+                        var finalized = !!(_ed && _ed.finalized === true);
+                        var hasFinalizationContract = !!(_ed && (
+                            Object.prototype.hasOwnProperty.call(_ed, 'finalized') ||
+                            Object.prototype.hasOwnProperty.call(_ed, 'finalizable') ||
+                            Object.prototype.hasOwnProperty.call(_ed, 'completionReason') ||
+                            Object.prototype.hasOwnProperty.call(_ed, 'evidenceVerified') ||
+                            Object.prototype.hasOwnProperty.call(_ed, 'missingChecks')
+                        ));
+                        assistantDiv.dataset.finalized = finalized ? 'true' : 'false';
+                        assistantDiv.classList.toggle('webshell-ai-candidate-output', !finalized);
+                        assistantDiv.classList.toggle('webshell-ai-finalized-output', finalized);
+                        if (!finalized && !hasFinalizationContract && text) {
+                            appendTimelineItem('finalization_check', '候选输出缺少最终化证明', text, Object.assign({}, _ed || {}, { missingFinalizationContract: true }));
+                            text = webshellFinalizationNotice(_ed || {}, text, false);
+                        } else if (!finalized && hasFinalizationContract) {
+                            text = webshellFinalizationNotice(_ed || {}, text, true);
+                        }
                         if (text) {
                             streamingTarget = String(text);
                             webshellStreamingTypingId += 1;
@@ -3271,6 +3564,11 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                         }
 
                     // ─── Terminal events ───
+                    } else if (_et === 'finalization_check') {
+                        var finalizationOk = !!(_ed && _ed.finalized === true);
+                        appendTimelineItem('finalization_check', finalizationOk ? '最终回复检查通过' : '最终回复检查未通过', finalizationOk ? (_em || '最终回复检查通过。') : webshellFinalizationNotice(_ed || {}, _em, true), _ed);
+                    } else if (_et === 'finalization_auto_continue') {
+                        appendTimelineItem('progress', '继续验证', _em, _ed);
                     } else if (_et === 'error' && _em) {
                         streamingTypingId += 1;
                         var errLabel = wsTOr('chat.error', '错误');
@@ -3523,7 +3821,7 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
         }
         // 生成结果后：将执行过程折叠并保留，供后续查看；统一放在「助手回复下方」（与刷新后加载历史一致，最佳实践）
         if (timelineContainer && timelineContainer.classList.contains('has-items') && !timelineContainer.closest('.webshell-ai-process-block')) {
-            var headerLabel = (typeof window.t === 'function') ? (window.t('chat.penetrationTestDetail') || '执行过程及调用工具') : '执行过程及调用工具';
+            var headerLabel = (typeof window.t === 'function') ? (window.t('chat.penetrationTestDetail') || '任务执行详情') : '任务执行详情';
             var wrap = document.createElement('div');
             wrap.className = 'process-details-container webshell-ai-process-block';
             wrap.innerHTML = '<button type="button" class="webshell-ai-process-toggle" aria-expanded="false">' + escapeHtml(headerLabel) + ' <span class="ws-toggle-icon">▶</span></button><div class="process-details-content"></div>';
@@ -3848,6 +4146,7 @@ function execWebshellCommand(conn, command) {
                 cmd_param: conn.cmdParam || '',
                 encoding: webshellConnEncoding(conn),
                 os: webshellConnOS(conn),
+                connection_id: conn.id || '',
                 command: command
             })
         }).then(function (r) { return r.json(); })
@@ -4596,6 +4895,7 @@ function deleteWebshell(id) {
 
 // 打开添加连接弹窗
 function showAddWebshellModal() {
+    if (typeof requirePermission === 'function' && !requirePermission('webshell:write')) return;
     var editIdEl = document.getElementById('webshell-edit-id');
     if (editIdEl) editIdEl.value = '';
     document.getElementById('webshell-url').value = '';
@@ -4607,11 +4907,15 @@ function showAddWebshellModal() {
     if (osSelEl) osSelEl.value = 'auto';
     var encSelEl = document.getElementById('webshell-encoding');
     if (encSelEl) encSelEl.value = 'auto';
+    populateWebshellProjectSelect('');
     document.getElementById('webshell-remark').value = '';
     var titleEl = document.getElementById('webshell-modal-title');
     if (titleEl) titleEl.textContent = wsT('webshell.addConnection');
     var modal = document.getElementById('webshell-modal');
-    if (modal) openAppModal(modal);
+    if (modal) {
+        openAppModal(modal);
+        refreshWebshellFormSelects(modal);
+    }
 }
 
 // 打开编辑连接弹窗（预填当前连接信息）
@@ -4633,7 +4937,9 @@ function showEditWebshellModal(connId) {
         if (osEditEl) osEditEl.value = normalizeWebshellOS(conn.os);
         var encEditEl = document.getElementById('webshell-encoding');
         if (encEditEl) encEditEl.value = normalizeWebshellEncoding(conn.encoding);
+        populateWebshellProjectSelect(webshellConnectionProjectId(conn));
         document.getElementById('webshell-remark').value = conn.remark || '';
+        refreshWebshellFormSelects(document.getElementById('webshell-modal'));
         document.getElementById('webshell-url')?.focus();
     });
 }
@@ -4912,6 +5218,7 @@ function testWebshellConnection() {
 
 // 保存连接（新建或更新，请求服务端写入 SQLite 后刷新列表）
 function saveWebshellConnection() {
+    if (typeof requirePermission === 'function' && !requirePermission('webshell:write')) return;
     var url = (document.getElementById('webshell-url') || {}).value;
     if (url && typeof url.trim === 'function') url = url.trim();
     if (!url) {
@@ -4931,7 +5238,9 @@ function saveWebshellConnection() {
 
     var editIdEl = document.getElementById('webshell-edit-id');
     var editId = editIdEl ? editIdEl.value.trim() : '';
-    var body = { url: url, password: password, type: type, method: method === 'get' ? 'get' : 'post', cmd_param: cmdParam, encoding: encoding, os: osTag, remark: remark || url };
+    var projectId = (document.getElementById('webshell-project-id') || {}).value || '';
+    if (projectId && typeof projectId.trim === 'function') projectId = projectId.trim(); else projectId = '';
+    var body = { url: url, password: password, type: type, method: method === 'get' ? 'get' : 'post', cmd_param: cmdParam, encoding: encoding, os: osTag, remark: remark || url, project_id: projectId };
     if (typeof apiFetch === 'undefined') return;
 
     var reqUrl = editId ? ('/api/webshell/connections/' + encodeURIComponent(editId)) : '/api/webshell/connections';

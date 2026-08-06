@@ -334,3 +334,13 @@ GET /users?q[password_start]=a   → count results
 GET /users?q[password_start]=ab  → narrow down
 # Tool: plormber (automated Ransack extraction)
 ```
+
+---
+
+## Related Routing
+
+- Auth bypass (no valid session at all) → [authbypass-authentication-flaws](../authbypass-authentication-flaws/SKILL.md)
+- API / BOLA → [api-sec](../api-sec/SKILL.md) / [api-fuzzing](../api-fuzzing/SKILL.md)
+- Tenant filter bypass via NoSQL → [nosql-injection](../nosql-injection/SKILL.md)
+- Business-logic object state abuse → [business-logic-vulnerabilities](../business-logic-vulnerabilities/SKILL.md)
+- Burp replay / response diff → [burp-mcp-vuln-check](../burp-mcp-vuln-check/SKILL.md)

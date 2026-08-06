@@ -10,7 +10,9 @@ import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -28,12 +30,10 @@ final class CyberStrikeAIClient {
     static final class Config {
         final String baseUrl; // e.g. http://127.0.0.1:8080
         final String password;
-        final AgentMode agentMode;
 
-        Config(String baseUrl, String password, AgentMode agentMode) {
+        Config(String baseUrl, String password) {
             this.baseUrl = baseUrl;
             this.password = password;
-            this.agentMode = agentMode;
         }
     }
 
@@ -51,6 +51,36 @@ final class CyberStrikeAIClient {
             this.displayName = displayName;
             this.streamPath = streamPath;
             this.orchestration = orchestration;
+        }
+    }
+
+    static final class ProjectOption {
+        final String id;
+        final String label;
+
+        ProjectOption(String id, String label) {
+            this.id = id == null ? "" : id;
+            this.label = label == null || label.isEmpty() ? this.id : label;
+        }
+
+        @Override
+        public String toString() {
+            return label.isEmpty() ? "(无)" : label;
+        }
+    }
+
+    static final class RoleOption {
+        final String name;
+        final String label;
+
+        RoleOption(String name, String label) {
+            this.name = name == null ? "" : name;
+            this.label = label == null || label.isEmpty() ? (this.name.isEmpty() ? "默认" : this.name) : label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
         }
     }
 
@@ -207,15 +237,75 @@ final class CyberStrikeAIClient {
         }
     }
 
+    List<ProjectOption> fetchProjects(Config cfg, String token) throws IOException {
+        String resp = authorizedGet(cfg.baseUrl, token, "/api/projects?limit=500");
+        List<ProjectOption> out = new ArrayList<>();
+        out.add(new ProjectOption("", "(无)"));
+        for (String obj : SimpleJson.extractObjectArray(resp, "projects")) {
+            String id = SimpleJson.extractStringField(obj, "id");
+            if (id.isEmpty()) continue;
+            String name = SimpleJson.extractStringField(obj, "name");
+            String status = SimpleJson.extractStringField(obj, "status");
+            String label = name.isEmpty() ? id : name;
+            if ("archived".equalsIgnoreCase(status)) {
+                label = label + " [已归档]";
+            }
+            out.add(new ProjectOption(id, label));
+        }
+        return out;
+    }
+
+    List<RoleOption> fetchRoles(Config cfg, String token) throws IOException {
+        String resp = authorizedGet(cfg.baseUrl, token, "/api/roles");
+        List<RoleOption> out = new ArrayList<>();
+        out.add(new RoleOption("", "默认"));
+        for (String obj : SimpleJson.extractObjectArray(resp, "roles")) {
+            if (!SimpleJson.extractBooleanField(obj, "enabled", true)) {
+                continue;
+            }
+            String name = SimpleJson.extractStringField(obj, "name");
+            if (name.isEmpty()) continue;
+            out.add(new RoleOption(name, name));
+        }
+        return out;
+    }
+
+    private String authorizedGet(String baseUrl, String token, String path) throws IOException {
+        URL url = new URL(baseUrl + path);
+        HttpURLConnection conn = SslTrustAll.open(url, AUTH_CONNECT_TIMEOUT_MS, AUTH_READ_TIMEOUT_MS);
+        try {
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            int code = conn.getResponseCode();
+            String resp = readAll(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
+            if (code < 200 || code >= 300) {
+                throw new IOException("GET " + path + " failed (" + code + "): " + resp);
+            }
+            return resp;
+        } finally {
+            conn.disconnect();
+        }
+    }
+
     void streamTest(Config cfg, String token, String message, StreamListener listener) {
-        String urlStr = cfg.baseUrl + cfg.agentMode.streamPath;
+        streamTest(cfg, token, message, "", "", AgentMode.EINO_SINGLE, listener);
+    }
+
+    void streamTest(Config cfg, String token, String message, String role, String projectId,
+                    AgentMode agentMode, StreamListener listener) {
+        AgentMode mode = agentMode != null ? agentMode : AgentMode.EINO_SINGLE;
+        String urlStr = cfg.baseUrl + mode.streamPath;
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("message", message);
         payload.put("conversationId", "");
-        payload.put("role", "");
-        if (cfg.agentMode.orchestration != null) {
-            payload.put("orchestration", cfg.agentMode.orchestration);
+        payload.put("role", role == null ? "" : role);
+        if (projectId != null && !projectId.trim().isEmpty()) {
+            payload.put("projectId", projectId.trim());
+        }
+        if (mode.orchestration != null) {
+            payload.put("orchestration", mode.orchestration);
         }
 
         Thread worker = new Thread(() -> {
@@ -319,6 +409,9 @@ final class CyberStrikeAIClient {
         sb.append("\"message\":\"").append(escapeJson(message)).append("\",");
         sb.append("\"conversationId\":\"").append(escapeJson(conversationId)).append("\",");
         sb.append("\"role\":\"").append(escapeJson(role)).append("\"");
+        if (payload.containsKey("projectId") && payload.get("projectId") != null) {
+            sb.append(",\"projectId\":\"").append(escapeJson(String.valueOf(payload.get("projectId")))).append("\"");
+        }
         if (payload.containsKey("orchestration") && payload.get("orchestration") != null) {
             sb.append(",\"orchestration\":\"").append(escapeJson(String.valueOf(payload.get("orchestration")))).append("\"");
         }

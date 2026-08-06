@@ -9,41 +9,47 @@ import (
 
 // AuditLog platform operation audit record.
 type AuditLog struct {
-	ID           string                 `json:"id"`
-	CreatedAt    time.Time              `json:"createdAt"`
-	Level        string                 `json:"level"`
-	Category     string                 `json:"category"`
-	Action       string                 `json:"action"`
-	Result       string                 `json:"result"`
-	Actor        string                 `json:"actor"`
-	SessionHint  string                 `json:"sessionHint,omitempty"`
-	ClientIP     string                 `json:"clientIp,omitempty"`
-	UserAgent    string                 `json:"userAgent,omitempty"`
-	ResourceType string                 `json:"resourceType,omitempty"`
-	ResourceID   string                 `json:"resourceId,omitempty"`
-	ResourceAvailable *bool             `json:"resourceAvailable,omitempty"` // API-only: whether linked resource still exists
-	Message      string                 `json:"message"`
-	Detail       map[string]interface{} `json:"detail,omitempty"`
+	ID                string                 `json:"id"`
+	CreatedAt         time.Time              `json:"createdAt"`
+	Level             string                 `json:"level"`
+	Category          string                 `json:"category"`
+	Action            string                 `json:"action"`
+	Result            string                 `json:"result"`
+	Actor             string                 `json:"actor"`
+	SessionHint       string                 `json:"sessionHint,omitempty"`
+	ClientIP          string                 `json:"clientIp,omitempty"`
+	UserAgent         string                 `json:"userAgent,omitempty"`
+	ResourceType      string                 `json:"resourceType,omitempty"`
+	ResourceID        string                 `json:"resourceId,omitempty"`
+	ResourceAvailable *bool                  `json:"resourceAvailable,omitempty"` // API-only: whether linked resource still exists
+	Message           string                 `json:"message"`
+	Detail            map[string]interface{} `json:"detail,omitempty"`
 }
 
 // ListAuditLogsFilter query parameters.
 type ListAuditLogsFilter struct {
-	Level        string
-	Category     string
-	Action       string
-	Result       string
-	Query        string
-	ResourceType string
-	ResourceID   string
-	Since        *time.Time
-	Until        *time.Time
-	Limit        int
-	Offset       int
+	Actor         string
+	Level         string
+	Category      string
+	Action        string
+	Result        string
+	Query         string
+	ResourceType  string
+	ResourceID    string
+	RelatedUserID string
+	Since         *time.Time
+	Until         *time.Time
+	Limit         int
+	Offset        int
 }
 
 func buildAuditLogsWhere(filter ListAuditLogsFilter) (string, []interface{}) {
 	conditions := []string{"1=1"}
 	args := []interface{}{}
+	if filter.Actor != "" {
+		conditions = append(conditions, "actor = ?")
+		args = append(args, filter.Actor)
+	}
 	if filter.Level != "" {
 		conditions = append(conditions, "level = ?")
 		args = append(args, filter.Level)
@@ -68,6 +74,10 @@ func buildAuditLogsWhere(filter ListAuditLogsFilter) (string, []interface{}) {
 		conditions = append(conditions, "resource_id = ?")
 		args = append(args, filter.ResourceID)
 	}
+	if relatedUserID := strings.TrimSpace(filter.RelatedUserID); relatedUserID != "" {
+		conditions = append(conditions, `(resource_id = ? OR detail_json LIKE ? OR detail_json LIKE ?)`)
+		args = append(args, relatedUserID, `%"user_id":"`+relatedUserID+`"%`, `%"userId":"`+relatedUserID+`"%`)
+	}
 	if filter.Since != nil {
 		conditions = append(conditions, sqliteEpochGE("created_at", ">="))
 		args = append(args, formatSQLiteUTC(*filter.Since))
@@ -78,8 +88,8 @@ func buildAuditLogsWhere(filter ListAuditLogsFilter) (string, []interface{}) {
 	}
 	if q := strings.TrimSpace(filter.Query); q != "" {
 		like := "%" + q + "%"
-		conditions = append(conditions, "(message LIKE ? OR resource_id LIKE ? OR action LIKE ? OR category LIKE ?)")
-		args = append(args, like, like, like, like)
+		conditions = append(conditions, "(message LIKE ? OR resource_id LIKE ? OR action LIKE ? OR category LIKE ? OR detail_json LIKE ?)")
+		args = append(args, like, like, like, like, like)
 	}
 	return strings.Join(conditions, " AND "), args
 }

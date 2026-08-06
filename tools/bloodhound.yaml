@@ -22,7 +22,6 @@ description: |
   - 需要域用户凭据
   - 需要 Neo4j 数据库支持
   - 收集过程可能需要较长时间
-  - 建议在授权环境中使用
 parameters:
   - name: "domain"
     type: "string"
@@ -61,7 +60,9 @@ parameters:
       额外的bloodhound参数。用于传递未在参数列表中定义的bloodhound选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - -u user -p pass（认证）
+      - --dns-timeout 10
+      - --collectionmethod All
 
       **注意事项：**
       - 多个参数用空格分隔

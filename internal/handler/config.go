@@ -16,8 +16,10 @@ import (
 	"cyberstrike-ai/internal/agents"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/knowledge"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
 
@@ -88,9 +90,30 @@ type ConfigHandler struct {
 	appUpdater                 AppUpdater                 // App更新器（可选）
 	robotRestarter             RobotRestarter             // 机器人连接重启器（可选），ApplyConfig 时重启钉钉/飞书
 	audit                      *audit.Service
+	db                         *database.DB
 	logger                     *zap.Logger
 	mu                         sync.RWMutex
 	lastEmbeddingConfig        *config.EmbeddingConfig // 上一次的嵌入模型配置（用于检测变更）
+}
+
+func (h *ConfigHandler) SetDB(db *database.DB) {
+	h.db = db
+}
+
+func (h *ConfigHandler) validateRobotServiceAccounts(robots config.RobotsConfig) error {
+	if h.db == nil {
+		return fmt.Errorf("RBAC 服务不可用，无法校验机器人服务账号")
+	}
+	for platform, userID := range robots.ServiceAccountUserIDs() {
+		user, err := h.db.GetRBACUserByID(userID)
+		if err != nil {
+			return fmt.Errorf("robots.%s.auth.service_user_id 对应用户不存在", platform)
+		}
+		if !user.Enabled {
+			return fmt.Errorf("robots.%s.auth.service_user_id 对应用户已禁用", platform)
+		}
+	}
+	return nil
 }
 
 // AttackChainUpdater 攻击链处理器更新接口
@@ -98,10 +121,10 @@ type AttackChainUpdater interface {
 	UpdateConfig(cfg *config.OpenAIConfig)
 }
 
-// AgentUpdater MCP 工具网关（internal/agent.Agent）热更新接口；非 Eino 编排实例。
+// AgentUpdater Agent更新接口
 type AgentUpdater interface {
 	UpdateConfig(cfg *config.OpenAIConfig)
-	UpdateMaxIterations(maxIterations int) // 写入共享 agentConfig.MaxIterations，供 multiagent 读取
+	UpdateMaxIterations(maxIterations int)
 	UpdateToolDescriptionMode(mode string)
 }
 
@@ -235,16 +258,21 @@ func (h *ConfigHandler) ApplyWechatRobotBinding(wc config.RobotWechatConfig) err
 
 // GetConfigResponse 获取配置响应
 type GetConfigResponse struct {
-	OpenAI     config.OpenAIConfig     `json:"openai"`
-	Vision     config.VisionConfig     `json:"vision"`
-	FOFA       config.FofaConfig       `json:"fofa"`
-	MCP        config.MCPConfig        `json:"mcp"`
-	Tools      []ToolConfigInfo        `json:"tools"`
-	Agent      config.AgentConfig      `json:"agent"`
-	Hitl       config.HitlConfig       `json:"hitl,omitempty"`
-	Knowledge  config.KnowledgeConfig  `json:"knowledge"`
-	Robots     config.RobotsConfig     `json:"robots,omitempty"`
-	MultiAgent config.MultiAgentPublic `json:"multi_agent,omitempty"`
+	AI         config.AIConfig          `json:"ai"`
+	OpenAI     config.OpenAIConfig      `json:"openai"`
+	Vision     config.VisionConfig      `json:"vision"`
+	FOFA       config.FofaConfig        `json:"fofa"`
+	WebSearch  config.WebSearchConfig   `json:"websearch"`
+	ZoomEye    config.SpaceSearchConfig `json:"zoomeye"`
+	Quake      config.SpaceSearchConfig `json:"quake"`
+	Shodan     config.SpaceSearchConfig `json:"shodan"`
+	MCP        config.MCPConfig         `json:"mcp"`
+	Tools      []ToolConfigInfo         `json:"tools"`
+	Agent      config.AgentConfig       `json:"agent"`
+	Hitl       config.HitlConfig        `json:"hitl,omitempty"`
+	Knowledge  config.KnowledgeConfig   `json:"knowledge"`
+	Robots     config.RobotsConfig      `json:"robots,omitempty"`
+	MultiAgent config.MultiAgentPublic  `json:"multi_agent,omitempty"`
 	C2         config.C2Public          `json:"c2"`
 }
 
@@ -317,27 +345,34 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	if load, err := agents.LoadMarkdownAgentsDir(agentsDir); err == nil {
 		subAgentCount = len(agents.MergeYAMLAndMarkdown(h.config.MultiAgent.SubAgents, load.SubAgents))
 	}
-	mw := h.config.MultiAgent.EinoMiddleware
 	multiPub := config.MultiAgentPublic{
-		Enabled:                      h.config.MultiAgent.Enabled,
-		RobotDefaultAgentMode: config.NormalizeRobotAgentMode(h.config.MultiAgent),
-		BatchUseMultiAgent:           h.config.MultiAgent.BatchUseMultiAgent,
-		SubAgentCount:                subAgentCount,
-		Orchestration:                config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
-		PlanExecuteLoopMaxIterations: h.config.MultiAgent.PlanExecuteLoopMaxIterations,
-		ToolSearchAlwaysVisibleTools: append([]string(nil), mw.ToolSearchAlwaysVisibleTools...),
-		// 仅回显用户配置的 always_visible；实际生效时与当轮角色绑定工具求交（见 multiagent.resolveAlwaysVisibleToolNames）
-		ToolSearchAlwaysVisibleEffectiveTools: append([]string(nil), mw.ToolSearchAlwaysVisibleTools...),
-		ExecutionBoostEffective:   mw.ExecutionBoostEffective(),
-		SkillRouterEffective:      mw.SkillRouterEffective(),
-		FinalizeGateEffective:     mw.FinalizeGateEffective(),
-		StructuredSummaryMaxRunes: mw.StructuredSummaryMaxRunesEffective(),
+		Enabled:                                    h.config.MultiAgent.Enabled,
+		RobotDefaultAgentMode:                      config.NormalizeRobotAgentMode(h.config.MultiAgent),
+		BatchUseMultiAgent:                         h.config.MultiAgent.BatchUseMultiAgent,
+		SubAgentCount:                              subAgentCount,
+		Orchestration:                              config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
+		PlanExecuteLoopMaxIterations:               h.config.MultiAgent.PlanExecuteLoopMaxIterations,
+		SummarizationUserIntentLedgerMaxRunes:      h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective(),
+		SummarizationUserIntentLedgerEntryMaxRunes: h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunesEffective(),
+		LatestUserMessageMaxRunes:                  h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunesEffective(),
+		LatestUserMessageHeadRunes:                 h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunesEffective(),
+		LatestUserMessageTailRunes:                 h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunesEffective(),
+		ToolSearchAlwaysVisibleTools:               append([]string(nil), h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools...),
+		ToolSearchAlwaysVisibleEffectiveTools: mergeToolNameLists(
+			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools,
+			builtin.GetAllBuiltinTools(),
+		),
 	}
 
 	c.JSON(http.StatusOK, GetConfigResponse{
+		AI:         h.config.AI,
 		OpenAI:     h.config.OpenAI,
 		Vision:     h.config.Vision,
 		FOFA:       h.config.FOFA,
+		WebSearch:  h.config.WebSearch,
+		ZoomEye:    h.config.ZoomEye,
+		Quake:      h.config.Quake,
+		Shodan:     h.config.Shodan,
 		MCP:        h.config.MCP,
 		Tools:      tools,
 		Agent:      h.config.Agent,
@@ -675,24 +710,83 @@ func (h *ConfigHandler) GetTools(c *gin.Context) {
 
 // UpdateConfigRequest 更新配置请求
 type UpdateConfigRequest struct {
-	OpenAI     *config.OpenAIConfig         `json:"openai,omitempty"`
-	Vision     *config.VisionConfig         `json:"vision,omitempty"`
-	FOFA       *config.FofaConfig           `json:"fofa,omitempty"`
-	MCP        *config.MCPConfig            `json:"mcp,omitempty"`
-	Tools      []ToolEnableStatus           `json:"tools,omitempty"`
-	Agent      *AgentConfigUpdate           `json:"agent,omitempty"`
-	Knowledge  *config.KnowledgeConfig      `json:"knowledge,omitempty"`
-	Robots     *config.RobotsConfig         `json:"robots,omitempty"`
-	MultiAgent *config.MultiAgentAPIUpdate  `json:"multi_agent,omitempty"`
-	C2         *config.C2APIUpdate           `json:"c2,omitempty"`
+	AI         *config.AIConfig            `json:"ai,omitempty"`
+	OpenAI     *config.OpenAIConfig        `json:"openai,omitempty"`
+	Vision     *config.VisionConfig        `json:"vision,omitempty"`
+	FOFA       *FofaConfigUpdate           `json:"fofa,omitempty"`
+	WebSearch  *config.WebSearchConfig     `json:"websearch,omitempty"`
+	ZoomEye    *config.SpaceSearchConfig   `json:"zoomeye,omitempty"`
+	Quake      *config.SpaceSearchConfig   `json:"quake,omitempty"`
+	Shodan     *config.SpaceSearchConfig   `json:"shodan,omitempty"`
+	MCP        *config.MCPConfig           `json:"mcp,omitempty"`
+	Tools      []ToolEnableStatus          `json:"tools,omitempty"`
+	Agent      *AgentConfigUpdate          `json:"agent,omitempty"`
+	Hitl       *config.HitlConfig          `json:"hitl,omitempty"`
+	Knowledge  *config.KnowledgeConfig     `json:"knowledge,omitempty"`
+	Robots     *config.RobotsConfig        `json:"robots,omitempty"`
+	MultiAgent *config.MultiAgentAPIUpdate `json:"multi_agent,omitempty"`
+	C2         *config.C2APIUpdate         `json:"c2,omitempty"`
 }
 
 // AgentConfigUpdate 用于 PATCH /api/config 的 agent 段：仅 JSON 中出现的字段（指针非 nil）覆盖内存配置。
 // 避免旧版「整包替换 *AgentConfig」时，未传的整型字段被反序列化为 0 误覆盖（例如 tool_timeout_minutes 变成 0）。
 type AgentConfigUpdate struct {
-	MaxIterations      *int    `json:"max_iterations,omitempty"`
-	ToolTimeoutMinutes *int    `json:"tool_timeout_minutes,omitempty"`
-	SystemPromptPath   *string `json:"system_prompt_path,omitempty"`
+	MaxIterations                      *int    `json:"max_iterations,omitempty"`
+	ToolTimeoutMinutes                 *int    `json:"tool_timeout_minutes,omitempty"`
+	ToolWaitTimeoutSeconds             *int    `json:"tool_wait_timeout_seconds,omitempty"`
+	ExternalMCPMaxConcurrentPerServer  *int    `json:"external_mcp_max_concurrent_per_server,omitempty"`
+	ExternalMCPMaxConcurrentTotal      *int    `json:"external_mcp_max_concurrent_total,omitempty"`
+	ExternalMCPCircuitFailureThreshold *int    `json:"external_mcp_circuit_failure_threshold,omitempty"`
+	ExternalMCPCircuitCooldownSeconds  *int    `json:"external_mcp_circuit_cooldown_seconds,omitempty"`
+	SystemPromptPath                   *string `json:"system_prompt_path,omitempty"`
+}
+
+// FofaConfigUpdate 用于 PATCH /api/config 的 fofa 段：仅 JSON 中出现的字段（指针非 nil）覆盖内存配置。
+// 避免 Web 界面仅提交 api_key/base_url 时整包替换 *config.FofaConfig，把 config.yaml 中配置的
+// endpoints/bearer_token/verify_ssl 等高级字段静默清空。
+type FofaConfigUpdate struct {
+	APIKey           *string                    `json:"api_key,omitempty"`
+	BaseURL          *string                    `json:"base_url,omitempty"`
+	Email            *string                    `json:"email,omitempty"`
+	AuthMode         *string                    `json:"auth_mode,omitempty"`
+	BearerToken      *string                    `json:"bearer_token,omitempty"`
+	VerifySSL        *bool                      `json:"verify_ssl,omitempty"`
+	TimeoutSeconds   *int                       `json:"timeout_seconds,omitempty"`
+	FallbackBaseURLs *[]string                  `json:"fallback_base_urls,omitempty"`
+	Endpoints        *[]config.FofaEndpointConfig `json:"endpoints,omitempty"`
+}
+
+func applyFofaConfigUpdate(dst *config.FofaConfig, src *FofaConfigUpdate) {
+	if dst == nil || src == nil {
+		return
+	}
+	if src.APIKey != nil {
+		dst.APIKey = *src.APIKey
+	}
+	if src.BaseURL != nil {
+		dst.BaseURL = *src.BaseURL
+	}
+	if src.Email != nil {
+		dst.Email = *src.Email
+	}
+	if src.AuthMode != nil {
+		dst.AuthMode = *src.AuthMode
+	}
+	if src.BearerToken != nil {
+		dst.BearerToken = *src.BearerToken
+	}
+	if src.VerifySSL != nil {
+		dst.VerifySSL = src.VerifySSL
+	}
+	if src.TimeoutSeconds != nil {
+		dst.TimeoutSeconds = *src.TimeoutSeconds
+	}
+	if src.FallbackBaseURLs != nil {
+		dst.FallbackBaseURLs = *src.FallbackBaseURLs
+	}
+	if src.Endpoints != nil {
+		dst.Endpoints = *src.Endpoints
+	}
 }
 
 func applyAgentConfigUpdate(dst *config.AgentConfig, src *AgentConfigUpdate) {
@@ -704,6 +798,21 @@ func applyAgentConfigUpdate(dst *config.AgentConfig, src *AgentConfigUpdate) {
 	}
 	if src.ToolTimeoutMinutes != nil {
 		dst.ToolTimeoutMinutes = *src.ToolTimeoutMinutes
+	}
+	if src.ToolWaitTimeoutSeconds != nil {
+		dst.ToolWaitTimeoutSeconds = *src.ToolWaitTimeoutSeconds
+	}
+	if src.ExternalMCPMaxConcurrentPerServer != nil {
+		dst.ExternalMCPMaxConcurrentPerServer = *src.ExternalMCPMaxConcurrentPerServer
+	}
+	if src.ExternalMCPMaxConcurrentTotal != nil {
+		dst.ExternalMCPMaxConcurrentTotal = *src.ExternalMCPMaxConcurrentTotal
+	}
+	if src.ExternalMCPCircuitFailureThreshold != nil {
+		dst.ExternalMCPCircuitFailureThreshold = *src.ExternalMCPCircuitFailureThreshold
+	}
+	if src.ExternalMCPCircuitCooldownSeconds != nil {
+		dst.ExternalMCPCircuitCooldownSeconds = *src.ExternalMCPCircuitCooldownSeconds
 	}
 	if src.SystemPromptPath != nil {
 		dst.SystemPromptPath = *src.SystemPromptPath
@@ -730,8 +839,20 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 	defer h.mu.Unlock()
 
 	// 更新OpenAI配置
+	if req.AI != nil {
+		h.config.AI = *req.AI
+		h.config.ApplyDefaultAIChannel()
+		h.logger.Info("更新 AI 通道配置",
+			zap.String("default_channel", h.config.AI.DefaultChannel),
+			zap.Int("channels", len(h.config.AI.Channels)),
+		)
+	}
 	if req.OpenAI != nil {
 		h.config.OpenAI = *req.OpenAI
+		h.config.AI.EnsureDefaultFromOpenAI(h.config.OpenAI)
+		if def := config.NormalizeAIChannelID(h.config.AI.DefaultChannel); def != "" {
+			h.config.AI.Channels[def] = config.AIChannelFromOpenAI(def, "Default", h.config.OpenAI)
+		}
 		h.logger.Info("更新OpenAI配置",
 			zap.String("base_url", h.config.OpenAI.BaseURL),
 			zap.String("model", h.config.OpenAI.Model),
@@ -746,10 +867,26 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		)
 	}
 
-	// 更新FOFA配置
+	// 更新FOFA配置（按出现字段合并，保留 config.yaml 中的多端点/Token 等高级字段）
 	if req.FOFA != nil {
-		h.config.FOFA = *req.FOFA
-		h.logger.Info("更新FOFA配置", zap.String("email", h.config.FOFA.Email))
+		applyFofaConfigUpdate(&h.config.FOFA, req.FOFA)
+		h.logger.Info("更新FOFA配置", zap.String("base_url", h.config.FOFA.BaseURL))
+	}
+	if req.ZoomEye != nil {
+		h.config.ZoomEye = *req.ZoomEye
+		h.logger.Info("更新ZoomEye配置", zap.String("base_url", h.config.ZoomEye.BaseURL))
+	}
+	if req.WebSearch != nil {
+		h.config.WebSearch = *req.WebSearch
+		h.logger.Info("更新联网搜索配置", zap.Bool("enabled", h.config.WebSearch.Enabled != nil && *h.config.WebSearch.Enabled))
+	}
+	if req.Quake != nil {
+		h.config.Quake = *req.Quake
+		h.logger.Info("更新Quake配置", zap.String("base_url", h.config.Quake.BaseURL))
+	}
+	if req.Shodan != nil {
+		h.config.Shodan = *req.Shodan
+		h.logger.Info("更新Shodan配置", zap.String("base_url", h.config.Shodan.BaseURL))
 	}
 
 	// 更新MCP配置
@@ -768,13 +905,55 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		h.logger.Info("更新Agent配置",
 			zap.Int("max_iterations", h.config.Agent.MaxIterations),
 			zap.Int("tool_timeout_minutes", h.config.Agent.ToolTimeoutMinutes),
+			zap.Int("tool_wait_timeout_seconds", h.config.Agent.ToolWaitTimeoutSeconds),
+			zap.Int("external_mcp_max_concurrent_per_server", h.config.Agent.ExternalMCPMaxConcurrentPerServer),
+			zap.Int("external_mcp_max_concurrent_total", h.config.Agent.ExternalMCPMaxConcurrentTotal),
+			zap.Int("external_mcp_circuit_failure_threshold", h.config.Agent.ExternalMCPCircuitFailureThreshold),
+			zap.Int("external_mcp_circuit_cooldown_seconds", h.config.Agent.ExternalMCPCircuitCooldownSeconds),
 		)
 		if h.agent != nil && req.Agent.MaxIterations != nil {
 			h.agent.UpdateMaxIterations(h.config.Agent.MaxIterations)
 		}
+		if h.executor != nil {
+			h.executor.SetToolOutputMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+			h.executor.SetToolOutputSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
+		}
 		if h.mcpServer != nil {
 			h.mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(h.config.Agent.ToolTimeoutMinutes)
+			h.mcpServer.ConfigureToolWaitTimeoutSeconds(h.config.Agent.ToolWaitTimeoutSeconds)
+			h.mcpServer.ConfigureToolResultMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+			h.mcpServer.ConfigureToolResultSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
 		}
+		if h.externalMCPMgr != nil {
+			h.externalMCPMgr.ConfigureToolWaitTimeoutSeconds(h.config.Agent.ToolWaitTimeoutSeconds)
+			h.externalMCPMgr.ConfigureToolResultMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+			h.externalMCPMgr.ConfigureToolResultSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
+			h.externalMCPMgr.ConfigureResilience(mcp.ExternalMCPResilienceConfig{
+				MaxConcurrentPerServer:  h.config.Agent.ExternalMCPMaxConcurrentPerServer,
+				MaxConcurrentTotal:      h.config.Agent.ExternalMCPMaxConcurrentTotal,
+				CircuitFailureThreshold: h.config.Agent.ExternalMCPCircuitFailureThreshold,
+				CircuitCooldown:         time.Duration(h.config.Agent.ExternalMCPCircuitCooldownSeconds) * time.Second,
+			})
+		}
+	}
+
+	if req.Hitl != nil {
+		h.config.Hitl.AuditModel = req.Hitl.AuditModel
+		h.config.Hitl.ToolWhitelist = mergeHitlToolWhitelistSlice(nil, req.Hitl.ToolWhitelist)
+		h.config.Hitl.DefaultReviewer = req.Hitl.EffectiveDefaultReviewer()
+		h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(req.Hitl.AuditAgentPrompt)
+		h.config.Hitl.AuditAgentPromptReviewEdit = strings.TrimSpace(req.Hitl.AuditAgentPromptReviewEdit)
+		if req.Hitl.RetentionDays != nil {
+			v := *req.Hitl.RetentionDays
+			if v < 0 {
+				v = 0
+			}
+			h.config.Hitl.RetentionDays = &v
+		}
+		h.logger.Info("更新HITL配置",
+			zap.String("default_reviewer", h.config.Hitl.DefaultReviewer),
+			zap.Int("tool_whitelist", len(h.config.Hitl.ToolWhitelist)),
+		)
 	}
 
 	// 更新Knowledge配置
@@ -804,12 +983,24 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if err := config.ValidateRobotsAuthorization(*req.Robots); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := h.validateRobotServiceAccounts(*req.Robots); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		h.config.Robots = *req.Robots
 		h.logger.Info("更新机器人配置",
 			zap.Bool("wechat_enabled", h.config.Robots.Wechat.Enabled),
 			zap.Bool("wecom_enabled", h.config.Robots.Wecom.Enabled),
 			zap.Bool("dingtalk_enabled", h.config.Robots.Dingtalk.Enabled),
 			zap.Bool("lark_enabled", h.config.Robots.Lark.Enabled),
+			zap.Bool("telegram_enabled", h.config.Robots.Telegram.Enabled),
+			zap.Bool("slack_enabled", h.config.Robots.Slack.Enabled),
+			zap.Bool("discord_enabled", h.config.Robots.Discord.Enabled),
+			zap.Bool("qq_enabled", h.config.Robots.QQ.Enabled),
 		)
 	}
 
@@ -831,6 +1022,41 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		if req.MultiAgent.PlanExecuteLoopMaxIterations != nil {
 			h.config.MultiAgent.PlanExecuteLoopMaxIterations = *req.MultiAgent.PlanExecuteLoopMaxIterations
 		}
+		if req.MultiAgent.SummarizationUserIntentLedgerMaxRunes != nil {
+			v := *req.MultiAgent.SummarizationUserIntentLedgerMaxRunes
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunes = v
+		}
+		if req.MultiAgent.SummarizationUserIntentLedgerEntryMaxRunes != nil {
+			v := *req.MultiAgent.SummarizationUserIntentLedgerEntryMaxRunes
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunes = v
+		}
+		if req.MultiAgent.LatestUserMessageMaxRunes != nil {
+			v := *req.MultiAgent.LatestUserMessageMaxRunes
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunes = v
+		}
+		if req.MultiAgent.LatestUserMessageHeadRunes != nil {
+			v := *req.MultiAgent.LatestUserMessageHeadRunes
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunes = v
+		}
+		if req.MultiAgent.LatestUserMessageTailRunes != nil {
+			v := *req.MultiAgent.LatestUserMessageTailRunes
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunes = v
+		}
 		if req.MultiAgent.ToolSearchAlwaysVisibleTools != nil {
 			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools = dedupeToolNameList(*req.MultiAgent.ToolSearchAlwaysVisibleTools)
 		}
@@ -839,6 +1065,11 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			zap.String("robot_default_agent_mode", config.NormalizeRobotAgentMode(h.config.MultiAgent)),
 			zap.Bool("batch_use_multi_agent", h.config.MultiAgent.BatchUseMultiAgent),
 			zap.Int("plan_execute_loop_max_iterations", h.config.MultiAgent.PlanExecuteLoopMaxIterations),
+			zap.Int("summarization_user_intent_ledger_max_runes", h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective()),
+			zap.Int("summarization_user_intent_ledger_entry_max_runes", h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunesEffective()),
+			zap.Int("latest_user_message_max_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunesEffective()),
+			zap.Int("latest_user_message_head_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunesEffective()),
+			zap.Int("latest_user_message_tail_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunesEffective()),
 			zap.Int("tool_search_always_visible_tools", len(h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools)),
 		)
 	}
@@ -1265,7 +1496,7 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "初始化知识库失败: " + err.Error()})
 			return
 		}
-		h.logger.Info("知识库动态初始化完成，工具已注册")
+		h.logger.Debug("知识库动态初始化完成，工具已注册")
 	}
 
 	// 检查嵌入模型配置是否变更（需要在锁外执行，避免阻塞）
@@ -1344,21 +1575,19 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "重新加载工具配置失败: " + err.Error()})
 		return
 	}
-	h.logger.Info("已从 tools 目录重新加载工具配置", zap.Int("tools_count", len(h.config.Security.Tools)))
+	h.logger.Debug("已从 tools 目录重新加载工具配置", zap.Int("tools_count", len(h.config.Security.Tools)))
 
 	// 重新注册工具（根据新的启用状态）
-	h.logger.Info("重新注册工具")
+	h.logger.Debug("重新注册工具")
 
 	// 清空MCP服务器中的工具
 	h.mcpServer.ClearTools()
 
 	// 重新注册安全工具
+	h.executor.SetToolOutputMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+	h.executor.SetToolOutputSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
 	h.executor.RegisterTools(h.mcpServer)
-
-	// 同步执行器治理配置（热重载生效）：并发上限由中间件层处理，此处只同步 executor 侧设置
-	h.executor.SetInjectCmdTimeout(h.config.MultiAgent.EinoMiddleware.ToolExecGovernorInjectCmdTimeoutEffective())
-	h.executor.SetMaxWallClockSeconds(h.config.MultiAgent.EinoMiddleware.ToolExecGovernorMaxWallClockEffective())
-	h.executor.SetShellNoOutputTimeoutSeconds(h.config.Agent.ShellNoOutputTimeoutSeconds)
+	mcp.RegisterExecutionControlTools(h.mcpServer, h.externalMCPMgr)
 
 	// 重新注册漏洞记录工具（内置工具，必须注册）
 	if h.vulnerabilityToolRegistrar != nil {
@@ -1429,6 +1658,24 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 	}
 	if h.mcpServer != nil {
 		h.mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(h.config.Agent.ToolTimeoutMinutes)
+		h.mcpServer.ConfigureToolWaitTimeoutSeconds(h.config.Agent.ToolWaitTimeoutSeconds)
+		h.mcpServer.ConfigureToolResultMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+		h.mcpServer.ConfigureToolResultSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
+	}
+	if h.executor != nil {
+		h.executor.SetToolOutputMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+		h.executor.SetToolOutputSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
+	}
+	if h.externalMCPMgr != nil {
+		h.externalMCPMgr.ConfigureToolWaitTimeoutSeconds(h.config.Agent.ToolWaitTimeoutSeconds)
+		h.externalMCPMgr.ConfigureToolResultMaxBytes(h.config.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
+		h.externalMCPMgr.ConfigureToolResultSpillRoot(h.config.MultiAgent.EinoMiddleware.ReductionRootDir)
+		h.externalMCPMgr.ConfigureResilience(mcp.ExternalMCPResilienceConfig{
+			MaxConcurrentPerServer:  h.config.Agent.ExternalMCPMaxConcurrentPerServer,
+			MaxConcurrentTotal:      h.config.Agent.ExternalMCPMaxConcurrentTotal,
+			CircuitFailureThreshold: h.config.Agent.ExternalMCPCircuitFailureThreshold,
+			CircuitCooldown:         time.Duration(h.config.Agent.ExternalMCPCircuitCooldownSeconds) * time.Second,
+		})
 	}
 
 	// 更新AttackChainHandler的OpenAI配置
@@ -1439,12 +1686,7 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 
 	// 更新检索器配置（如果知识库启用）
 	if h.config.Knowledge.Enabled && h.retrieverUpdater != nil {
-		retrievalConfig := &knowledge.RetrievalConfig{
-			TopK:                h.config.Knowledge.Retrieval.TopK,
-			SimilarityThreshold: h.config.Knowledge.Retrieval.SimilarityThreshold,
-			SubIndexFilter:      h.config.Knowledge.Retrieval.SubIndexFilter,
-			PostRetrieve:        h.config.Knowledge.Retrieval.PostRetrieve,
-		}
+		retrievalConfig := knowledge.RetrievalConfigFromYAML(h.config.Knowledge.Retrieval)
 		h.retrieverUpdater.UpdateConfig(retrievalConfig)
 		h.logger.Info("检索器配置已更新",
 			zap.Int("top_k", retrievalConfig.TopK),
@@ -1479,7 +1721,7 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 			Result:   "success",
 			Message:  "配置已应用",
 			Detail: map[string]interface{}{
-				"tools_count":      len(h.config.Security.Tools),
+				"tools_count":       len(h.config.Security.Tools),
 				"knowledge_enabled": h.config.Knowledge.Enabled,
 				"c2_enabled":        h.config.C2.EnabledEffective(),
 			},
@@ -1511,9 +1753,14 @@ func (h *ConfigHandler) saveConfig() error {
 
 	updateAgentConfig(root, h.config.Agent)
 	updateMCPConfig(root, h.config.MCP)
-	updateOpenAIConfig(root, h.config.OpenAI)
+	updateAIConfig(root, h.config.AI)
+	removeKeyFromMap(root.Content[0], "openai")
 	updateVisionConfig(root, h.config.Vision)
 	updateFOFAConfig(root, h.config.FOFA)
+	updateWebSearchConfig(root, h.config.WebSearch)
+	updateSpaceSearchConfig(root, "zoomeye", h.config.ZoomEye)
+	updateSpaceSearchConfig(root, "quake", h.config.Quake)
+	updateSpaceSearchConfig(root, "shodan", h.config.Shodan)
 	updateKnowledgeConfig(root, h.config.Knowledge)
 	updateC2Config(root, h.config.C2)
 	updateRobotsConfig(root, h.config.Robots)
@@ -1620,6 +1867,11 @@ func updateAgentConfig(doc *yaml.Node, agent config.AgentConfig) {
 	agentNode := ensureMap(root, "agent")
 	setIntInMap(agentNode, "max_iterations", agent.MaxIterations)
 	setIntInMap(agentNode, "tool_timeout_minutes", agent.ToolTimeoutMinutes)
+	setIntInMap(agentNode, "tool_wait_timeout_seconds", agent.ToolWaitTimeoutSeconds)
+	setIntInMap(agentNode, "external_mcp_max_concurrent_per_server", agent.ExternalMCPMaxConcurrentPerServer)
+	setIntInMap(agentNode, "external_mcp_max_concurrent_total", agent.ExternalMCPMaxConcurrentTotal)
+	setIntInMap(agentNode, "external_mcp_circuit_failure_threshold", agent.ExternalMCPCircuitFailureThreshold)
+	setIntInMap(agentNode, "external_mcp_circuit_cooldown_seconds", agent.ExternalMCPCircuitCooldownSeconds)
 	setStringInMap(agentNode, "system_prompt_path", agent.SystemPromptPath)
 }
 
@@ -1697,22 +1949,95 @@ func updateOpenAIConfig(doc *yaml.Node, cfg config.OpenAIConfig) {
 	}
 }
 
+func updateAIConfig(doc *yaml.Node, cfg config.AIConfig) {
+	root := doc.Content[0]
+	aiNode := ensureMap(root, "ai")
+	if strings.TrimSpace(cfg.DefaultChannel) != "" {
+		setStringInMap(aiNode, "default_channel", config.NormalizeAIChannelID(cfg.DefaultChannel))
+	}
+	channelsNode := ensureMap(aiNode, "channels")
+	channelsNode.Content = nil
+	normalized := make(map[string]config.AIChannelConfig, len(cfg.Channels))
+	ids := make([]string, 0, len(cfg.Channels))
+	for id, ch := range cfg.Channels {
+		nid := config.NormalizeAIChannelID(id)
+		if nid == "" {
+			continue
+		}
+		if _, exists := normalized[nid]; !exists {
+			ids = append(ids, nid)
+		}
+		normalized[nid] = ch
+	}
+	sort.Strings(ids)
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ch := normalized[id]
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: id}
+		channelNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		channelsNode.Content = append(channelsNode.Content, keyNode, channelNode)
+		setStringInMap(channelNode, "name", ch.Name)
+		if strings.TrimSpace(ch.Provider) != "" {
+			setStringInMap(channelNode, "provider", ch.Provider)
+		}
+		setStringInMap(channelNode, "api_key", ch.APIKey)
+		setStringInMap(channelNode, "base_url", ch.BaseURL)
+		setStringInMap(channelNode, "model", ch.Model)
+		if ch.MaxTotalTokens > 0 {
+			setIntInMap(channelNode, "max_total_tokens", ch.MaxTotalTokens)
+		}
+		if ch.MaxCompletionTokens > 0 {
+			setIntInMap(channelNode, "max_completion_tokens", ch.MaxCompletionTokens)
+		}
+		rn := ensureMap(channelNode, "reasoning")
+		if strings.TrimSpace(ch.Reasoning.Mode) != "" {
+			setStringInMap(rn, "mode", ch.Reasoning.Mode)
+		}
+		if strings.TrimSpace(ch.Reasoning.Effort) != "" {
+			setStringInMap(rn, "effort", ch.Reasoning.Effort)
+		}
+		if ch.Reasoning.AllowClientReasoning != nil {
+			setBoolInMap(rn, "allow_client_reasoning", *ch.Reasoning.AllowClientReasoning)
+		}
+		if strings.TrimSpace(ch.Reasoning.Profile) != "" {
+			setStringInMap(rn, "profile", ch.Reasoning.Profile)
+		}
+		if len(rn.Content) == 0 {
+			removeKeyFromMap(channelNode, "reasoning")
+		}
+	}
+}
+
 func updateFOFAConfig(doc *yaml.Node, cfg config.FofaConfig) {
 	root := doc.Content[0]
 	fofaNode := ensureMap(root, "fofa")
 	setStringInMap(fofaNode, "base_url", cfg.BaseURL)
-	setStringInMap(fofaNode, "email", cfg.Email)
+	removeKeyFromMap(fofaNode, "email")
 	setStringInMap(fofaNode, "api_key", cfg.APIKey)
-	setStringInMap(fofaNode, "auth_mode", cfg.AuthMode)
-	setStringInMap(fofaNode, "bearer_token", cfg.BearerToken)
+}
+
+func updateSpaceSearchConfig(doc *yaml.Node, key string, cfg config.SpaceSearchConfig) {
+	root := doc.Content[0]
+	node := ensureMap(root, key)
+	setStringInMap(node, "base_url", cfg.BaseURL)
+	setStringInMap(node, "api_key", cfg.APIKey)
+}
+
+func updateWebSearchConfig(doc *yaml.Node, cfg config.WebSearchConfig) {
+	root := doc.Content[0]
+	node := ensureMap(root, "websearch")
+	setBoolInMap(node, "enabled", cfg.Enabled != nil && *cfg.Enabled)
+	setStringInMap(node, "api_key", cfg.APIKey)
+	setStringInMap(node, "base_url", cfg.BaseURL)
+	if cfg.MaxResults > 0 {
+		setIntInMap(node, "max_results", cfg.MaxResults)
+	}
 	if cfg.TimeoutSeconds > 0 {
-		setIntInMap(fofaNode, "timeout_seconds", cfg.TimeoutSeconds)
-	}
-	if cfg.VerifySSL != nil {
-		setBoolInMap(fofaNode, "verify_ssl", *cfg.VerifySSL)
-	}
-	if cfg.FallbackBaseURLs != nil {
-		setStringSliceInMap(fofaNode, "fallback_base_urls", cfg.FallbackBaseURLs)
+		setIntInMap(node, "timeout_seconds", cfg.TimeoutSeconds)
 	}
 }
 
@@ -1738,6 +2063,13 @@ func updateKnowledgeConfig(doc *yaml.Node, cfg config.KnowledgeConfig) {
 	setIntInMap(retrievalNode, "top_k", cfg.Retrieval.TopK)
 	setFloatInMap(retrievalNode, "similarity_threshold", cfg.Retrieval.SimilarityThreshold)
 	setStringInMap(retrievalNode, "sub_index_filter", cfg.Retrieval.SubIndexFilter)
+	mqNode := ensureMap(retrievalNode, "multi_query")
+	setIntInMap(mqNode, "max_queries", cfg.Retrieval.MultiQuery.MaxQueries)
+	rerankNode := ensureMap(retrievalNode, "rerank")
+	setStringInMap(rerankNode, "provider", cfg.Retrieval.Rerank.Provider)
+	setStringInMap(rerankNode, "model", cfg.Retrieval.Rerank.Model)
+	setStringInMap(rerankNode, "base_url", cfg.Retrieval.Rerank.BaseURL)
+	setStringInMap(rerankNode, "api_key", cfg.Retrieval.Rerank.APIKey)
 	postNode := ensureMap(retrievalNode, "post_retrieve")
 	setIntInMap(postNode, "prefetch_top_k", cfg.Retrieval.PostRetrieve.PrefetchTopK)
 	setIntInMap(postNode, "max_context_chars", cfg.Retrieval.PostRetrieve.MaxContextChars)
@@ -1816,10 +2148,29 @@ func (h *ConfigHandler) MergeHitlToolWhitelistIntoConfig(add []string) error {
 func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	root := doc.Content[0]
 	hitlNode := ensureMap(root, "hitl")
+	auditModelNode := ensureMap(hitlNode, "audit_model")
+	setStringInMap(auditModelNode, "provider", cfg.AuditModel.Provider)
+	setStringInMap(auditModelNode, "base_url", cfg.AuditModel.BaseURL)
+	setStringInMap(auditModelNode, "api_key", cfg.AuditModel.APIKey)
+	setStringInMap(auditModelNode, "model", cfg.AuditModel.Model)
 	// flow 样式 [a, b, c] 单行展示，工具多时比块序列省行数
 	setFlowStringSliceInMap(hitlNode, "tool_whitelist", cfg.ToolWhitelist)
+	setStringInMap(hitlNode, "default_reviewer", cfg.EffectiveDefaultReviewer())
+	setIntInMap(hitlNode, "retention_days", cfg.RetentionDaysEffective())
 	setStringInMap(hitlNode, "audit_agent_prompt", cfg.AuditAgentPrompt)
 	setStringInMap(hitlNode, "audit_agent_prompt_review_edit", cfg.AuditAgentPromptReviewEdit)
+}
+
+// UpdateHitlDefaultReviewer 更新全局默认审批方并写入 config.yaml。
+func (h *ConfigHandler) UpdateHitlDefaultReviewer(reviewer string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.Hitl.DefaultReviewer = config.HitlConfig{DefaultReviewer: reviewer}.EffectiveDefaultReviewer()
+	if err := h.saveConfig(); err != nil {
+		return err
+	}
+	h.logger.Info("HITL 全局默认审批方已写入配置文件", zap.String("default_reviewer", h.config.Hitl.DefaultReviewer))
+	return nil
 }
 
 // UpdateHitlAuditAgentStrategy 更新审批/审查编辑两套审计 Agent 提示词并写入 config.yaml。
@@ -1873,6 +2224,28 @@ func updateRobotsConfig(doc *yaml.Node, cfg config.RobotsConfig) {
 	setStringInMap(larkNode, "app_secret", cfg.Lark.AppSecret)
 	setStringInMap(larkNode, "verify_token", cfg.Lark.VerifyToken)
 	setBoolInMap(larkNode, "allow_chat_id_fallback", cfg.Lark.AllowChatIDFallback)
+
+	telegramNode := ensureMap(robotsNode, "telegram")
+	setBoolInMap(telegramNode, "enabled", cfg.Telegram.Enabled)
+	setStringInMap(telegramNode, "bot_token", cfg.Telegram.BotToken)
+	setStringInMap(telegramNode, "bot_username", cfg.Telegram.BotUsername)
+	setBoolInMap(telegramNode, "allow_group_messages", cfg.Telegram.AllowGroupMessages)
+
+	slackNode := ensureMap(robotsNode, "slack")
+	setBoolInMap(slackNode, "enabled", cfg.Slack.Enabled)
+	setStringInMap(slackNode, "bot_token", cfg.Slack.BotToken)
+	setStringInMap(slackNode, "app_token", cfg.Slack.AppToken)
+
+	discordNode := ensureMap(robotsNode, "discord")
+	setBoolInMap(discordNode, "enabled", cfg.Discord.Enabled)
+	setStringInMap(discordNode, "bot_token", cfg.Discord.BotToken)
+	setBoolInMap(discordNode, "allow_guild_messages", cfg.Discord.AllowGuildMessages)
+
+	qqNode := ensureMap(robotsNode, "qq")
+	setBoolInMap(qqNode, "enabled", cfg.QQ.Enabled)
+	setStringInMap(qqNode, "app_id", cfg.QQ.AppID)
+	setStringInMap(qqNode, "client_secret", cfg.QQ.ClientSecret)
+	setBoolInMap(qqNode, "sandbox", cfg.QQ.Sandbox)
 }
 
 func updateMultiAgentConfig(doc *yaml.Node, cfg config.MultiAgentConfig) {
@@ -1883,6 +2256,11 @@ func updateMultiAgentConfig(doc *yaml.Node, cfg config.MultiAgentConfig) {
 	setBoolInMap(maNode, "batch_use_multi_agent", cfg.BatchUseMultiAgent)
 	setIntInMap(maNode, "plan_execute_loop_max_iterations", cfg.PlanExecuteLoopMaxIterations)
 	mwNode := ensureMap(maNode, "eino_middleware")
+	setIntInMap(mwNode, "summarization_user_intent_ledger_max_runes", cfg.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective())
+	setIntInMap(mwNode, "summarization_user_intent_ledger_entry_max_runes", cfg.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunesEffective())
+	setIntInMap(mwNode, "latest_user_message_max_runes", cfg.EinoMiddleware.LatestUserMessageMaxRunesEffective())
+	setIntInMap(mwNode, "latest_user_message_head_runes", cfg.EinoMiddleware.LatestUserMessageHeadRunesEffective())
+	setIntInMap(mwNode, "latest_user_message_tail_runes", cfg.EinoMiddleware.LatestUserMessageTailRunesEffective())
 	setFlowStringSliceInMap(mwNode, "tool_search_always_visible_tools", dedupeToolNameList(cfg.EinoMiddleware.ToolSearchAlwaysVisibleTools))
 }
 
@@ -1971,6 +2349,18 @@ func setStringInMap(mapNode *yaml.Node, key, value string) {
 	valueNode.Tag = "!!str"
 	valueNode.Style = 0
 	valueNode.Value = value
+}
+
+func removeKeyFromMap(mapNode *yaml.Node, key string) {
+	if mapNode == nil || mapNode.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(mapNode.Content); i += 2 {
+		if mapNode.Content[i].Value == key {
+			mapNode.Content = append(mapNode.Content[:i], mapNode.Content[i+2:]...)
+			return
+		}
+	}
 }
 
 func setStringSliceInMap(mapNode *yaml.Node, key string, values []string) {

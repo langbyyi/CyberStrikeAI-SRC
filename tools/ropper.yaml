@@ -55,7 +55,9 @@ parameters:
       额外的ropper参数。用于传递未在参数列表中定义的ropper选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - --search 'pop rdi'（搜索指令）
+      - --search --badbytes 00（过滤坏字节）
+      - --file ./bin（指定文件）
 
       **注意事项：**
       - 多个参数用空格分隔

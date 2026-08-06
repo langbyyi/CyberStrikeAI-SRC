@@ -45,20 +45,22 @@ func validC2TextIDForDelete(id string) bool {
 
 // C2Listener 监听器实体
 type C2Listener struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Type          string    `json:"type"`           // tcp_reverse|http_beacon|https_beacon|websocket|dns
-	BindHost      string    `json:"bindHost"`       // 默认 127.0.0.1
-	BindPort      int       `json:"bindPort"`       // 1-65535
-	ProfileID     string    `json:"profileId"`      // 可空：关联 c2_profiles.id
-	EncryptionKey string    `json:"-"`              // base64(AES-256)，前端不返回
-	ImplantToken  string    `json:"-"`              // beacon 携带的鉴权 token，前端不返回
-	Status        string    `json:"status"`         // stopped|running|error
-	ConfigJSON    string    `json:"configJson"`     // TLS 证书路径 / URI 模式 / 上限并发 等
-	Remark        string    `json:"remark"`
-	CreatedAt     time.Time `json:"createdAt"`
+	ID            string     `json:"id"`
+	ProjectID     string     `json:"project_id,omitempty"`
+	Name          string     `json:"name"`
+	Type          string     `json:"type"`       // tcp_reverse|http_beacon|https_beacon|websocket|dns
+	BindHost      string     `json:"bindHost"`   // 默认 127.0.0.1
+	BindPort      int        `json:"bindPort"`   // 1-65535
+	ProfileID     string     `json:"profileId"`  // 可空：关联 c2_profiles.id
+	EncryptionKey string     `json:"-"`          // base64(AES-256)，前端不返回
+	ImplantToken  string     `json:"-"`          // beacon 携带的鉴权 token，前端不返回
+	Status        string     `json:"status"`     // stopped|running|error
+	ConfigJSON    string     `json:"configJson"` // TLS 证书路径 / URI 模式 / 上限并发 等
+	Remark        string     `json:"remark"`
+	OwnerUserID   string     `json:"ownerUserId,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
 	StartedAt     *time.Time `json:"startedAt,omitempty"`
-	LastError     string    `json:"lastError,omitempty"`
+	LastError     string     `json:"lastError,omitempty"`
 }
 
 // C2Session 已上线会话
@@ -132,17 +134,17 @@ type C2Event struct {
 
 // C2Profile Malleable Profile
 type C2Profile struct {
-	ID                    string                 `json:"id"`
-	Name                  string                 `json:"name"`
-	UserAgent             string                 `json:"userAgent"`
-	URIs                  []string               `json:"uris"`
-	RequestHeaders        map[string]string      `json:"requestHeaders,omitempty"`
-	ResponseHeaders       map[string]string      `json:"responseHeaders,omitempty"`
-	BodyTemplate          string                 `json:"bodyTemplate"`
-	JitterMinMS           int                    `json:"jitterMinMs"`
-	JitterMaxMS           int                    `json:"jitterMaxMs"`
-	Extra                 map[string]interface{} `json:"extra,omitempty"`
-	CreatedAt             time.Time              `json:"createdAt"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	UserAgent       string                 `json:"userAgent"`
+	URIs            []string               `json:"uris"`
+	RequestHeaders  map[string]string      `json:"requestHeaders,omitempty"`
+	ResponseHeaders map[string]string      `json:"responseHeaders,omitempty"`
+	BodyTemplate    string                 `json:"bodyTemplate"`
+	JitterMinMS     int                    `json:"jitterMinMs"`
+	JitterMaxMS     int                    `json:"jitterMaxMs"`
+	Extra           map[string]interface{} `json:"extra,omitempty"`
+	CreatedAt       time.Time              `json:"createdAt"`
 }
 
 // ----------------------------------------------------------------------------
@@ -164,13 +166,13 @@ func (db *DB) CreateC2Listener(l *C2Listener) error {
 		l.ConfigJSON = "{}"
 	}
 	query := `
-		INSERT INTO c2_listeners (id, name, type, bind_host, bind_port, profile_id, encryption_key,
-			implant_token, status, config_json, remark, created_at, started_at, last_error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO c2_listeners (id, project_id, name, type, bind_host, bind_port, profile_id, encryption_key,
+			implant_token, status, config_json, remark, owner_user_id, created_at, started_at, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := db.Exec(query,
-		l.ID, l.Name, l.Type, l.BindHost, l.BindPort, l.ProfileID, l.EncryptionKey,
-		l.ImplantToken, l.Status, l.ConfigJSON, l.Remark, l.CreatedAt, l.StartedAt, l.LastError,
+		l.ID, strings.TrimSpace(l.ProjectID), l.Name, l.Type, l.BindHost, l.BindPort, l.ProfileID, l.EncryptionKey,
+		l.ImplantToken, l.Status, l.ConfigJSON, l.Remark, l.OwnerUserID, l.CreatedAt, l.StartedAt, l.LastError,
 	)
 	if err != nil {
 		db.logger.Error("创建 C2 监听器失败", zap.Error(err), zap.String("id", l.ID))
@@ -189,13 +191,13 @@ func (db *DB) UpdateC2Listener(l *C2Listener) error {
 	}
 	query := `
 		UPDATE c2_listeners SET
-			name = ?, type = ?, bind_host = ?, bind_port = ?, profile_id = ?, encryption_key = ?,
-			implant_token = ?, status = ?, config_json = ?, remark = ?, started_at = ?, last_error = ?
+			project_id = ?, name = ?, type = ?, bind_host = ?, bind_port = ?, profile_id = ?, encryption_key = ?,
+			implant_token = ?, status = ?, config_json = ?, remark = ?, owner_user_id = ?, started_at = ?, last_error = ?
 		WHERE id = ?
 	`
 	res, err := db.Exec(query,
-		l.Name, l.Type, l.BindHost, l.BindPort, l.ProfileID, l.EncryptionKey,
-		l.ImplantToken, l.Status, l.ConfigJSON, l.Remark, l.StartedAt, l.LastError, l.ID,
+		strings.TrimSpace(l.ProjectID), l.Name, l.Type, l.BindHost, l.BindPort, l.ProfileID, l.EncryptionKey,
+		l.ImplantToken, l.Status, l.ConfigJSON, l.Remark, l.OwnerUserID, l.StartedAt, l.LastError, l.ID,
 	)
 	if err != nil {
 		db.logger.Error("更新 C2 监听器失败", zap.Error(err), zap.String("id", l.ID))
@@ -228,19 +230,19 @@ func (db *DB) SetC2ListenerStatus(id, status, lastError string, startedAt *time.
 // GetC2Listener 单条查询
 func (db *DB) GetC2Listener(id string) (*C2Listener, error) {
 	query := `
-		SELECT id, name, type, bind_host, bind_port, COALESCE(profile_id, ''),
+		SELECT id, COALESCE(project_id, ''), name, type, bind_host, bind_port, COALESCE(profile_id, ''),
 			COALESCE(encryption_key, ''), COALESCE(implant_token, ''), status,
 			COALESCE(config_json, '{}'), COALESCE(remark, ''),
-			created_at, started_at, COALESCE(last_error, '')
+			COALESCE(owner_user_id, ''), created_at, started_at, COALESCE(last_error, '')
 		FROM c2_listeners WHERE id = ?
 	`
 	var l C2Listener
 	var startedAt sql.NullTime
 	err := db.QueryRow(query, id).Scan(
-		&l.ID, &l.Name, &l.Type, &l.BindHost, &l.BindPort, &l.ProfileID,
+		&l.ID, &l.ProjectID, &l.Name, &l.Type, &l.BindHost, &l.BindPort, &l.ProfileID,
 		&l.EncryptionKey, &l.ImplantToken, &l.Status,
 		&l.ConfigJSON, &l.Remark,
-		&l.CreatedAt, &startedAt, &l.LastError,
+		&l.OwnerUserID, &l.CreatedAt, &startedAt, &l.LastError,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -258,10 +260,10 @@ func (db *DB) GetC2Listener(id string) (*C2Listener, error) {
 // ListC2Listeners 全量列表，按创建时间倒序
 func (db *DB) ListC2Listeners() ([]*C2Listener, error) {
 	query := `
-		SELECT id, name, type, bind_host, bind_port, COALESCE(profile_id, ''),
+		SELECT id, COALESCE(project_id, ''), name, type, bind_host, bind_port, COALESCE(profile_id, ''),
 			COALESCE(encryption_key, ''), COALESCE(implant_token, ''), status,
 			COALESCE(config_json, '{}'), COALESCE(remark, ''),
-			created_at, started_at, COALESCE(last_error, '')
+			COALESCE(owner_user_id, ''), created_at, started_at, COALESCE(last_error, '')
 		FROM c2_listeners ORDER BY created_at DESC
 	`
 	rows, err := db.Query(query)
@@ -274,9 +276,56 @@ func (db *DB) ListC2Listeners() ([]*C2Listener, error) {
 		var l C2Listener
 		var startedAt sql.NullTime
 		if err := rows.Scan(
-			&l.ID, &l.Name, &l.Type, &l.BindHost, &l.BindPort, &l.ProfileID,
+			&l.ID, &l.ProjectID, &l.Name, &l.Type, &l.BindHost, &l.BindPort, &l.ProfileID,
 			&l.EncryptionKey, &l.ImplantToken, &l.Status,
 			&l.ConfigJSON, &l.Remark,
+			&l.OwnerUserID, &l.CreatedAt, &startedAt, &l.LastError,
+		); err != nil {
+			db.logger.Warn("扫描 c2_listeners 行失败", zap.Error(err))
+			continue
+		}
+		if startedAt.Valid {
+			t := startedAt.Time
+			l.StartedAt = &t
+		}
+		list = append(list, &l)
+	}
+	return list, rows.Err()
+}
+
+// ListC2ListenersForAccess lists listeners visible to the resolved RBAC scope.
+func (db *DB) ListC2ListenersForAccess(access RBACListAccess, projectID string) ([]*C2Listener, error) {
+	conditions := []string{"1=1"}
+	args := []interface{}{}
+	if projectID = strings.TrimSpace(projectID); projectID == ProjectFilterUnbound {
+		conditions = append(conditions, "COALESCE(project_id, '') = ''")
+	} else if projectID != "" {
+		conditions = append(conditions, "COALESCE(project_id, '') = ?")
+		args = append(args, projectID)
+	}
+	appendC2ListenerAccessFilter(&conditions, &args, access)
+	query := `
+		SELECT id, COALESCE(project_id, ''), name, type, bind_host, bind_port, COALESCE(profile_id, ''),
+			COALESCE(encryption_key, ''), COALESCE(implant_token, ''), status,
+			COALESCE(config_json, '{}'), COALESCE(remark, ''),
+			COALESCE(owner_user_id, ''), created_at, started_at, COALESCE(last_error, '')
+		FROM c2_listeners
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY created_at DESC
+	`
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*C2Listener
+	for rows.Next() {
+		var l C2Listener
+		var startedAt sql.NullTime
+		if err := rows.Scan(
+			&l.ID, &l.ProjectID, &l.Name, &l.Type, &l.BindHost, &l.BindPort, &l.ProfileID,
+			&l.EncryptionKey, &l.ImplantToken, &l.Status,
+			&l.ConfigJSON, &l.Remark, &l.OwnerUserID,
 			&l.CreatedAt, &startedAt, &l.LastError,
 		); err != nil {
 			db.logger.Warn("扫描 c2_listeners 行失败", zap.Error(err))
@@ -289,6 +338,26 @@ func (db *DB) ListC2Listeners() ([]*C2Listener, error) {
 		list = append(list, &l)
 	}
 	return list, rows.Err()
+}
+
+func appendC2ListenerAccessFilter(conditions *[]string, args *[]interface{}, access RBACListAccess) {
+	if access.Scope == RBACScopeAll {
+		return
+	}
+	if access.UserID == "" {
+		*conditions = append(*conditions, "1=0")
+		return
+	}
+	clauses := []string{"owner_user_id = ?"}
+	*args = append(*args, access.UserID)
+	if access.Scope == RBACScopeAssigned {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM rbac_resource_assignments ra
+			WHERE ra.user_id = ? AND ra.resource_type = 'c2_listener' AND ra.resource_id = c2_listeners.id
+		)`)
+		*args = append(*args, access.UserID)
+	}
+	*conditions = append(*conditions, "("+strings.Join(clauses, " OR ")+")")
 }
 
 // DeleteC2Listener 级联删除（会话/任务/文件/事件随之消失）
@@ -473,6 +542,7 @@ func (db *DB) queryC2SessionWhere(whereClause string, args ...interface{}) (*C2S
 // ListC2SessionsFilter 列表过滤参数
 type ListC2SessionsFilter struct {
 	ListenerID string
+	ProjectID  string
 	Status     string // active|sleeping|dead|killed；空表示全部
 	OS         string
 	Search     string // 模糊匹配 hostname/username/internal_ip
@@ -487,6 +557,18 @@ func (db *DB) ListC2Sessions(filter ListC2SessionsFilter) ([]*C2Session, error) 
 	if filter.ListenerID != "" {
 		conditions = append(conditions, "listener_id = ?")
 		args = append(args, filter.ListenerID)
+	}
+	if strings.TrimSpace(filter.ProjectID) == ProjectFilterUnbound {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_listeners l
+			WHERE l.id = c2_sessions.listener_id AND COALESCE(l.project_id, '') = ''
+		)`)
+	} else if strings.TrimSpace(filter.ProjectID) != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_listeners l
+			WHERE l.id = c2_sessions.listener_id AND COALESCE(l.project_id, '') = ?
+		)`)
+		args = append(args, strings.TrimSpace(filter.ProjectID))
 	}
 	if filter.Status != "" {
 		conditions = append(conditions, "status = ?")
@@ -550,6 +632,121 @@ func (db *DB) ListC2Sessions(filter ListC2SessionsFilter) ([]*C2Session, error) 
 	return list, rows.Err()
 }
 
+// ListC2SessionsForAccess lists sessions whose parent listener is visible.
+func (db *DB) ListC2SessionsForAccess(filter ListC2SessionsFilter, access RBACListAccess) ([]*C2Session, error) {
+	conditions, args := buildC2SessionsWhere(filter)
+	appendC2SessionAccessFilter(&conditions, &args, access)
+	query := `
+		SELECT id, listener_id, implant_uuid, COALESCE(hostname,''), COALESCE(username,''),
+			COALESCE(os,''), COALESCE(arch,''), COALESCE(pid, 0), COALESCE(process_name,''),
+			COALESCE(is_admin, 0), COALESCE(internal_ip,''), COALESCE(external_ip,''),
+			COALESCE(user_agent,''), COALESCE(sleep_seconds, 5), COALESCE(jitter_percent, 0),
+			status, first_seen_at, last_check_in, COALESCE(metadata_json, '{}'),
+			COALESCE(note, '')
+		FROM c2_sessions
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY last_check_in DESC
+	`
+	if filter.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", filter.Limit)
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return db.scanC2SessionRows(rows)
+}
+
+func buildC2SessionsWhere(filter ListC2SessionsFilter) ([]string, []interface{}) {
+	conditions := []string{"1=1"}
+	args := []interface{}{}
+	if filter.ListenerID != "" {
+		conditions = append(conditions, "listener_id = ?")
+		args = append(args, filter.ListenerID)
+	}
+	if strings.TrimSpace(filter.ProjectID) == ProjectFilterUnbound {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_listeners l
+			WHERE l.id = c2_sessions.listener_id AND COALESCE(l.project_id, '') = ''
+		)`)
+	} else if strings.TrimSpace(filter.ProjectID) != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_listeners l
+			WHERE l.id = c2_sessions.listener_id AND COALESCE(l.project_id, '') = ?
+		)`)
+		args = append(args, strings.TrimSpace(filter.ProjectID))
+	}
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.OS != "" {
+		conditions = append(conditions, "os = ?")
+		args = append(args, filter.OS)
+	}
+	if filter.Search != "" {
+		conditions = append(conditions, "(hostname LIKE ? OR username LIKE ? OR internal_ip LIKE ?)")
+		kw := "%" + filter.Search + "%"
+		args = append(args, kw, kw, kw)
+	}
+	if filter.Suspicious {
+		conditions = append(conditions, `status = 'dead' AND (
+			hostname LIKE 'tcp_%' OR LOWER(COALESCE(username,'')) = 'unknown' OR COALESCE(pid, 0) = 0
+		)`)
+	}
+	return conditions, args
+}
+
+func (db *DB) scanC2SessionRows(rows *sql.Rows) ([]*C2Session, error) {
+	var list []*C2Session
+	for rows.Next() {
+		var s C2Session
+		var isAdminInt int
+		var metadataJSON string
+		if err := rows.Scan(
+			&s.ID, &s.ListenerID, &s.ImplantUUID, &s.Hostname, &s.Username,
+			&s.OS, &s.Arch, &s.PID, &s.ProcessName,
+			&isAdminInt, &s.InternalIP, &s.ExternalIP,
+			&s.UserAgent, &s.SleepSeconds, &s.JitterPercent,
+			&s.Status, &s.FirstSeenAt, &s.LastCheckIn, &metadataJSON,
+			&s.Note,
+		); err != nil {
+			db.logger.Warn("扫描 c2_sessions 行失败", zap.Error(err))
+			continue
+		}
+		s.IsAdmin = isAdminInt != 0
+		if metadataJSON != "" && metadataJSON != "{}" {
+			_ = json.Unmarshal([]byte(metadataJSON), &s.Metadata)
+		}
+		list = append(list, &s)
+	}
+	return list, rows.Err()
+}
+
+func appendC2SessionAccessFilter(conditions *[]string, args *[]interface{}, access RBACListAccess) {
+	if access.Scope == RBACScopeAll {
+		return
+	}
+	if access.UserID == "" {
+		*conditions = append(*conditions, "1=0")
+		return
+	}
+	clauses := []string{`EXISTS (
+		SELECT 1 FROM c2_listeners
+		WHERE c2_listeners.id = c2_sessions.listener_id AND c2_listeners.owner_user_id = ?
+	)`}
+	*args = append(*args, access.UserID)
+	if access.Scope == RBACScopeAssigned {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM rbac_resource_assignments ra
+			WHERE ra.user_id = ? AND ra.resource_type = 'c2_listener' AND ra.resource_id = c2_sessions.listener_id
+		)`)
+		*args = append(*args, access.UserID)
+	}
+	*conditions = append(*conditions, "("+strings.Join(clauses, " OR ")+")")
+}
+
 // DeleteC2Session 级联删除其 tasks/files
 func (db *DB) DeleteC2Session(id string) error {
 	res, err := db.Exec(`DELETE FROM c2_sessions WHERE id = ?`, id)
@@ -594,6 +791,29 @@ func (db *DB) DeleteC2SessionsByIDs(ids []string) (int64, error) {
 		args[i] = clean[i]
 	}
 	query := `DELETE FROM c2_sessions WHERE id IN (` + placeholders + `)`
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (db *DB) DeleteC2SessionsByIDsForAccess(ids []string, access RBACListAccess) (int64, error) {
+	if access.Scope == RBACScopeAll {
+		return db.DeleteC2SessionsByIDs(ids)
+	}
+	clean := cleanC2IDs(ids)
+	if len(clean) == 0 {
+		return 0, ErrNoValidC2SessionIDs
+	}
+	placeholders := strings.Repeat("?,", len(clean)-1) + "?"
+	args := make([]interface{}, 0, len(clean)+2)
+	for _, id := range clean {
+		args = append(args, id)
+	}
+	conditions := []string{"id IN (" + placeholders + ")"}
+	appendC2SessionAccessFilter(&conditions, &args, access)
+	query := `DELETE FROM c2_sessions WHERE ` + strings.Join(conditions, " AND ")
 	res, err := db.Exec(query, args...)
 	if err != nil {
 		return 0, err
@@ -759,7 +979,10 @@ func (db *DB) GetC2Task(id string) (*C2Task, error) {
 // ListC2TasksFilter 任务过滤
 type ListC2TasksFilter struct {
 	SessionID string
+	ProjectID string
 	Status    string
+	TaskType  string
+	Since     *time.Time
 	Limit     int
 	Offset    int
 }
@@ -771,10 +994,65 @@ func buildC2TasksWhere(filter ListC2TasksFilter) (where string, args []interface
 		conditions = append(conditions, "session_id = ?")
 		args = append(args, filter.SessionID)
 	}
+	if strings.TrimSpace(filter.ProjectID) == ProjectFilterUnbound {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_sessions s
+			JOIN c2_listeners l ON l.id = s.listener_id
+			WHERE s.id = c2_tasks.session_id AND COALESCE(l.project_id, '') = ''
+		)`)
+	} else if strings.TrimSpace(filter.ProjectID) != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM c2_sessions s
+			JOIN c2_listeners l ON l.id = s.listener_id
+			WHERE s.id = c2_tasks.session_id AND COALESCE(l.project_id, '') = ?
+		)`)
+		args = append(args, strings.TrimSpace(filter.ProjectID))
+	}
 	if filter.Status != "" {
 		conditions = append(conditions, "status = ?")
 		args = append(args, filter.Status)
 	}
+	if strings.TrimSpace(filter.TaskType) != "" {
+		conditions = append(conditions, "task_type = ?")
+		args = append(args, strings.TrimSpace(filter.TaskType))
+	}
+	if filter.Since != nil {
+		conditions = append(conditions, sqliteEpochGE("created_at", ">="))
+		args = append(args, formatSQLiteUTC(*filter.Since))
+	}
+	return strings.Join(conditions, " AND "), args
+}
+
+func appendC2TaskAccessFilter(conditions *[]string, args *[]interface{}, access RBACListAccess) {
+	if access.Scope == RBACScopeAll {
+		return
+	}
+	if access.UserID == "" {
+		*conditions = append(*conditions, "1=0")
+		return
+	}
+	clauses := []string{`EXISTS (
+		SELECT 1 FROM c2_sessions s
+		JOIN c2_listeners l ON l.id = s.listener_id
+		WHERE s.id = c2_tasks.session_id AND l.owner_user_id = ?
+	)`}
+	*args = append(*args, access.UserID)
+	if access.Scope == RBACScopeAssigned {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM c2_sessions s
+			JOIN rbac_resource_assignments ra ON ra.resource_id = s.listener_id
+			WHERE s.id = c2_tasks.session_id
+				AND ra.user_id = ? AND ra.resource_type = 'c2_listener'
+		)`)
+		*args = append(*args, access.UserID)
+	}
+	*conditions = append(*conditions, "("+strings.Join(clauses, " OR ")+")")
+}
+
+func buildC2TasksWhereForAccess(filter ListC2TasksFilter, access RBACListAccess) (string, []interface{}) {
+	where, args := buildC2TasksWhere(filter)
+	conditions := []string{where}
+	appendC2TaskAccessFilter(&conditions, &args, access)
 	return strings.Join(conditions, " AND "), args
 }
 
@@ -787,6 +1065,51 @@ func (db *DB) CountC2Tasks(filter ListC2TasksFilter) (int64, error) {
 	return n, err
 }
 
+func (db *DB) CountC2TasksForAccess(filter ListC2TasksFilter, access RBACListAccess) (int64, error) {
+	where, args := buildC2TasksWhereForAccess(filter, access)
+	query := `SELECT COUNT(*) FROM c2_tasks WHERE ` + where
+	var n int64
+	err := db.QueryRow(query, args...).Scan(&n)
+	return n, err
+}
+
+// CountC2TasksByStatusForAccess 与 ListC2Tasks 相同过滤条件下按状态统计
+func (db *DB) CountC2TasksByStatusForAccess(filter ListC2TasksFilter, access RBACListAccess) (map[string]int64, error) {
+	where, args := buildC2TasksWhereForAccess(filter, access)
+	query := `SELECT status, COUNT(*) FROM c2_tasks WHERE ` + where + ` GROUP BY status`
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int64{
+		"queued":    0,
+		"sent":      0,
+		"running":   0,
+		"success":   0,
+		"failed":    0,
+		"cancelled": 0,
+		"pending":   0,
+	}
+	var legacyPending int64
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			continue
+		}
+		if status == "pending" {
+			legacyPending = n
+			continue
+		}
+		if _, ok := counts[status]; ok {
+			counts[status] = n
+		}
+	}
+	counts["pending"] = counts["queued"] + counts["sent"] + counts["running"] + legacyPending
+	return counts, rows.Err()
+}
+
 // CountC2TasksQueuedOrPending 统计 queued/pending 状态任务数（仪表盘「待审任务」）
 func (db *DB) CountC2TasksQueuedOrPending(sessionID string) (int64, error) {
 	conditions := []string{"status IN ('queued', 'pending')"}
@@ -796,6 +1119,15 @@ func (db *DB) CountC2TasksQueuedOrPending(sessionID string) (int64, error) {
 		args = append(args, sessionID)
 	}
 	query := `SELECT COUNT(*) FROM c2_tasks WHERE ` + strings.Join(conditions, " AND ")
+	var n int64
+	err := db.QueryRow(query, args...).Scan(&n)
+	return n, err
+}
+
+func (db *DB) CountC2TasksQueuedOrPendingForAccess(sessionID, projectID string, access RBACListAccess) (int64, error) {
+	filter := ListC2TasksFilter{SessionID: sessionID, ProjectID: projectID}
+	where, args := buildC2TasksWhereForAccess(filter, access)
+	query := `SELECT COUNT(*) FROM c2_tasks WHERE status IN ('queued', 'pending') AND ` + where
 	var n int64
 	err := db.QueryRow(query, args...).Scan(&n)
 	return n, err
@@ -831,6 +1163,74 @@ func (db *DB) ListC2Tasks(filter ListC2TasksFilter) ([]*C2Task, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	var list []*C2Task
+	for rows.Next() {
+		var t C2Task
+		var payloadJSON string
+		var sentAt, startedAt, completedAt sql.NullTime
+		if err := rows.Scan(
+			&t.ID, &t.SessionID, &t.TaskType, &payloadJSON,
+			&t.Status, &t.ResultText, &t.ResultBlobPath,
+			&t.Error, &t.Source,
+			&t.ConversationID, &t.ApprovalStatus,
+			&t.CreatedAt, &sentAt, &startedAt, &completedAt, &t.DurationMS,
+		); err != nil {
+			db.logger.Warn("扫描 c2_tasks 行失败", zap.Error(err))
+			continue
+		}
+		if payloadJSON != "" && payloadJSON != "{}" {
+			_ = json.Unmarshal([]byte(payloadJSON), &t.Payload)
+		}
+		if sentAt.Valid {
+			x := sentAt.Time
+			t.SentAt = &x
+		}
+		if startedAt.Valid {
+			x := startedAt.Time
+			t.StartedAt = &x
+		}
+		if completedAt.Valid {
+			x := completedAt.Time
+			t.CompletedAt = &x
+		}
+		list = append(list, &t)
+	}
+	return list, rows.Err()
+}
+
+func (db *DB) ListC2TasksForAccess(filter ListC2TasksFilter, access RBACListAccess) ([]*C2Task, error) {
+	where, args := buildC2TasksWhereForAccess(filter, access)
+	query := `
+		SELECT id, session_id, task_type, COALESCE(payload_json, '{}'),
+			status, COALESCE(result_text, ''), COALESCE(result_blob_path, ''),
+			COALESCE(error, ''), COALESCE(source, 'manual'),
+			COALESCE(conversation_id, ''), COALESCE(approval_status, ''),
+			created_at, sent_at, started_at, completed_at, COALESCE(duration_ms, 0)
+		FROM c2_tasks
+		WHERE ` + where + `
+		ORDER BY created_at DESC
+	`
+	limit := filter.Limit
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 {
+		if limit > 1000 {
+			limit = 1000
+		}
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return db.scanC2TaskRows(rows)
+}
+
+func (db *DB) scanC2TaskRows(rows *sql.Rows) ([]*C2Task, error) {
 	var list []*C2Task
 	for rows.Next() {
 		var t C2Task
@@ -978,6 +1378,29 @@ func (db *DB) DeleteC2TasksByIDs(ids []string) (int64, error) {
 	return res.RowsAffected()
 }
 
+func (db *DB) DeleteC2TasksByIDsForAccess(ids []string, access RBACListAccess) (int64, error) {
+	if access.Scope == RBACScopeAll {
+		return db.DeleteC2TasksByIDs(ids)
+	}
+	clean := cleanC2IDs(ids)
+	if len(clean) == 0 {
+		return 0, ErrNoValidC2TaskIDs
+	}
+	placeholders := strings.Repeat("?,", len(clean)-1) + "?"
+	args := make([]interface{}, 0, len(clean)+2)
+	for _, id := range clean {
+		args = append(args, id)
+	}
+	conditions := []string{"id IN (" + placeholders + ")"}
+	appendC2TaskAccessFilter(&conditions, &args, access)
+	query := `DELETE FROM c2_tasks WHERE ` + strings.Join(conditions, " AND ")
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ----------------------------------------------------------------------------
 // CRUD：C2 文件
 // ----------------------------------------------------------------------------
@@ -1024,6 +1447,27 @@ func (db *DB) ListC2FilesBySession(sessionID string) ([]*C2File, error) {
 	return list, rows.Err()
 }
 
+func cleanC2IDs(ids []string) []string {
+	const maxBatch = 500
+	if len(ids) > maxBatch {
+		ids = ids[:maxBatch]
+	}
+	clean := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if !validC2TextIDForDelete(id) {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		clean = append(clean, id)
+	}
+	return clean
+}
+
 // ----------------------------------------------------------------------------
 // CRUD：C2 事件审计
 // ----------------------------------------------------------------------------
@@ -1037,7 +1481,9 @@ func (db *DB) AppendC2Event(e *C2Event) error {
 		return errors.New("event id is required")
 	}
 	if e.CreatedAt.IsZero() {
-		e.CreatedAt = time.Now()
+		e.CreatedAt = time.Now().UTC()
+	} else {
+		e.CreatedAt = e.CreatedAt.UTC()
 	}
 	if strings.TrimSpace(e.Level) == "" {
 		e.Level = "info"
@@ -1052,7 +1498,7 @@ func (db *DB) AppendC2Event(e *C2Event) error {
 		INSERT INTO c2_events (id, level, category, session_id, task_id, message, data_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	_, err := db.Exec(query, e.ID, e.Level, e.Category, e.SessionID, e.TaskID, e.Message, dataJSON, e.CreatedAt)
+	_, err := db.Exec(query, e.ID, e.Level, e.Category, e.SessionID, e.TaskID, e.Message, dataJSON, formatSQLiteUTC(e.CreatedAt))
 	return err
 }
 
@@ -1060,6 +1506,7 @@ func (db *DB) AppendC2Event(e *C2Event) error {
 type ListC2EventsFilter struct {
 	Level     string
 	Category  string
+	ProjectID string
 	SessionID string
 	TaskID    string
 	Since     *time.Time
@@ -1078,6 +1525,49 @@ func buildC2EventsWhere(filter ListC2EventsFilter) (where string, args []interfa
 		conditions = append(conditions, "category = ?")
 		args = append(args, filter.Category)
 	}
+	if strings.TrimSpace(filter.ProjectID) == ProjectFilterUnbound {
+		conditions = append(conditions, `(
+			EXISTS (
+				SELECT 1 FROM c2_sessions s
+				JOIN c2_listeners l ON l.id = s.listener_id
+				WHERE s.id = c2_events.session_id AND COALESCE(l.project_id, '') = ''
+			)
+			OR EXISTS (
+				SELECT 1 FROM c2_tasks t
+				JOIN c2_sessions s ON s.id = t.session_id
+				JOIN c2_listeners l ON l.id = s.listener_id
+				WHERE t.id = c2_events.task_id AND COALESCE(l.project_id, '') = ''
+			)
+			OR EXISTS (
+				SELECT 1 FROM c2_listeners l
+				WHERE json_valid(c2_events.data_json)
+					AND l.id = json_extract(c2_events.data_json, '$.listener_id')
+					AND COALESCE(l.project_id, '') = ''
+			)
+		)`)
+	} else if strings.TrimSpace(filter.ProjectID) != "" {
+		conditions = append(conditions, `(
+			EXISTS (
+				SELECT 1 FROM c2_sessions s
+				JOIN c2_listeners l ON l.id = s.listener_id
+				WHERE s.id = c2_events.session_id AND COALESCE(l.project_id, '') = ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM c2_tasks t
+				JOIN c2_sessions s ON s.id = t.session_id
+				JOIN c2_listeners l ON l.id = s.listener_id
+				WHERE t.id = c2_events.task_id AND COALESCE(l.project_id, '') = ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM c2_listeners l
+				WHERE json_valid(c2_events.data_json)
+					AND l.id = json_extract(c2_events.data_json, '$.listener_id')
+					AND COALESCE(l.project_id, '') = ?
+			)
+		)`)
+		pid := strings.TrimSpace(filter.ProjectID)
+		args = append(args, pid, pid, pid)
+	}
 	if filter.SessionID != "" {
 		conditions = append(conditions, "session_id = ?")
 		args = append(args, filter.SessionID)
@@ -1087,9 +1577,59 @@ func buildC2EventsWhere(filter ListC2EventsFilter) (where string, args []interfa
 		args = append(args, filter.TaskID)
 	}
 	if filter.Since != nil {
-		conditions = append(conditions, "created_at >= ?")
-		args = append(args, *filter.Since)
+		conditions = append(conditions, sqliteEpochGE("created_at", ">="))
+		args = append(args, formatSQLiteUTC(*filter.Since))
 	}
+	return strings.Join(conditions, " AND "), args
+}
+
+func appendC2EventAccessFilter(conditions *[]string, args *[]interface{}, access RBACListAccess) {
+	if access.Scope == RBACScopeAll {
+		return
+	}
+	if access.UserID == "" {
+		*conditions = append(*conditions, "1=0")
+		return
+	}
+	clauses := []string{`EXISTS (
+		SELECT 1 FROM c2_sessions s
+		JOIN c2_listeners l ON l.id = s.listener_id
+		WHERE s.id = c2_events.session_id AND l.owner_user_id = ?
+	)`}
+	*args = append(*args, access.UserID)
+	if access.Scope == RBACScopeAssigned {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM c2_sessions s
+			JOIN rbac_resource_assignments ra ON ra.resource_id = s.listener_id
+			WHERE s.id = c2_events.session_id
+				AND ra.user_id = ? AND ra.resource_type = 'c2_listener'
+		)`)
+		*args = append(*args, access.UserID)
+	}
+	clauses = append(clauses, `EXISTS (
+		SELECT 1 FROM c2_tasks t
+		JOIN c2_sessions s ON s.id = t.session_id
+		JOIN c2_listeners l ON l.id = s.listener_id
+		WHERE t.id = c2_events.task_id AND l.owner_user_id = ?
+	)`)
+	*args = append(*args, access.UserID)
+	if access.Scope == RBACScopeAssigned {
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM c2_tasks t
+			JOIN c2_sessions s ON s.id = t.session_id
+			JOIN rbac_resource_assignments ra ON ra.resource_id = s.listener_id
+			WHERE t.id = c2_events.task_id
+				AND ra.user_id = ? AND ra.resource_type = 'c2_listener'
+		)`)
+		*args = append(*args, access.UserID)
+	}
+	*conditions = append(*conditions, "("+strings.Join(clauses, " OR ")+")")
+}
+
+func buildC2EventsWhereForAccess(filter ListC2EventsFilter, access RBACListAccess) (string, []interface{}) {
+	where, args := buildC2EventsWhere(filter)
+	conditions := []string{where}
+	appendC2EventAccessFilter(&conditions, &args, access)
 	return strings.Join(conditions, " AND "), args
 }
 
@@ -1100,6 +1640,41 @@ func (db *DB) CountC2Events(filter ListC2EventsFilter) (int64, error) {
 	var n int64
 	err := db.QueryRow(query, args...).Scan(&n)
 	return n, err
+}
+
+func (db *DB) CountC2EventsForAccess(filter ListC2EventsFilter, access RBACListAccess) (int64, error) {
+	where, args := buildC2EventsWhereForAccess(filter, access)
+	query := `SELECT COUNT(*) FROM c2_events WHERE ` + where
+	var n int64
+	err := db.QueryRow(query, args...).Scan(&n)
+	return n, err
+}
+
+// CountC2EventsByLevelForAccess 与 ListC2Events 相同过滤条件下按级别统计
+func (db *DB) CountC2EventsByLevelForAccess(filter ListC2EventsFilter, access RBACListAccess) (map[string]int64, error) {
+	where, args := buildC2EventsWhereForAccess(filter, access)
+	query := `SELECT level, COUNT(*) FROM c2_events WHERE ` + where + ` GROUP BY level`
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int64{
+		"info":     0,
+		"warn":     0,
+		"critical": 0,
+	}
+	for rows.Next() {
+		var level string
+		var n int64
+		if err := rows.Scan(&level, &n); err != nil {
+			continue
+		}
+		if _, ok := counts[level]; ok {
+			counts[level] = n
+		}
+	}
+	return counts, rows.Err()
 }
 
 // ListC2Events 事件查询，按创建时间倒序
@@ -1127,6 +1702,50 @@ func (db *DB) ListC2Events(filter ListC2EventsFilter) ([]*C2Event, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	var list []*C2Event
+	for rows.Next() {
+		var e C2Event
+		var dataJSON string
+		if err := rows.Scan(&e.ID, &e.Level, &e.Category, &e.SessionID, &e.TaskID,
+			&e.Message, &dataJSON, &e.CreatedAt); err != nil {
+			continue
+		}
+		if dataJSON != "" {
+			_ = json.Unmarshal([]byte(dataJSON), &e.Data)
+		}
+		list = append(list, &e)
+	}
+	return list, rows.Err()
+}
+
+func (db *DB) ListC2EventsForAccess(filter ListC2EventsFilter, access RBACListAccess) ([]*C2Event, error) {
+	where, args := buildC2EventsWhereForAccess(filter, access)
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+		SELECT id, level, category, COALESCE(session_id, ''), COALESCE(task_id, ''),
+			message, COALESCE(data_json, ''), created_at
+		FROM c2_events
+		WHERE ` + where + `
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`
+	args = append(args, limit, offset)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanC2EventRows(rows)
+}
+
+func scanC2EventRows(rows *sql.Rows) ([]*C2Event, error) {
 	var list []*C2Event
 	for rows.Next() {
 		var e C2Event
@@ -1174,6 +1793,29 @@ func (db *DB) DeleteC2EventsByIDs(ids []string) (int64, error) {
 		args[i] = clean[i]
 	}
 	query := `DELETE FROM c2_events WHERE id IN (` + placeholders + `)`
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (db *DB) DeleteC2EventsByIDsForAccess(ids []string, access RBACListAccess) (int64, error) {
+	if access.Scope == RBACScopeAll {
+		return db.DeleteC2EventsByIDs(ids)
+	}
+	clean := cleanC2IDs(ids)
+	if len(clean) == 0 {
+		return 0, ErrNoValidC2EventIDs
+	}
+	placeholders := strings.Repeat("?,", len(clean)-1) + "?"
+	args := make([]interface{}, 0, len(clean)+4)
+	for _, id := range clean {
+		args = append(args, id)
+	}
+	conditions := []string{"id IN (" + placeholders + ")"}
+	appendC2EventAccessFilter(&conditions, &args, access)
+	query := `DELETE FROM c2_events WHERE ` + strings.Join(conditions, " AND ")
 	res, err := db.Exec(query, args...)
 	if err != nil {
 		return 0, err

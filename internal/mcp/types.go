@@ -190,17 +190,24 @@ type CallToolResponse struct {
 
 // ToolExecution 工具执行记录
 type ToolExecution struct {
-	ID              string                 `json:"id"`
-	ToolName        string                 `json:"toolName"`
-	Arguments       map[string]interface{} `json:"arguments"`
-	Status          string                 `json:"status"` // pending, running, completed, failed, cancelled
-	Result          *ToolResult            `json:"result,omitempty"`
-	Error           string                 `json:"error,omitempty"`
-	StartTime       time.Time              `json:"startTime"`
-	EndTime         *time.Time             `json:"endTime,omitempty"`
-	Duration        time.Duration          `json:"duration,omitempty"`
-	ConversationID  string                 `json:"conversationId,omitempty"`
-	SemanticOutcome string                 `json:"semanticOutcome,omitempty"`
+	ID        string                 `json:"id"`
+	ToolName  string                 `json:"toolName"`
+	Arguments map[string]interface{} `json:"arguments"`
+	Status    string                 `json:"status"` // pending, running, completed, failed, cancelled
+	Result    *ToolResult            `json:"result,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+	StartTime time.Time              `json:"startTime"`
+	EndTime   *time.Time             `json:"endTime,omitempty"`
+	Duration  time.Duration          `json:"duration,omitempty"`
+	// PartialOutput is a bounded tail preview of output produced by a running tool.
+	// It is intentionally separate from Result, which remains the final canonical tool result.
+	PartialOutput          string     `json:"partialOutput,omitempty"`
+	PartialOutputBytes     int64      `json:"partialOutputBytes,omitempty"`
+	PartialOutputTruncated bool       `json:"partialOutputTruncated,omitempty"`
+	PartialOutputUpdatedAt *time.Time `json:"partialOutputUpdatedAt,omitempty"`
+	// ConversationID 仅 API 展示用（进行中的 Agent 任务），不写入 tool_executions 表。
+	ConversationID string `json:"conversationId,omitempty"`
+	OwnerUserID    string `json:"-"`
 }
 
 // ToolStats 工具统计信息

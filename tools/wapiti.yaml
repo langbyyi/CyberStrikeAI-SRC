@@ -1,0 +1,28 @@
+name: wapiti
+command: wapiti
+enabled: true
+short_description: Web 漏洞扫描器（注入/XSS/文件包含等）
+description: 'Web 应用漏洞扫描器，检测 SQL 注入、XSS、文件包含、XXE、SSRF 等。
+
+  **使用场景：** Web 应用主动漏洞扫描。
+
+
+  **安装：** `apt install wapiti` 或 `pipx install wapiti`（若不可用先安装）。'
+parameters:
+  - name: url
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 目标 URL
+  - name: module
+    type: string
+    required: false
+    flag: -m
+    format: flag
+    description: 模块，如 `-m sql,http`
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `--batch`(无交互) `-f html -o report`(输出)

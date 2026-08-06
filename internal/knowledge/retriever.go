@@ -27,15 +27,19 @@ type Retriever struct {
 
 	rerankMu sync.RWMutex
 	reranker DocumentReranker
+
+	pipeline retriever.Retriever
+	wireOpenAI *config.OpenAIConfig
 }
 
 // RetrievalConfig 检索配置
 type RetrievalConfig struct {
 	TopK                int
 	SimilarityThreshold float64
-	// SubIndexFilter 非空时仅检索 sub_indexes 包含该标签（逗号分隔之一）的行；空 sub_indexes 的旧行仍保留以兼容。
-	SubIndexFilter string
-	PostRetrieve   config.PostRetrieveConfig
+	SubIndexFilter      string
+	MultiQuery          config.MultiQueryConfig
+	Rerank              config.RerankConfig
+	PostRetrieve        config.PostRetrieveConfig
 }
 
 // NewRetriever 创建新的检索器
@@ -48,7 +52,7 @@ func NewRetriever(db *sql.DB, embedder *Embedder, config *RetrievalConfig, logge
 	}
 }
 
-// UpdateConfig 更新检索配置
+// UpdateConfig 更新检索配置并重建 Eino MultiQuery + 重排流水线。
 func (r *Retriever) UpdateConfig(cfg *RetrievalConfig) {
 	if cfg != nil {
 		r.config = cfg
@@ -57,10 +61,16 @@ func (r *Retriever) UpdateConfig(cfg *RetrievalConfig) {
 				zap.Int("top_k", cfg.TopK),
 				zap.Float64("similarity_threshold", cfg.SimilarityThreshold),
 				zap.String("sub_index_filter", cfg.SubIndexFilter),
+				zap.Int("multi_query_max", cfg.MultiQuery.MaxQueriesEffective()),
 				zap.Int("post_retrieve_prefetch_top_k", cfg.PostRetrieve.PrefetchTopK),
 				zap.Int("post_retrieve_max_context_chars", cfg.PostRetrieve.MaxContextChars),
 				zap.Int("post_retrieve_max_context_tokens", cfg.PostRetrieve.MaxContextTokens),
 			)
+		}
+	}
+	if r.wireOpenAI != nil {
+		if err := WireRetrieverPipeline(context.Background(), r, r.wireOpenAI); err != nil && r.logger != nil {
+			r.logger.Warn("检索流水线重建失败", zap.Error(err))
 		}
 	}
 }
@@ -103,7 +113,7 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// Search 搜索知识库。统一经 [VectorEinoRetriever]（Eino retriever.Retriever 边界）。
+// Search 搜索知识库（Eino MultiQuery → 向量检索 → 重排 → 后处理）。
 func (r *Retriever) Search(ctx context.Context, req *SearchRequest) ([]*RetrievalResult, error) {
 	if req == nil {
 		return nil, fmt.Errorf("请求不能为空")
@@ -113,7 +123,7 @@ func (r *Retriever) Search(ctx context.Context, req *SearchRequest) ([]*Retrieva
 		return nil, fmt.Errorf("查询不能为空")
 	}
 	opts := r.einoRetrieverOptions(req)
-	docs, err := NewVectorEinoRetriever(r).Retrieve(ctx, q, opts...)
+	docs, err := r.activeEinoRetriever().Retrieve(ctx, q, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +153,19 @@ func (r *Retriever) einoRetrieverOptions(req *SearchRequest) []retriever.Option 
 
 // EinoRetrieve 直接返回 [schema.Document]，供 Eino Graph / Chain 使用。
 func (r *Retriever) EinoRetrieve(ctx context.Context, query string, opts ...retriever.Option) ([]*schema.Document, error) {
-	return NewVectorEinoRetriever(r).Retrieve(ctx, query, opts...)
+	return r.activeEinoRetriever().Retrieve(ctx, query, opts...)
+}
+
+func (r *Retriever) activeEinoRetriever() retriever.Retriever {
+	if r != nil && r.pipeline != nil {
+		return r.pipeline
+	}
+	return NewVectorEinoRetriever(r)
+}
+
+// AsEinoRetriever 将知识库检索流水线暴露为 Eino [retriever.Retriever]。
+func (r *Retriever) AsEinoRetriever() retriever.Retriever {
+	return r.activeEinoRetriever()
 }
 
 func (r *Retriever) knowledgeEmbeddingSelectSQL(riskType, subIndexFilter string) (string, []interface{}) {
@@ -299,7 +321,14 @@ func (r *Retriever) vectorSearch(ctx context.Context, req *SearchRequest) ([]*Re
 	return results, nil
 }
 
-// AsEinoRetriever 将纯向量检索暴露为 Eino [retriever.Retriever]。
-func (r *Retriever) AsEinoRetriever() retriever.Retriever {
-	return NewVectorEinoRetriever(r)
+// RetrievalConfigFromYAML maps API/YAML retrieval settings into the knowledge package.
+func RetrievalConfigFromYAML(r config.RetrievalConfig) *RetrievalConfig {
+	return &RetrievalConfig{
+		TopK:                r.TopK,
+		SimilarityThreshold: r.SimilarityThreshold,
+		SubIndexFilter:      r.SubIndexFilter,
+		MultiQuery:          r.MultiQuery,
+		Rerank:              r.Rerank,
+		PostRetrieve:        r.PostRetrieve,
+	}
 }

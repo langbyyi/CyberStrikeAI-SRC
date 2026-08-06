@@ -1,0 +1,26 @@
+name: chisel
+command: chisel
+enabled: true
+short_description: 内网隧道/端口转发（HTTP/SSH 隧道）
+description: '内网穿透与端口转发工具，基于 TCP/HTTP 隧道。
+
+  **使用场景：** 内网横向移动、端口转发、绕过出网限制。
+
+
+  **安装：** `go install github.com/jpillora/chisel@latest` 或下载 release（若不可用先安装）。'
+parameters:
+  - name: mode
+    type: string
+    required: true
+    position: 0
+    format: positional
+    options:
+      - client
+      - server
+    description: client(客户端)/server(服务端)
+  - name: arguments
+    type: string
+    required: true
+    position: 1
+    format: positional
+    description: 模式参数，如 `client 1.2.3.4:8080 R:8000:10.0.0.1:80` 或 `server -p 8080`

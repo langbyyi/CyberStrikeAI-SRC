@@ -9,6 +9,7 @@ import (
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -67,7 +68,7 @@ func (h *ExternalMCPHandler) GetExternalMCPs(c *gin.Context) {
 		errorMsg := externalMCPStatusError(h.manager, name, status)
 
 		result[name] = ExternalMCPResponse{
-			Config:    cfg,
+			Config:    externalMCPConfigForResponse(c, cfg),
 			Status:    status,
 			ToolCount: toolCount,
 			Error:     errorMsg,
@@ -113,11 +114,31 @@ func (h *ExternalMCPHandler) GetExternalMCP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ExternalMCPResponse{
-		Config:    cfg,
+		Config:    externalMCPConfigForResponse(c, cfg),
 		Status:    status,
 		ToolCount: toolCount,
 		Error:     externalMCPStatusError(h.manager, name, status),
 	})
+}
+
+func externalMCPConfigForResponse(c *gin.Context, cfg config.ExternalMCPServerConfig) config.ExternalMCPServerConfig {
+	if security.SessionHasPermission(c, "mcp:write") {
+		return cfg
+	}
+	copyCfg := cfg
+	if len(cfg.Env) > 0 {
+		copyCfg.Env = make(map[string]string, len(cfg.Env))
+		for key := range cfg.Env {
+			copyCfg.Env[key] = "***"
+		}
+	}
+	if len(cfg.Headers) > 0 {
+		copyCfg.Headers = make(map[string]string, len(cfg.Headers))
+		for key := range cfg.Headers {
+			copyCfg.Headers[key] = "***"
+		}
+	}
+	return copyCfg
 }
 
 // externalMCPStatusError 在 error/disconnected 状态下返回最近错误（含断连原因）。

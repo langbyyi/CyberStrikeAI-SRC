@@ -33,6 +33,10 @@ type ProjectDashboardSummary struct {
 
 // GetProjectDashboardSummary 聚合跨项目近期事实（仅活跃项目、排除 deprecated）。
 func (db *DB) GetProjectDashboardSummary(factLimit int) (*ProjectDashboardSummary, error) {
+	return db.GetProjectDashboardSummaryForAccess(factLimit, "", "")
+}
+
+func (db *DB) GetProjectDashboardSummaryForAccess(factLimit int, userID, scope string) (*ProjectDashboardSummary, error) {
 	if factLimit <= 0 {
 		factLimit = 5
 	}
@@ -44,25 +48,42 @@ func (db *DB) GetProjectDashboardSummary(factLimit int) (*ProjectDashboardSummar
 		RecentFacts: []ProjectDashboardFact{},
 	}
 
-	if err := db.QueryRow(`SELECT COUNT(*) FROM projects WHERE status = 'active'`).Scan(&out.Totals.ActiveProjects); err != nil {
+	projectAccess := ""
+	args := []interface{}{}
+	userID = strings.TrimSpace(userID)
+	if userID != "" && scope != RBACScopeAll {
+		projectAccess = ` AND (
+			p.owner_user_id = ?
+			OR EXISTS (
+				SELECT 1 FROM rbac_resource_assignments ra
+				WHERE ra.user_id = ? AND ra.resource_type = 'project' AND ra.resource_id = p.id
+			)
+		)`
+		args = append(args, userID, userID)
+	}
+
+	if err := db.QueryRow(`SELECT COUNT(*) FROM projects p WHERE p.status = 'active'`+projectAccess, args...).Scan(&out.Totals.ActiveProjects); err != nil {
 		return nil, fmt.Errorf("统计活跃项目失败: %w", err)
 	}
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM project_facts f
 		 INNER JOIN projects p ON p.id = f.project_id
-		 WHERE f.confidence != 'deprecated' AND p.status = 'active'`,
+		 WHERE f.confidence != 'deprecated' AND p.status = 'active'`+projectAccess,
+		args...,
 	).Scan(&out.Totals.TotalFacts); err != nil {
 		return nil, fmt.Errorf("统计事实失败: %w", err)
 	}
 
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, factLimit)
 	rows, err := db.Query(
 		`SELECT f.id, f.project_id, p.name, f.fact_key, f.category, f.summary, f.confidence, f.pinned, f.updated_at
 		 FROM project_facts f
 		 INNER JOIN projects p ON p.id = f.project_id
-		 WHERE f.confidence != 'deprecated' AND p.status = 'active'
+		 WHERE f.confidence != 'deprecated' AND p.status = 'active'`+projectAccess+`
 		 ORDER BY f.pinned DESC, f.updated_at DESC
 		 LIMIT ?`,
-		factLimit,
+		queryArgs...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("查询近期事实失败: %w", err)

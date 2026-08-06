@@ -256,20 +256,16 @@ Found JSON/API endpoint with authentication?
 
 ---
 
-## MCP TOOLS
+## TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send requests with manipulated Origin headers |
-| `http_repeater` | Replay and compare CORS probe responses |
-| `browser_agent_inspect` | Verify CORS behavior in real browser |
-| `burpsuite_alternative_scan` | Automated CORS scanning across endpoints |
+Use the currently visible HTTP request/replay or browser tools to send controlled `Origin` variants and compare responses. Do not assume a Burp MCP or scanner is installed; role visibility and RBAC/HITL remain authoritative.
 
 ---
 
 ## RELATED ROUTING
 
-- [CSRF Testing](../csrf/SKILL.md) — when state-changing operations lack CSRF protection
-- [OAuth/OIDC Misconfiguration](../oauth-oidc/SKILL.md) — when redirect URI or token handling is flawed
-- [JWT/OAuth Token Attacks](../jwt-attacks/SKILL.md) — when token validation or signing is weak
+- [CSRF Testing](../csrf-cross-site-request-forgery/SKILL.md) — when state-changing operations lack CSRF protection
+- [OAuth/OIDC Misconfiguration](../oauth-oidc-misconfiguration/SKILL.md) — when redirect URI or token handling is flawed
+- [JWT/OAuth Token Attacks](../jwt-oauth-token-attacks/SKILL.md) — when token validation or signing is weak
 - [Clickjacking](../clickjacking/SKILL.md) — when pages lack X-Frame-Options (complementary framing attack)
+

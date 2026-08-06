@@ -1,4 +1,4 @@
-# 排除个人数据 / 运行时产物 — GitHub Release 和 git archive 自动忽略
+# 排除个人数据 / 运行时产物 - GitHub Release 和 git archive 自动忽略
 cookies.txt export-ignore
 skills/.eino/ export-ignore
 

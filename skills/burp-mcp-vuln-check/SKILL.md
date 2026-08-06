@@ -121,9 +121,9 @@ HTTP endpoint in Burp proxy history?
 ## RELATED ROUTING
 
 - [recon-and-methodology](../recon-and-methodology/SKILL.md) — general recon and asset discovery before Burp-based verification
-- [api-security](../api-security/SKILL.md) — API testing flow for endpoints found in Burp proxy history
-- [sqli](../sqli/SKILL.md) — SQL injection evidence collection and verification via Burp
-- [xss](../xss/SKILL.md) — XSS evidence collection and response diffing via Burp
+- [api-security](../api-sec/SKILL.md) — API testing flow for endpoints found in Burp proxy history
+- [sqli](../sqli-sql-injection/SKILL.md) — SQL injection evidence collection and verification via Burp
+- [xss](../xss-cross-site-scripting/SKILL.md) — XSS evidence collection and response diffing via Burp
 
 ## TESTING CHECKLIST
 
@@ -138,14 +138,9 @@ HTTP endpoint in Burp proxy history?
 - [ ] Test file upload: upload inert marker files only when the workflow supports uploads
 - [ ] Compare mutated vs baseline with two independent indicators before confirming a finding
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests for low-impact vulnerability verification (path traversal, SSRF, SQLi probes, access control checks) without Burp MCP dependency |
-| `http_repeater` | Replay and mutate candidate requests to compare baseline vs probe responses for differential evidence during vulnerability triage |
-| `burpsuite_alternative_scan` | Comprehensive web scanning combining HTTP framework and browser agent for complete security testing when Burp MCP is unavailable |
-| `nuclei_scan` | Run targeted Nuclei templates against confirmed endpoints from Burp history to validate vulnerability classes and reduce false positives |
+When Burp MCP is connected and visible, use it only for scoped history inspection and low-impact replay. Otherwise use visible `http-framework-test` for baseline/probe differentials and `nuclei` only with a narrowly selected relevant template. Never invent Burp, repeater, browser-agent, or alternative-scanner calls.
 
 ## Evidence Format
 
@@ -163,11 +158,3 @@ Impact:
 Limitations:
 Recommended fix:
 ```
-
-## RELATED ROUTING
-
-- [recon](../recon-and-methodology/SKILL.md) — Recon discovers endpoints to verify via Burp
-- [api-security](../api-security/SKILL.md) — API security testing uses Burp for endpoint verification
-- [sqli](../sqli/SKILL.md) — SQL injection verification through Burp proxy history
-- [xss](../xss/SKILL.md) — XSS payload verification via Burp Repeater and Collaborator
-- [ssrf](../ssrf/SKILL.md) — SSRF blind detection via Burp Collaborator

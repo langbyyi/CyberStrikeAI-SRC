@@ -137,7 +137,7 @@ func (db *DB) GetBatchQueue(queueID string) (*BatchTaskQueueRow, error) {
 // GetAllBatchQueues 获取所有批量任务队列
 func (db *DB) GetAllBatchQueues() ([]*BatchTaskQueueRow, error) {
 	rows, err := db.Query(
-		"SELECT "+batchQueueSelectColumns+" FROM batch_task_queues ORDER BY created_at DESC",
+		"SELECT " + batchQueueSelectColumns + " FROM batch_task_queues ORDER BY created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("查询批量任务队列列表失败: %w", err)
@@ -168,6 +168,10 @@ func (db *DB) GetAllBatchQueues() ([]*BatchTaskQueueRow, error) {
 
 // ListBatchQueues 列出批量任务队列（支持筛选和分页）
 func (db *DB) ListBatchQueues(limit, offset int, status, keyword string) ([]*BatchTaskQueueRow, error) {
+	return db.ListBatchQueuesForAccess(limit, offset, status, keyword, "", "")
+}
+
+func (db *DB) ListBatchQueuesForAccess(limit, offset int, status, keyword, userID, scope string) ([]*BatchTaskQueueRow, error) {
 	query := "SELECT " + batchQueueSelectColumns + " FROM batch_task_queues WHERE 1=1"
 	args := []interface{}{}
 
@@ -181,6 +185,26 @@ func (db *DB) ListBatchQueues(limit, offset int, status, keyword string) ([]*Bat
 	if keyword != "" {
 		query += " AND (id LIKE ? OR title LIKE ?)"
 		args = append(args, "%"+keyword+"%", "%"+keyword+"%")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID != "" && scope != RBACScopeAll {
+		query += ` AND (
+			owner_user_id = ?
+			OR EXISTS (
+				SELECT 1 FROM rbac_resource_assignments ra
+				WHERE ra.user_id = ? AND ra.resource_type = 'batch_task' AND ra.resource_id = batch_task_queues.id
+			)
+			OR (
+				project_id IS NOT NULL AND project_id <> '' AND (
+					EXISTS (SELECT 1 FROM projects p WHERE p.id = batch_task_queues.project_id AND p.owner_user_id = ?)
+					OR EXISTS (
+						SELECT 1 FROM rbac_resource_assignments pra
+						WHERE pra.user_id = ? AND pra.resource_type = 'project' AND pra.resource_id = batch_task_queues.project_id
+					)
+				)
+			)
+		)`
+		args = append(args, userID, userID, userID, userID)
 	}
 
 	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -216,6 +240,10 @@ func (db *DB) ListBatchQueues(limit, offset int, status, keyword string) ([]*Bat
 
 // CountBatchQueues 统计批量任务队列总数（支持筛选条件）
 func (db *DB) CountBatchQueues(status, keyword string) (int, error) {
+	return db.CountBatchQueuesForAccess(status, keyword, "", "")
+}
+
+func (db *DB) CountBatchQueuesForAccess(status, keyword, userID, scope string) (int, error) {
 	query := "SELECT COUNT(*) FROM batch_task_queues WHERE 1=1"
 	args := []interface{}{}
 
@@ -229,6 +257,26 @@ func (db *DB) CountBatchQueues(status, keyword string) (int, error) {
 	if keyword != "" {
 		query += " AND (id LIKE ? OR title LIKE ?)"
 		args = append(args, "%"+keyword+"%", "%"+keyword+"%")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID != "" && scope != RBACScopeAll {
+		query += ` AND (
+			owner_user_id = ?
+			OR EXISTS (
+				SELECT 1 FROM rbac_resource_assignments ra
+				WHERE ra.user_id = ? AND ra.resource_type = 'batch_task' AND ra.resource_id = batch_task_queues.id
+			)
+			OR (
+				project_id IS NOT NULL AND project_id <> '' AND (
+					EXISTS (SELECT 1 FROM projects p WHERE p.id = batch_task_queues.project_id AND p.owner_user_id = ?)
+					OR EXISTS (
+						SELECT 1 FROM rbac_resource_assignments pra
+						WHERE pra.user_id = ? AND pra.resource_type = 'project' AND pra.resource_id = batch_task_queues.project_id
+					)
+				)
+			)
+		)`
+		args = append(args, userID, userID, userID, userID)
 	}
 
 	var count int

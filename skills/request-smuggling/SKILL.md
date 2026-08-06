@@ -289,10 +289,12 @@ fetch("https://target.example/vulnerable", {
 
 ---
 
-## 12. RELATED ROUTING
+## 9. RELATED ROUTING
 
 - **输入进入解释器/查询语言/模板**（与 HTTP 分帧无关）→ [Injection Testing Router](../cmdi-command-injection/SKILL.md)（再下钻 XSS、SQLi、SSTI 等）。
 - **响应头拆分、Location CRLF** → [CRLF Injection](../crlf-injection/SKILL.md)。
 - **缓存与路径键混淆** → [Web Cache Deception](../web-cache-deception/SKILL.md)。
 
 当已确认是 **HTTP 消息边界** 问题而非参数注入时，应**留在本 skill**，避免误路由到通用注入流程。
+
+

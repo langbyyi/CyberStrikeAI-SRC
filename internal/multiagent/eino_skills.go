@@ -18,8 +18,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// prepareEinoSkills builds Eino official skill backend + middleware, and a shared local disk backend
-// for skill discovery and (optionally) filesystem/execute tools. Returns nils when disabled or dir missing.
+// prepareEinoSkills builds Eino official skill backend + middleware, and a shared local disk backend.
+// The local backend is also required by reduction, so reduction must not silently disappear merely
+// because Skills are disabled or skills_dir is unavailable.
 // skillsRoot is the absolute skills directory (empty when skills are not active).
 func prepareEinoSkills(
 	ctx context.Context,
@@ -27,15 +28,34 @@ func prepareEinoSkills(
 	ma *config.MultiAgentConfig,
 	logger *zap.Logger,
 ) (loc *localbk.Local, skillMW adk.ChatModelAgentMiddleware, fsTools bool, skillsRoot string, err error) {
-	if ma == nil || ma.EinoSkills.Disable {
+	if ma == nil {
 		return nil, nil, false, "", nil
+	}
+	needLocalBackend := ma.EinoMiddleware.ReductionEnable
+	newLocalBackend := func() (*localbk.Local, error) {
+		backend, backendErr := localbk.NewBackend(ctx, &localbk.Config{})
+		if backendErr != nil {
+			return nil, fmt.Errorf("eino local backend: %w", backendErr)
+		}
+		return backend, nil
+	}
+	if ma.EinoSkills.Disable {
+		if !needLocalBackend {
+			return nil, nil, false, "", nil
+		}
+		loc, err = newLocalBackend()
+		return loc, nil, false, "", err
 	}
 	root := strings.TrimSpace(skillsDir)
 	if root == "" {
 		if logger != nil {
 			logger.Warn("eino skills: skills_dir empty, skip")
 		}
-		return nil, nil, false, "", nil
+		if !needLocalBackend {
+			return nil, nil, false, "", nil
+		}
+		loc, err = newLocalBackend()
+		return loc, nil, false, "", err
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -45,12 +65,16 @@ func prepareEinoSkills(
 		if logger != nil {
 			logger.Warn("eino skills: directory missing, skip", zap.String("dir", abs), zap.Error(err))
 		}
-		return nil, nil, false, "", nil
+		if !needLocalBackend {
+			return nil, nil, false, "", nil
+		}
+		loc, err = newLocalBackend()
+		return loc, nil, false, "", err
 	}
 
-	loc, err = localbk.NewBackend(ctx, &localbk.Config{})
+	loc, err = newLocalBackend()
 	if err != nil {
-		return nil, nil, false, "", fmt.Errorf("eino local backend: %w", err)
+		return nil, nil, false, "", err
 	}
 
 	skillBE, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
@@ -83,8 +107,12 @@ func subAgentFilesystemMiddleware(
 	invokeNotify *einomcp.ToolInvokeNotifyHolder,
 	einoAgentName string,
 	beginMonitor func(toolCallID, command string) string,
+	appendPartialMonitor func(executionID, toolCallID, chunk string),
+	registerCancelMonitor func(executionID string, cancel context.CancelFunc),
+	unregisterCancelMonitor func(executionID string),
 	finishMonitor func(executionID, toolCallID, command, stdout string, success bool, invokeErr error),
 	toolTimeoutMinutes int,
+	toolWaitTimeoutSeconds int,
 	shellNoOutputTimeoutSec int,
 	outputChunk func(toolName, toolCallID, chunk string),
 ) (adk.ChatModelAgentMiddleware, error) {
@@ -99,8 +127,12 @@ func subAgentFilesystemMiddleware(
 			einoAgentName:           strings.TrimSpace(einoAgentName),
 			outputChunk:             outputChunk,
 			beginMonitor:            beginMonitor,
+			appendPartialMonitor:    appendPartialMonitor,
+			registerCancelMonitor:   registerCancelMonitor,
+			unregisterCancelMonitor: unregisterCancelMonitor,
 			finishMonitor:           finishMonitor,
 			toolTimeoutMinutes:      toolTimeoutMinutes,
+			toolWaitTimeoutSeconds:  toolWaitTimeoutSeconds,
 			shellNoOutputTimeoutSec: shellNoOutputTimeoutSec,
 		},
 	})
@@ -112,6 +144,13 @@ func agentToolTimeoutMinutes(cfg *config.Config) int {
 		return 0
 	}
 	return cfg.Agent.ToolTimeoutMinutes
+}
+
+func agentToolWaitTimeoutSeconds(cfg *config.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Agent.ToolWaitTimeoutSeconds
 }
 
 // agentShellNoOutputTimeoutSeconds：0=默认 300s（5 分钟）；-1=关闭；>0=自定义秒数。

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/openai"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -26,7 +27,8 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 	if h.config != nil {
 		prompt = h.config.Hitl.EffectiveAuditAgentPromptForMode(mode)
 	}
-	if h.auditLLM == nil {
+	llmCfg := h.auditLLMConfig()
+	if strings.TrimSpace(llmCfg.APIKey) == "" || strings.TrimSpace(llmCfg.Model) == "" {
 		return hitlDecision{Decision: "reject", Comment: "audit agent: LLM 未配置"}
 	}
 	if ctx == nil {
@@ -37,7 +39,7 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 
 	userContent := buildAuditAgentReviewInput(mode, toolName, payload)
 	requestBody := map[string]interface{}{
-		"model": h.auditLLMModel(),
+		"model": strings.TrimSpace(llmCfg.Model),
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": prompt},
 			{"role": "user", "content": userContent},
@@ -56,7 +58,8 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := h.auditLLM.ChatCompletion(callCtx, requestBody, &apiResponse); err != nil {
+	client := openai.NewClient(&llmCfg, nil, h.logger)
+	if err := client.ChatCompletion(callCtx, requestBody, &apiResponse); err != nil {
 		h.logger.Warn("审计 Agent LLM 调用失败", zap.Error(err), zap.String("tool", toolName))
 		return hitlDecision{
 			Decision: "reject",
@@ -99,11 +102,11 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 	return dec
 }
 
-func (h *AgentHandler) auditLLMModel() string {
-	if h.config != nil && strings.TrimSpace(h.config.OpenAI.Model) != "" {
-		return strings.TrimSpace(h.config.OpenAI.Model)
+func (h *AgentHandler) auditLLMConfig() config.OpenAIConfig {
+	if h != nil && h.config != nil {
+		return h.config.Hitl.AuditModelEffective(h.config.OpenAI)
 	}
-	return ""
+	return config.OpenAIConfig{}
 }
 
 func buildAuditAgentReviewInput(hitlMode, toolName string, payload map[string]interface{}) string {
@@ -338,11 +341,11 @@ func (h *AgentHandler) UpdateHITLAuditStrategy(c *gin.Context) {
 		h.config.Hitl.AuditAgentPromptReviewEdit = reviewEditPrompt
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                                true,
-		"auditAgentPrompt":                  config.HitlConfig{AuditAgentPrompt: approvalPrompt}.EffectiveAuditAgentPromptForMode("approval"),
-		"auditAgentPromptCustom":            approvalPrompt != "",
-		"auditAgentPromptReviewEdit":        config.HitlConfig{AuditAgentPromptReviewEdit: reviewEditPrompt}.EffectiveAuditAgentPromptForMode("review_edit"),
-		"auditAgentPromptReviewEditCustom":  reviewEditPrompt != "",
+		"ok":                               true,
+		"auditAgentPrompt":                 config.HitlConfig{AuditAgentPrompt: approvalPrompt}.EffectiveAuditAgentPromptForMode("approval"),
+		"auditAgentPromptCustom":           approvalPrompt != "",
+		"auditAgentPromptReviewEdit":       config.HitlConfig{AuditAgentPromptReviewEdit: reviewEditPrompt}.EffectiveAuditAgentPromptForMode("review_edit"),
+		"auditAgentPromptReviewEditCustom": reviewEditPrompt != "",
 	})
 }
 

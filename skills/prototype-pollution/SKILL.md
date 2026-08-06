@@ -188,3 +188,5 @@ __proto__[onerror]=alert(1)
 - 输入路由与多类注入并列入口 → [Injection Testing Router](../cmdi-command-injection/SKILL.md)。
 - 模板执行链（非 PP）→ [SSTI](../ssti-server-side-template-injection/SKILL.md)。
 - 不安全反序列化（非 JS 原型）→ [Deserialization](../deserialization-insecure/SKILL.md)。
+
+

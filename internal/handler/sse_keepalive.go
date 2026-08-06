@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sync"
@@ -13,33 +14,51 @@ import (
 // some proxies that treat connections as idle; 10s is a reasonable balance with traffic.
 const sseKeepaliveInterval = 10 * time.Second
 
-// sseKeepalive sends periodic SSE traffic so proxies (e.g. nginx proxy_read_timeout), NATs,
+// runSSEKeepalive starts periodic SSE heartbeats in a background goroutine.
+// The returned stop function must be deferred (or called) before the handler returns so the
+// goroutine exits before Gin finalizes the ResponseWriter (avoids "Write called after Handler finished").
+//
+// writeMu must be the same mutex used by the handler's event writes for this request: concurrent
+// writes to http.ResponseWriter break chunked transfer encoding (browser: net::ERR_INVALID_CHUNKED_ENCODING).
+func runSSEKeepalive(c *gin.Context, writeMu *sync.Mutex) func() {
+	if writeMu == nil {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sseKeepaliveLoop(c, stop, writeMu)
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stop)
+			wg.Wait()
+		})
+	}
+}
+
+// sseKeepaliveLoop sends periodic SSE traffic so proxies (e.g. nginx proxy_read_timeout), NATs,
 // and load balancers do not close long-running streams. Some intermediaries ignore comment-only
 // lines, so we send both a comment and a minimal data frame (type heartbeat) per tick.
-//
-// writeMu must be the same mutex used by sendEvent for this request: concurrent writes to
-// http.ResponseWriter break chunked transfer encoding (browser: net::ERR_INVALID_CHUNKED_ENCODING).
-func sseKeepalive(c *gin.Context, stop <-chan struct{}, writeMu *sync.Mutex) {
-	if writeMu == nil {
-		return
-	}
+func sseKeepaliveLoop(c *gin.Context, stop <-chan struct{}, writeMu *sync.Mutex) {
 	ticker := time.NewTicker(sseKeepaliveInterval)
 	defer ticker.Stop()
+	ctx := c.Request.Context()
 	for {
 		select {
 		case <-stop:
 			return
-		case <-c.Request.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			select {
-			case <-stop:
-				return
-			case <-c.Request.Context().Done():
-				return
-			default:
-			}
 			writeMu.Lock()
+			if sseShuttingDown(stop, ctx) {
+				writeMu.Unlock()
+				return
+			}
 			if _, err := fmt.Fprintf(c.Writer, ": keepalive\n\n"); err != nil {
 				writeMu.Unlock()
 				return
@@ -54,5 +73,16 @@ func sseKeepalive(c *gin.Context, stop <-chan struct{}, writeMu *sync.Mutex) {
 			}
 			writeMu.Unlock()
 		}
+	}
+}
+
+func sseShuttingDown(stop <-chan struct{}, ctx context.Context) bool {
+	select {
+	case <-stop:
+		return true
+	case <-ctx.Done():
+		return true
+	default:
+		return false
 	}
 }

@@ -209,3 +209,11 @@ X-Forwarded-Host: evil.com
 □ Check Vary header presence
 □ Test with and without authentication
 ```
+
+---
+
+## Related Routing
+
+- Path normalization / `..;/` tricks → [web-attack-methods](../web-attack-methods/SKILL.md)
+- CRLF / header injection into cache → [crlf-injection](../crlf-injection/SKILL.md)
+- CDN JS-challenge / 502 bypass → [web-attack-methods](../web-attack-methods/SKILL.md)

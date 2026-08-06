@@ -5,6 +5,31 @@ import (
 	"strings"
 )
 
+const ModelFacingTraceVersionKey = "cyberstrike_model_facing_trace_version"
+
+// IsModelFacingTraceJSON reports whether a persisted trace was produced from the final
+// model-boundary state. Legacy traces have no version marker and require one-time migration.
+func IsModelFacingTraceJSON(traceInputJSON string) bool {
+	var raw []map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(traceInputJSON)), &raw); err != nil {
+		return false
+	}
+	for _, msg := range raw {
+		extra, _ := msg["extra"].(map[string]interface{})
+		v, ok := extra[ModelFacingTraceVersionKey]
+		if !ok {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			return n >= 1
+		case int:
+			return n >= 1
+		}
+	}
+	return false
+}
+
 // ParseTraceMessages 解析落库的 last_react_input（OpenAI 风格 messages JSON 数组）。
 func ParseTraceMessages(traceInputJSON string) ([]ChatMessage, error) {
 	traceInputJSON = strings.TrimSpace(traceInputJSON)
@@ -15,6 +40,7 @@ func ParseTraceMessages(traceInputJSON string) ([]ChatMessage, error) {
 	if err := json.Unmarshal([]byte(traceInputJSON), &raw); err != nil {
 		return nil, err
 	}
+	modelFacing := IsModelFacingTraceJSON(traceInputJSON)
 	out := make([]ChatMessage, 0, len(raw))
 	for _, msgMap := range raw {
 		msg := ChatMessage{}
@@ -23,6 +49,7 @@ func ParseTraceMessages(traceInputJSON string) ([]ChatMessage, error) {
 			continue
 		}
 		msg.Role = role
+		msg.ModelFacingTrace = modelFacing
 		if content, ok := msgMap["content"].(string); ok {
 			msg.Content = content
 		}

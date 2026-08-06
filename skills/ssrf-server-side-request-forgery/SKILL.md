@@ -312,3 +312,12 @@ From zseano's methodology: **if developers filter only `169.254.169.254` directl
 <!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]>
 <request>&xxe;</request>
 ```
+
+---
+
+## Related Routing
+
+- Open redirect → SSRF chain → [open-redirect](../open-redirect/SKILL.md)
+- XXE (external entities = SSRF sibling) → [xxe-xml-external-entity](../xxe-xml-external-entity/SKILL.md)
+- Request smuggling to reach SSRF surface → [request-smuggling](../request-smuggling/SKILL.md)
+- Burp Collaborator OOB → [burp-mcp-vuln-check](../burp-mcp-vuln-check/SKILL.md)

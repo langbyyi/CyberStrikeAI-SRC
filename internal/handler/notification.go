@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai/internal/security"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -89,6 +91,10 @@ func normalizedSinceSec(sinceMs int64) int64 {
 	return 0
 }
 
+func ptrTime(t time.Time) *time.Time {
+	return &t
+}
+
 func normalizeSinceMs(raw int64) int64 {
 	if raw > 0 {
 		return raw
@@ -126,8 +132,82 @@ func i18nText(english bool, zh string, en string) string {
 	return zh
 }
 
-func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool) ([]NotificationSummaryItem, error) {
-	rows, err := h.db.Query(`
+func notificationAccessFromContext(c *gin.Context) database.RBACListAccess {
+	session, ok := security.CurrentSession(c)
+	if !ok {
+		return database.RBACListAccess{}
+	}
+	return database.RBACListAccess{UserID: session.UserID, Scope: session.Scope}
+}
+
+func appendConversationAccessSQL(query string, args []interface{}, column string, access database.RBACListAccess) (string, []interface{}) {
+	userID := strings.TrimSpace(access.UserID)
+	if access.Scope == database.RBACScopeAll {
+		return query, args
+	}
+	if userID == "" {
+		return query + ` AND 1=0`, args
+	}
+	query += ` AND ` + column + ` IS NOT NULL AND ` + column + ` <> '' AND (
+		EXISTS (SELECT 1 FROM conversations c WHERE c.id = ` + column + ` AND c.owner_user_id = ?)
+		OR EXISTS (
+			SELECT 1 FROM rbac_resource_assignments ra
+			WHERE ra.user_id = ? AND ra.resource_type = 'conversation' AND ra.resource_id = ` + column + `
+		)
+		OR EXISTS (
+			SELECT 1 FROM conversations c
+			JOIN projects p ON p.id = c.project_id
+			WHERE c.id = ` + column + ` AND p.owner_user_id = ?
+		)
+		OR EXISTS (
+			SELECT 1 FROM conversations c
+			JOIN rbac_resource_assignments pra ON pra.resource_id = c.project_id
+			WHERE c.id = ` + column + ` AND pra.user_id = ? AND pra.resource_type = 'project'
+		)
+	)`
+	args = append(args, userID, userID, userID, userID)
+	return query, args
+}
+
+func appendVulnerabilityNotificationAccessSQL(query string, args []interface{}, access database.RBACListAccess) (string, []interface{}) {
+	userID := strings.TrimSpace(access.UserID)
+	if access.Scope == database.RBACScopeAll {
+		return query, args
+	}
+	if userID == "" {
+		return query + ` AND 1=0`, args
+	}
+	query += ` AND (
+		owner_user_id = ?
+		OR EXISTS (
+			SELECT 1 FROM rbac_resource_assignments ra
+			WHERE ra.user_id = ? AND ra.resource_type = 'vulnerability' AND ra.resource_id = vulnerabilities.id
+		)
+		OR (
+			project_id IS NOT NULL AND project_id <> '' AND (
+				EXISTS (SELECT 1 FROM projects p WHERE p.id = vulnerabilities.project_id AND p.owner_user_id = ?)
+				OR EXISTS (
+					SELECT 1 FROM rbac_resource_assignments pra
+					WHERE pra.user_id = ? AND pra.resource_type = 'project' AND pra.resource_id = vulnerabilities.project_id
+				)
+			)
+		)
+		OR (
+			conversation_id IS NOT NULL AND conversation_id <> '' AND (
+				EXISTS (SELECT 1 FROM conversations c WHERE c.id = vulnerabilities.conversation_id AND c.owner_user_id = ?)
+				OR EXISTS (
+					SELECT 1 FROM rbac_resource_assignments cra
+					WHERE cra.user_id = ? AND cra.resource_type = 'conversation' AND cra.resource_id = vulnerabilities.conversation_id
+				)
+			)
+		)
+	)`
+	args = append(args, userID, userID, userID, userID, userID, userID)
+	return query, args
+}
+
+func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, error) {
+	query := `
 		SELECT
 			id,
 			conversation_id,
@@ -135,9 +215,14 @@ func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool) ([]N
 			COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
 		FROM hitl_interrupts
 		WHERE status = 'pending'
-		ORDER BY created_at DESC
+	`
+	args := []interface{}{}
+	query, args = appendConversationAccessSQL(query, args, "conversation_id", access)
+	query += ` ORDER BY created_at DESC
 		LIMIT ?
-	`, limit)
+	`
+	args = append(args, limit)
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +255,9 @@ func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool) ([]N
 	return items, nil
 }
 
-func (h *NotificationHandler) loadVulnerabilityItems(sinceMs int64, limit int, english bool) ([]NotificationSummaryItem, map[string]int, error) {
+func (h *NotificationHandler) loadVulnerabilityItems(sinceMs int64, limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, map[string]int, error) {
 	sinceSec := normalizedSinceSec(sinceMs)
-	rows, err := h.db.Query(`
+	query := `
 		SELECT
 			id,
 			title,
@@ -181,9 +266,15 @@ func (h *NotificationHandler) loadVulnerabilityItems(sinceMs int64, limit int, e
 			COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
 		FROM vulnerabilities
 		WHERE CAST(strftime('%s', created_at) AS INTEGER) > ?
+	`
+	args := []interface{}{sinceSec}
+	query, args = appendVulnerabilityNotificationAccessSQL(query, args, access)
+	query += `
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, sinceSec, limit)
+	`
+	args = append(args, limit)
+	rows, err := h.db.Query(query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -241,29 +332,23 @@ func (h *NotificationHandler) loadVulnerabilityItems(sinceMs int64, limit int, e
 }
 
 // loadC2SessionOnlineEvents 新会话上线（c2_events：session + critical，与 Manager.IngestCheckIn 一致）
-func (h *NotificationHandler) loadC2SessionOnlineEvents(sinceMs int64, limit int, english bool) ([]NotificationSummaryItem, int, error) {
+func (h *NotificationHandler) loadC2SessionOnlineEvents(sinceMs int64, limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, int, error) {
 	sinceSec := normalizedSinceSec(sinceMs)
-	rows, err := h.db.Query(`
-		SELECT id, message, COALESCE(session_id, ''),
-			COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
-		FROM c2_events
-		WHERE category = 'session' AND level = 'critical'
-		  AND CAST(strftime('%s', created_at) AS INTEGER) > ?
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, sinceSec, limit)
+	events, err := h.db.ListC2EventsForAccess(database.ListC2EventsFilter{
+		Category: "session",
+		Level:    "critical",
+		Since:    ptrTime(time.Unix(sinceSec, 0)),
+		Limit:    limit,
+	}, access)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	items := make([]NotificationSummaryItem, 0, limit)
-	for rows.Next() {
-		var id, message, sessionID string
-		var createdSec int64
-		if err := rows.Scan(&id, &message, &sessionID, &createdSec); err != nil {
+	for _, e := range events {
+		if e == nil {
 			continue
 		}
-		desc := strings.TrimSpace(message)
+		desc := strings.TrimSpace(e.Message)
 		if len(desc) > 220 {
 			desc = desc[:200] + "…"
 		}
@@ -271,19 +356,19 @@ func (h *NotificationHandler) loadC2SessionOnlineEvents(sinceMs int64, limit int
 			desc = i18nText(english, "新会话已建立", "A new session was created")
 		}
 		items = append(items, NotificationSummaryItem{
-			ID:         "c2evt:" + id,
+			ID:         "c2evt:" + e.ID,
 			Level:      "p0",
 			Type:       "c2_session_online",
 			Title:      i18nText(english, "C2 新会话上线", "C2 new session online"),
 			Desc:       desc,
-			Ts:         unixSecToRFC3339(createdSec),
+			Ts:         e.CreatedAt.UTC().Format(time.RFC3339),
 			Count:      1,
 			Actionable: false,
 			Read:       false,
-			SessionID:  sessionID,
+			SessionID:  e.SessionID,
 		})
 	}
-	return items, len(items), rows.Err()
+	return items, len(items), nil
 }
 
 func (h *NotificationHandler) loadFailedExecutionItems(sinceMs int64, limit int, english bool) ([]NotificationSummaryItem, int, error) {
@@ -331,7 +416,7 @@ func (h *NotificationHandler) loadFailedExecutionItems(sinceMs int64, limit int,
 	return items, count, nil
 }
 
-func (h *NotificationHandler) summarizeLongRunningTasks(threshold time.Duration, english bool) ([]NotificationSummaryItem, int) {
+func (h *NotificationHandler) summarizeLongRunningTasks(threshold time.Duration, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, int) {
 	if h.agentHandler == nil || h.agentHandler.tasks == nil {
 		return nil, 0
 	}
@@ -340,6 +425,9 @@ func (h *NotificationHandler) summarizeLongRunningTasks(threshold time.Duration,
 	items := make([]NotificationSummaryItem, 0, len(tasks))
 	for _, t := range tasks {
 		if t == nil {
+			continue
+		}
+		if !h.notificationConversationAllowed(access, t.ConversationID) {
 			continue
 		}
 		if now.Sub(t.StartedAt) >= threshold {
@@ -360,7 +448,7 @@ func (h *NotificationHandler) summarizeLongRunningTasks(threshold time.Duration,
 	return items, len(items)
 }
 
-func (h *NotificationHandler) summarizeCompletedTasksSince(sinceMs int64, limit int, english bool) ([]NotificationSummaryItem, int) {
+func (h *NotificationHandler) summarizeCompletedTasksSince(sinceMs int64, limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, int) {
 	if h.agentHandler == nil || h.agentHandler.tasks == nil {
 		return nil, 0
 	}
@@ -369,6 +457,9 @@ func (h *NotificationHandler) summarizeCompletedTasksSince(sinceMs int64, limit 
 	items := make([]NotificationSummaryItem, 0, limit)
 	for _, t := range completed {
 		if t == nil {
+			continue
+		}
+		if !h.notificationConversationAllowed(access, t.ConversationID) {
 			continue
 		}
 		if t.CompletedAt.After(since) {
@@ -403,14 +494,16 @@ func buildPlaceholders(n int) string {
 	return strings.Join(out, ",")
 }
 
-func (h *NotificationHandler) readStatesByIDs(ids []string) (map[string]bool, error) {
+func (h *NotificationHandler) readStatesByIDs(userID string, ids []string) (map[string]bool, error) {
 	result := make(map[string]bool, len(ids))
-	if len(ids) == 0 {
+	userID = strings.TrimSpace(userID)
+	if len(ids) == 0 || userID == "" {
 		return result, nil
 	}
 	holders := buildPlaceholders(len(ids))
-	query := "SELECT event_id FROM notification_reads WHERE event_id IN (" + holders + ")"
-	args := make([]interface{}, 0, len(ids))
+	query := "SELECT event_id FROM notification_reads_by_user WHERE user_id = ? AND event_id IN (" + holders + ")"
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, userID)
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -429,7 +522,7 @@ func (h *NotificationHandler) readStatesByIDs(ids []string) (map[string]bool, er
 	return result, nil
 }
 
-func (h *NotificationHandler) applyReadStates(items []NotificationSummaryItem) ([]NotificationSummaryItem, error) {
+func (h *NotificationHandler) applyReadStates(userID string, items []NotificationSummaryItem) ([]NotificationSummaryItem, error) {
 	markableIDs := make([]string, 0, len(items))
 	for _, item := range items {
 		if item.Actionable {
@@ -437,7 +530,7 @@ func (h *NotificationHandler) applyReadStates(items []NotificationSummaryItem) (
 		}
 		markableIDs = append(markableIDs, item.ID)
 	}
-	readMap, err := h.readStatesByIDs(markableIDs)
+	readMap, err := h.readStatesByIDs(userID, markableIDs)
 	if err != nil {
 		return items, err
 	}
@@ -494,34 +587,38 @@ func createNotificationReadTableIfNeeded(db *database.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS notification_reads (
-			event_id TEXT PRIMARY KEY,
-			read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		CREATE TABLE IF NOT EXISTS notification_reads_by_user (
+			user_id TEXT NOT NULL,
+			event_id TEXT NOT NULL,
+			read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY(user_id, event_id)
 		);
 	`)
 	if err != nil {
 		return err
 	}
-	_, idxErr := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at ON notification_reads(read_at DESC);`)
+	_, idxErr := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_reads_user_read_at ON notification_reads_by_user(user_id, read_at DESC);`)
 	return idxErr
 }
 
-func pruneNotificationReads(db *database.DB, maxRows int) error {
+func pruneNotificationReads(db *database.DB, userID string, maxRows int) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if maxRows <= 0 {
+	userID = strings.TrimSpace(userID)
+	if maxRows <= 0 || userID == "" {
 		return nil
 	}
 	_, err := db.Exec(`
-		DELETE FROM notification_reads
-		WHERE event_id NOT IN (
+		DELETE FROM notification_reads_by_user
+		WHERE user_id = ? AND event_id NOT IN (
 			SELECT event_id
-			FROM notification_reads
+			FROM notification_reads_by_user
+			WHERE user_id = ?
 			ORDER BY read_at DESC, rowid DESC
 			LIMIT ?
 		)
-	`, maxRows)
+	`, userID, userID, maxRows)
 	return err
 }
 
@@ -564,6 +661,11 @@ func (h *NotificationHandler) MarkRead(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "marked": 0})
 		return
 	}
+	session, ok := security.CurrentSession(c)
+	if !ok || strings.TrimSpace(session.UserID) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authenticated user"})
+		return
+	}
 	tx, err := h.db.Begin()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to begin transaction"})
@@ -573,9 +675,9 @@ func (h *NotificationHandler) MarkRead(c *gin.Context) {
 		_ = tx.Rollback()
 	}()
 	stmt, err := tx.Prepare(`
-		INSERT INTO notification_reads(event_id, read_at)
-		VALUES(?, CURRENT_TIMESTAMP)
-		ON CONFLICT(event_id) DO UPDATE SET read_at = CURRENT_TIMESTAMP
+		INSERT INTO notification_reads_by_user(user_id, event_id, read_at)
+		VALUES(?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(user_id, event_id) DO UPDATE SET read_at = CURRENT_TIMESTAMP
 	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare statement"})
@@ -588,7 +690,7 @@ func (h *NotificationHandler) MarkRead(c *gin.Context) {
 		if !ok {
 			continue
 		}
-		if _, err := stmt.Exec(id); err != nil {
+		if _, err := stmt.Exec(session.UserID, id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark read"})
 			return
 		}
@@ -598,7 +700,7 @@ func (h *NotificationHandler) MarkRead(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit read marks"})
 		return
 	}
-	if err := pruneNotificationReads(h.db, notificationReadMaxRows); err != nil {
+	if err := pruneNotificationReads(h.db, session.UserID, notificationReadMaxRows); err != nil {
 		h.logger.Warn("裁剪通知已读记录失败", zap.Error(err))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "marked": marked})
@@ -626,30 +728,57 @@ func (h *NotificationHandler) GetSummary(c *gin.Context) {
 	if limit > 200 {
 		limit = 200
 	}
+	access := notificationAccessFromContext(c)
 
-	hitlItems, err := h.loadPendingHITLItems(limit, english)
-	if err != nil {
-		h.logger.Warn("加载 HITL 通知失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize hitl notifications"})
-		return
+	hitlItems := []NotificationSummaryItem{}
+	if security.SessionHasPermission(c, "hitl:read") {
+		var err error
+		hitlItems, err = h.loadPendingHITLItems(limit, english, access)
+		if err != nil {
+			h.logger.Warn("加载 HITL 通知失败", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize hitl notifications"})
+			return
+		}
 	}
 
-	vulnItems, vulnCounts, err := h.loadVulnerabilityItems(sinceMs, limit, english)
-	if err != nil {
-		h.logger.Warn("加载漏洞通知失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize vulnerabilities"})
-		return
+	vulnItems := []NotificationSummaryItem{}
+	vulnCounts := map[string]int{
+		"newCriticalVulns": 0,
+		"newHighVulns":     0,
+		"newMediumVulns":   0,
+		"newLowVulns":      0,
+		"newInfoVulns":     0,
+	}
+	if security.SessionHasPermission(c, "vulnerability:read") {
+		var err error
+		vulnItems, vulnCounts, err = h.loadVulnerabilityItems(sinceMs, limit, english, access)
+		if err != nil {
+			h.logger.Warn("加载漏洞通知失败", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize vulnerabilities"})
+			return
+		}
 	}
 
-	c2OnlineItems, c2OnlineCount, err := h.loadC2SessionOnlineEvents(sinceMs, limit, english)
-	if err != nil {
-		h.logger.Warn("加载 C2 会话上线通知失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize c2 session events"})
-		return
+	c2OnlineItems := []NotificationSummaryItem{}
+	c2OnlineCount := 0
+	if security.SessionHasPermission(c, "c2:read") {
+		var err error
+		c2OnlineItems, c2OnlineCount, err = h.loadC2SessionOnlineEvents(sinceMs, limit, english, access)
+		if err != nil {
+			h.logger.Warn("加载 C2 会话上线通知失败", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize c2 session events"})
+			return
+		}
 	}
 
-	longRunningItems, longRunningCount := h.summarizeLongRunningTasks(15*time.Minute, english)
-	completedItems, completedCount := h.summarizeCompletedTasksSince(sinceMs, limit, english)
+	longRunningItems := []NotificationSummaryItem{}
+	completedItems := []NotificationSummaryItem{}
+	longRunningCount := 0
+	completedCount := 0
+	if security.SessionHasPermission(c, "tasks:read") || security.SessionHasPermission(c, "chat:read") {
+		longRunningItems, longRunningCount = h.summarizeLongRunningTasks(15*time.Minute, english, access)
+		completedItems, completedCount = h.summarizeCompletedTasksSince(sinceMs, limit, english, access)
+	}
 
 	items := make([]NotificationSummaryItem, 0, len(hitlItems)+len(vulnItems)+len(c2OnlineItems)+len(longRunningItems)+len(completedItems))
 	items = append(items, hitlItems...)
@@ -658,7 +787,8 @@ func (h *NotificationHandler) GetSummary(c *gin.Context) {
 	items = append(items, longRunningItems...)
 	items = append(items, completedItems...)
 
-	items, err = h.applyReadStates(items)
+	session, _ := security.CurrentSession(c)
+	items, err := h.applyReadStates(session.UserID, items)
 	if err != nil {
 		h.logger.Warn("加载通知已读状态失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load notification read states"})
@@ -696,4 +826,12 @@ func (h *NotificationHandler) GetSummary(c *gin.Context) {
 		},
 		Items: items,
 	})
+}
+
+func (h *NotificationHandler) notificationConversationAllowed(access database.RBACListAccess, conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return access.Scope == database.RBACScopeAll
+	}
+	return h.db.UserCanAccessResource(access.UserID, access.Scope, "conversation", conversationID)
 }

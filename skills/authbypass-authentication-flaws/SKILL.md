@@ -380,7 +380,7 @@ Token: short random (32-bit entropy) → brute-forceable
 | 6 | Response manipulation | Intercept and change response to bypass |
 | 7 | Change request method | POST→GET or vice versa may skip captcha check |
 | 8 | JSON content-type | Switch from form to JSON — captcha handler may not process |
-| 9 | OCR bypass | Simple captchas solvable with tesseract/ML |
+| 9 | OCR bypass | 用 ddddocr 工具识别验证码（ocr 文字/detect 点选/slide 滑块），纯数字传 charset=digit 提升准确率，识别后回填 captcha/verifyCode 字段继续爆破或重置 |
 | 10 | Audio captcha weakness | Audio often simpler than visual |
 | 11 | SMS code in response | Verification code returned in API response body |
 | 12 | SMS code predictable | Sequential or time-based codes |
@@ -439,3 +439,15 @@ uniqid() = hex(microtime)
 - `AethliosIK/reset-tolkien` — Automated token prediction for password resets
 - `openwall/php_mt_seed` — PHP mt_rand seed recovery
 - `sandwich` — Token timestamp analysis
+
+---
+
+## Related Routing
+
+- SQLi login bypass specifics → [sqli-sql-injection](../sqli-sql-injection/SKILL.md)
+- JWT / OAuth token attacks → [jwt-oauth-token-attacks](../jwt-oauth-token-attacks/SKILL.md)
+- OAuth/OIDC misconfig → [oauth-oidc-misconfiguration](../oauth-oidc-misconfiguration/SKILL.md)
+- SAML SSO → [saml-sso-assertion-attacks](../saml-sso-assertion-attacks/SKILL.md)
+- NoSQL operator injection in login → [nosql-injection](../nosql-injection/SKILL.md)
+- LDAP injection auth bypass → [ldap-injection-testing](../ldap-injection-testing/SKILL.md)
+- Session/state after auth → [business-logic-vulnerabilities](../business-logic-vulnerabilities/SKILL.md)

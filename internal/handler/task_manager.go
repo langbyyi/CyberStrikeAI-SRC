@@ -236,13 +236,12 @@ func (m *AgentTaskManager) ActiveMCPExecutionID(conversationID string) string {
 
 // CompletedTask 已完成的任务（用于历史记录）
 type CompletedTask struct {
-	ConversationID   string                       `json:"conversationId"`
-	Title            string                       `json:"title,omitempty"`
-	Message          string                       `json:"message,omitempty"`
-	StartedAt        time.Time                    `json:"startedAt"`
-	CompletedAt      time.Time                    `json:"completedAt"`
-	Status           string                       `json:"status"`
-	ExecutionSummary *multiagent.ExecutionSummary `json:"executionSummary,omitempty"`
+	ConversationID string    `json:"conversationId"`
+	Title          string    `json:"title,omitempty"`
+	Message        string    `json:"message,omitempty"`
+	StartedAt      time.Time `json:"startedAt"`
+	CompletedAt    time.Time `json:"completedAt"`
+	Status         string    `json:"status"`
 }
 
 // AgentTaskManager 管理正在运行的Agent任务
@@ -253,7 +252,7 @@ type AgentTaskManager struct {
 	maxHistorySize   int              // 最大历史记录数
 	historyRetention time.Duration    // 历史记录保留时间
 	eventBus         *TaskEventBus    // 可选：任务结束时关闭镜像 SSE 订阅
-	// toolCanceler 在用户整轮停止任务时终止当前 MCP 工具（非「中断并继续」）。
+	// toolCanceler 在用户整轮停止任务或会话结束时终止该会话仍在运行的 MCP 工具（非「中断并继续」）。
 	toolCanceler func(conversationID string)
 }
 
@@ -285,7 +284,7 @@ func (m *AgentTaskManager) SetTaskEventBus(b *TaskEventBus) {
 	m.eventBus = b
 }
 
-// SetToolCanceler 设置整轮停止任务时终止当前 MCP 工具的回调（由 AgentHandler 注入）。
+// SetToolCanceler 设置整轮停止任务/会话结束时终止仍在运行 MCP 工具的回调（由 AgentHandler 注入）。
 func (m *AgentTaskManager) SetToolCanceler(fn func(conversationID string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -297,6 +296,18 @@ func (m *AgentTaskManager) GetTask(conversationID string) *AgentTask {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.tasks[conversationID]
+}
+
+// GetTaskSnapshot 返回运行任务的只读副本，供状态展示使用，避免锁外读取可变任务字段。
+func (m *AgentTaskManager) GetTaskSnapshot(conversationID string) *AgentTask {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	task := m.tasks[conversationID]
+	if task == nil {
+		return nil
+	}
+	snapshot := *task
+	return &snapshot
 }
 
 // runStuckCancellingCleanup 定期将长时间处于「取消中」的任务强制结束，避免卡住无法发新消息
@@ -433,6 +444,8 @@ func (m *AgentTaskManager) FinishTask(conversationID string, finalStatus string)
 	if finalStatus != "" {
 		task.Status = finalStatus
 	}
+	toolCanceler := m.toolCanceler
+	activeEinoExecuteCancel := task.activeEinoExecuteCancel
 
 	// 保存到历史记录
 	completedTask := &CompletedTask{
@@ -441,9 +454,6 @@ func (m *AgentTaskManager) FinishTask(conversationID string, finalStatus string)
 		StartedAt:      task.StartedAt,
 		CompletedAt:    time.Now(),
 		Status:         finalStatus,
-	}
-	if summary, ok := multiagent.ConversationExecutionSummary(conversationID); ok {
-		completedTask.ExecutionSummary = &summary
 	}
 
 	// 添加到历史记录
@@ -456,6 +466,12 @@ func (m *AgentTaskManager) FinishTask(conversationID string, finalStatus string)
 	delete(m.tasks, conversationID)
 	bus := m.eventBus
 	m.mu.Unlock()
+	if toolCanceler != nil {
+		toolCanceler(conversationID)
+	}
+	if activeEinoExecuteCancel != nil {
+		activeEinoExecuteCancel()
+	}
 	if bus != nil {
 		bus.CloseConversation(conversationID)
 	}

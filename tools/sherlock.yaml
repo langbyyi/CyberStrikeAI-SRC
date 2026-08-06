@@ -1,0 +1,28 @@
+name: sherlock
+command: sherlock
+enabled: true
+short_description: 社交媒体用户名探测（OSINT）
+description: '跨平台社交媒体用户名搜索，判断用户名在哪些平台注册。
+
+  **使用场景：** OSINT 用户画像、账号关联分析。
+
+
+  **安装：** `pipx install sherlock-project` 或 `apt install sherlock`（若不可用先安装）。'
+parameters:
+  - name: username
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 要搜索的用户名
+  - name: output
+    type: string
+    required: false
+    flag: -o
+    format: flag
+    description: 输出文件
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `--timeout 20` `--site twitter` `-v`(详细)

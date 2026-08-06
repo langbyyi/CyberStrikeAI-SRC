@@ -341,20 +341,15 @@ Found OAuth/OIDC flow ("Login with X")?
 
 ---
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted OAuth requests with manipulated parameters |
-| `http_repeater` | Replay and modify OAuth flow requests |
-| `browser_agent_inspect` | Observe OAuth flow in real browser |
-| `jwt_analyzer` | Analyze id_token JWT for claim issues |
+Use visible `http-framework-test` for controlled flow replay and `jwt-analyzer` for token inspection. Browser observation is optional and only applies when a browser tool is actually visible. Do not invent repeater or browser-agent MCP calls.
 
 ---
 
 ## RELATED ROUTING
 
-- [CORS Misconfiguration](../cors/SKILL.md) — when CORS allows token theft cross-origin
-- [JWT/OAuth Token Attacks](../jwt-attacks/SKILL.md) — when token signing or claims are weak
-- [CSRF Testing](../csrf/SKILL.md) — when OAuth state parameter is missing
-- [SAML SSO Assertion Attacks](../saml-attacks/SKILL.md) — when SAML-based SSO is in use
+- [CORS Misconfiguration](../cors-cross-origin-misconfiguration/SKILL.md) — when CORS allows token theft cross-origin
+- [JWT/OAuth Token Attacks](../jwt-oauth-token-attacks/SKILL.md) — when token signing or claims are weak
+- [CSRF Testing](../csrf-cross-site-request-forgery/SKILL.md) — when OAuth state parameter is missing
+- [SAML SSO Assertion Attacks](../saml-sso-assertion-attacks/SKILL.md) — when SAML-based SSO is in use

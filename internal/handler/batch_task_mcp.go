@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 
@@ -74,7 +76,14 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 		if offset > 100000 {
 			offset = 100000
 		}
-		queues, total, err := h.batchTaskManager.ListQueues(pageSize, offset, status, keyword)
+		queues := []*BatchTaskQueue{}
+		total := 0
+		var err error
+		if principal, ok := authctx.PrincipalFromContext(ctx); ok {
+			queues, total, err = h.batchTaskManager.ListQueuesForAccess(pageSize, offset, status, keyword, principal.UserID, principal.ScopeFor("tasks:read"))
+		} else {
+			return batchMCPTextResult("缺少认证身份", true), nil
+		}
 		if err != nil {
 			return batchMCPTextResult(fmt.Sprintf("列出队列失败: %v", err), true), nil
 		}
@@ -215,10 +224,19 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 			executeNow = false
 		}
 		projectID := strings.TrimSpace(mcpArgString(args, "project_id"))
+		if principal, ok := authctx.PrincipalFromContext(ctx); ok && projectID != "" && principal.ScopeFor("tasks:write") != database.RBACScopeAll {
+			if h.db == nil || !h.db.UserCanAccessResource(principal.UserID, principal.ScopeFor("tasks:write"), "project", projectID) {
+				return batchMCPTextResult("无权访问目标项目", true), nil
+			}
+		}
 		concurrency := int(mcpArgFloat(args, "concurrency"))
 		queue, createErr := h.batchTaskManager.CreateBatchQueue(title, role, agentMode, scheduleMode, cronExpr, projectID, nextRunAt, concurrency, tasks)
 		if createErr != nil {
 			return batchMCPTextResult("创建队列失败: "+createErr.Error(), true), nil
+		}
+		if principal, ok := authctx.PrincipalFromContext(ctx); ok && h.db != nil {
+			_ = h.db.SetResourceOwner("batch_task", queue.ID, principal.UserID)
+			_ = h.db.AssignResourceToUser(principal.UserID, "batch_task", queue.ID)
 		}
 		started := false
 		if executeNow {
@@ -646,7 +664,7 @@ schedule_mode 为 cron 时必须提供有效 cron_expr；为 manual 时会清除
 		return batchMCPJSONResult(queue)
 	})
 
-	logger.Info("批量任务 MCP 工具已注册", zap.Int("count", 12))
+	logger.Debug("批量任务 MCP 工具已注册", zap.Int("count", 12))
 }
 
 // --- batch_task_list 精简结构（避免把每条子任务的 result 等大段文本塞进列表上下文） ---

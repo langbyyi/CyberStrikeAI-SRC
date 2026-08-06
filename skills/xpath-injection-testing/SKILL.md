@@ -1,6 +1,8 @@
 ---
 name: xpath-injection-testing
-description: Professional skills and methodology for XPath injection vulnerability testing
+description: XPath injection vulnerability testing. Use when user input reaches XPath/XQuery
+  expressions, XML-based query filters, or web apps using XPath for authentication/data
+  retrieval — including blind XPath injection.
 ---
 
 # XPath Injection Vulnerability Testing
@@ -358,18 +360,13 @@ XPath query found in application (login, search, XML API)?
 - [ ] Test encoding bypasses: URL-encode payloads (`%27%20or%20%271%27%3D%271`), HTML-entity encode special characters
 - [ ] Verify with parameterized queries or input escaping to confirm the fix
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests with XPath injection payloads (`' or '1'='1`, `admin')] | //*`) in login forms, search parameters, and XML query endpoints |
-| `http_repeater` | Replay and modify XPath injection payloads to test authentication bypass, boolean-based blind extraction, and node enumeration across different input points |
-| `nuclei_scan` | Run XPath-injection-specific Nuclei templates to automate detection of XPath injection vulnerabilities in XML-based API endpoints |
-| `api_fuzzer` | Fuzz API parameters with XPath injection strings to discover XML query sinks where user input reaches XPath expressions |
+Use visible `http-framework-test` for baseline/probe comparison, `nuclei` only with a narrowly selected relevant template, and `execute-python-script` for controlled boolean-differential mutation. Do not assume a repeater or API-fuzzer MCP exists.
 
 ## RELATED ROUTING
 
-- [ldap-injection](../ldap-injection/SKILL.md) — LDAP injection shares the same query-manipulation patterns as XPath injection
-- [sqli](../sqli/SKILL.md) — SQL injection is the relational analogue; boolean-blind and auth-bypass techniques transfer
-- [xxe](../xxe/SKILL.md) — both target XML-processing pipelines in the application
-- [authentication-bypass](../authentication-bypass/SKILL.md) — XPath tautology bypass (`' or '1'='1`) is a core auth bypass method
+- [ldap-injection](../ldap-injection-testing/SKILL.md) — LDAP injection shares the same query-manipulation patterns as XPath injection
+- [sqli](../sqli-sql-injection/SKILL.md) — SQL injection is the relational analogue; boolean-blind and auth-bypass techniques transfer
+- [xxe](../xxe-xml-external-entity/SKILL.md) — both target XML-processing pipelines in the application
+- [authentication-bypass](../authbypass-authentication-flaws/SKILL.md) — XPath tautology bypass (`' or '1'='1`) is a core auth bypass method

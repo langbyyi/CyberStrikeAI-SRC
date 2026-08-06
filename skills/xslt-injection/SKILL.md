@@ -289,16 +289,12 @@ No single universal scanner replaces **version-specific** behavior validation.
 - [ ] Test .NET `msxsl:script` RCE: inline C# with `System.Diagnostics.Process.Start`
 - [ ] Test `xsl:import`/`xsl:include` with external stylesheet URLs for SSRF or code injection
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests with XSLT injection payloads (malicious stylesheets, `document()` calls, `system-property()` probes) to XML transform endpoints |
-| `http_repeater` | Replay and modify XSLT payloads to fingerprint processors, test XXE via XSLT, and verify `document()` SSRF/file-read behavior |
-| `nuclei_scan` | Run XSLT-injection-specific Nuclei templates to automate detection of XSLT processing endpoints and common misconfigurations |
-| `browser_agent_inspect` | Inspect web application pages for XSLT transform endpoints, SOAP services, and report generators that accept user-controlled stylesheet input |
+Use visible `http-framework-test` for controlled transform requests, `nuclei` only with a narrowly selected relevant template, and `execute-python-script` for offline processor fingerprinting or payload generation. Do not assume repeater or browser-agent MCP calls exist.
 
 ## RELATED ROUTING
 
-- **xxe** — DTD/entity hardening, generic XML parsers (`../xxe/SKILL.md`).
-- **ssrf** — when `document(http:…)` or entity URLs cause server fetches (`../ssrf/SKILL.md`).
+- [XXE](../xxe-xml-external-entity/SKILL.md) — DTD/entity hardening and generic XML parsers.
+- [SSRF](../ssrf-server-side-request-forgery/SKILL.md) — when `document(http:…)` or entity URLs cause server fetches.
+

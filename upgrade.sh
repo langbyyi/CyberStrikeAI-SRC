@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CyberStrikeAI GitHub one-click upgrade script (Branch/Tag)
+# CyberStrikeAI GitHub one-click upgrade script (Release/Tag)
 #
 # Default preserves:
 # - config.yaml
 # - data/
 # - venv/ (disabled with --no-venv)
 # - tools/ (user extensions; never overwritten by upgrade)
-#
-# Default syncs (overwrites with upstream):
 # - roles/
 # - skills/
 
@@ -23,44 +21,34 @@ VENV_DIR="$ROOT_DIR/venv"
 KNOWLEDGE_BASE_DIR="$ROOT_DIR/knowledge_base"
 
 BACKUP_BASE_DIR="$ROOT_DIR/.upgrade-backup"
-TMP_DIR=""
+UPGRADE_TMP_DIR=""
 
 GITHUB_REPO="langbyyi/CyberStrikeAI-SRC"
 
 TAG=""
-BRANCH="${GITHUB_BRANCH:-master}"
-TAG_SET=0
-BRANCH_SET=0
 PRESERVE_VENV=1
 STOP_SERVICE=1
 FORCE_STOP=0
 YES=0
-SYNC_ROLES_SKILLS=1
 
 usage() {
   cat <<EOF
 Usage:
-  ./upgrade.sh [--branch master | --tag vX.Y.Z] [--no-venv] [--no-stop]
-                [--force-stop] [--yes] [--no-sync-roles-skills]
+  ./upgrade.sh [--tag vX.Y.Z] [--no-venv] [--no-stop]
+                [--force-stop] [--yes]
 
 Options:
-  --branch <branch>        Upgrade from a GitHub source branch (default: master).
-                            The default can also be set with GITHUB_BRANCH.
-  --tag <tag>              Upgrade from a GitHub source tag (e.g. v1.3.28).
-  --no-venv                 Do not preserve venv/ (Python deps will be re-installed).
-  --no-stop                 Do not try to stop the running service.
-  --force-stop             If no process matching current directory is found, also stop
-                            any cyberstrike-ai processes (use with caution).
-  --yes                     Do not ask for confirmation.
-  --no-sync-roles-skills   Preserve local roles/ and skills/ instead of syncing from
-                            upstream (default: roles/skills are synced).
-                            tools/ is always preserved (user extensions).
+  --tag <tag>          Specify GitHub Release tag (e.g. v1.3.28).
+                        If omitted, the script uses the latest release.
+  --no-venv             Do not preserve venv/ (Python deps will be re-installed).
+  --no-stop             Do not try to stop the running service.
+  --force-stop         If no process matching current directory is found, also stop
+                        any cyberstrike-ai processes (use with caution).
+  --yes                 Do not ask for confirmation.
 
 Description:
   The script backs up config.yaml/data/tools/roles/skills/ (and optionally venv/) to
-  .upgrade-backup/. By default roles/ and skills/ are synced from upstream so the
-  latest predefined roles and skill packs ship on upgrade; pass --no-sync-roles-skills
-  to keep your local edits.
+  .upgrade-backup/
 EOF
 }
 
@@ -74,11 +62,18 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 http_get() {
   # $1: url
   if have_cmd curl; then
-    curl -fsSL "$1"
+    # If GITHUB_TOKEN is provided, use it for api.github.com to avoid low rate limits.
+    if [[ -n "${GITHUB_TOKEN:-}" && "$1" == https://api.github.com/* ]]; then
+      # Do not use `-f` so we can parse GitHub error JSON bodies and show `message`.
+      curl -sSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "$1"
+    else
+      # Do not use `-f` so we can parse GitHub error JSON bodies and show `message`.
+      curl -sSL "$1"
+    fi
   elif have_cmd wget; then
     wget -qO- "$1"
   else
-    err "curl or wget is required to download GitHub source archives. Please install one of them."
+    err "curl or wget is required to download GitHub releases. Please install one of them."
     exit 1
   fi
 }
@@ -177,7 +172,7 @@ confirm_or_exit() {
     info " - Preserve venv/: no (will remove old venv and re-install deps)"
   fi
   info " - Preserve tools/: yes (always)"
-  if [[ "$SYNC_ROLES_SKILLS" -eq 1 ]]; then info " - Sync roles/skills from upstream: yes (default; use --no-sync-roles-skills to preserve local)"; else info " - Preserve roles/skills: yes"; fi
+  info " - Preserve roles/skills: yes (always)"
   info " - Stop service: ${STOP_SERVICE}"
   echo ""
   read -r -p "Continue? (y/N) " ans
@@ -187,8 +182,60 @@ confirm_or_exit() {
   fi
 }
 
+resolve_tag() {
+  if [[ -n "$TAG" ]]; then
+    info "Using specified tag: $TAG"
+    return 0
+  fi
+
+  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+  info "Fetching latest Release..."
+  local json
+  json="$(http_get "$api_url")"
+  TAG="$(printf '%s' "$json" | python3 - <<'PY'
+import json, sys
+data=json.loads(sys.stdin.read() or "{}")
+print(data.get("tag_name",""))
+PY
+)"
+
+  if [[ -z "$TAG" ]]; then
+    local msg
+    msg="$(printf '%s' "$json" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('message',''))" 2>/dev/null || true)"
+
+    # Fallback: try query releases list (sometimes latest endpoint returns error JSON without tag_name).
+    local fallback_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=1"
+    info "Fallback to: ${fallback_url}"
+    local fallback_json
+    fallback_json="$(http_get "$fallback_url" 2>/dev/null || true)"
+    local fallback_tag
+    fallback_tag="$(printf '%s' "$fallback_json" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '[]'); print(d[0].get('tag_name','') if isinstance(d,list) and d else '')" 2>/dev/null || true)"
+
+    if [[ -n "$fallback_tag" ]]; then
+      TAG="$fallback_tag"
+      info "Latest Release tag (fallback): $TAG"
+      return 0
+    fi
+
+    local snippet
+    snippet="$(printf '%s' "$json" | python3 -c "import sys; s=sys.stdin.read(); print(s[:300].replace('\\n',' '))" 2>/dev/null || true)"
+
+    if [[ -n "$msg" ]]; then
+      err "Failed to fetch latest tag: ${msg}"
+    else
+      err "Failed to fetch latest tag."
+    fi
+    if [[ -n "$snippet" ]]; then
+      err "API response snippet: ${snippet}"
+    fi
+    err "Please try using --tag to specify the version, or set export GITHUB_TOKEN=\"...\"."
+    exit 1
+  fi
+  info "Latest Release tag: $TAG"
+}
+
 update_config_version() {
-  # Replace config.yaml's version: ... with the selected source version.
+  # Replace config.yaml's version: ... with the specified tag.
   local new_tag="$1"
   python3 - "$CONFIG_FILE" "$new_tag" <<PY
 import re, sys
@@ -229,9 +276,9 @@ sync_code() {
 
   local -a rsync_excludes
   rsync_excludes+=( "--exclude=.upgrade-backup/" )
-  rsync_excludes+=( "--exclude=.git/" )
   rsync_excludes+=( "--exclude=config.yaml" )
   rsync_excludes+=( "--exclude=data/" )
+  rsync_excludes+=( "--exclude=tmp/" )
 
   if [[ "$PRESERVE_VENV" -eq 1 ]]; then
     rsync_excludes+=( "--exclude=venv/" )
@@ -244,11 +291,11 @@ sync_code() {
 
   # User tool extensions: never replace or delete during upgrade.
   rsync_excludes+=( "--exclude=tools/" )
-  # roles/ and skills/ default preserved; --sync-roles-skills overrides to sync from upstream.
-  if [[ "$SYNC_ROLES_SKILLS" -ne 1 ]]; then
-    rsync_excludes+=( "--exclude=roles/" )
-    rsync_excludes+=( "--exclude=skills/" )
-  fi
+  rsync_excludes+=( "--exclude=roles/" )
+  rsync_excludes+=( "--exclude=skills/" )
+
+  # Ensure this upgrade script itself is not deleted.
+  rsync_excludes+=( "--exclude=upgrade.sh" )
 
   # shellcheck disable=SC2068
   info "Syncing code into current directory (preserving data/config; using rsync --delete)..."
@@ -263,21 +310,7 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --tag)
-        if [[ $# -lt 2 || -z "${2:-}" ]]; then
-          err "--tag requires a non-empty tag."
-          exit 1
-        fi
-        TAG="$2"
-        TAG_SET=1
-        shift 2
-        ;;
-      --branch)
-        if [[ $# -lt 2 || -z "${2:-}" ]]; then
-          err "--branch requires a non-empty branch."
-          exit 1
-        fi
-        BRANCH="$2"
-        BRANCH_SET=1
+        TAG="${2:-}"
         shift 2
         ;;
       --no-venv)
@@ -296,10 +329,6 @@ main() {
         YES=1
         shift 1
         ;;
-      --no-sync-roles-skills)
-        SYNC_ROLES_SKILLS=0
-        shift 1
-        ;;
       -h|--help)
         usage
         exit 0
@@ -312,14 +341,11 @@ main() {
     esac
   done
 
-  if [[ "$TAG_SET" -eq 1 && "$BRANCH_SET" -eq 1 ]]; then
-    err "--tag and --branch cannot be used together."
-    exit 1
-  fi
-
   confirm_or_exit
 
   stop_service
+
+  resolve_tag
 
   local ts
   ts="$(date +"%Y%m%d_%H%M%S")"
@@ -350,41 +376,31 @@ main() {
     backup_dir_tgz "skills" "$ROOT_DIR/skills"
   fi
 
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR" >/dev/null 2>&1 || true' EXIT
+  UPGRADE_TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "${UPGRADE_TMP_DIR:-}" >/dev/null 2>&1 || true' EXIT
 
-  local tarball="${TMP_DIR}/source.tar.gz"
-  local source_version
-  local url
-  if [[ "$TAG_SET" -eq 1 ]]; then
-    source_version="$TAG"
-    url="https://github.com/${GITHUB_REPO}/archive/refs/tags/${TAG}.tar.gz"
-    info "Using source tag: $TAG"
-  else
-    source_version="branch:${BRANCH}"
-    url="https://github.com/${GITHUB_REPO}/archive/refs/heads/${BRANCH}.tar.gz"
-    info "Using source branch: $BRANCH"
-  fi
+  local tarball="${UPGRADE_TMP_DIR}/source.tar.gz"
+  local url="https://github.com/${GITHUB_REPO}/archive/refs/tags/${TAG}.tar.gz"
   info "Downloading source package: ${url}"
   http_get "$url" >"$tarball"
 
   info "Extracting source package..."
-  tar -xzf "$tarball" -C "$TMP_DIR"
+  tar -xzf "$tarball" -C "$UPGRADE_TMP_DIR"
 
   # GitHub tarball usually creates a top-level directory.
   local extracted_dir
-  extracted_dir="$(ls -d "${TMP_DIR}"/*/ 2>/dev/null | head -n 1 || true)"
+  extracted_dir="$(ls -d "${UPGRADE_TMP_DIR}"/*/ 2>/dev/null | head -n 1 || true)"
   if [[ -z "$extracted_dir" || ! -f "${extracted_dir}/run.sh" ]]; then
     err "run.sh not found in the extracted directory. Please check network/download contents."
     exit 1
   fi
 
-  sync_code "$TMP_DIR" "$extracted_dir"
+  sync_code "$UPGRADE_TMP_DIR" "$extracted_dir"
 
   # Update config.yaml version display
   if [[ -f "$CONFIG_FILE" ]]; then
-    info "Updating config.yaml version field to: $source_version"
-    update_config_version "$source_version"
+    info "Updating config.yaml version field to: $TAG"
+    update_config_version "$TAG"
   fi
 
   info "Upgrade complete. Starting service..."
@@ -393,4 +409,3 @@ main() {
 }
 
 main "$@"
-

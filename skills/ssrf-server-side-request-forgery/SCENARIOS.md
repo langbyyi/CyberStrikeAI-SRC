@@ -224,3 +224,5 @@ http://127.0.0.1:9222/json → list debugging targets
 # Connect via WebSocket → full control of browser tabs
 # Read cookies, navigate to arbitrary URLs, execute JS
 ```
+
+

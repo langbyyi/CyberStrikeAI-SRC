@@ -362,23 +362,16 @@ Found GraphQL endpoint?
 
 ---
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `graphql_scanner` | Automated GraphQL introspection and security scanning |
-| `api_schema_analyzer` | Analyze GraphQL schema for security issues |
-| `http_framework_test` | Send crafted GraphQL queries with injection payloads |
-| `http_repeater` | Replay GraphQL queries and compare responses |
-| `api_fuzzer` | Fuzz GraphQL arguments with injection payloads |
-| `browser_agent_inspect` | Inspect frontend JS for GraphQL query patterns |
+Use visible `graphql-scanner`, `api-schema-analyzer`, `http-framework-test`, `x8`, `ffuf`, or `execute-python-script` tools for schema inspection, controlled query replay and argument mutation. Inspect downloaded frontend assets with visible file/command tools when needed. Never assume a browser-agent or repeater MCP exists.
 
 ---
 
 ## RELATED ROUTING
 
-- If hidden fields affect privilege: [IDOR and Broken Object Authorization](../idor/SKILL.md)
-- If GraphQL batching changes auth or rate behavior: [JWT and OAuth Token Attacks](../jwt-attacks/SKILL.md)
-- If endpoint discovery is incomplete: [API Security Router](../api-security/SKILL.md)
+- If hidden fields affect privilege: [IDOR and Broken Object Authorization](../idor-broken-object-authorization/SKILL.md)
+- If GraphQL batching changes auth or rate behavior: [JWT and OAuth Token Attacks](../jwt-oauth-token-attacks/SKILL.md)
+- If endpoint discovery is incomplete: [API Security Router](../api-sec/SKILL.md)
 - If NoSQL injection found via GraphQL filters: [NoSQL Injection](../nosql-injection/SKILL.md)
-- If SQL injection found in resolver: [SQL Injection](../sqli/SKILL.md)
+- If SQL injection found in resolver: [SQL Injection](../sqli-sql-injection/SKILL.md)

@@ -34,9 +34,9 @@ type Manager struct {
 	runningListeners map[string]Listener // listener_id → 已 Start 的 listener 实例
 	storageDir       string              // 大结果（截图/下载）落盘根目录
 
-	hitlBridge        HITLBridge // 危险任务在 EnqueueTask 时调它发起审批（nil 表示不接 HITL）
+	hitlBridge        HITLBridge                                    // 危险任务在 EnqueueTask 时调它发起审批（nil 表示不接 HITL）
 	hitlDangerousGate func(conversationID, mcpToolName string) bool // 与人机协同一致：为 nil 或返回 false 时不走桥
-	hooks             Hooks // 扩展挂钩：会话上线 / 任务完成 时通知漏洞库与攻击链
+	hooks             Hooks                                         // 扩展挂钩：会话上线 / 任务完成 时通知漏洞库与攻击链
 }
 
 // MCPToolC2Task 与 MCP builtin、c2_task 工具名一致，供 HITL 白名单与 Agent 侧对齐。
@@ -63,7 +63,7 @@ type HITLApprovalRequest struct {
 
 // Hooks 给上层（漏洞管理 / 攻击链）注入回调
 type Hooks struct {
-	OnSessionFirstSeen func(session *database.C2Session)            // 新会话首次上线
+	OnSessionFirstSeen func(session *database.C2Session)             // 新会话首次上线
 	OnTaskCompleted    func(task *database.C2Task, sessionID string) // 任务完成（success/failed）
 }
 
@@ -144,6 +144,7 @@ func (m *Manager) Close() {
 // CreateListenerInput Web/MCP 创建监听器的入参（已校验 + 已 trim）
 type CreateListenerInput struct {
 	Name      string
+	ProjectID string
 	Type      string
 	BindHost  string
 	BindPort  int
@@ -195,6 +196,7 @@ func (m *Manager) CreateListener(in CreateListenerInput) (*database.C2Listener, 
 
 	listener := &database.C2Listener{
 		ID:            "l_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:14],
+		ProjectID:     strings.TrimSpace(in.ProjectID),
 		Name:          strings.TrimSpace(in.Name),
 		Type:          strings.ToLower(strings.TrimSpace(in.Type)),
 		BindHost:      bindHost,

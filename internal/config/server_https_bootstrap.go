@@ -44,3 +44,17 @@ func ApplyDevHTTPSBootstrap(cfg *Config) {
 	}
 	cfg.Server.TLSAutoSelfSign = true
 }
+
+// ApplyPlainHTTPBootstrap 供 --http / 一键脚本使用：强制主站使用明文 HTTP。
+// 它会覆盖配置文件中的 TLS 开关、自签证书以及证书路径，避免 --http 仍被配置中的 HTTPS 选项重新启用。
+func ApplyPlainHTTPBootstrap(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.Server.TLSEnabled = false
+	cfg.Server.TLSAutoSelfSign = false
+	cfg.Server.TLSCertPath = ""
+	cfg.Server.TLSKeyPath = ""
+	disabled := false
+	cfg.Server.TLSHTTPRedirect = &disabled
+}

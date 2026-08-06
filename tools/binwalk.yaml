@@ -36,7 +36,9 @@ parameters:
       额外的binwalk参数。用于传递未在参数列表中定义的binwalk选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - -Me（递归提取所有文件）
+      - --dd='type:offset:length'（按类型提取）
+      - --signature（仅签名扫描）
 
       **注意事项：**
       - 多个参数用空格分隔

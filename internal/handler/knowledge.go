@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"cyberstrike-ai/internal/audit"
@@ -316,20 +317,55 @@ func (h *KnowledgeHandler) DeleteItem(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
 }
 
-// RebuildIndex 重建索引
-func (h *KnowledgeHandler) RebuildIndex(c *gin.Context) {
-	// 异步重建索引
+// StartIndex 构建知识库向量索引。默认仅补齐尚无向量的知识项；mode=full 时全量重建。
+func (h *KnowledgeHandler) StartIndex(c *gin.Context) {
+	if err := h.indexer.TryBeginIndexRun(); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "已有索引任务正在进行，请等待完成"})
+		return
+	}
+
+	mode := strings.TrimSpace(c.Query("mode"))
+	if mode == "" {
+		mode = "missing"
+	}
+	if mode != "full" && mode != "missing" {
+		h.indexer.FinishIndexRun()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 mode 参数，可选值：missing、full"})
+		return
+	}
+
+	fullRebuild := mode == "full"
+	message := "索引构建已开始，将在后台进行"
+	auditAction := "index_build"
+	auditDetail := "构建知识库索引"
+	if fullRebuild {
+		message = "全量索引重建已开始，将在后台进行"
+		auditAction = "index_rebuild_full"
+		auditDetail = "全量重建知识库索引"
+	}
+
 	go func() {
+		defer h.indexer.FinishIndexRun()
 		ctx := context.Background()
-		if err := h.indexer.RebuildIndex(ctx); err != nil {
-			h.logger.Error("重建索引失败", zap.Error(err))
+		var err error
+		if fullRebuild {
+			err = h.indexer.RunRebuildIndex(ctx)
+		} else {
+			err = h.indexer.RunIndexMissing(ctx)
+		}
+		if err != nil {
+			if fullRebuild {
+				h.logger.Error("全量重建索引失败", zap.Error(err))
+			} else {
+				h.logger.Error("构建知识库索引失败", zap.Error(err))
+			}
 		}
 	}()
 
 	if h.audit != nil {
-		h.audit.RecordOK(c, "knowledge", "index_rebuild", "重建知识库索引", "knowledge", "", nil)
+		h.audit.RecordOK(c, "knowledge", auditAction, auditDetail, "knowledge", "", nil)
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "索引重建已开始，将在后台进行"})
+	c.JSON(http.StatusOK, gin.H{"message": message, "mode": mode})
 }
 
 // ScanKnowledgeBase 扫描知识库

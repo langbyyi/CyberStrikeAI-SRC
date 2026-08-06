@@ -48,7 +48,9 @@ parameters:
       额外的paramspider参数。用于传递未在参数列表中定义的paramspider选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - --exclude somedomain（排除域）
+      - --level high（爬取级别）
+      - --subdomains（含子域）
 
       **注意事项：**
       - 多个参数用空格分隔

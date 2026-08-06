@@ -1,85 +1,78 @@
-name: "responder"
-command: "python3"
+name: responder
+command: python3
 args:
-  - "-c"
-  - |
-    import shlex
-    import subprocess
-    import sys
-    import time
-
-    interface = sys.argv[1] if len(sys.argv) > 1 else "eth0"
-    analyze = sys.argv[2].lower() == "true" if len(sys.argv) > 2 else False
-    wpad = sys.argv[3].lower() == "true" if len(sys.argv) > 3 else True
-    fingerprint = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else False
-    duration = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else 300
-    extra = sys.argv[6] if len(sys.argv) > 6 else ""
-
-    cmd = ["responder", "-I", interface]
-    if analyze:
-        cmd.append("-A")
-    if wpad:
-        cmd.append("-w")
-    if fingerprint:
-        cmd.append("-f")
-    if extra:
-        cmd.extend(shlex.split(extra))
-
-    proc = subprocess.Popen(cmd)
-    try:
-        if duration > 0:
-            time.sleep(duration)
-            proc.terminate()
-            proc.wait(timeout=10)
-        else:
-            proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
-        proc.wait(timeout=10)
+  - -c
+  - "import shlex\nimport subprocess\nimport sys\nimport time\n\ninterface = sys.argv[1] if len(sys.argv) > 1 else \"eth0\"\nanalyze = sys.argv[2].lower() == \"true\" if len(sys.argv) > 2 else False\nwpad = sys.argv[3].lower() == \"true\" if len(sys.argv) > 3 else True\nfingerprint = sys.argv[4].lower() == \"true\" if len(sys.argv) > 4 else False\nduration = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else 300\nextra = sys.argv[6] if len(sys.argv) > 6 else \"\"\n\ncmd = [\"responder\", \"-I\", interface]\nif analyze:\n    cmd.append(\"-A\")\nif wpad:\n    cmd.append(\"-w\")\nif fingerprint:\n    cmd.append(\"-f\")\nif extra:\n    cmd.extend(shlex.split(extra))\n\nproc = subprocess.Popen(cmd)\ntry:\n    if duration > 0:\n        time.sleep(duration)\n        proc.terminate()\n        proc.wait(timeout=10)\n    else:\n        proc.wait()\nexcept KeyboardInterrupt:\n    proc.terminate()\n    proc.wait(timeout=10)\n"
 enabled: true
-short_description: "LLMNR/NBT-NS/MDNS投毒和凭据收集工具"
-description: |
-  封装 Responder，支持自动在指定持续时间后停止进程，避免占用网络。
+short_description: LLMNR/NBT-NS/MDNS投毒和凭据收集工具
+description: '封装 Responder，用于 LLMNR/NBT-NS/MDNS 投毒与凭据收集。
+
+
+  **主要功能：**
+
+  - LLMNR/NBT-NS/MDNS 毒化，捕获网络内认证凭据
+
+  - 自动在指定持续时间后停止进程，避免长期占用网络
+
+  - 支持分析模式（只监听不投毒）、WPAD 选项、指纹识别
+
+
+  **使用场景：**
+
+  - 内网渗透测试中捕获 NTLM 哈希
+
+  - 结合 hashcat 离线破解捕获的哈希
+
+  - 认证协议投毒验证
+
+
+  **注意事项：**
+
+  - 需要 root 权限运行
+
+  - 选择正确的网络接口（-I）
+
+  - 投毒会干扰局域网内主机解析，注意影响范围'
 parameters:
-  - name: "interface"
-    type: "string"
-    description: "网络接口（-I）"
+  - name: interface
+    type: string
+    description: 网络接口（-I）
     required: false
-    default: "eth0"
+    default: eth0
     position: 0
-    format: "positional"
-  - name: "analyze"
-    type: "bool"
-    description: "仅分析模式（-A）"
+    format: positional
+  - name: analyze
+    type: bool
+    description: 仅分析模式（-A）
     required: false
     default: false
     position: 1
-    format: "positional"
-  - name: "wpad"
-    type: "bool"
-    description: "启用WPAD恶意代理（-w）"
+    format: positional
+  - name: wpad
+    type: bool
+    description: 启用WPAD恶意代理（-w）
     required: false
     default: true
     position: 2
-    format: "positional"
-  - name: "fingerprint"
-    type: "bool"
-    description: "指纹识别模式（-f）"
+    format: positional
+  - name: fingerprint
+    type: bool
+    description: 指纹识别模式（-f）
     required: false
     default: false
     position: 3
-    format: "positional"
-  - name: "duration"
-    type: "int"
-    description: "运行持续时间（秒，0表示直到手动停止）"
+    format: positional
+  - name: duration
+    type: int
+    description: 运行持续时间（秒，0表示直到手动停止）
     required: false
     default: 300
     position: 4
-    format: "positional"
-  - name: "additional_args"
-    type: "string"
-    description: "额外的Responder参数（直接追加）"
+    format: positional
+  - name: additional_args
+    type: string
+    description: 额外的Responder参数（直接追加）
     required: false
-    default: ""
+    default: ''
     position: 5
-    format: "positional"
+    format: positional

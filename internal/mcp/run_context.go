@@ -22,6 +22,8 @@ type EinoExecuteRunRegistry interface {
 type toolRunRegistryCtxKey struct{}
 type einoExecuteRunRegistryCtxKey struct{}
 type mcpConversationIDCtxKey struct{}
+type mcpExecutionIDCtxKey struct{}
+type mcpProjectIDCtxKey struct{}
 
 // WithToolRunRegistry 将登记器注入 ctx（Eino / 原生 Agent 任务 ctx）。
 func WithToolRunRegistry(ctx context.Context, reg ToolRunRegistry) context.Context {
@@ -75,6 +77,48 @@ func MCPConversationIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	v, _ := ctx.Value(mcpConversationIDCtxKey{}).(string)
+	return v
+}
+
+// WithMCPExecutionID 将当前工具 executionId 注入 ctx，供超长输出落盘文件名对齐。
+func WithMCPExecutionID(ctx context.Context, executionID string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	id := strings.TrimSpace(executionID)
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpExecutionIDCtxKey{}, id)
+}
+
+// MCPExecutionIDFromContext 读取当前工具 executionId。
+func MCPExecutionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(mcpExecutionIDCtxKey{}).(string)
+	return v
+}
+
+// WithMCPProjectID 将项目 ID 注入 ctx，供 reduction/trunc 落盘路径与项目隔离对齐。
+func WithMCPProjectID(ctx context.Context, projectID string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	id := strings.TrimSpace(projectID)
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpProjectIDCtxKey{}, id)
+}
+
+// MCPProjectIDFromContext 读取项目 ID。
+func MCPProjectIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(mcpProjectIDCtxKey{}).(string)
 	return v
 }
 

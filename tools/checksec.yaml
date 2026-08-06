@@ -29,7 +29,9 @@ parameters:
       额外的checksec参数。用于传递未在参数列表中定义的checksec选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - --file=./binary（指定二进制）
+      - --format=csv（输出格式）
+      - --output=result.json（输出到文件）
 
       **注意事项：**
       - 多个参数用空格分隔

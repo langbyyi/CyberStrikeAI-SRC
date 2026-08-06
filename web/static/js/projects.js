@@ -7,6 +7,21 @@ const PROJECTS_LIST_PAGE_SIZE_KEY = 'cyberstrike.projects_list_page_size';
 let currentProjectId = null;
 let currentProjectUpdatedAt = null;
 let currentProjectTab = 'facts';
+let currentProjectAssets = [];
+const PROJECT_ASSETS_PAGE_SIZE_KEY = 'cyberstrike.project_assets_page_size';
+let projectAssetsPagination = {
+    page: 1,
+    pageSize: (() => {
+        try {
+            const size = Number(localStorage.getItem(PROJECT_ASSETS_PAGE_SIZE_KEY));
+            return [10, 20, 50, 100].includes(size) ? size : 20;
+        } catch (e) {
+            return 20;
+        }
+    })(),
+    total: 0,
+    totalPages: 1,
+};
 const projectNameById = {};
 let _projectsListReady = false;
 let _projectsFetchPromise = null;
@@ -24,6 +39,208 @@ function tpFmt(key, fallback, opts) {
     const text = tp(key, opts);
     if (!text || text === key) return fallback;
     return text;
+}
+
+function requireProjectWrite() {
+    if (typeof requirePermission !== 'function') return true;
+    return requirePermission(
+        'project:write',
+        tpFmt('projects.writePermissionDenied', '当前账号仅有只读权限，无法创建或修改项目'),
+    );
+}
+
+function requireProjectDelete() {
+    if (typeof requirePermission !== 'function') return true;
+    return requirePermission(
+        'project:delete',
+        tpFmt('projects.writePermissionDenied', '当前账号仅有只读权限，无法删除项目'),
+    );
+}
+
+async function notifyProjectApiFailure(response, fallbackKey, fallbackText) {
+    if (typeof ensureApiOk === 'function') {
+        return ensureApiOk(response, tpFmt(fallbackKey, fallbackText));
+    }
+    if (!response || response.ok) return true;
+    alert(tpFmt(fallbackKey, fallbackText));
+    return false;
+}
+
+const PROJECTS_FILTER_SELECT_HANDLERS = {
+    'project-facts-filter-category': function () { loadProjectFacts(); },
+    'project-facts-filter-confidence': function () { loadProjectFacts(); },
+    'project-graph-view': function () { loadProjectFactGraph(); },
+    'project-vulns-filter-severity': function () { loadProjectVulnerabilities(); },
+    'project-vulns-filter-status': function () { loadProjectVulnerabilities(); },
+    'projects-page-size-pagination': function () { changeProjectsPageSize(); }
+};
+const projectsFilterSelectMap = {};
+let projectsFilterSelectDocBound = false;
+const PROJECTS_FILTER_SELECT_CARET = '<svg class="projects-filter-select-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function closeAllProjectsFilterSelects() {
+    Object.keys(projectsFilterSelectMap).forEach(function (id) {
+        const reg = projectsFilterSelectMap[id];
+        if (!reg || !reg.wrapper) return;
+        reg.wrapper.classList.remove('open');
+        if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function pruneProjectsFilterSelectMap(root) {
+    Object.keys(projectsFilterSelectMap).forEach(function (id) {
+        const select = document.getElementById(id);
+        if (!select || (root && !root.contains(select))) {
+            delete projectsFilterSelectMap[id];
+        }
+    });
+}
+
+function syncProjectsFilterSelect(select) {
+    const reg = projectsFilterSelectMap[select.id];
+    if (!reg) return;
+    const dropdown = reg.dropdown;
+    const trigger = reg.trigger;
+    const valueSpan = trigger.querySelector('.projects-filter-select-value');
+
+    dropdown.innerHTML = '';
+    Array.prototype.forEach.call(select.options, function (opt) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'projects-filter-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-value', opt.value);
+        if (opt.value === select.value) {
+            item.classList.add('is-selected');
+            item.setAttribute('aria-selected', 'true');
+        } else {
+            item.setAttribute('aria-selected', 'false');
+        }
+        const check = document.createElement('span');
+        check.className = 'projects-filter-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'projects-filter-select-label';
+        label.textContent = opt.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        dropdown.appendChild(item);
+    });
+
+    const selectedOpt = select.options[select.selectedIndex];
+    if (valueSpan) {
+        valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+    }
+    trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+}
+
+function syncAllProjectsFilterSelects() {
+    Object.keys(projectsFilterSelectMap).forEach(function (id) {
+        const select = document.getElementById(id);
+        if (select) syncProjectsFilterSelect(select);
+    });
+}
+
+function enhanceProjectsFilterSelect(select) {
+    if (!select || !select.id) return;
+    const existing = projectsFilterSelectMap[select.id];
+    if (existing && existing.select !== select) {
+        delete projectsFilterSelectMap[select.id];
+    }
+    if (select.dataset.projectsCustomSelect === '1') {
+        syncProjectsFilterSelect(select);
+        return;
+    }
+    select.dataset.projectsCustomSelect = '1';
+    select.classList.add('projects-filter-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'projects-filter-select-ui';
+    if (select.id === 'projects-page-size-pagination') {
+        wrapper.classList.add('projects-filter-select-ui--compact');
+    }
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'projects-filter-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'projects-filter-select-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', PROJECTS_FILTER_SELECT_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'projects-filter-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    projectsFilterSelectMap[select.id] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+    trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (select.disabled) return;
+        const open = wrapper.classList.contains('open');
+        closeAllProjectsFilterSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+        }
+    });
+
+    dropdown.addEventListener('click', function (e) {
+        const opt = e.target.closest('.projects-filter-select-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        wrapper.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        syncProjectsFilterSelect(select);
+    });
+
+    select.addEventListener('change', function () {
+        syncProjectsFilterSelect(select);
+    });
+
+    if (!select.dataset.projectsFilterBound) {
+        select.dataset.projectsFilterBound = '1';
+        const handler = PROJECTS_FILTER_SELECT_HANDLERS[select.id];
+        if (typeof handler === 'function') {
+            select.addEventListener('change', handler);
+        }
+    }
+
+    syncProjectsFilterSelect(select);
+}
+
+function refreshProjectsFilterSelects() {
+    const page = document.getElementById('page-projects');
+    if (!page) return;
+    pruneProjectsFilterSelectMap(page);
+    page.querySelectorAll('select.projects-filter-select-native, #projects-page-size-pagination').forEach(function (select) {
+        enhanceProjectsFilterSelect(select);
+    });
+    if (!projectsFilterSelectDocBound) {
+        projectsFilterSelectDocBound = true;
+        document.addEventListener('click', closeAllProjectsFilterSelects);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeAllProjectsFilterSelects();
+        });
+    }
 }
 
 /** 与后端 internal/project/fact_template.go 对齐 */
@@ -64,6 +281,8 @@ Host: ...
 ## 关联
 - related_vulnerability_id: <可选>
 - 依赖事实: <fact_key，如 auth/session_cookie>
+  - 结构化关系边（自动同步；links 文本格式 type: source_fact_key）:
+  - discovered_on: target/primary_domain
 
 ## 备注与不确定性
 <待验证假设、环境差异、绕过尝试记录>`;
@@ -169,6 +388,65 @@ function rebuildProjectNameMap(list) {
     (list || []).forEach((p) => {
         if (p && p.id) projectNameById[p.id] = p.name || p.id;
     });
+}
+
+function rememberProjectsInNameMap(list) {
+    (list || []).forEach((p) => {
+        if (p && p.id) projectNameById[p.id] = p.name || p.id;
+    });
+}
+
+/** 与后端 projectListSearchPattern 对齐：name / description / id 子串匹配（忽略大小写） */
+function matchProjectSearchQuery(project, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    const name = String(project.name || '').toLowerCase();
+    const desc = String(project.description || '').toLowerCase();
+    const id = String(project.id || '').toLowerCase();
+    return name.includes(q) || desc.includes(q) || id.includes(q);
+}
+
+function sortProjectsForPicker(projects) {
+    return [...projects].sort((a, b) => {
+        const ap = a.pinned ? 1 : 0;
+        const bp = b.pinned ? 1 : 0;
+        if (bp !== ap) return bp - ap;
+        const au = a.updated_at || a.updatedAt || '';
+        const bu = b.updated_at || b.updatedAt || '';
+        return String(bu).localeCompare(String(au));
+    });
+}
+
+/** 从已加载列表中筛选活跃项目（对话选择器 / 项目筛选下拉） */
+function filterActiveProjectsLocal(projects, query) {
+    const list = (projects || []).filter((p) => p && p.id && p.status !== 'archived');
+    const q = String(query || '').trim();
+    const filtered = q ? list.filter((p) => matchProjectSearchQuery(p, q)) : list;
+    return sortProjectsForPicker(filtered);
+}
+
+async function searchActiveProjects(query, opts = {}) {
+    const params = new URLSearchParams();
+    params.set('status', opts.status || 'active');
+    params.set('limit', String(opts.limit ?? (String(query || '').trim() ? PROJECT_PICKER_SEARCH_LIMIT : PROJECT_PICKER_INITIAL_LIMIT)));
+    params.set('offset', String(opts.offset ?? 0));
+    const q = String(query || '').trim();
+    if (q) params.set('search', q);
+    const res = await apiFetch(`/api/projects?${params}`);
+    if (!res.ok) throw new Error(tp('projects.loadProjectsFailed'));
+    const parsed = parseProjectsListResponse(await res.json());
+    rememberProjectsInNameMap(parsed.items);
+    return parsed;
+}
+
+async function fetchProjectSummary(projectId) {
+    const id = String(projectId || '').trim();
+    if (!id) return null;
+    const res = await apiFetch(`/api/projects/${encodeURIComponent(id)}`);
+    if (!res.ok) return null;
+    const project = await res.json();
+    if (project && project.id) rememberProjectsInNameMap([project]);
+    return project;
 }
 
 function getProjectsListPageSize() {
@@ -291,6 +569,9 @@ async function ensureProjectsLoaded(force) {
             projectsCacheAll = list;
             rebuildProjectNameMap(projectsCacheAll);
             _projectsListReady = true;
+            if (typeof window.refreshConversationProjectFilter === 'function') {
+                window.refreshConversationProjectFilter();
+            }
             return projectsCacheAll;
         })
         .catch((e) => {
@@ -303,12 +584,24 @@ async function ensureProjectsLoaded(force) {
     return _projectsFetchPromise;
 }
 
+function isProjectsCacheReady() {
+    return _projectsListReady;
+}
+
 function prefetchProjectsForChat() {
+    const id = (resolveChatProjectSelection() || '').trim();
+    if (id && !projectNameById[id]) {
+        fetchProjectSummary(id).catch(() => {});
+    }
     ensureProjectsLoaded().catch(() => {});
 }
 
-/** 新对话时默认不绑定项目；用户需主动选择后才写入共享黑板 */
+/** 新对话沿用用户最近选择的项目；没有选择时才保持未绑定。 */
 async function ensureDefaultActiveProjectForNewChat() {
+    const id = getActiveProjectId();
+    if (!id) return '';
+    const project = await fetchProjectSummary(id).catch(() => null);
+    if (project && project.id && project.status !== 'archived') return project.id;
     setActiveProjectId('');
     return '';
 }
@@ -332,6 +625,7 @@ async function initProjectsPage() {
     const page = document.getElementById('page-projects');
     if (!page || page.style.display === 'none') return;
     initProjectsModalEscape();
+    refreshProjectsFilterSelects();
     if (typeof syncAppModalBodyLock === 'function') {
         syncAppModalBodyLock();
     }
@@ -368,6 +662,9 @@ async function loadProjectsList() {
     }
     if (typeof refreshVulnerabilityProjectFilter === 'function') {
         refreshVulnerabilityProjectFilter();
+    }
+    if (typeof window.refreshAllProjectFilterSelects === 'function') {
+        await window.refreshAllProjectFilterSelects();
     }
 }
 
@@ -563,13 +860,14 @@ function renderProjectsPagination() {
             </div>
             <label class="pagination-page-size">
                 ${escapeHtml(tp('projects.paginationPerPage'))}
-                <select id="projects-page-size-pagination" onchange="changeProjectsPageSize()">
+                <select id="projects-page-size-pagination" class="projects-filter-select-native">
                     <option value="20" ${pageSize === 20 ? 'selected' : ''}>20</option>
                     <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
                     <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
                 </select>
             </label>
         </div>`;
+    refreshProjectsFilterSelects();
 }
 
 function renderProjectsSidebar() {
@@ -578,8 +876,10 @@ function renderProjectsSidebar() {
     updateProjectsListCount();
     const list = projectsCache;
     if (!projectsCache.length) {
-        el.innerHTML =
-            `<div class="projects-empty">${escapeHtml(tp('projects.noProjects'))}<br><button type="button" class="btn-primary btn-small projects-empty-btn" onclick="showNewProjectModal()">${escapeHtml(tp('projects.newProject'))}</button></div>`;
+        const createBtn = (typeof hasPermission === 'function' && hasPermission('project:write'))
+            ? `<button type="button" class="btn-primary btn-small projects-empty-btn" onclick="showNewProjectModal()">${escapeHtml(tp('projects.newProject'))}</button>`
+            : '';
+        el.innerHTML = `<div class="projects-empty">${escapeHtml(tp('projects.noProjects'))}${createBtn ? `<br>${createBtn}` : ''}</div>`;
         updateProjectsDetailVisibility();
         renderProjectsPagination();
         return;
@@ -593,11 +893,7 @@ function renderProjectsSidebar() {
     el.innerHTML = list.map((p) => {
         const active = p.id === currentProjectId ? ' is-active' : '';
         const archived = p.status === 'archived' ? ' is-archived' : '';
-        const reportBadge = (p.report_type === 'edusrc')
-            ? `<span class="projects-list-item-badge projects-list-item-badge--edusrc">${escapeHtml(tp('projects.reportTypeEdusrc'))}</span>`
-            : (p.report_type === 'enterprise' ? `<span class="projects-list-item-badge">${escapeHtml(tp('projects.reportTypeEnterprise'))}</span>` : '');
         const badges = [
-            reportBadge,
             p.pinned ? `<span class="projects-list-item-badge">${escapeHtml(tp('projects.pinned'))}</span>` : '',
             p.status === 'archived' ? `<span class="projects-list-item-badge">${escapeHtml(tp('projects.archived'))}</span>` : '',
         ].join('');
@@ -610,6 +906,7 @@ function renderProjectsSidebar() {
         </div>`;
     }).join('');
     updateProjectsDetailVisibility();
+    if (typeof applyRBACToUI === 'function') applyRBACToUI(el);
 }
 
 function clampProjectDescription(text) {
@@ -651,9 +948,12 @@ function updateProjectStatusPill(status) {
 
 function renderProjectDetailMeta(updatedAt) {
     const metaEl = document.getElementById('projects-detail-meta');
-    if (!metaEl) return;
+    const timeEl = document.getElementById('projects-detail-meta-time');
+    if (!metaEl || !timeEl) return;
     const time = formatProjectTime(updatedAt);
-    metaEl.textContent = tpFmt('projects.updatedPrefix', `Updated ${time}`, { time });
+    const full = tpFmt('projects.updatedPrefix', `Updated ${time}`, { time });
+    timeEl.textContent = time;
+    metaEl.title = full;
 }
 
 function refreshProjectDetailMetaI18n() {
@@ -692,6 +992,8 @@ function updateProjectStats(stats) {
 
 async function selectProject(id) {
     currentProjectId = id;
+    if (id) setActiveProjectId(id);
+    projectAssetsPagination.page = 1;
     const searchEl = document.getElementById('project-facts-search');
     const catEl = document.getElementById('project-facts-filter-category');
     const confEl = document.getElementById('project-facts-filter-confidence');
@@ -706,6 +1008,7 @@ async function selectProject(id) {
     if (vulnSearchEl) vulnSearchEl.value = '';
     if (vulnSevEl) vulnSevEl.value = '';
     if (vulnStatusEl) vulnStatusEl.value = '';
+    syncAllProjectsFilterSelects();
     renderProjectsSidebar();
     updateProjectsDetailVisibility();
     try {
@@ -718,6 +1021,7 @@ async function selectProject(id) {
         document.getElementById('project-edit-scope').value = p.scope_json || '';
         const statusEl = document.getElementById('project-edit-status');
         if (statusEl) statusEl.value = p.status || 'active';
+        syncAllProjectsFilterSelects();
         const pinEl = document.getElementById('project-edit-pinned');
         if (pinEl) pinEl.checked = !!p.pinned;
         updateProjectStatusPill(p.status || 'active');
@@ -733,21 +1037,438 @@ async function selectProject(id) {
 }
 
 function switchProjectTab(tab) {
+    if (tab === 'assets' && typeof hasPermission === 'function' && !hasPermission('asset:read')) tab = 'facts';
     currentProjectTab = tab;
-    ['facts', 'conversations', 'vulns', 'settings'].forEach((t) => {
+    ['facts', 'graph', 'assets', 'conversations', 'vulns', 'settings'].forEach((t) => {
         const btn = document.getElementById(`project-tab-${t}`);
         const panel = document.getElementById(`project-panel-${t}`);
         if (btn) btn.classList.toggle('is-active', t === tab);
         if (panel) panel.hidden = t !== tab;
     });
     if (tab === 'facts') loadProjectFacts();
+    if (tab === 'graph') loadProjectFactGraph();
+    if (tab === 'assets') loadProjectAssets();
     if (tab === 'conversations') loadProjectConversations();
     if (tab === 'vulns') loadProjectVulnerabilities();
+}
+
+async function loadProjectAssets(page) {
+    const tbody = document.getElementById('project-assets-tbody');
+    const countEl = document.getElementById('project-assets-count');
+    if (!tbody || !currentProjectId) return;
+    const requestedPage = Math.max(1, Number(page || projectAssetsPagination.page || 1));
+    projectAssetsPagination.page = requestedPage;
+    tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${escapeHtml(tpFmt('common.loading', '加载中...'))}</td></tr>`;
+    const qs = new URLSearchParams({
+        project_id: currentProjectId,
+        page: String(requestedPage),
+        page_size: String(projectAssetsPagination.pageSize),
+    });
+    const res = await apiFetch(`/api/assets?${qs.toString()}`);
+    if (!res.ok) {
+        currentProjectAssets = [];
+        projectAssetsPagination.total = 0;
+        projectAssetsPagination.totalPages = 1;
+        if (countEl) countEl.textContent = '0';
+        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${escapeHtml(tpFmt('common.loadFailed', '加载失败'))}</td></tr>`;
+        renderProjectAssetsPagination();
+        return;
+    }
+    const data = await res.json();
+    currentProjectAssets = data.assets || [];
+    projectAssetsPagination.page = Number(data.page || requestedPage);
+    projectAssetsPagination.total = Number(data.total || 0);
+    projectAssetsPagination.totalPages = Math.max(1, Number(data.total_pages || 1));
+    if (projectAssetsPagination.page > projectAssetsPagination.totalPages) {
+        return loadProjectAssets(projectAssetsPagination.totalPages);
+    }
+    if (countEl) countEl.textContent = tpFmt('projects.assetCount', `${data.total || 0} 个资产`, { count: data.total || 0 });
+    if (!currentProjectAssets.length) {
+        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${escapeHtml(tpFmt('projects.noBoundAssets', '暂无绑定到此项目的资产'))}</td></tr>`;
+        renderProjectAssetsPagination();
+        return;
+    }
+    tbody.innerHTML = currentProjectAssets.map((asset, index) => {
+        const target = asset.host || asset.domain || asset.ip || '-';
+        const service = [asset.protocol, asset.port ? ':' + asset.port : ''].join('') || '-';
+        const fingerprint = [asset.title, asset.server].filter(Boolean).join(' · ') || '-';
+        const updated = asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '-';
+        const status = asset.status === 'inactive' ? tpFmt('assets.statusInactive', '停用') : tpFmt('assets.statusActive', '活跃');
+        return `<tr>
+            <td class="cell-summary"><button type="button" class="projects-asset-target" onclick="openProjectAssetDetail(${index})" title="${escapeHtml(target)}">${escapeHtml(target)}</button></td>
+            <td><code>${escapeHtml(service)}</code></td>
+            <td class="cell-summary" title="${escapeHtml(fingerprint)}">${escapeHtml(fingerprint)}</td>
+            <td>${escapeHtml(asset.source || '-')}</td>
+            <td>${escapeHtml(updated)}</td>
+            <td><span class="asset-status asset-status--${escapeHtml(asset.status || 'active')}">${escapeHtml(status)}</span></td>
+            <td class="col-actions"><div class="projects-table-actions"><button type="button" class="projects-action-btn projects-action-btn--mute" data-require-permission="asset:write" onclick="unbindAssetFromProject(${index})" title="${escapeHtml(tp('projects.unbindProjectTitle'))}">${escapeHtml(tp('projects.unbind'))}</button></div></td>
+        </tr>`;
+    }).join('');
+    renderProjectAssetsPagination();
+    const tableWrap = document.querySelector('#project-panel-assets .projects-table-wrap');
+    if (tableWrap) tableWrap.scrollTop = 0;
+}
+
+function renderProjectAssetsPagination() {
+    const root = document.getElementById('project-assets-pagination');
+    if (!root) return;
+    const { page, pageSize, total, totalPages } = projectAssetsPagination;
+    const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+    const end = total === 0 ? 0 : Math.min(page * pageSize, total);
+    const atFirst = page <= 1 || total === 0;
+    const atLast = page >= totalPages || total === 0;
+    root.innerHTML = `<div class="pagination">
+        <div class="pagination-info">
+            <span>${escapeHtml(tpFmt('projects.paginationShow', `显示 ${start}-${end} / 共 ${total}`, { start, end, total }))}</span>
+            <label class="pagination-page-size">${escapeHtml(tpFmt('projects.paginationPerPage', '每页显示'))}
+                <select id="project-assets-page-size" onchange="changeProjectAssetsPageSize(this.value)">
+                    ${[10, 20, 50, 100].map(size => `<option value="${size}" ${size === pageSize ? 'selected' : ''}>${size}</option>`).join('')}
+                </select>
+            </label>
+        </div>
+        <div class="pagination-controls">
+            <button type="button" class="btn-secondary" onclick="loadProjectAssets(1)" ${atFirst ? 'disabled' : ''}>${escapeHtml(tpFmt('skillsPage.firstPage', '首页'))}</button>
+            <button type="button" class="btn-secondary" onclick="loadProjectAssets(${Math.max(1, page - 1)})" ${atFirst ? 'disabled' : ''}>${escapeHtml(tpFmt('projects.paginationPrev', '上一页'))}</button>
+            <span class="pagination-page">${escapeHtml(tpFmt('skillsPage.pageOf', `第 ${page} / ${totalPages} 页`, { current: page, total: totalPages }))}</span>
+            <button type="button" class="btn-secondary" onclick="loadProjectAssets(${Math.min(totalPages, page + 1)})" ${atLast ? 'disabled' : ''}>${escapeHtml(tpFmt('projects.paginationNext', '下一页'))}</button>
+            <button type="button" class="btn-secondary" onclick="loadProjectAssets(${totalPages})" ${atLast ? 'disabled' : ''}>${escapeHtml(tpFmt('skillsPage.lastPage', '尾页'))}</button>
+        </div>
+    </div>`;
+}
+
+function changeProjectAssetsPageSize(value) {
+    const size = Number(value);
+    if (![10, 20, 50, 100].includes(size)) return;
+    projectAssetsPagination.pageSize = size;
+    projectAssetsPagination.page = 1;
+    try {
+        localStorage.setItem(PROJECT_ASSETS_PAGE_SIZE_KEY, String(size));
+    } catch (e) { /* ignore */ }
+    loadProjectAssets(1);
+}
+
+function openProjectAssetDetail(index) {
+    const asset = currentProjectAssets[Number(index)];
+    if (asset && typeof window.openAssetDetailRecord === 'function') window.openAssetDetailRecord(asset);
+}
+
+async function unbindAssetFromProject(index) {
+    const asset = currentProjectAssets[Number(index)];
+    if (!asset || !asset.id || !currentProjectId) return;
+    const target = asset.host || asset.domain || asset.ip || asset.id;
+    const message = tpFmt('projects.unbindAssetConfirm', `确定将“${target}”从当前项目解绑吗？资产不会被删除。`, { target });
+    if (!confirm(message)) return;
+    try {
+        const res = await apiFetch('/api/assets/project-binding', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asset_ids: [asset.id], project_id: '' })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        if (typeof showInlineToast === 'function') {
+            showInlineToast(tpFmt('projects.unbindAssetDone', '已从项目解绑资产', { target }));
+        }
+        await loadProjectAssets(projectAssetsPagination.page);
+        await refreshProjectHeaderStats();
+    } catch (error) {
+        alert(`${tp('projects.unbindFailed')}: ${error.message || error}`);
+    }
+}
+
+let _selectedGraphFactKey = null;
+let _selectedGraphEdgeId = null;
+let _currentGraphData = null;
+let _graphConnectMode = false;
+let _graphConnectSource = null;
+
+function toggleProjectFactGraphConnectMode() {
+    _graphConnectMode = !_graphConnectMode;
+    _graphConnectSource = null;
+    const btn = document.getElementById('project-graph-connect-btn');
+    if (btn) {
+        btn.classList.toggle('is-active', _graphConnectMode);
+        btn.textContent = _graphConnectMode ? tp('projects.graphConnectActive') : tp('projects.graphConnect');
+        btn.classList.toggle('projects-graph-action-btn--connect-active', _graphConnectMode);
+    }
+    if (typeof ProjectFactGraph !== 'undefined') {
+        ProjectFactGraph.setConnectMode(_graphConnectMode, handleGraphConnectNodePick);
+    }
+}
+
+async function handleGraphConnectNodePick(factKey) {
+    if (!factKey || String(factKey).startsWith('vuln:')) return;
+    if (!requireProjectWrite()) return;
+    if (!_graphConnectSource) {
+        _graphConnectSource = factKey;
+        if (typeof showNotification === 'function') {
+            showNotification(tpFmt('projects.graphConnectPickTarget', `已选源节点 ${factKey}，请点击目标节点`, { source: factKey }), 'info');
+        }
+        return;
+    }
+    if (_graphConnectSource === factKey) return;
+    const edgeType = window.prompt(tp('projects.graphEdgeTypePrompt'), 'leads_to');
+    if (!edgeType) {
+        _graphConnectSource = null;
+        return;
+    }
+    const res = await apiFetch(`/api/projects/${currentProjectId}/fact-edges`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            source_fact_key: _graphConnectSource,
+            target_fact_key: factKey,
+            edge_type: edgeType.trim(),
+        }),
+    });
+    _graphConnectSource = null;
+    if (!(await notifyProjectApiFailure(res, 'projects.graphConnectFailed', '创建边失败'))) return;
+    if (typeof showNotification === 'function') showNotification(tp('projects.graphConnectSuccess'), 'success');
+    loadProjectFactGraph();
+    loadProjectFacts();
+}
+
+function formatIncomingLinksForModal(links) {
+    if (!links || !links.length) return '';
+    return links
+        .map((e) => `${e.edge_type || e.type}: ${e.source_fact_key || e.from}`)
+        .join('\n');
+}
+
+
+async function loadProjectFactGraph() {
+    const container = document.getElementById('project-fact-graph-container');
+    const statsEl = document.getElementById('project-fact-graph-stats');
+    if (!container || !currentProjectId) return;
+    container.innerHTML = `<div class="loading-spinner">${escapeHtml(tp('common.loading'))}</div>`;
+    closeProjectFactGraphSidebar();
+    const view = document.getElementById('project-graph-view')?.value || 'path';
+    const hideDeprecated = document.getElementById('project-facts-filter-hide-deprecated')?.checked !== false;
+    const params = new URLSearchParams({ view });
+    if (!hideDeprecated) params.set('exclude_deprecated', '0');
+    try {
+        const res = await apiFetch(`/api/projects/${currentProjectId}/fact-graph?${params}`);
+        if (!res.ok) throw new Error(tp('common.loadFailed'));
+        const data = await res.json();
+        _currentGraphData = data;
+        if (typeof ProjectFactGraph !== 'undefined') {
+            ProjectFactGraph.render(container, data, {
+                emptyText: tp('projects.graphEmpty'),
+                emptyTitle: tp('projects.graphEmptyTitle'),
+                emptySteps: [
+                    tp('projects.graphEmptyStep1'),
+                    tp('projects.graphEmptyStep2'),
+                    tp('projects.graphEmptyStep3'),
+                ],
+                emptyActionLabel: tp('projects.graphEmptyCta'),
+                onEmptyAction: () => showAddFactModal(),
+                onNodeSelect: (factKey) => showProjectFactGraphNode(factKey, _currentGraphData),
+                onEdgeSelect: (edgeId) => showProjectFactGraphEdge(edgeId, _currentGraphData),
+            });
+        }
+        const nodeCount = (data.nodes || []).length;
+        const edgeCount = (data.edges || []).length;
+        if (statsEl) {
+            statsEl.innerHTML =
+                `<span class="projects-graph-stat-badge"><strong>${nodeCount}</strong> ${escapeHtml(tp('projects.graphStatsNodes'))}</span>` +
+                `<span class="projects-graph-stat-badge"><strong>${edgeCount}</strong> ${escapeHtml(tp('projects.graphStatsEdges'))}</span>`;
+        }
+    } catch (e) {
+        container.innerHTML = `<div class="error-message">${escapeHtml(e.message || tp('common.loadFailed'))}</div>`;
+        if (statsEl) statsEl.textContent = '';
+    }
+}
+
+function filterProjectFactGraph() {
+    const q = document.getElementById('project-graph-search')?.value || '';
+    if (typeof ProjectFactGraph !== 'undefined') {
+        ProjectFactGraph.filterBySearch(q);
+    }
+}
+
+function centerProjectFactGraph() {
+    if (typeof ProjectFactGraph !== 'undefined') ProjectFactGraph.center();
+}
+
+function closeProjectFactGraphSidebar() {
+    _selectedGraphFactKey = null;
+    _selectedGraphEdgeId = null;
+    if (typeof ProjectFactGraph !== 'undefined') ProjectFactGraph.clearEdgeSelection();
+    const sidebar = document.getElementById('project-fact-graph-sidebar');
+    if (sidebar) sidebar.hidden = true;
+}
+
+function isSyntheticGraphEdge(edge) {
+    if (!edge) return true;
+    const id = String(edge.id || '');
+    const type = String(edge.type || '');
+    return id.startsWith('vuln-link:') || type === 'links_vuln';
+}
+
+function getGraphEdgesForFact(factKey, graphData) {
+    if (!factKey || !graphData?.edges) return [];
+    return graphData.edges.filter((e) => e.source === factKey || e.target === factKey);
+}
+
+function renderGraphEdgesListHtml(factKey, graphData, selectedEdgeId) {
+    const edges = getGraphEdgesForFact(factKey, graphData);
+    if (!edges.length) {
+        return `<p class="project-fact-graph-edges-empty">${escapeHtml(tp('projects.graphEdgesEmpty'))}</p>`;
+    }
+    return edges
+        .map((e) => {
+            const isOut = e.source === factKey;
+            const dirLabel = isOut ? tp('projects.graphEdgeFromSelf') : tp('projects.graphEdgeToSelf');
+            const src = e.source || '';
+            const tgt = e.target || '';
+            const selected = e.id === selectedEdgeId ? ' is-selected' : '';
+            const synthetic = isSyntheticGraphEdge(e);
+            const deleteBtn = synthetic
+                ? `<span class="project-fact-graph-edge-synthetic" title="${escapeHtml(tp('projects.graphEdgeSynthetic'))}">—</span>`
+                : `<button type="button" class="project-fact-graph-edge-delete" data-edge-id="${escapeHtml(e.id)}" onclick="event.stopPropagation(); deleteProjectFactEdge(this.dataset.edgeId)" title="${escapeHtml(tp('projects.graphDeleteEdge'))}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>`;
+            return `<div class="project-fact-graph-edge-item${selected}" data-edge-id="${escapeHtml(e.id)}" onclick="focusProjectFactGraphEdge(${JSON.stringify(e.id)})">
+                <span class="project-fact-graph-edge-dir">${escapeHtml(dirLabel)}</span>
+                <span class="project-fact-graph-edge-type">${escapeHtml(e.type || '')}</span>
+                <span class="project-fact-graph-edge-peer" title="${escapeHtml(src + ' → ' + tgt)}">${escapeHtml(src)} → ${escapeHtml(tgt)}</span>
+                ${deleteBtn}
+            </div>`;
+        })
+        .join('');
+}
+
+function renderProjectFactGraphEdges(factKey, graphData, selectedEdgeId) {
+    const wrap = document.getElementById('project-fact-graph-edges-wrap');
+    const list = document.getElementById('project-fact-graph-edges-list');
+    if (!wrap || !list) return;
+    const edges = getGraphEdgesForFact(factKey, graphData);
+    wrap.hidden = false;
+    list.innerHTML = renderGraphEdgesListHtml(factKey, graphData, selectedEdgeId);
+    if (selectedEdgeId) {
+        const selectedEl = list.querySelector('[data-edge-id="' + String(selectedEdgeId).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+        if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest' });
+    }
+    if (!edges.length) wrap.hidden = false;
+}
+
+function graphVulnIdFromKey(factKey) {
+    const key = String(factKey || '');
+    if (!key.startsWith('vuln:')) return null;
+    return key.slice(5);
+}
+
+function showProjectFactGraphNode(factKey, graphData, selectedEdgeId) {
+    if (!factKey) {
+        closeProjectFactGraphSidebar();
+        return;
+    }
+    _selectedGraphFactKey = factKey;
+    _selectedGraphEdgeId = selectedEdgeId || null;
+    const node = (graphData?.nodes || []).find((n) => n.fact_key === factKey || n.id === factKey);
+    const vulnId = graphVulnIdFromKey(factKey);
+    const isVulnNode = !!vulnId;
+    const sidebar = document.getElementById('project-fact-graph-sidebar');
+    const titleEl = document.getElementById('project-fact-graph-node-title');
+    const metaEl = document.getElementById('project-fact-graph-node-meta');
+    const categoryEl = document.getElementById('project-fact-graph-node-category');
+    const detailBtn = document.getElementById('project-fact-graph-detail-btn');
+    const editBtn = document.getElementById('project-fact-graph-edit-btn');
+    if (!sidebar || !titleEl || !metaEl) return;
+    titleEl.textContent = isVulnNode ? vulnId : factKey;
+    titleEl.title = isVulnNode ? vulnId : factKey;
+    if (categoryEl) {
+        const visualType =
+            typeof ProjectFactGraph !== 'undefined' && ProjectFactGraph.resolveGraphNodeType
+                ? ProjectFactGraph.resolveGraphNodeType(node)
+                : node?.type || node?.category || 'note';
+        const theme =
+            typeof ProjectFactGraph !== 'undefined' && ProjectFactGraph.nodeTheme
+                ? ProjectFactGraph.nodeTheme(visualType)
+                : { typeEn: String(visualType).toUpperCase(), typeLabel: visualType };
+        categoryEl.textContent = theme.typeEn || String(visualType).toUpperCase();
+        categoryEl.hidden = false;
+        categoryEl.className = 'project-fact-graph-node-category project-fact-graph-node-category--' + visualType;
+        categoryEl.title = theme.typeLabel || visualType;
+    }
+    const conf = node?.confidence || '';
+    const summary = (node?.summary || node?.label || '').trim();
+    if (summary || conf || isVulnNode) {
+        const parts = [];
+        if (summary) {
+            parts.push(`<span class="project-fact-graph-node-summary">${escapeHtml(summary)}</span>`);
+        }
+        if (isVulnNode) {
+            parts.push(
+                `<span class="project-fact-graph-node-vuln-hint">${escapeHtml(tp('projects.graphVulnSidebarHint'))}</span>`,
+            );
+        }
+        if (conf) {
+            parts.push(formatConfidenceBadge(conf));
+        }
+        metaEl.innerHTML = parts.join('');
+    } else {
+        metaEl.textContent = '';
+    }
+    if (detailBtn) {
+        detailBtn.textContent = isVulnNode ? tp('projects.viewVulnerability') : tp('projects.details');
+    }
+    if (editBtn) {
+        editBtn.hidden = isVulnNode;
+    }
+    renderProjectFactGraphEdges(factKey, graphData, _selectedGraphEdgeId);
+    if (_selectedGraphEdgeId && typeof ProjectFactGraph !== 'undefined') {
+        ProjectFactGraph.selectEdge(_selectedGraphEdgeId);
+    } else if (typeof ProjectFactGraph !== 'undefined') {
+        ProjectFactGraph.clearEdgeSelection();
+    }
+    sidebar.hidden = false;
+}
+
+function showProjectFactGraphEdge(edgeId, graphData) {
+    const edge = (graphData?.edges || []).find((e) => e.id === edgeId);
+    if (!edge) return;
+    const anchorKey = edge.source && !String(edge.source).startsWith('vuln:') ? edge.source : edge.target;
+    showProjectFactGraphNode(anchorKey, graphData, edgeId);
+}
+
+function focusProjectFactGraphEdge(edgeId) {
+    if (!edgeId || !_currentGraphData) return;
+    showProjectFactGraphEdge(edgeId, _currentGraphData);
+}
+
+async function deleteProjectFactEdge(edgeId) {
+    if (!edgeId || !currentProjectId) return;
+    if (!requireProjectWrite()) return;
+    const edge = (_currentGraphData?.edges || []).find((e) => e.id === edgeId);
+    if (isSyntheticGraphEdge(edge)) return;
+    if (!confirm(tp('projects.confirmDeleteGraphEdge'))) return;
+    const res = await apiFetch(`/api/projects/${currentProjectId}/fact-edges/${encodeURIComponent(edgeId)}`, {
+        method: 'DELETE',
+    });
+    if (!(await notifyProjectApiFailure(res, 'projects.graphEdgeDeleteFailed', '删除边失败'))) return;
+    if (typeof showNotification === 'function') showNotification(tp('projects.graphEdgeDeleteSuccess'), 'success');
+    const keepKey = _selectedGraphFactKey;
+    await loadProjectFactGraph();
+    if (keepKey) showProjectFactGraphNode(keepKey, _currentGraphData);
+    loadProjectFacts();
+}
+
+function openSelectedGraphFactDetail() {
+    if (!_selectedGraphFactKey) return;
+    const vulnId = graphVulnIdFromKey(_selectedGraphFactKey);
+    if (vulnId) {
+        openVulnerabilityDetail(vulnId);
+        return;
+    }
+    viewProjectFactBody(_selectedGraphFactKey);
+}
+
+function editSelectedGraphFact() {
+    if (_selectedGraphFactKey) showEditFactModal(_selectedGraphFactKey);
 }
 
 function buildProjectFactsQueryParams() {
     const params = new URLSearchParams();
     params.set('limit', '200');
+    params.set('include_link_counts', 'true');
     const search = document.getElementById('project-facts-search')?.value?.trim();
     const category = document.getElementById('project-facts-filter-category')?.value?.trim();
     const confidence = document.getElementById('project-facts-filter-confidence')?.value?.trim();
@@ -772,11 +1493,11 @@ function debouncedLoadProjectFacts() {
 async function loadProjectFacts() {
     const tbody = document.getElementById('project-facts-tbody');
     if (!tbody || !currentProjectId) return;
-    tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${escapeHtml(tp('common.loading'))}</td></tr>`;
+    tbody.innerHTML = `<tr class="is-empty-row"><td colspan="8">${escapeHtml(tp('common.loading'))}</td></tr>`;
     const qs = buildProjectFactsQueryParams().toString();
     const res = await apiFetch(`/api/projects/${currentProjectId}/facts?${qs}`);
     if (!res.ok) {
-        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${escapeHtml(tp('common.loadFailed'))}</td></tr>`;
+        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="8">${escapeHtml(tp('common.loadFailed'))}</td></tr>`;
         return;
     }
     const facts = await res.json();
@@ -786,7 +1507,7 @@ async function loadProjectFacts() {
             document.getElementById('project-facts-filter-category')?.value ||
             document.getElementById('project-facts-filter-confidence')?.value ||
             document.getElementById('project-facts-filter-sparse')?.checked;
-        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="7">${
+        tbody.innerHTML = `<tr class="is-empty-row"><td colspan="8">${
             hasFilter ? tp('projects.noMatchingFacts') : tp('projects.noFacts')
         }</td></tr>`;
         refreshProjectHeaderStats();
@@ -801,10 +1522,16 @@ async function loadProjectFacts() {
         const pinBadge = f.pinned
             ? `<span class="projects-list-item-badge" title="${escapeHtml(tp('projects.pinned'))}">${escapeHtml(tp('projects.pinned'))}</span>`
             : '';
+        const lc = f.link_counts || {};
+        const linkBadge =
+            lc.outgoing || lc.incoming
+                ? `<span class="projects-fact-link-badge" title="${escapeHtml(tp('projects.linkCountsTitle'))}">↑${lc.outgoing || 0} ↓${lc.incoming || 0}</span>`
+                : '<span class="projects-fact-link-badge projects-fact-link-badge--empty">—</span>';
         return `<tr>
             <td class="cell-fact-key"><code class="projects-fact-key-chip" title="${keyEsc}">${keyEsc}</code>${pinBadge}${vulnLink}</td>
             <td class="cell-fact-category">${formatCategoryBadge(f.category)}</td>
             <td class="cell-summary" title="${escapeHtml(f.summary)}">${escapeHtml(f.summary)}</td>
+            <td class="cell-fact-links">${linkBadge}</td>
             <td>${formatFactBodyBadge(f)}</td>
             <td>${formatConfidenceBadge(f.confidence)}</td>
             <td>${formatProjectTime(f.updated_at, f.created_at)}</td>
@@ -853,6 +1580,7 @@ async function loadProjectConversations() {
             <td class="col-actions">
                 <div class="projects-table-actions">
                     <button type="button" class="projects-action-btn projects-action-btn--view" data-conv-id="${idEsc}" onclick="openProjectConversation(this.dataset.convId)">${escapeHtml(tp('projects.open'))}</button>
+                    <button type="button" class="projects-action-btn" data-conv-id="${idEsc}" onclick="promoteConversationAttackChain(this.dataset.convId)" title="${escapeHtml(tp('projects.promoteAttackChainTitle'))}">${escapeHtml(tp('projects.promoteAttackChain'))}</button>
                     <button type="button" class="projects-action-btn projects-action-btn--mute" data-conv-id="${idEsc}" onclick="unbindConversationFromProject(this.dataset.convId)" title="${escapeHtml(tp('projects.unbindProjectTitle'))}">${escapeHtml(tp('projects.unbind'))}</button>
                 </div>
             </td>
@@ -871,6 +1599,30 @@ function openProjectConversation(conversationId) {
             loadConversation(conversationId);
         }
     }, 200);
+}
+
+async function promoteConversationAttackChain(conversationId) {
+    if (!currentProjectId || !conversationId) return;
+    if (!requireProjectWrite()) return;
+    if (!confirm(tp('projects.confirmPromoteAttackChain'))) return;
+    const res = await apiFetch(
+        `/api/projects/${currentProjectId}/promote-attack-chain/${encodeURIComponent(conversationId)}`,
+        { method: 'POST' },
+    );
+    if (!(await notifyProjectApiFailure(res, 'projects.promoteAttackChainFailed', '沉淀失败'))) return;
+    const data = await res.json();
+    if (typeof showNotification === 'function') {
+        showNotification(
+            tpFmt(
+                'projects.promoteAttackChainSuccess',
+                `已沉淀 ${data.facts_created || 0} 新 / ${data.facts_updated || 0} 更新 / ${data.edges_created || 0} 边`,
+                data,
+            ),
+            'success',
+        );
+    }
+    loadProjectFacts();
+    if (currentProjectTab === 'graph') loadProjectFactGraph();
 }
 
 async function unbindConversationFromProject(conversationId) {
@@ -991,6 +1743,7 @@ async function linkFactToExistingVulnerability() {
 async function createVulnerabilityFromCurrentFact() {
     const f = _factDetailFact;
     if (!f || !currentProjectId) return;
+    if (typeof requirePermission === 'function' && !requirePermission('vulnerability:write')) return;
     let convId =
         (f.source_conversation_id || '').trim() ||
         (typeof window.currentConversationId === 'string' ? window.currentConversationId.trim() : '');
@@ -1021,12 +1774,9 @@ async function createVulnerabilityFromCurrentFact() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return alert(err.error || tp('projects.createVulnerabilityFailed'));
-    }
+    if (!(await notifyProjectApiFailure(res, 'projects.createVulnerabilityFailed', '创建漏洞失败'))) return;
     const vuln = await res.json();
-    await apiFetch(`/api/projects/${currentProjectId}/facts/${encodeURIComponent(f.id)}`, {
+    const upd = await apiFetch(`/api/projects/${currentProjectId}/facts/${encodeURIComponent(f.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1038,6 +1788,7 @@ async function createVulnerabilityFromCurrentFact() {
             related_vulnerability_id: vuln.id,
         }),
     });
+    if (!(await notifyProjectApiFailure(upd, 'projects.linkFailed', '关联失败'))) return;
     const createdVulnLabel = vuln.title || vuln.id;
     const successMsg = tp('projects.createVulnerabilityAndLinkSuccess', {
         value: createdVulnLabel,
@@ -1058,6 +1809,7 @@ function inferSeverityFromFact(f) {
 }
 
 async function deprecateProjectFactByKey(factKey) {
+    if (!requireProjectWrite()) return;
     if (!confirm(
         tp('projects.confirmDeprecateFact', {
             factKey,
@@ -1069,11 +1821,12 @@ async function deprecateProjectFactByKey(factKey) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fact_key: factKey }),
     });
-    if (!res.ok) return alert(tp('projects.operationFailed'));
+    if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
     loadProjectFacts();
 }
 
 async function restoreProjectFactByKey(factKey) {
+    if (!requireProjectWrite()) return;
     if (!confirm(
         tp('projects.confirmRestoreFact', {
             factKey,
@@ -1085,10 +1838,7 @@ async function restoreProjectFactByKey(factKey) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fact_key: factKey, confidence: 'tentative' }),
     });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return alert(err.error || tp('projects.operationFailed'));
-    }
+    if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
     loadProjectFacts();
 }
 
@@ -1203,6 +1953,7 @@ function closeProjectsOverlay(id) {
 }
 
 function showNewProjectModal() {
+    if (!requireProjectWrite()) return;
     document.getElementById('project-modal-title').textContent = tp('projects.modalNewTitle');
     const sub = document.getElementById('project-modal-subtitle');
     if (sub) sub.textContent = tp('projects.modalNewSubtitle');
@@ -1210,14 +1961,13 @@ function showNewProjectModal() {
     if (submitBtn) submitBtn.textContent = tp('projects.createProject');
     document.getElementById('project-modal-name').value = '';
     document.getElementById('project-modal-description').value = '';
-    const rtEl = document.getElementById('project-modal-report-type');
-    if (rtEl) rtEl.value = 'enterprise';
     window._projectModalEditId = null;
     openProjectsOverlay('project-modal');
 }
 
 async function showEditProjectModal(projectId) {
     if (!projectId) return;
+    if (!requireProjectWrite()) return;
     window._projectModalFromChat = false;
     window._projectModalEditId = projectId;
     document.getElementById('project-modal-title').textContent = tp('projects.modalEditTitle');
@@ -1245,12 +1995,9 @@ async function showEditProjectModal(projectId) {
     }
     const name = (p.name || '').slice(0, PROJECT_NAME_MAX_LENGTH);
     const description = clampProjectDescription(p.description || '');
-    const reportType = p.report_type || 'enterprise';
     deferModalContent(() => {
         if (nameEl) nameEl.value = name;
         if (descEl) descEl.value = description;
-        const rtEl = document.getElementById('project-modal-report-type');
-        if (rtEl) rtEl.value = reportType;
         nameEl?.focus();
     });
 }
@@ -1263,41 +2010,47 @@ function showNewProjectModalFromChat() {
 }
 
 async function saveProjectModal() {
+    if (!requireProjectWrite()) return;
     const name = document.getElementById('project-modal-name').value.trim().slice(0, PROJECT_NAME_MAX_LENGTH);
     if (!name) return alert(tp('projects.enterProjectName'));
-    const rtEl = document.getElementById('project-modal-report-type');
-    const reportType = rtEl ? rtEl.value : 'enterprise';
     const body = {
         name,
         description: clampProjectDescription(document.getElementById('project-modal-description').value),
-        report_type: reportType,
     };
     const editId = window._projectModalEditId;
-    const res = editId
-        ? await apiFetch(`/api/projects/${editId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        : await apiFetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error || tp('projects.saveFailed'));
-        return;
-    }
-    const fromChat = !!window._projectModalFromChat;
-    const fromWebshellConnId = window._projectModalFromWebshellConnId || '';
-    window._projectModalFromChat = false;
-    window._projectModalFromWebshellConnId = '';
-    closeProjectModal();
-    const saved = await res.json();
-    await loadProjectsList();
-    if (saved.id) {
-        if (fromWebshellConnId && !editId) {
-            if (typeof applyWebshellAiProjectSelection === 'function') {
-                await applyWebshellAiProjectSelection(saved.id);
+    const submitBtn = document.getElementById('project-modal-submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+        const res = editId
+            ? await apiFetch(`/api/projects/${editId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+            : await apiFetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', '保存失败'))) return;
+        const fromChat = !!window._projectModalFromChat;
+        const fromWebshellConnId = window._projectModalFromWebshellConnId || '';
+        window._projectModalFromChat = false;
+        window._projectModalFromWebshellConnId = '';
+        closeProjectModal();
+        const saved = await res.json();
+        await loadProjectsList();
+        if (saved.id) {
+            if (fromWebshellConnId && !editId) {
+                if (typeof applyWebshellAiProjectSelection === 'function') {
+                    await applyWebshellAiProjectSelection(saved.id);
+                }
+            } else if (fromChat && !editId) {
+                await applyChatProjectSelection(saved.id);
+            } else {
+                await selectProject(saved.id);
             }
-        } else if (fromChat && !editId) {
-            await applyChatProjectSelection(saved.id);
-        } else {
-            await selectProject(saved.id);
         }
+    } catch (error) {
+        if (typeof notifyApiError === 'function') {
+            notifyApiError(error?.message || tpFmt('projects.saveFailed', '保存失败'));
+        } else {
+            alert(error?.message || tpFmt('projects.saveFailed', '保存失败'));
+        }
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
     }
 }
 
@@ -1332,7 +2085,7 @@ function insertProjectScopeExample() {
 }
 
 async function saveProjectSettings() {
-    if (!currentProjectId) return;
+    if (!currentProjectId || !requireProjectWrite()) return;
     const scopeRaw = document.getElementById('project-edit-scope').value.trim();
     if (scopeRaw) {
         try {
@@ -1354,10 +2107,14 @@ async function saveProjectSettings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (!res.ok) return alert(tp('projects.saveFailed'));
+    if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', '保存失败'))) return;
     await loadProjectsList();
     await selectProject(currentProjectId);
-    alert(tp('projects.saved'));
+    if (typeof notifyApiError === 'function') {
+        notifyApiError(tp('projects.saved'), 'success');
+    } else {
+        alert(tp('projects.saved'));
+    }
 }
 
 function findProjectById(projectId) {
@@ -1420,6 +2177,7 @@ function showProjectListActionMenu(event, projectId) {
     }
     if (deleteText) deleteText.textContent = tp('projects.deleteProject');
     positionProjectListActionMenu(event);
+    if (typeof applyRBACToUI === 'function') applyRBACToUI(menu);
 }
 
 function initProjectListActionMenu() {
@@ -1438,6 +2196,7 @@ function initProjectListActionMenu() {
 }
 
 async function toggleProjectArchiveById(projectId) {
+    if (!requireProjectWrite()) return;
     const p = findProjectById(projectId);
     if (!p) return;
     const cur = p.status || 'active';
@@ -1448,7 +2207,7 @@ async function toggleProjectArchiveById(projectId) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: next }),
     });
-    if (!res.ok) return alert(tp('projects.operationFailed'));
+    if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
     await loadProjectsList();
     if (currentProjectId === projectId && projectsCache.some((item) => item.id === projectId)) {
         await selectProject(projectId);
@@ -1460,10 +2219,11 @@ async function toggleProjectArchiveById(projectId) {
 }
 
 async function deleteProjectById(projectId) {
+    if (!requireProjectDelete()) return;
     if (!projectId || !confirm(tp('projects.confirmDeleteProject'))) return;
     const deletedIndex = projectsCache.findIndex((p) => p.id === projectId);
     const res = await apiFetch(`/api/projects/${projectId}`, { method: 'DELETE' });
-    if (!res.ok) return alert(tp('projects.deleteFailed'));
+    if (!(await notifyProjectApiFailure(res, 'projects.deleteFailed', '删除失败'))) return;
     if (getActiveProjectId() === projectId) setActiveProjectId('');
     if (currentProjectId === projectId) currentProjectId = null;
     await loadProjectsList();
@@ -1521,6 +2281,10 @@ function resetFactModalForm() {
     if (pinEl) pinEl.checked = false;
     const rel = document.getElementById('fact-modal-related-vuln');
     if (rel) rel.value = '';
+    const linksEl = document.getElementById('fact-modal-links');
+    if (linksEl) linksEl.value = '';
+    const incomingWrap = document.getElementById('fact-modal-incoming-links-wrap');
+    if (incomingWrap) incomingWrap.hidden = true;
     updateFactFormHints();
 }
 
@@ -1552,6 +2316,8 @@ function fillFactModalForm(f) {
     }
     const rel = document.getElementById('fact-modal-related-vuln');
     if (rel) rel.value = f.related_vulnerability_id || '';
+    const linksEl = document.getElementById('fact-modal-links');
+    if (linksEl) linksEl.value = formatIncomingLinksForModal(f.incoming_links);
     const pinEl = document.getElementById('fact-modal-pinned');
     if (pinEl) pinEl.checked = !!f.pinned;
     updateFactFormHints();
@@ -1559,16 +2325,18 @@ function fillFactModalForm(f) {
 
 function showAddFactModal() {
     if (!currentProjectId) return alert(tp('projects.selectProjectFirst'));
+    if (!requireProjectWrite()) return;
     resetFactModalForm();
     openProjectsOverlay('fact-modal');
 }
 
 async function showEditFactModal(factKey) {
     if (!currentProjectId) return alert(tp('projects.selectProjectFirst'));
+    if (!requireProjectWrite()) return;
     resetFactModalForm();
     openProjectsOverlay('fact-modal', { focus: false });
     const res = await apiFetch(
-        `/api/projects/${currentProjectId}/facts?fact_key=${encodeURIComponent(factKey)}`,
+        `/api/projects/${currentProjectId}/facts?fact_key=${encodeURIComponent(factKey)}&include_links=true`,
     );
     if (!res.ok) {
         closeFactModal();
@@ -1587,6 +2355,7 @@ function closeFactModal() {
 }
 
 async function saveFactModal() {
+    if (!requireProjectWrite()) return;
     const fact_key = document.getElementById('fact-modal-key').value.trim();
     const summary = document.getElementById('fact-modal-summary').value.trim();
     const category = document.getElementById('fact-modal-category').value.trim() || 'note';
@@ -1606,6 +2375,7 @@ async function saveFactModal() {
         confidence: document.getElementById('fact-modal-confidence').value,
         pinned: !!document.getElementById('fact-modal-pinned')?.checked,
         related_vulnerability_id: document.getElementById('fact-modal-related-vuln')?.value?.trim() || '',
+        links_text: document.getElementById('fact-modal-links')?.value || '',
     };
     const editId = window._factModalEditId;
     const res = editId
@@ -1619,18 +2389,19 @@ async function saveFactModal() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload),
           });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return alert(err.error || tp('projects.saveFailed'));
-    }
+    if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', '保存失败'))) return;
     closeFactModal();
     loadProjectFacts();
+    if (currentProjectTab === 'graph') loadProjectFactGraph();
 }
 
 async function deleteProjectFact(id) {
+    if (!requireProjectWrite()) return;
     if (!confirm(tp('projects.confirmDeleteFact'))) return;
-    await apiFetch(`/api/projects/${currentProjectId}/facts/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/projects/${currentProjectId}/facts/${id}`, { method: 'DELETE' });
+    if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
     loadProjectFacts();
+    if (currentProjectTab === 'graph') loadProjectFactGraph();
 }
 
 function parseProjectDate(t) {
@@ -1698,27 +2469,20 @@ function getChatProjectSelection() {
     return getActiveProjectId();
 }
 
-function isActiveChatProjectId(id) {
-    if (!id) return false;
-    const source = projectsCacheAll.length ? projectsCacheAll : projectsCache;
-    return source.some((p) => p.id === id && p.status !== 'archived');
-}
-
-/** 用于 UI：无效/已删除/无可用项目时视为未绑定 */
+/** 用于 UI：返回当前选中的项目 ID（有效性由 normalizeStaleChatProjectSelection 异步校验） */
 function resolveChatProjectSelection() {
-    const raw = getChatProjectSelection();
-    if (!raw) return '';
-    if (!_projectsListReady) return raw;
-    return isActiveChatProjectId(raw) ? raw : '';
+    return getChatProjectSelection() || '';
 }
 
 let _normalizingStaleProject = false;
 
-/** 项目列表加载后，清除 localStorage 或对话上残留的失效项目 ID */
+/** 清除 localStorage 或对话上残留的失效项目 ID */
 async function normalizeStaleChatProjectSelection() {
-    if (!_projectsListReady || _normalizingStaleProject) return;
-    const raw = getChatProjectSelection();
-    if (!raw || isActiveChatProjectId(raw)) return;
+    if (_normalizingStaleProject) return;
+    const raw = (getChatProjectSelection() || '').trim();
+    if (!raw) return;
+    const project = await fetchProjectSummary(raw);
+    if (project && project.id && project.status !== 'archived') return;
 
     _normalizingStaleProject = true;
     try {
@@ -1745,6 +2509,175 @@ async function normalizeStaleChatProjectSelection() {
     }
 }
 
+const PROJECT_PICKER_DEBOUNCE_MS = 100;
+const projectPickerPanelState = {
+    chat: { seq: 0, timer: null },
+    webshell: { seq: 0, timer: null },
+};
+
+function appendChatProjectPanelItem(list, project, selectedId, onSelect, tFn) {
+    const t = tFn || tp;
+    const isNone = !project.id;
+    const isSelected = isNone ? !selectedId : selectedId === project.id;
+    const fullDesc = isNone
+        ? (project.description || '')
+        : (project.description || '').trim() || t('projects.sharedFactBoard');
+    const desc = isNone
+        ? (project.description || '')
+        : fullDesc.slice(0, 80);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'role-selection-item-main' + (isSelected ? ' selected' : '');
+    btn.setAttribute('role', 'option');
+    btn.setAttribute('data-selection-detail', fullDesc);
+    btn.onclick = () => onSelect(project.id || '');
+    btn.innerHTML = `
+        <div class="role-selection-item-icon-main">${isNone ? '—' : '📁'}</div>
+        <div class="role-selection-item-content-main">
+            <div class="role-selection-item-name-main">${escapeHtml(project.name || t('common.untitled'))}</div>
+            <div class="role-selection-item-description-main">${escapeHtml(desc)}</div>
+        </div>
+        ${isSelected ? '<div class="role-selection-checkmark-main">✓</div>' : ''}
+    `;
+    list.appendChild(btn);
+}
+
+function appendChatProjectPanelMessage(list, className, text) {
+    const el = document.createElement('div');
+    el.className = className;
+    el.textContent = text;
+    list.appendChild(el);
+    return el;
+}
+
+function pickerMessage(t, key, fallback) {
+    const value = t(key);
+    if (!value || value === key) return fallback;
+    return value;
+}
+
+async function renderProjectPickerPanel(panelKey, config) {
+    const state = projectPickerPanelState[panelKey];
+    const list = document.getElementById(config.listId);
+    if (!list || !state) return;
+    const query = (document.getElementById(config.searchInputId)?.value || '').trim();
+    const seq = ++state.seq;
+    const selectedId = config.getSelectedId();
+    const t = config.t || tp;
+
+    const renderPinned = () => {
+        appendChatProjectPanelItem(
+            list,
+            {
+                id: '',
+                name: t('projects.noProject'),
+                description: t('projects.noProjectDescription'),
+            },
+            selectedId,
+            config.onSelect,
+            t
+        );
+    };
+
+    const needsFetch = !isProjectsCacheReady();
+    let loadingEl = null;
+    if (needsFetch) {
+        list.innerHTML = '';
+        renderPinned();
+        loadingEl = appendChatProjectPanelMessage(
+            list,
+            'chat-project-panel-loading',
+            pickerMessage(t, 'common.loading', '加载中…')
+        );
+    }
+
+    try {
+        const all = await ensureProjectsLoaded();
+        if (seq !== state.seq) return;
+
+        list.innerHTML = '';
+        renderPinned();
+        const projects = filterActiveProjectsLocal(all, query);
+        projects.forEach((p) => {
+            appendChatProjectPanelItem(list, p, selectedId, config.onSelect, t);
+        });
+
+        if (query && projects.length === 0) {
+            appendChatProjectPanelMessage(
+                list,
+                'chat-project-panel-empty',
+                pickerMessage(t, 'chat.filterProjectSearchEmpty', '没有匹配的项目')
+            );
+        }
+    } catch (e) {
+        if (seq !== state.seq) return;
+        list.innerHTML = '';
+        renderPinned();
+        appendChatProjectPanelMessage(
+            list,
+            'chat-project-panel-empty',
+            pickerMessage(t, 'chat.filterProjectSearchFailed', '加载项目失败，请重试')
+        );
+    } finally {
+        if (loadingEl && loadingEl.parentNode) loadingEl.remove();
+    }
+}
+
+function initProjectPickerPanelSearch(panelKey, searchInputId, onSearch) {
+    const input = document.getElementById(searchInputId);
+    if (!input || input.dataset.pickerBound === panelKey) return;
+    input.dataset.pickerBound = panelKey;
+    input.addEventListener('input', onSearch);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (panelKey === 'chat' && typeof closeChatProjectPanel === 'function') {
+                closeChatProjectPanel();
+            } else if (panelKey === 'webshell' && typeof wsCloseProjectPanel === 'function') {
+                wsCloseProjectPanel();
+            }
+        }
+    });
+}
+
+function clearProjectPickerPanelSearch(panelKey, searchInputId) {
+    const state = projectPickerPanelState[panelKey];
+    if (!state) return;
+    state.seq += 1;
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+    }
+    const input = document.getElementById(searchInputId);
+    if (input) input.value = '';
+}
+
+function scheduleProjectPickerPanelSearch(panelKey, loadFn) {
+    const state = projectPickerPanelState[panelKey];
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+        state.timer = null;
+        loadFn();
+    }, PROJECT_PICKER_DEBOUNCE_MS);
+}
+
+async function loadChatProjectPanelList() {
+    await renderProjectPickerPanel('chat', {
+        listId: 'chat-project-list',
+        searchInputId: 'chat-project-search',
+        getSelectedId: resolveChatProjectSelection,
+        onSelect: (projectId) => selectChatProject(projectId),
+    });
+}
+
+async function ensureChatProjectButtonLabel() {
+    const id = (resolveChatProjectSelection() || '').trim();
+    if (id && !projectNameById[id]) {
+        await fetchProjectSummary(id);
+    }
+    updateChatProjectButtonLabel();
+}
+
 function updateChatProjectButtonLabel() {
     const textEl = document.getElementById('chat-project-text');
     if (!textEl) return;
@@ -1752,56 +2685,15 @@ function updateChatProjectButtonLabel() {
     textEl.textContent = id && projectNameById[id] ? projectNameById[id] : tp('projects.noProject');
 }
 
-function renderChatProjectPanelList() {
-    const list = document.getElementById('chat-project-list');
-    if (!list) return;
-    const selected = resolveChatProjectSelection();
-    const source = projectsCacheAll.length ? projectsCacheAll : projectsCache;
-    const activeProjects = source.filter((p) => p.status !== 'archived');
-    const items = [{ id: '', name: tp('projects.noProject'), description: tp('projects.noProjectDescription') }, ...activeProjects];
-    if (!items.length) {
-        list.innerHTML = `<div class="chat-project-panel-empty">${escapeHtml(tp('projects.noProjectsClickCreate'))}</div>`;
-        return;
-    }
-    list.innerHTML = '';
-    items.forEach((p) => {
-        const isNone = !p.id;
-        const isSelected = isNone ? !selected : selected === p.id;
-        const desc = isNone
-            ? (p.description || '')
-            : (p.description || '').trim().slice(0, 80) || tp('projects.sharedFactBoard');
-        const projectId = p.id || '';
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'role-selection-item-main' + (isSelected ? ' selected' : '');
-        btn.setAttribute('role', 'option');
-        btn.onclick = () => {
-            selectChatProject(projectId);
-        };
-        btn.innerHTML = `
-                <div class="role-selection-item-icon-main">${isNone ? '—' : '📁'}</div>
-                <div class="role-selection-item-content-main">
-                    <div class="role-selection-item-name-main">${escapeHtml(p.name || tp('common.untitled'))}</div>
-                    <div class="role-selection-item-description-main">${escapeHtml(desc)}</div>
-                </div>
-                ${isSelected ? '<div class="role-selection-checkmark-main">✓</div>' : ''}
-            `;
-        list.appendChild(btn);
-    });
-}
-
 async function renderChatProjectPanel() {
-    const list = document.getElementById('chat-project-list');
-    if (!list) return;
-    list.innerHTML = `<div class="chat-project-panel-loading">${escapeHtml(tp('common.loading'))}</div>`;
-    try {
-        await ensureProjectsLoaded();
-    } catch (e) {
-        console.warn(e);
-        list.innerHTML = `<div class="chat-project-panel-empty">${escapeHtml(tp('projects.loadFailedRetry'))}</div>`;
-        return;
-    }
-    renderChatProjectPanelList();
+    initProjectPickerPanelSearch('chat', 'chat-project-search', () => {
+        scheduleProjectPickerPanelSearch('chat', () => loadChatProjectPanelList());
+    });
+    clearProjectPickerPanelSearch('chat', 'chat-project-search');
+    await loadChatProjectPanelList();
+    const panel = document.getElementById('chat-project-panel');
+    if (panel && typeof applyRBACToUI === 'function') applyRBACToUI(panel);
+    requestAnimationFrame(() => document.getElementById('chat-project-search')?.focus());
 }
 
 function closeChatProjectPanel() {
@@ -1812,6 +2704,7 @@ function closeChatProjectPanel() {
         btn.classList.remove('active');
         btn.setAttribute('aria-expanded', 'false');
     }
+    clearProjectPickerPanelSearch('chat', 'chat-project-search');
 }
 
 async function toggleChatProjectPanel() {
@@ -1870,21 +2763,23 @@ async function applyChatProjectSelection(projectId) {
         setActiveProjectId(projectId);
     }
     updateChatProjectButtonLabel();
+    if (typeof window.onConversationProjectBindingChanged === 'function') {
+        window.onConversationProjectBindingChanged(projectId);
+    }
 }
 
 /** 对话页项目选择器：同步按钮文案；若浮层已打开则刷新列表 */
 async function refreshChatProjectSelector() {
     if (!document.getElementById('chat-project-btn')) return;
     try {
-        await ensureProjectsLoaded();
         await normalizeStaleChatProjectSelection();
+        await ensureChatProjectButtonLabel();
     } catch (e) {
         console.warn(e);
     }
-    updateChatProjectButtonLabel();
     const panel = document.getElementById('chat-project-panel');
     if (panel && panel.style.display === 'flex') {
-        renderChatProjectPanelList();
+        await loadChatProjectPanelList();
     }
 }
 
@@ -1901,9 +2796,10 @@ function initChatProjectSelector() {
         document.addEventListener('languagechange', () => {
             renderProjectsSidebar();
             renderProjectsPagination();
+            syncAllProjectsFilterSelects();
             updateChatProjectButtonLabel();
             const panel = document.getElementById('chat-project-panel');
-            if (panel && panel.style.display === 'flex') renderChatProjectPanelList();
+            if (panel && panel.style.display === 'flex') loadChatProjectPanelList();
             if (currentProjectId) {
                 refreshProjectDetailMetaI18n();
                 const source = projectsCacheAll.length ? projectsCacheAll : projectsCache;
@@ -1925,14 +2821,32 @@ function initChatProjectSelector() {
     });
 }
 
+function initProjectGraphFooterWheelScroll() {
+    const footer = document.querySelector('.project-fact-graph-footer');
+    if (!footer || footer.dataset.wheelScrollBound === 'true') return;
+    footer.dataset.wheelScrollBound = 'true';
+    footer.addEventListener('wheel', (event) => {
+        if (footer.scrollWidth <= footer.clientWidth || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+        const maxScrollLeft = footer.scrollWidth - footer.clientWidth;
+        const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, footer.scrollLeft + event.deltaY));
+        if (nextScrollLeft === footer.scrollLeft) return;
+        footer.scrollLeft = nextScrollLeft;
+        event.preventDefault();
+    }, { passive: false });
+}
+
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         initChatProjectSelector();
         initProjectListActionMenu();
+        initProjectGraphFooterWheelScroll();
+        refreshProjectsFilterSelects();
     });
 } else {
     initChatProjectSelector();
     initProjectListActionMenu();
+    initProjectGraphFooterWheelScroll();
+    refreshProjectsFilterSelects();
 }
 
 window.initProjectsPage = initProjectsPage;
@@ -1961,6 +2875,11 @@ window.onChatProjectChange = onChatProjectChange;
 window.toggleChatProjectPanel = toggleChatProjectPanel;
 window.closeChatProjectPanel = closeChatProjectPanel;
 window.selectChatProject = selectChatProject;
+window.renderProjectPickerPanel = renderProjectPickerPanel;
+window.initProjectPickerPanelSearch = initProjectPickerPanelSearch;
+window.clearProjectPickerPanelSearch = clearProjectPickerPanelSearch;
+window.scheduleProjectPickerPanelSearch = scheduleProjectPickerPanelSearch;
+window.loadChatProjectPanelList = loadChatProjectPanelList;
 window.prefetchProjectsForChat = prefetchProjectsForChat;
 window.ensureDefaultActiveProjectForNewChat = ensureDefaultActiveProjectForNewChat;
 window.getActiveProjectId = getActiveProjectId;
@@ -1986,5 +2905,24 @@ window.viewFactsForVulnerability = viewFactsForVulnerability;
 window.openProjectConversation = openProjectConversation;
 window.unbindConversationFromProject = unbindConversationFromProject;
 window.loadProjectConversations = loadProjectConversations;
+window.loadProjectAssets = loadProjectAssets;
+window.openProjectAssetDetail = openProjectAssetDetail;
+window.unbindAssetFromProject = unbindAssetFromProject;
+window.loadProjectFactGraph = loadProjectFactGraph;
+window.filterProjectFactGraph = filterProjectFactGraph;
+window.centerProjectFactGraph = centerProjectFactGraph;
+window.closeProjectFactGraphSidebar = closeProjectFactGraphSidebar;
+window.openSelectedGraphFactDetail = openSelectedGraphFactDetail;
+window.editSelectedGraphFact = editSelectedGraphFact;
+window.promoteConversationAttackChain = promoteConversationAttackChain;
+window.deleteProjectFactEdge = deleteProjectFactEdge;
+window.focusProjectFactGraphEdge = focusProjectFactGraphEdge;
+window.toggleProjectFactGraphConnectMode = toggleProjectFactGraphConnectMode;
 window.rebuildProjectNameMap = rebuildProjectNameMap;
+window.rememberProjectsInNameMap = rememberProjectsInNameMap;
+window.searchActiveProjects = searchActiveProjects;
+window.filterActiveProjectsLocal = filterActiveProjectsLocal;
+window.fetchProjectSummary = fetchProjectSummary;
 window.projectNameById = projectNameById;
+window.ensureProjectsLoaded = ensureProjectsLoaded;
+window.isProjectsCacheReady = isProjectsCacheReady;

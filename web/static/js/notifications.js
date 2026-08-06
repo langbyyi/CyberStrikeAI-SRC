@@ -140,7 +140,13 @@
             return;
         }
         if ((item.type === 'task_completed' || item.type === 'long_running_tasks') && item.conversationId) {
-            window.location.hash = 'chat?conversation=' + encodeURIComponent(item.conversationId);
+            // 统一走路由提供的会话导航入口。直接修改 hash 会先触发 hashchange
+            // 切页，再由路由延迟加载会话，视觉上会多闪一次。
+            if (typeof window.navigateToConversation === 'function') {
+                window.navigateToConversation(item.conversationId);
+            } else {
+                window.location.hash = 'chat?conversation=' + encodeURIComponent(item.conversationId);
+            }
             return;
         }
         if (item.type === 'task_failed' && item.executionId) {

@@ -492,3 +492,5 @@ POST /_search
 ```
 
 **Other sinks (quick reference):** PDF generators (wkhtmltopdf / WeasyPrint with user HTML); Git wrappers (`git clone` URL / hooks).
+
+

@@ -1,7 +1,6 @@
 package burp;
 
 import javax.swing.*;
-import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,19 +55,26 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory {
             return;
         }
 
-        String instruction = showInstructionEditor(tab.getUiComponent(), lastInstruction);
-        if (instruction == null) {
+        SendOptionsDialog.Result options = SendOptionsDialog.show(
+                tab.getUiComponent(), client, cfg, token, lastInstruction);
+        if (options == null) {
             return;
         }
-        lastInstruction = instruction;
+        lastInstruction = options.instruction;
 
-        String prompt = HttpMessageFormatter.toPrompt(helpers, msg, instruction);
+        String prompt = HttpMessageFormatter.toPrompt(helpers, msg, options.instruction);
         String title = HttpMessageFormatter.getRequestTitle(helpers, msg);
-        String agentModeStr = cfg.agentMode.displayName;
-        String runId = tab.startNewRun(title, agentModeStr, msg);
-        tab.appendProgressToRun(runId, "\n[server] " + cfg.baseUrl + "\n\n");
+        String agentModeStr = options.agentMode.displayName;
+        String roleLabel = options.role.isEmpty() ? "默认" : options.role;
+        String runId = tab.startNewRun(title, agentModeStr + " · " + roleLabel, msg);
+        tab.appendProgressToRun(runId, "\n[server] " + cfg.baseUrl);
+        if (!options.projectId.isEmpty()) {
+            tab.appendProgressToRun(runId, "\n[project] " + options.projectId);
+        }
+        tab.appendProgressToRun(runId, "\n\n");
 
-        client.streamTest(cfg, token, prompt, new CyberStrikeAIClient.StreamListener() {
+        client.streamTest(cfg, token, prompt, options.role, options.projectId, options.agentMode,
+                new CyberStrikeAIClient.StreamListener() {
             @Override
             public void onEvent(String type, String message, String rawJson) {
                 if (type == null) type = "";
@@ -189,39 +195,6 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory {
                 tab.setRunStatus(runId, "done");
             }
         });
-    }
-
-    private static String showInstructionEditor(Component parent, String initialValue) {
-        JTextArea editor = new JTextArea(
-                initialValue == null || initialValue.trim().isEmpty()
-                        ? HttpMessageFormatter.defaultInstruction()
-                        : initialValue,
-                6,
-                70
-        );
-        editor.setLineWrap(true);
-        editor.setWrapStyleWord(true);
-        editor.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
-
-        JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.add(new JLabel("Edit instruction before sending:"), BorderLayout.NORTH);
-        panel.add(new JScrollPane(editor), BorderLayout.CENTER);
-
-        int result = JOptionPane.showConfirmDialog(
-                parent,
-                panel,
-                "Customize Prompt Instruction",
-                JOptionPane.OK_CANCEL_OPTION,
-                JOptionPane.PLAIN_MESSAGE
-        );
-        if (result != JOptionPane.OK_OPTION) {
-            return null;
-        }
-        String value = editor.getText();
-        if (value == null || value.trim().isEmpty()) {
-            return HttpMessageFormatter.defaultInstruction();
-        }
-        return value.trim();
     }
 }
 

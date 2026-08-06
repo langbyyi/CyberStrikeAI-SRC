@@ -1,5 +1,5 @@
 // 页面路由管理
-let currentPage = 'dashboard';
+let currentPage = null;
 
 /** chat、漏洞管理页在切换时保留当前 hash 上的查询串（如 ?conversation= / ?conversation_id=） */
 function buildHashForPage(pageId) {
@@ -50,6 +50,29 @@ function scheduleChatConversationFromHash(delayMs) {
     }, delayMs);
 }
 
+/** 跳转到指定对话：单次切页 + 单次加载，避免 hashchange 与手动 load 重复触发导致闪烁 */
+function navigateToConversation(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+    const targetHash = 'chat?conversation=' + encodeURIComponent(cid);
+    const alreadyOnChat = currentPage === 'chat';
+
+    if (window.location.hash.slice(1) !== targetHash) {
+        history.replaceState(null, '', '#' + targetHash);
+    }
+
+    if (!alreadyOnChat) {
+        switchPage('chat');
+    }
+
+    if (typeof loadConversation === 'function') {
+        void loadConversation(cid);
+    } else if (typeof window.loadConversation === 'function') {
+        void window.loadConversation(cid);
+    }
+}
+window.navigateToConversation = navigateToConversation;
+
 // 初始化路由
 function initRouter() {
     // 从URL hash读取页面（如果有）
@@ -58,7 +81,7 @@ function initRouter() {
         const hashParts = hash.split('?');
         let pageId = hashParts[0];
         if (pageId === 'c2') pageId = 'c2-listeners';
-        if (pageId && ['dashboard', 'chat', 'hitl', 'info-collect', 'projects', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'tasks', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
+        if (pageId && ['dashboard', 'chat', 'hitl', 'asset-overview', 'asset-library', 'info-collect', 'projects', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'platform-rbac', 'workflows', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'tasks', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
             switchPage(pageId);
             if (pageId === 'chat') {
                 scheduleChatConversationFromHash(500);
@@ -73,6 +96,19 @@ function initRouter() {
 
 // 切换页面
 function switchPage(pageId) {
+    const targetPage = document.getElementById(`page-${pageId}`);
+    if (!targetPage) return;
+
+    // 导航点击会修改 hash，随后浏览器还会触发 hashchange。
+    // 同一页面已经激活时不再重复初始化，避免接口重复请求和页面二次重绘。
+    if (currentPage === pageId && targetPage.classList.contains('active')) {
+        const currentHash = buildHashForPage(pageId);
+        if (window.location.hash.slice(1) !== currentHash) {
+            window.location.hash = currentHash;
+        }
+        return;
+    }
+
     if (typeof window.syncC2NavOnceFromServer === 'function') {
         void window.syncC2NavOnceFromServer();
     }
@@ -82,21 +118,22 @@ function switchPage(pageId) {
     });
     
     // 显示目标页面
-    const targetPage = document.getElementById(`page-${pageId}`);
-    if (targetPage) {
-        targetPage.classList.add('active');
-        currentPage = pageId;
+    targetPage.classList.add('active');
+    currentPage = pageId;
         
-        const newHash = buildHashForPage(pageId);
-        if (window.location.hash.slice(1) !== newHash) {
-            window.location.hash = newHash;
-        }
+    const newHash = buildHashForPage(pageId);
+    if (window.location.hash.slice(1) !== newHash) {
+        window.location.hash = newHash;
+    }
         
-        // 更新导航状态
-        updateNavState(pageId);
+    // 更新导航状态
+    updateNavState(pageId);
         
-        // 页面特定的初始化
-        initPage(pageId);
+    // 页面特定的初始化
+    initPage(pageId);
+
+    if (typeof applyRBACToUI === 'function') {
+        applyRBACToUI(targetPage);
     }
 }
 window.switchPage = switchPage;
@@ -114,7 +151,15 @@ function updateNavState(pageId) {
     });
     
     // 设置活动状态
-    if (pageId === 'mcp-monitor' || pageId === 'mcp-management') {
+    if (pageId === 'asset-overview' || pageId === 'asset-library' || pageId === 'info-collect') {
+        const assetItem = document.querySelector('.nav-item[data-page="assets"]');
+        if (assetItem) {
+            assetItem.classList.add('active');
+            assetItem.classList.add('expanded');
+        }
+        const submenuItem = document.querySelector(`.nav-submenu-item[data-page="${pageId}"]`);
+        if (submenuItem) submenuItem.classList.add('active');
+    } else if (pageId === 'mcp-monitor' || pageId === 'mcp-management') {
         // MCP子菜单项
         const mcpItem = document.querySelector('.nav-item[data-page="mcp"]');
         if (mcpItem) {
@@ -347,6 +392,12 @@ async function initPage(pageId) {
                 initInfoCollectPage();
             }
             break;
+        case 'asset-overview':
+            if (typeof loadAssetOverview === 'function') loadAssetOverview();
+            break;
+        case 'asset-library':
+            if (typeof loadAssets === 'function') loadAssets();
+            break;
         case 'tasks':
             // 初始化任务管理页面
             if (typeof initTasksPage === 'function') {
@@ -391,9 +442,11 @@ async function initPage(pageId) {
                     startExternalMcpPoll();
                 }
             };
-            // 先拉取配置（含 tool_search 常驻列表），再加载工具与外部 MCP
-            if (typeof loadConfig === 'function') {
-                loadConfig(false)
+            // 先拉取配置（含 tool_search 常驻列表），再加载工具与外部 MCP。
+            // 仅有 mcp:read 的用户无需拉全量 /api/config（需 config:read）。
+            const canLoadFullConfig = typeof hasPermission !== 'function' || hasPermission('config:read');
+            if (typeof loadConfig === 'function' && canLoadFullConfig) {
+                loadConfig(false, { silent: true })
                     .catch(err => {
                         console.warn('加载配置失败（将继续加载 MCP 列表）:', err);
                     })
@@ -447,6 +500,16 @@ async function initPage(pageId) {
                         renderRolesList();
                     }
                 });
+            }
+            break;
+        case 'platform-rbac':
+            if (typeof initPlatformRbacPage === 'function') {
+                initPlatformRbacPage();
+            }
+            break;
+        case 'workflows':
+            if (typeof refreshWorkflows === 'function') {
+                refreshWorkflows();
             }
             break;
         case 'skills-monitor':
@@ -510,7 +573,7 @@ document.addEventListener('DOMContentLoaded', function() {
         let pageId = hashParts[0];
         
         if (pageId === 'c2') pageId = 'c2-listeners';
-        if (pageId && ['dashboard', 'chat', 'hitl', 'info-collect', 'projects', 'tasks', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
+        if (pageId && ['dashboard', 'chat', 'hitl', 'asset-overview', 'asset-library', 'info-collect', 'projects', 'tasks', 'workflows', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'platform-rbac', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
             switchPage(pageId);
             if (pageId === 'chat') {
                 scheduleChatConversationFromHash(200);
@@ -569,4 +632,3 @@ function initConversationSidebarState() {
 
 // 导出函数供其他脚本使用（与上方尽早绑定保持一致，便于外部脚本探测）
 window.currentPage = function() { return currentPage; };
-

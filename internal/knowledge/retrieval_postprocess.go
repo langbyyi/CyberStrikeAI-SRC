@@ -19,7 +19,7 @@ import (
 // postRetrieveMaxPrefetchCap 限制单次向量候选上限，避免误配置导致全表扫压力过大。
 const postRetrieveMaxPrefetchCap = 200
 
-// DocumentReranker 可选重排（如交叉编码器 / 第三方 Rerank API），由 [Retriever.SetDocumentReranker] 注入；失败时在适配层降级为向量序。
+// DocumentReranker 精排（HTTP dashscope / Cohere 兼容 API），由 [WireRetrieverPipeline] 注入。
 type DocumentReranker interface {
 	Rerank(ctx context.Context, query string, docs []*schema.Document) ([]*schema.Document, error)
 }
@@ -167,13 +167,16 @@ func truncateDocumentsByBudget(docs []*schema.Document, maxRunes, maxTokens int,
 	return out, nil
 }
 
-// EffectivePrefetchTopK 计算向量检索应拉取的候选条数（供粗排 / 去重 / 重排）。
+// EffectivePrefetchTopK 计算每条 MultiQuery 变体在向量阶段的候选条数（供融合 / 重排 / 后处理）。
 func EffectivePrefetchTopK(topK int, po *config.PostRetrieveConfig) int {
 	if topK < 1 {
 		topK = 5
 	}
-	fetch := topK
-	if po != nil && po.PrefetchTopK > fetch {
+	fetch := topK * 4
+	if fetch < 20 {
+		fetch = 20
+	}
+	if po != nil && po.PrefetchTopK > 0 {
 		fetch = po.PrefetchTopK
 	}
 	if fetch > postRetrieveMaxPrefetchCap {
@@ -182,7 +185,7 @@ func EffectivePrefetchTopK(topK int, po *config.PostRetrieveConfig) int {
 	return fetch
 }
 
-// ApplyPostRetrieve 检索后处理：规范化正文去重 → 预算截断 → 最终 TopK。重排在 [VectorEinoRetriever] 中单独调用以便失败时降级。
+// ApplyPostRetrieve 检索后处理：规范化正文去重 → 预算截断 → 最终 TopK（精排已在流水线中完成）。
 func ApplyPostRetrieve(docs []*schema.Document, po *config.PostRetrieveConfig, tokenModel string, finalTopK int) ([]*schema.Document, error) {
 	if finalTopK < 1 {
 		finalTopK = 5

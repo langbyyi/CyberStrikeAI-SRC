@@ -68,7 +68,6 @@ description: |
   **注意事项：**
   - 需要 Python 环境
   - 需要相应的凭据
-  - 仅用于授权的安全测试
   - 工具路径通常在 /usr/share/doc/python3-impacket/examples/ 或通过 pip 安装
 parameters:
   - name: "script"
@@ -90,7 +89,9 @@ parameters:
       额外的impacket参数。用于传递未在参数列表中定义的impacket选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - -h（各模块帮助）
+      - -just-dc-user（只取指定用户）
+      - -no-pass（无密码）
 
       **注意事项：**
       - 多个参数用空格分隔

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,37 +16,12 @@ import (
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/tooloutput"
 
 	"github.com/creack/pty"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
-
-var errShellReapTimeout = errors.New("shell process did not exit within reap grace")
-
-const shellReapGrace = 5 * time.Second
-
-func waitShellExitBounded(done <-chan error, grace time.Duration, force func()) error {
-	if grace <= 0 {
-		grace = shellReapGrace
-	}
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		if force != nil {
-			force()
-		}
-		return errShellReapTimeout
-	}
-}
-
-func waitShellSessionBounded(session *ShellSession) error {
-	done := make(chan error, 1)
-	go func() { done <- session.Wait() }()
-	return waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
-}
 
 // ToolOutputCallback 用于在工具执行过程中把 stdout/stderr 增量推给上层（SSE）。
 // 通过 context 传递，避免修改 MCP ToolHandler 签名导致的“写死工具”问题。
@@ -64,9 +38,9 @@ type Executor struct {
 	toolIndex               map[string]*config.ToolConfig // 工具索引，用于 O(1) 查找
 	mcpServer               *mcp.Server
 	logger                  *zap.Logger
-	shellNoOutputTimeoutSec int  // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
-	injectCmdTimeout        bool // 对 curl/wget 在未指定超时时注入 --max-time 兜底（默认 true，见 SetInjectCmdTimeout）
-	maxWallClockSec         int  // exec/execute 单次工具调用 wall-clock 总上限秒数；0=默认 300；-1=关闭（见 SetMaxWallClockSeconds）
+	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
+	toolOutputMaxBytes      int
+	spillRootDir            string
 }
 
 // NewExecutor 创建新的执行器
@@ -87,44 +61,49 @@ func (e *Executor) SetShellNoOutputTimeoutSeconds(sec int) {
 	e.shellNoOutputTimeoutSec = sec
 }
 
-// SetInjectCmdTimeout 配置 exec 命令层超时注入（curl/wget 在未指定超时时注入 --max-time 兜底）。
-func (e *Executor) SetInjectCmdTimeout(enable bool) {
-	e.injectCmdTimeout = enable
+// SetToolOutputMaxBytes limits stdout/stderr retained and streamed by exec-like
+// tools. It should stay aligned with MCP result normalization so every channel
+// sees the same bounded payload. Oversized full output is spilled to disk first.
+func (e *Executor) SetToolOutputMaxBytes(maxBytes int) {
+	e.toolOutputMaxBytes = maxBytes
 }
 
-// SetMaxWallClockSeconds 配置 exec/execute 单次工具调用的 wall-clock 总上限秒数（0=默认 300，负数=关闭）。
-func (e *Executor) SetMaxWallClockSeconds(sec int) {
-	e.maxWallClockSec = sec
+// SetToolOutputSpillRoot sets the reduction-compatible root for spilling full
+// exec stdout/stderr when the in-memory bound is exceeded (empty → tmp/reduction).
+func (e *Executor) SetToolOutputSpillRoot(rootDir string) {
+	e.spillRootDir = strings.TrimSpace(rootDir)
 }
 
-// ResolveWallClockTimeoutSeconds 解析 wall-clock 总上限：-1=关闭（返回 0）；0=默认 300；否则原样返回。
-func ResolveWallClockTimeoutSeconds(sec int) int {
-	if sec < 0 {
-		return 0
+func (e *Executor) wrapToolOutputCallback(ctx context.Context, cb ToolOutputCallback) ToolOutputCallback {
+	executionID := mcp.MCPExecutionIDFromContext(ctx)
+	if e == nil || e.mcpServer == nil || strings.TrimSpace(executionID) == "" {
+		return cb
 	}
-	if sec == 0 {
-		return 300
+	return func(chunk string) {
+		if chunk != "" {
+			e.mcpServer.AppendToolExecutionPartialOutput(executionID, chunk)
+		}
+		if cb != nil {
+			cb(chunk)
+		}
 	}
-	return sec
 }
 
-// WallClockTimeoutMessage 构造 wall-clock 超时 soft error（含 P1-a 风格的 error_code/retryable）。
-func WallClockTimeoutMessage(sec int, output string) string {
-	const maxOutput = 800
-	snippet := output
-	if len(snippet) > maxOutput {
-		snippet = snippet[:maxOutput] + "\n... [truncated]"
+func (e *Executor) spillOptsFromContext(ctx context.Context) tooloutput.SpillOpts {
+	root := ""
+	if e != nil {
+		root = e.spillRootDir
 	}
-	return fmt.Sprintf(`命令执行超过单次 wall-clock 上限 %ds，已被终止。
-输出截止点：
-%s
-
-可能原因与建议：
-- 脚本串行执行了过多慢请求（如此前的 for+15 个 API）。建议改用并行(xargs -P)或缩短目标列表。
-- 扫描范围过大。建议收窄 scope、severity 或字典。
-- 确需长跑的任务请改后台运行(&)后异步查结果。
-
-[error_code: timeout, retryable: true]`, sec, snippet)
+	opts := tooloutput.SpillOpts{RootDir: root}
+	if ctx != nil {
+		opts.ConversationID = mcp.MCPConversationIDFromContext(ctx)
+		opts.ProjectID = mcp.MCPProjectIDFromContext(ctx)
+		opts.ExecutionID = mcp.MCPExecutionIDFromContext(ctx)
+	}
+	if opts.ExecutionID == "" {
+		opts.ExecutionID = uuid.NewString()
+	}
+	return opts
 }
 
 // buildToolIndex 构建工具索引，将 O(n) 查找优化为 O(1)
@@ -135,7 +114,7 @@ func (e *Executor) buildToolIndex() {
 			e.toolIndex[e.config.Tools[i].Name] = &e.config.Tools[i]
 		}
 	}
-	e.logger.Info("工具索引构建完成",
+	e.logger.Debug("工具索引构建完成",
 		zap.Int("totalTools", len(e.config.Tools)),
 		zap.Int("enabledTools", len(e.toolIndex)),
 	)
@@ -143,7 +122,7 @@ func (e *Executor) buildToolIndex() {
 
 // ExecuteTool 执行安全工具
 func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.ToolResult, error) {
-	e.logger.Info("ExecuteTool被调用",
+	e.logger.Debug("ExecuteTool被调用",
 		zap.String("toolName", toolName),
 		zap.Any("args", args),
 	)
@@ -161,7 +140,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 
 	// 特殊处理：exec工具直接执行系统命令
 	if toolName == "exec" {
-		e.logger.Info("执行exec工具")
+		e.logger.Debug("执行exec工具")
 		return e.executeSystemCommand(ctx, args)
 	}
 
@@ -176,7 +155,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		return nil, fmt.Errorf("工具 %s 未找到或未启用", toolName)
 	}
 
-	e.logger.Info("找到工具配置",
+	e.logger.Debug("找到工具配置",
 		zap.String("toolName", toolName),
 		zap.String("command", toolConfig.Command),
 		zap.Strings("args", toolConfig.Args),
@@ -184,7 +163,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 
 	// 特殊处理：内部工具（command 以 "internal:" 开头）
 	if strings.HasPrefix(toolConfig.Command, "internal:") {
-		e.logger.Info("执行内部工具",
+		e.logger.Debug("执行内部工具",
 			zap.String("toolName", toolName),
 			zap.String("command", toolConfig.Command),
 		)
@@ -194,7 +173,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	// 构建命令 - 根据工具类型使用不同的参数格式
 	cmdArgs := e.buildCommandArgs(toolName, toolConfig, args)
 
-	e.logger.Info("构建命令参数完成",
+	e.logger.Debug("构建命令参数完成",
 		zap.String("toolName", toolName),
 		zap.Strings("cmdArgs", cmdArgs),
 		zap.Int("argsCount", len(cmdArgs)),
@@ -217,34 +196,24 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		}, nil
 	}
 
-	// 启动前预检：nuclei 模板 / ffuf 字典缺失则不拉子进程，直接返回结构化 soft error 指引换路。
-	if msg := e.preflightToolPaths(toolName, toolConfig, args); msg != "" {
-		e.logger.Warn("工具启动前预检失败",
-			zap.String("tool", toolName),
-			zap.String("reason", "preflight"),
-		)
-		return &mcp.ToolResult{
-			Content: []mcp.Content{{Type: "text", Text: msg}},
-			IsError: true,
-		}, nil
-	}
-
 	// 执行命令
 	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
 	attachNonInteractiveStdin(cmd)
 	_ = prepareShellCmdSession(cmd)
 
-	e.logger.Info("执行安全工具",
+	e.logger.Debug("执行安全工具",
 		zap.String("tool", toolName),
 		zap.Strings("args", cmdArgs),
 	)
 
 	var output string
 	var err error
-	// 如果上层提供了 stdout/stderr 增量回调，则边执行边读取并回调。
-	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
-		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
+	spill := e.spillOptsFromContext(ctx)
+	// 如果上层提供了 stdout/stderr 增量回调，或当前处于 MCP execution 中，则边执行边读取并回调。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); (ok && cb != nil) || mcp.MCPExecutionIDFromContext(ctx) != "" {
+		cb = e.wrapToolOutputCallback(ctx, cb)
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
@@ -252,11 +221,11 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
-			output, err = runCommandWithPTY(ctx, cmd2, cb)
+			output, err = runCommandWithPTY(ctx, cmd2, cb, e.toolOutputMaxBytes, spill)
 		}
 	} else {
-		// 非流式：内存缓冲 + ctx 取消杀进程组 + 无输出空闲兜底；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
-		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
+		// 非流式：内存缓冲 + ctx 取消杀进程组；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
+		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
@@ -264,7 +233,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
-			output, err = runCommandWithPTY(ctx, cmd2, nil)
+			output, err = runCommandWithPTY(ctx, cmd2, nil, e.toolOutputMaxBytes, spill)
 		}
 	}
 	if err != nil {
@@ -273,7 +242,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		if exitCode != nil && toolConfig.AllowedExitCodes != nil {
 			for _, allowedCode := range toolConfig.AllowedExitCodes {
 				if *exitCode == allowedCode {
-					e.logger.Info("工具执行完成（退出码在允许列表中）",
+					e.logger.Debug("工具执行完成（退出码在允许列表中）",
 						zap.String("tool", toolName),
 						zap.Int("exitCode", *exitCode),
 						zap.String("output", string(output)),
@@ -308,7 +277,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		}, nil
 	}
 
-	e.logger.Info("工具执行成功",
+	e.logger.Debug("工具执行成功",
 		zap.String("tool", toolName),
 		zap.String("output", string(output)),
 	)
@@ -326,7 +295,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 
 // RegisterTools 注册工具到MCP服务器
 func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
-	e.logger.Info("开始注册工具",
+	e.logger.Debug("开始注册工具",
 		zap.Int("totalTools", len(e.config.Tools)),
 		zap.Int("enabledTools", len(e.toolIndex)),
 	)
@@ -374,7 +343,7 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 		}
 
 		handler := func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
-			e.logger.Info("工具handler被调用",
+			e.logger.Debug("工具handler被调用",
 				zap.String("toolName", toolName),
 				zap.Any("args", args),
 			)
@@ -382,14 +351,14 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 		}
 
 		mcpServer.RegisterTool(tool, handler)
-		e.logger.Info("注册安全工具成功",
+		e.logger.Debug("注册安全工具成功",
 			zap.String("tool", toolConfigCopy.Name),
 			zap.String("command", toolConfigCopy.Command),
 			zap.Int("index", i),
 		)
 	}
 
-	e.logger.Info("工具注册完成",
+	e.logger.Debug("工具注册完成",
 		zap.Int("registeredCount", len(e.config.Tools)),
 	)
 }
@@ -430,8 +399,7 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 
 		// 对于需要子命令的工具（如 gobuster dir），position 0 必须紧跟在命令名后、所有 flag 之前
 		for _, param := range positionalParams {
-			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
-				isSensitiveGateOnlyParam(param.Name) {
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" {
 				continue
 			}
 			if param.Position != nil && *param.Position == 0 {
@@ -449,9 +417,8 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 		// 处理标志参数
 		for _, param := range flagParams {
 			// 跳过特殊参数，它们会在后面单独处理
-			// action / 敏感闸放行参数仅用于框架逻辑，不传递给外部命令
-			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
-				isSensitiveGateOnlyParam(param.Name) {
+			// action 参数仅用于工具内部逻辑，不传递给命令
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" {
 				continue
 			}
 
@@ -502,15 +469,21 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 				}
 			}
 
+			formattedValue := e.formatParamValue(param, value)
+			if strings.TrimSpace(formattedValue) == "" {
+				if param.Required {
+					e.logger.Warn("必需参数为空",
+						zap.String("tool", toolName),
+						zap.String("param", param.Name),
+					)
+					return []string{}
+				}
+				continue
+			}
+
 			format := param.Format
 			if format == "" {
 				format = "flag" // 默认格式
-			}
-
-			formattedValue := e.formatParamValue(param, value)
-			// 空字符串值不传递：避免 --flag standalone 把下一个参数误吞掉（如 nmap --script <target>）。
-			if formattedValue == "" && param.Type != "bool" {
-				continue
 			}
 
 			switch format {
@@ -839,25 +812,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		zap.String("command", command),
 	)
 
-	// wall-clock 总上限：针对 exec 单次工具调用的硬兜底，治"持续慢输出但始终不超 inactivity"的长脚本
-	//（如 for 循环串行跑 15 个 API 跑 600s+）。与 inactivity（无输出空闲）互补。
-	wallClockSec := ResolveWallClockTimeoutSeconds(e.maxWallClockSec)
-	if wallClockSec > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(wallClockSec)*time.Second)
-		defer cancel()
-	}
-
 	command = PrepareShellCommandForExecute(command)
-
-	// 命令层超时兜底：对 curl/wget 在用户未指定超时时注入 --max-time/--connect-timeout，
-	// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。开关默认开，可配关闭。
-	if e.injectCmdTimeout {
-		if injected := maybeInjectCmdTimeout(command); injected != command {
-			e.logger.Info("注入命令层超时（curl/wget 兜底）", zap.String("command", injected))
-			command = injected
-		}
-	}
 
 	// 获取shell类型（可选，默认为sh）
 	shell := "sh"
@@ -1019,9 +974,11 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	// 非后台命令：等待输出
 	var output string
 	var err error
-	// 若上层提供工具输出增量回调，则边执行边流式读取。
-	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
-		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
+	spill := e.spillOptsFromContext(ctx)
+	// 若上层提供工具输出增量回调，或当前处于 MCP execution 中，则边执行边流式读取。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); (ok && cb != nil) || mcp.MCPExecutionIDFromContext(ctx) != "" {
+		cb = e.wrapToolOutputCallback(ctx, cb)
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
 			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
@@ -1029,10 +986,10 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 				cmd2.Dir = workDir
 			}
 			ConfigureShellCmdForAgentExecute(cmd2)
-			output, err = runCommandWithPTY(ctx, cmd2, cb)
+			output, err = runCommandWithPTY(ctx, cmd2, cb, e.toolOutputMaxBytes, spill)
 		}
 	} else {
-		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
+		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
 			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
@@ -1040,19 +997,10 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 				cmd2.Dir = workDir
 			}
 			ConfigureShellCmdForAgentExecute(cmd2)
-			output, err = runCommandWithPTY(ctx, cmd2, nil)
+			output, err = runCommandWithPTY(ctx, cmd2, nil, e.toolOutputMaxBytes, spill)
 		}
 	}
 	if err != nil {
-		text := FormatCommandFailureFromErr(err, output)
-		// wall-clock 超时优先给出结构化提示（error_code=timeout / retryable），便于模型换路。
-		if wallClockSec > 0 && errors.Is(err, context.DeadlineExceeded) {
-			text = WallClockTimeoutMessage(wallClockSec, output)
-			e.logger.Warn("exec wall-clock timeout",
-				zap.String("command", command),
-				zap.Int("max_wall_clock_sec", wallClockSec),
-			)
-		}
 		e.logger.Error("系统命令执行失败",
 			zap.String("command", command),
 			zap.Error(err),
@@ -1062,7 +1010,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 			Content: []mcp.Content{
 				{
 					Type: "text",
-					Text: text,
+					Text: FormatCommandFailureFromErr(err, output),
 				},
 			},
 			IsError: true,
@@ -1088,24 +1036,24 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 // combinedOutputCancellable 行为对齐 cmd.CombinedOutput（stdout/stderr 写入内存缓冲），
 // 但在 ctx 取消时 terminateCmdTree 终止整棵进程树。
 // 非流式路径不使用双流管道 fan-in，避免 stderr 撑满管道缓冲区时与 stdout 互相阻塞导致死锁。
-// noOutputSec<=0 时仅保留原 ctx 取消语义；>0 时叠加无输出空闲兜底（与流式路径一致）。
+// 无输出空闲检测由上层 agent.tool_timeout_minutes 兜底，不改变原 CombinedOutput 语义。
 func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, error) {
-	return combinedOutputCancellableWithInactivity(ctx, cmd, 0)
+	return combinedOutputCancellableWithLimit(ctx, cmd, 0, tooloutput.SpillOpts{})
 }
 
-// combinedOutputCancellableWithInactivity 在 combinedOutputCancellable 基础上叠加无输出空闲检测：
-// 当 noOutputSec 内 stdout/stderr 均无新写入，则终止进程树并返回软失败提示（与流式路径语义一致）。
-func combinedOutputCancellableWithInactivity(ctx context.Context, cmd *exec.Cmd, noOutputSec int) (string, error) {
-	var stdoutBuf, stderrBuf strings.Builder
-	idleWatch := NewShellInactivityWatch(noOutputSec)
-	cmd.Stdout = wrapBumpingWriter(&stdoutBuf, idleWatch)
-	cmd.Stderr = wrapBumpingWriter(&stderrBuf, idleWatch)
+func combinedOutputCancellableWithLimit(ctx context.Context, cmd *exec.Cmd, maxBytes int, spill tooloutput.SpillOpts) (string, error) {
+	var tee *tooloutput.Tee
+	if maxBytes > 0 {
+		tee = tooloutput.NewTee(spill)
+		defer func() { _ = tee.Close() }()
+	}
+	stdoutBuf := newBoundedOutputCollector(maxBytes, tee)
+	stderrBuf := newBoundedOutputCollector(maxBytes, tee)
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
 
 	session, err := StartShellSession(cmd)
 	if err != nil {
-		if idleWatch != nil {
-			idleWatch.Stop()
-		}
 		return "", err
 	}
 
@@ -1123,171 +1071,15 @@ func combinedOutputCancellableWithInactivity(ctx context.Context, cmd *exec.Cmd,
 		}
 	}()
 	defer close(stopWatch)
-	if idleWatch != nil {
-		defer idleWatch.Stop()
-	}
-
-	var idleCh <-chan struct{}
-	if idleWatch != nil {
-		idleCh = idleWatch.Expired
-	}
 
 	var waitErr error
 	select {
 	case waitErr = <-done:
 	case <-ctx.Done():
-		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
-		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), ctx.Err()
-	case <-idleCh:
-		// 无输出空闲超时：杀进程组，等待回收，返回软失败提示（模型可见、可换路）。
-		TerminateShellCmdSession(session)
-		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
-		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), fmt.Errorf("%s", ShellNoOutputTimeoutMessage(noOutputSec))
+		waitErr = <-done
+		return finalizeJoinedBoundedOutputs(stdoutBuf, stderrBuf, maxBytes, tee), ctx.Err()
 	}
-	return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), waitErr
-}
-
-// bumpingWriter 包装底层 Writer，每次 Write 时 Bump 无输出空闲计时器。
-type bumpingWriter struct {
-	w     io.Writer
-	watch *ShellInactivityWatch
-}
-
-func (bw *bumpingWriter) Write(p []byte) (int, error) {
-	n, err := bw.w.Write(p)
-	if bw.watch != nil {
-		bw.watch.Bump()
-	}
-	return n, err
-}
-
-// wrapBumpingWriter 仅当存在空闲计时器时包装，否则原样返回（零开销）。
-func wrapBumpingWriter(w io.Writer, watch *ShellInactivityWatch) io.Writer {
-	if watch == nil {
-		return w
-	}
-	return &bumpingWriter{w: w, watch: watch}
-}
-
-// maybeInjectCmdTimeout 对 curl/wget 在未显式指定超时时注入兜底超时，
-// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。
-// 保守策略：命令已含 --max-time(curl) 或 --timeout/-T(wget) 时不覆盖；返回值与入参相同时表示未注入。
-func maybeInjectCmdTimeout(command string) string {
-	if command == "" {
-		return command
-	}
-	if strings.Contains(command, "curl") && !strings.Contains(command, "--max-time") {
-		command = strings.ReplaceAll(command, "curl ", "curl --max-time 60 --connect-timeout 10 ")
-	}
-	if strings.Contains(command, "wget") && !strings.Contains(command, "--timeout") && !strings.Contains(command, " -T ") {
-		command = strings.ReplaceAll(command, "wget ", "wget --timeout=60 --tries=2 ")
-	}
-	return command
-}
-
-// preflightToolPaths 对重工具做启动前路径校验（nuclei 模板 / ffuf 字典），
-// 缺失时不拉子进程，返回结构化 soft error 指引模型换路（避免 nuclei 自身 [FTL] 后才失败、白白等超时）。
-// 返回空串表示校验通过。
-func (e *Executor) preflightToolPaths(toolName string, toolConfig *config.ToolConfig, args map[string]interface{}) string {
-	switch toolName {
-	case "nuclei":
-		// 模型显式指定 template 参数（-t）则跳过内置目录校验。
-		if hasNonEmptyArg(args, "template") || hasAdditionalArgSubstring(args, "-t ") || hasAdditionalArgSubstring(args, "-templates ") {
-			return ""
-		}
-		if tp := defaultNucleiTemplatesDir(); tp != "" && !pathExists(tp) {
-			return fmt.Sprintf(`[preflight] nuclei 内置模板目录不存在: %s
-
-命令已中止（未启动子进程），避免空等超时。建议：
-- 安装/更新模板库: nuclei -update-templates
-- 或显式指定模板参数 template（如 -t <路径>）
-- 或改用不依赖模板库的工具（如 http-framework-test）
-
-[preflight] nuclei built-in templates dir missing: %s`, tp, tp)
-		}
-	case "ffuf":
-		wl := resolveFfufWordlist(args, toolConfig)
-		if wl != "" && !pathExists(wl) {
-			return fmt.Sprintf(`[preflight] ffuf 字典路径不存在: %s
-
-命令已中止（未启动子进程），避免空等超时。建议：
-- 提供已存在的 wordlist 路径（或安装 seclists/dirb 等字典包）
-- 或改用其它目录发现方式
-
-[preflight] ffuf wordlist missing: %s`, wl, wl)
-		}
-	}
-	return ""
-}
-
-func hasNonEmptyArg(args map[string]interface{}, key string) bool {
-	v, ok := args[key]
-	if !ok {
-		return false
-	}
-	if s, ok := v.(string); ok {
-		return strings.TrimSpace(s) != ""
-	}
-	return v != nil
-}
-
-func hasAdditionalArgSubstring(args map[string]interface{}, sub string) bool {
-	s, _ := args["additional_args"].(string)
-	return strings.Contains(s, sub)
-}
-
-func pathExists(p string) bool {
-	if p == "" {
-		return false
-	}
-	if _, err := os.Stat(p); err == nil {
-		return true
-	}
-	return false
-}
-
-// defaultNucleiTemplatesDir 返回 nuclei 默认模板目录（$HOME/nuclei-templates）；取不到 HOME 时返回空串。
-func defaultNucleiTemplatesDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return home + "/nuclei-templates"
-}
-
-// resolveFfufWordlist 解析 ffuf 实际使用的字典路径：模型显式参数 > additional_args 中的 -w > yaml 默认值。
-func resolveFfufWordlist(args map[string]interface{}, toolConfig *config.ToolConfig) string {
-	if wl, ok := args["wordlist"].(string); ok && strings.TrimSpace(wl) != "" {
-		return wl
-	}
-	if additional, ok := args["additional_args"].(string); ok && additional != "" {
-		if wl := extractFlagValue(additional, "-w", "--wordlist"); wl != "" {
-			return wl
-		}
-	}
-	if toolConfig != nil {
-		for _, p := range toolConfig.Parameters {
-			if p.Name == "wordlist" && p.Default != nil {
-				if s, ok := p.Default.(string); ok && s != "" {
-					return s
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// extractFlagValue 从空格分隔的参数串中提取 -x/--xxx 紧随的值；找不到返回空串。
-func extractFlagValue(s string, flags ...string) string {
-	parts := strings.Fields(s)
-	for i := 0; i < len(parts); i++ {
-		for _, f := range flags {
-			if parts[i] == f && i+1 < len(parts) {
-				return parts[i+1]
-			}
-		}
-	}
-	return ""
+	return finalizeJoinedBoundedOutputs(stdoutBuf, stderrBuf, maxBytes, tee), waitErr
 }
 
 func joinCommandOutput(stdout, stderr string) string {
@@ -1300,9 +1092,164 @@ func joinCommandOutput(stdout, stderr string) string {
 	return stdout + stderr
 }
 
+type boundedOutputCollector struct {
+	builder   strings.Builder
+	maxBytes  int
+	seenBytes int
+	truncated bool
+	tee       *tooloutput.Tee
+}
+
+func newBoundedOutputCollector(maxBytes int, tee *tooloutput.Tee) *boundedOutputCollector {
+	return &boundedOutputCollector{maxBytes: maxBytes, tee: tee}
+}
+
+func (b *boundedOutputCollector) Write(p []byte) (int, error) {
+	b.WriteStringLimited(string(p))
+	return len(p), nil
+}
+
+func (b *boundedOutputCollector) WriteStringLimited(s string) string {
+	if b == nil {
+		return ""
+	}
+	if b.tee != nil {
+		_, _ = b.tee.Write([]byte(s))
+	}
+	if b.maxBytes <= 0 {
+		b.seenBytes += len(s)
+		b.builder.WriteString(s)
+		return s
+	}
+	b.seenBytes += len(s)
+	if b.builder.Len() >= b.maxBytes {
+		b.truncated = true
+		return ""
+	}
+	remaining := b.maxBytes - b.builder.Len()
+	if len(s) <= remaining {
+		b.builder.WriteString(s)
+		return s
+	}
+	kept := truncateStringBytes(s, remaining)
+	b.builder.WriteString(kept)
+	b.truncated = true
+	return kept
+}
+
+func (b *boundedOutputCollector) String() string {
+	if b == nil {
+		return ""
+	}
+	return b.builder.String()
+}
+
+func finalizeJoinedBoundedOutputs(stdout, stderr *boundedOutputCollector, maxBytes int, tee *tooloutput.Tee) string {
+	if tee != nil {
+		_ = tee.Close()
+	}
+	truncated := (stdout != nil && stdout.truncated) || (stderr != nil && stderr.truncated)
+	seen := 0
+	if stdout != nil {
+		seen += stdout.seenBytes
+	}
+	if stderr != nil {
+		seen += stderr.seenBytes
+	}
+	joined := joinCommandOutput(
+		func() string {
+			if stdout == nil {
+				return ""
+			}
+			return stdout.String()
+		}(),
+		func() string {
+			if stderr == nil {
+				return ""
+			}
+			return stderr.String()
+		}(),
+	)
+	if maxBytes > 0 && !truncated && len(joined) > maxBytes {
+		truncated = true
+		seen = len(joined)
+	}
+	path := ""
+	if tee != nil {
+		path = tee.Path()
+	}
+	if truncated && maxBytes > 0 {
+		if path != "" {
+			return tooloutput.FormatPersistedFromFile(path, seen, maxBytes)
+		}
+		if len(joined) > maxBytes {
+			return truncateStringBytes(joined, maxBytes)
+		}
+		return joined
+	}
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	if maxBytes > 0 && len(joined) > maxBytes {
+		return truncateStringBytes(joined, maxBytes)
+	}
+	return joined
+}
+
+func finalizeBoundedOutput(collector *boundedOutputCollector, maxBytes int, tee *tooloutput.Tee) string {
+	if tee != nil {
+		_ = tee.Close()
+	}
+	if collector == nil {
+		return ""
+	}
+	path := ""
+	if tee != nil {
+		path = tee.Path()
+	}
+	if collector.truncated && maxBytes > 0 {
+		if path != "" {
+			return tooloutput.FormatPersistedFromFile(path, collector.seenBytes, maxBytes)
+		}
+		return truncateStringBytes(collector.String(), maxBytes)
+	}
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	out := collector.String()
+	if maxBytes > 0 && len(out) > maxBytes {
+		return tooloutput.BoundWithSpill(out, maxBytes, tooloutput.SpillOpts{})
+	}
+	return out
+}
+
+func limitOutputString(s string, maxBytes int, spill tooloutput.SpillOpts) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	return tooloutput.BoundWithSpill(s, maxBytes, spill)
+}
+
+func truncateStringBytes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut <= 0 {
+		return ""
+	}
+	return s[:cut]
+}
+
 // streamCommandOutput 以“边读边回调”的方式读取命令 stdout/stderr。
 // 使用定长块读取，避免按行读取在无换行输出时永久阻塞；ctx 取消时终止进程树。
-func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback, noOutputSec int) (string, error) {
+func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback, noOutputSec int, maxBytes int, spill tooloutput.SpillOpts) (string, error) {
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -1354,7 +1301,12 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		close(chunks)
 	}()
 
-	var outBuilder strings.Builder
+	tee := (*tooloutput.Tee)(nil)
+	if maxBytes > 0 {
+		tee = tooloutput.NewTee(spill)
+		defer func() { _ = tee.Close() }()
+	}
+	outBuilder := newBoundedOutputCollector(maxBytes, tee)
 	var deltaBuilder strings.Builder
 	lastFlush := time.Now()
 
@@ -1377,11 +1329,11 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 	fireInactivity := func() {
 		TerminateShellCmdSession(session)
 		msg := ShellNoOutputTimeoutMessage(idleWatch.Sec)
-		outBuilder.WriteString(msg)
+		msg = outBuilder.WriteStringLimited(msg)
 		if cb != nil {
 			cb(msg)
 		}
-		_ = waitShellSessionBounded(session)
+		_ = session.Wait()
 	}
 
 chunksLoop:
@@ -1394,11 +1346,11 @@ chunksLoop:
 		case <-ctx.Done():
 			TerminateShellCmdSession(session)
 			flush()
-			_ = waitShellSessionBounded(session)
+			_ = session.Wait()
 			return outBuilder.String(), ctx.Err()
 		case <-idleCh:
 			fireInactivity()
-			return outBuilder.String(), fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
+			return finalizeBoundedOutput(outBuilder, maxBytes, tee), fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
 		case chunk, ok := <-chunks:
 			if !ok {
 				break chunksLoop
@@ -1406,8 +1358,8 @@ chunksLoop:
 			if chunk != "" && idleWatch != nil {
 				idleWatch.Bump()
 			}
-			outBuilder.WriteString(chunk)
-			deltaBuilder.WriteString(chunk)
+			keptChunk := outBuilder.WriteStringLimited(chunk)
+			deltaBuilder.WriteString(keptChunk)
 			if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
 				flush()
 			}
@@ -1417,7 +1369,7 @@ chunksLoop:
 
 	// 等待命令结束，返回最终退出状态
 	waitErr := session.Wait()
-	return outBuilder.String(), waitErr
+	return finalizeBoundedOutput(outBuilder, maxBytes, tee), waitErr
 }
 
 // applyDefaultTerminalEnv 为外部工具补齐常见的终端环境变量。
@@ -1470,15 +1422,14 @@ func shouldRetryWithPTY(output string) bool {
 
 // runCommandWithPTY 为子进程分配 PTY，适配需要交互式终端的工具（如 autorecon）。
 // 若 cb != nil，将持续回调增量输出（用于 SSE）。
-func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback) (string, error) {
+func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback, maxBytes int, spill tooloutput.SpillOpts) (string, error) {
 	if runtime.GOOS == "windows" {
 		// PTY 方案为类 Unix；Windows 走原逻辑
 		if cb != nil {
-			return streamCommandOutput(ctx, cmd, cb, 0)
+			return streamCommandOutput(ctx, cmd, cb, 0, maxBytes, spill)
 		}
 		_ = prepareShellCmdSession(cmd)
-		out, err := cmd.CombinedOutput()
-		return string(out), err
+		return combinedOutputCancellableWithLimit(ctx, cmd, maxBytes, spill)
 	}
 
 	_ = prepareShellCmdSession(cmd)
@@ -1505,7 +1456,12 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	}()
 	defer close(done)
 
-	var outBuilder strings.Builder
+	tee := (*tooloutput.Tee)(nil)
+	if maxBytes > 0 {
+		tee = tooloutput.NewTee(spill)
+		defer func() { _ = tee.Close() }()
+	}
+	outBuilder := newBoundedOutputCollector(maxBytes, tee)
 	var deltaBuilder strings.Builder
 	lastFlush := time.Now()
 	flush := func() {
@@ -1527,8 +1483,8 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 			// 统一换行为 \n，避免前端错位
 			chunk = strings.ReplaceAll(chunk, "\r\n", "\n")
 			chunk = strings.ReplaceAll(chunk, "\r", "\n")
-			outBuilder.WriteString(chunk)
-			deltaBuilder.WriteString(chunk)
+			keptChunk := outBuilder.WriteStringLimited(chunk)
+			deltaBuilder.WriteString(keptChunk)
 			if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
 				flush()
 			}
@@ -1540,7 +1496,7 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	flush()
 
 	waitErr := cmd.Wait()
-	return outBuilder.String(), waitErr
+	return finalizeBoundedOutput(outBuilder, maxBytes, tee), waitErr
 }
 
 // executeInternalTool 执行内部工具（不执行外部命令）

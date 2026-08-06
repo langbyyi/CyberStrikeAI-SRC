@@ -2,15 +2,15 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
-
-	"github.com/google/uuid"
 
 	"go.uber.org/zap"
 )
@@ -35,31 +35,52 @@ type listToolsInflight struct {
 	err   error
 }
 
+type ExternalMCPResilienceConfig struct {
+	MaxConcurrentPerServer  int
+	MaxConcurrentTotal      int
+	CircuitFailureThreshold int
+	CircuitCooldown         time.Duration
+}
+
+type externalMCPServerRuntime struct {
+	semaphore           chan struct{}
+	consecutiveFailures int
+	circuitOpenUntil    time.Time
+}
+
 // ExternalMCPManager 外部MCP管理器
 type ExternalMCPManager struct {
-	clients      map[string]ExternalMCPClient
-	configs      map[string]config.ExternalMCPServerConfig
-	logger       *zap.Logger
-	storage      MonitorStorage            // 可选的持久化存储
-	executions   map[string]*ToolExecution // 执行记录
-	stats        map[string]*ToolStats     // 工具统计信息
-	errors       map[string]string         // 错误信息
-	toolCounts   map[string]int            // 工具数量缓存
-	toolCountsMu sync.RWMutex              // 工具数量缓存的锁
-	toolCache    map[string]toolListCacheEntry // 工具列表缓存：MCP名称 -> 工具列表
-	toolCacheMu  sync.RWMutex              // 工具列表缓存的锁
-	listToolsMu  sync.Mutex
-	listToolsInflight map[string]*listToolsInflight
-	stopRefresh  chan struct{}             // 停止后台刷新的信号
-	refreshWg    sync.WaitGroup            // 等待后台刷新goroutine完成
-	refreshing   atomic.Bool               // 防止 refreshToolCounts 并发堆积
-	mu           sync.RWMutex
-	runningCancels    map[string]context.CancelFunc
-	abortUserNotes    map[string]string
-	reconnectMu       sync.Mutex
-	reconnecting      map[string]bool
-	reconnectLastTry  map[string]time.Time
-	reconnectAttempts map[string]int
+	clients            map[string]ExternalMCPClient
+	configs            map[string]config.ExternalMCPServerConfig
+	logger             *zap.Logger
+	storage            MonitorStorage                // 可选的持久化存储
+	executions         map[string]*ToolExecution     // 执行记录
+	stats              map[string]*ToolStats         // 工具统计信息
+	errors             map[string]string             // 错误信息
+	toolCounts         map[string]int                // 工具数量缓存
+	toolCountsMu       sync.RWMutex                  // 工具数量缓存的锁
+	toolCache          map[string]toolListCacheEntry // 工具列表缓存：MCP名称 -> 工具列表
+	toolCacheMu        sync.RWMutex                  // 工具列表缓存的锁
+	listToolsMu        sync.Mutex
+	listToolsInflight  map[string]*listToolsInflight
+	stopRefresh        chan struct{}  // 停止后台刷新的信号
+	refreshWg          sync.WaitGroup // 等待后台刷新goroutine完成
+	refreshing         atomic.Bool    // 防止 refreshToolCounts 并发堆积
+	mu                 sync.RWMutex
+	runningCancels     map[string]context.CancelFunc
+	abortUserNotes     map[string]string
+	reconnectMu        sync.Mutex
+	reconnecting       map[string]bool
+	reconnectLastTry   map[string]time.Time
+	reconnectAttempts  map[string]int
+	toolAuthorizer     func(context.Context, string, map[string]interface{}) error
+	executionService   *ExecutionService
+	toolWaitTimeout    time.Duration
+	toolResultMaxBytes int
+	spillRootDir       string
+	resilience         ExternalMCPResilienceConfig
+	serverRuntimes     map[string]*externalMCPServerRuntime
+	globalSemaphore    chan struct{}
 }
 
 // NewExternalMCPManager 创建外部MCP管理器
@@ -67,29 +88,128 @@ func NewExternalMCPManager(logger *zap.Logger) *ExternalMCPManager {
 	return NewExternalMCPManagerWithStorage(logger, nil)
 }
 
+// SetToolAuthorizer installs the policy decision point for all external MCP
+// invocations. App wiring configures this before any Agent can call a tool.
+func (m *ExternalMCPManager) SetToolAuthorizer(authorizer func(context.Context, string, map[string]interface{}) error) {
+	m.mu.Lock()
+	m.toolAuthorizer = authorizer
+	m.mu.Unlock()
+}
+
 // NewExternalMCPManagerWithStorage 创建外部MCP管理器（带持久化存储）
 func NewExternalMCPManagerWithStorage(logger *zap.Logger, storage MonitorStorage) *ExternalMCPManager {
 	manager := &ExternalMCPManager{
-		clients:        make(map[string]ExternalMCPClient),
-		configs:        make(map[string]config.ExternalMCPServerConfig),
-		logger:         logger,
-		storage:        storage,
-		executions:     make(map[string]*ToolExecution),
-		stats:          make(map[string]*ToolStats),
-		errors:         make(map[string]string),
-		toolCounts:        make(map[string]int),
-		toolCache:         make(map[string]toolListCacheEntry),
-		listToolsInflight: make(map[string]*listToolsInflight),
-		stopRefresh:       make(chan struct{}),
-		runningCancels:    make(map[string]context.CancelFunc),
-		abortUserNotes:    make(map[string]string),
-		reconnecting:      make(map[string]bool),
-		reconnectLastTry:  make(map[string]time.Time),
-		reconnectAttempts: make(map[string]int),
+		clients:            make(map[string]ExternalMCPClient),
+		configs:            make(map[string]config.ExternalMCPServerConfig),
+		logger:             logger,
+		storage:            storage,
+		executions:         make(map[string]*ToolExecution),
+		stats:              make(map[string]*ToolStats),
+		errors:             make(map[string]string),
+		toolCounts:         make(map[string]int),
+		toolCache:          make(map[string]toolListCacheEntry),
+		listToolsInflight:  make(map[string]*listToolsInflight),
+		stopRefresh:        make(chan struct{}),
+		runningCancels:     make(map[string]context.CancelFunc),
+		abortUserNotes:     make(map[string]string),
+		reconnecting:       make(map[string]bool),
+		reconnectLastTry:   make(map[string]time.Time),
+		reconnectAttempts:  make(map[string]int),
+		toolWaitTimeout:    60 * time.Second,
+		toolResultMaxBytes: DefaultToolResultMaxBytes,
+		resilience: ExternalMCPResilienceConfig{
+			MaxConcurrentPerServer:  2,
+			MaxConcurrentTotal:      16,
+			CircuitFailureThreshold: 3,
+			CircuitCooldown:         60 * time.Second,
+		},
+		serverRuntimes:  make(map[string]*externalMCPServerRuntime),
+		globalSemaphore: make(chan struct{}, 16),
 	}
+	manager.executionService = NewExecutionService(storage, logger)
 	// 启动后台刷新工具数量的goroutine
 	manager.startToolCountRefresh()
 	return manager
+}
+
+func (m *ExternalMCPManager) ConfigureToolResultMaxBytes(maxBytes int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.toolResultMaxBytes = maxBytes
+	m.mu.Unlock()
+	if m.executionService != nil {
+		m.executionService.ConfigureToolResultMaxBytes(maxBytes)
+	}
+}
+
+// ConfigureToolResultSpillRoot sets the local directory root used when oversized
+// tool results are spilled (aligned with reduction_root_dir; empty → tmp/reduction).
+func (m *ExternalMCPManager) ConfigureToolResultSpillRoot(rootDir string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.spillRootDir = strings.TrimSpace(rootDir)
+	m.mu.Unlock()
+	if m.executionService != nil {
+		m.executionService.ConfigureToolResultSpillRoot(rootDir)
+	}
+}
+
+// ConfigureToolWaitTimeoutSeconds controls how long an agent-facing tool call
+// waits for an external MCP execution before returning an execution_id that can
+// be polled with wait_tool_execution. seconds<=0 waits until completion.
+func (m *ExternalMCPManager) ConfigureToolWaitTimeoutSeconds(seconds int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if seconds <= 0 {
+		m.toolWaitTimeout = 0
+		return
+	}
+	m.toolWaitTimeout = time.Duration(seconds) * time.Second
+}
+
+func (m *ExternalMCPManager) ConfigureResilience(cfg ExternalMCPResilienceConfig) {
+	if m == nil {
+		return
+	}
+	normalized := normalizeExternalMCPResilienceConfig(cfg)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resilience = normalized
+	m.serverRuntimes = make(map[string]*externalMCPServerRuntime)
+	if normalized.MaxConcurrentTotal > 0 {
+		m.globalSemaphore = make(chan struct{}, normalized.MaxConcurrentTotal)
+	} else {
+		m.globalSemaphore = nil
+	}
+}
+
+func normalizeExternalMCPResilienceConfig(cfg ExternalMCPResilienceConfig) ExternalMCPResilienceConfig {
+	if cfg.MaxConcurrentPerServer == 0 {
+		cfg.MaxConcurrentPerServer = 2
+	}
+	if cfg.MaxConcurrentTotal == 0 {
+		cfg.MaxConcurrentTotal = 16
+	}
+	if cfg.CircuitFailureThreshold == 0 {
+		cfg.CircuitFailureThreshold = 3
+	}
+	if cfg.CircuitCooldown <= 0 {
+		cfg.CircuitCooldown = 60 * time.Second
+	}
+	if cfg.MaxConcurrentPerServer < 0 {
+		cfg.MaxConcurrentPerServer = 0
+	}
+	if cfg.MaxConcurrentTotal < 0 {
+		cfg.MaxConcurrentTotal = 0
+	}
+	return cfg
 }
 
 // LoadConfigs 加载配置
@@ -554,133 +674,264 @@ func (m *ExternalMCPManager) updateToolCache(name string, tools []Tool) {
 
 // CallTool 调用外部MCP工具（返回执行ID）
 func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolResult, string, error) {
-	// 解析工具名称：name::toolName
+	if m.executionService == nil {
+		m.executionService = NewExecutionService(m.storage, m.logger)
+		m.executionService.ConfigureToolResultMaxBytes(m.toolResultMaxBytes)
+		m.executionService.ConfigureToolResultSpillRoot(m.spillRootDir)
+	}
+	var ownerUserID string
+	if principal, ok := authctx.PrincipalFromContext(ctx); ok {
+		ownerUserID = principal.UserID
+	}
 	var mcpName, actualToolName string
-	if idx := findSubstring(toolName, "::"); idx > 0 {
-		mcpName = toolName[:idx]
-		actualToolName = toolName[idx+2:]
-	} else {
-		return nil, "", fmt.Errorf("无效的工具名称格式: %s", toolName)
-	}
-
-	client, exists := m.GetClient(mcpName)
-	if !exists {
-		return nil, "", fmt.Errorf("外部MCP客户端不存在: %s", mcpName)
-	}
-
-	// 检查连接状态，如果未连接或状态为error，不允许调用
-	if !client.IsConnected() {
-		status := client.GetStatus()
-		if status == "error" {
-			// 获取错误信息（如果有）
-			errorMsg := m.GetError(mcpName)
-			if errorMsg != "" {
-				return nil, "", fmt.Errorf("外部MCP连接失败: %s (错误: %s)", mcpName, errorMsg)
-			}
-			return nil, "", fmt.Errorf("外部MCP连接失败: %s", mcpName)
-		}
-		return nil, "", fmt.Errorf("外部MCP客户端未连接: %s (状态: %s)", mcpName, status)
-	}
-
-	// 创建执行记录
-	executionID := uuid.New().String()
-	execution := &ToolExecution{
-		ID:             executionID,
-		ToolName:       toolName, // 使用完整工具名称（包含MCP名称）
+	var client ExternalMCPClient
+	handle, err := m.executionService.Submit(ctx, ExecutionRequest{
+		ToolName:       toolName,
 		Arguments:      args,
-		Status:         "running",
-		StartTime:      time.Now(),
 		ConversationID: MCPConversationIDFromContext(ctx),
-	}
+		OwnerUserID:    ownerUserID,
+		PreRun: func(runCtx context.Context, exec *ToolExecution) (func(), error) {
+			_, authenticated := authctx.PrincipalFromContext(runCtx)
+			m.mu.RLock()
+			authorizer := m.toolAuthorizer
+			m.mu.RUnlock()
+			if authorizer != nil {
+				if err := authorizer(runCtx, toolName, args); err != nil {
+					return nil, fmt.Errorf("external tool authorization denied: %w", err)
+				}
+			} else if authenticated {
+				return nil, fmt.Errorf("external tool authorization policy is not configured")
+			}
 
-	m.mu.Lock()
-	m.executions[executionID] = execution
-	// 如果内存中的执行记录超过限制，清理最旧的记录
-	m.cleanupOldExecutions()
-	m.mu.Unlock()
-
-	if m.storage != nil {
-		if err := m.storage.SaveToolExecution(execution); err != nil {
-			m.logger.Warn("保存执行记录到数据库失败", zap.Error(err))
-		}
-	}
-
-	execCtx, runCancel := context.WithCancel(ctx)
-	m.registerRunningCancel(executionID, runCancel)
-	notifyToolRunBegin(ctx, executionID)
-	defer func() {
-		notifyToolRunEnd(ctx, executionID)
-		runCancel()
-		m.unregisterRunningCancel(executionID)
-	}()
-
-	// 调用工具
-	result, err := client.CallTool(execCtx, actualToolName, args)
-	if err != nil {
-		m.handleConnectionDead(mcpName, client, err)
-	}
-	cancelledWithUserNote := m.applyAbortUserNoteToCancelledToolResult(executionID, &result, &err)
-
-	// 更新执行记录
-	m.mu.Lock()
-	now := time.Now()
-	execution.EndTime = &now
-	execution.Duration = now.Sub(execution.StartTime)
-
-	if err != nil {
-		st, msg := executionStatusAndMessage(err)
-		execution.Status = st
-		execution.Error = msg
-	} else if result != nil && result.IsError {
-		if cancelledWithUserNote {
-			execution.Status = "cancelled"
-			execution.Error = ""
-			execution.Result = result
-		} else {
-			execution.Status = "failed"
-			if len(result.Content) > 0 {
-				execution.Error = result.Content[0].Text
+			// 解析工具名称：name::toolName
+			if idx := findSubstring(toolName, "::"); idx > 0 {
+				mcpName = toolName[:idx]
+				actualToolName = toolName[idx+2:]
 			} else {
-				execution.Error = "工具执行返回错误结果"
+				return nil, fmt.Errorf("无效的工具名称格式: %s", toolName)
 			}
-			execution.Result = result
-		}
-	} else {
-		execution.Status = "completed"
-		if result == nil {
-			result = &ToolResult{
-				Content: []Content{
-					{Type: "text", Text: "工具执行完成，但未返回结果"},
-				},
+
+			var exists bool
+			client, exists = m.GetClient(mcpName)
+			if !exists {
+				return nil, fmt.Errorf("外部MCP客户端不存在: %s", mcpName)
 			}
-		}
-		execution.Result = result
+			if err := m.checkExternalMCPCircuit(mcpName); err != nil {
+				return nil, err
+			}
+
+			// 检查连接状态，如果未连接或状态为error，不允许调用
+			if !client.IsConnected() {
+				status := client.GetStatus()
+				if status == "error" {
+					// 获取错误信息（如果有）
+					errorMsg := m.GetError(mcpName)
+					if errorMsg != "" {
+						return nil, fmt.Errorf("外部MCP连接失败: %s (错误: %s)", mcpName, errorMsg)
+					}
+					return nil, fmt.Errorf("外部MCP连接失败: %s", mcpName)
+				}
+				return nil, fmt.Errorf("外部MCP客户端未连接: %s (状态: %s)", mcpName, status)
+			}
+
+			release, acquireErr := m.acquireExternalMCPCallSlot(runCtx, mcpName)
+			if acquireErr != nil {
+				return nil, acquireErr
+			}
+			return release, nil
+		},
+		Run: func(runCtx context.Context) (*ToolResult, error) {
+			result, callErr := client.CallTool(runCtx, actualToolName, args)
+			if callErr != nil {
+				m.handleConnectionDead(mcpName, client, callErr)
+			}
+			return result, callErr
+		},
+		OnDone: func(exec *ToolExecution) {
+			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled
+			if mcpName != "" {
+				m.recordExternalMCPResult(mcpName, failed)
+			}
+			m.updateStats(toolName, failed)
+		},
+	})
+	if err != nil {
+		return nil, "", err
 	}
-	execution.SemanticOutcome = ClassifyToolExecutionSemanticOutcome(execution)
+
+	m.mu.RLock()
+	waitTimeout := m.toolWaitTimeout
+	m.mu.RUnlock()
+	snapshot, waitErr := m.executionService.Wait(ctx, handle.ID, waitTimeout)
+	if errors.Is(waitErr, ErrExecutionWaitTimeout) {
+		return externalMCPWaitTimeoutResult(snapshot, waitTimeout), handle.ID, nil
+	}
+	if waitErr != nil {
+		return nil, handle.ID, waitErr
+	}
+	if snapshot == nil || snapshot.Execution == nil {
+		return &ToolResult{Content: []Content{{Type: "text", Text: "工具执行完成，但未返回执行快照"}}, IsError: true}, handle.ID, nil
+	}
+	if snapshot.Execution.Result != nil {
+		return snapshot.Execution.Result, handle.ID, nil
+	}
+	if snapshot.Execution.Error != "" {
+		return nil, handle.ID, errors.New(snapshot.Execution.Error)
+	}
+	return &ToolResult{Content: []Content{{Type: "text", Text: "工具执行完成，但未返回结果"}}, IsError: false}, handle.ID, nil
+}
+
+func externalMCPWaitTimeoutResult(snapshot *ExecutionSnapshot, waitTimeout time.Duration) *ToolResult {
+	execID := ""
+	status := ToolExecutionStatusRunning
+	toolName := ""
+	elapsed := time.Duration(0)
+	if snapshot != nil && snapshot.Execution != nil {
+		execID = snapshot.Execution.ID
+		status = snapshot.Execution.Status
+		toolName = snapshot.Execution.ToolName
+		elapsed = time.Since(snapshot.Execution.StartTime).Round(time.Second)
+	}
+	waitText := "unbounded"
+	if waitTimeout > 0 {
+		waitText = waitTimeout.Round(time.Second).String()
+	}
+	msg := fmt.Sprintf(`工具已提交到后台执行，但本次等待已到达上限。
+
+execution_id: %s
+tool: %s
+status: %s
+wait_timeout: %s
+elapsed: %s
+
+你可以继续推理、改用其他工具，或调用 wait_tool_execution 继续等待该 execution_id；也可以调用 cancel_tool_execution 取消。`, execID, toolName, status, waitText, elapsed)
+	return &ToolResult{Content: []Content{{Type: "text", Text: msg}}, IsError: true}
+}
+
+func (m *ExternalMCPManager) checkExternalMCPCircuit(mcpName string) error {
+	if m == nil {
+		return nil
+	}
+	name := strings.TrimSpace(mcpName)
+	if name == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resilience.CircuitFailureThreshold < 0 {
+		return nil
+	}
+	rt := m.externalMCPRuntimeLocked(name)
+	if rt == nil || rt.circuitOpenUntil.IsZero() {
+		return nil
+	}
+	now := time.Now()
+	if now.Before(rt.circuitOpenUntil) {
+		return fmt.Errorf("外部MCP服务 %s 已临时熔断，预计 %s 后重试", name, time.Until(rt.circuitOpenUntil).Round(time.Second))
+	}
+	rt.circuitOpenUntil = time.Time{}
+	return nil
+}
+
+func (m *ExternalMCPManager) acquireExternalMCPCallSlot(ctx context.Context, mcpName string) (func(), error) {
+	if m == nil {
+		return func() {}, nil
+	}
+	name := strings.TrimSpace(mcpName)
+	m.mu.Lock()
+	rt := m.externalMCPRuntimeLocked(name)
+	serverSem := chan struct{}(nil)
+	if rt != nil {
+		serverSem = rt.semaphore
+	}
+	globalSem := m.globalSemaphore
 	m.mu.Unlock()
 
-	if m.storage != nil {
-		if err := m.storage.SaveToolExecution(execution); err != nil {
-			m.logger.Warn("保存执行记录到数据库失败", zap.Error(err))
+	releaseGlobal := false
+	if globalSem != nil {
+		select {
+		case globalSem <- struct{}{}:
+			releaseGlobal = true
+		case <-ctxDone(ctx):
+			return func() {}, contextErr(ctx)
 		}
 	}
-
-	// 更新统计信息
-	failed := err != nil || (result != nil && result.IsError)
-	m.updateStats(toolName, failed)
-
-	// 如果使用存储，从内存中删除（已持久化）
-	if m.storage != nil {
-		m.mu.Lock()
-		delete(m.executions, executionID)
-		m.mu.Unlock()
+	releaseServer := false
+	if serverSem != nil {
+		select {
+		case serverSem <- struct{}{}:
+			releaseServer = true
+		case <-ctxDone(ctx):
+			if releaseGlobal {
+				<-globalSem
+			}
+			return func() {}, contextErr(ctx)
+		}
 	}
+	return func() {
+		if releaseServer {
+			<-serverSem
+		}
+		if releaseGlobal {
+			<-globalSem
+		}
+	}, nil
+}
 
-	if err != nil {
-		return nil, executionID, err
+func contextErr(ctx context.Context) error {
+	if ctx == nil || ctx.Err() == nil {
+		return context.Canceled
 	}
+	return ctx.Err()
+}
 
-	return result, executionID, nil
+func (m *ExternalMCPManager) recordExternalMCPResult(mcpName string, failed bool) {
+	if m == nil || strings.TrimSpace(mcpName) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.externalMCPRuntimeLocked(mcpName)
+	if rt == nil {
+		return
+	}
+	if !failed {
+		rt.consecutiveFailures = 0
+		rt.circuitOpenUntil = time.Time{}
+		return
+	}
+	if m.resilience.CircuitFailureThreshold < 0 {
+		return
+	}
+	rt.consecutiveFailures++
+	if rt.consecutiveFailures >= m.resilience.CircuitFailureThreshold {
+		rt.circuitOpenUntil = time.Now().Add(m.resilience.CircuitCooldown)
+		m.logger.Warn("外部MCP服务触发熔断",
+			zap.String("name", mcpName),
+			zap.Int("consecutiveFailures", rt.consecutiveFailures),
+			zap.Duration("cooldown", m.resilience.CircuitCooldown),
+		)
+	}
+}
+
+func (m *ExternalMCPManager) externalMCPRuntimeLocked(mcpName string) *externalMCPServerRuntime {
+	if m.serverRuntimes == nil {
+		m.serverRuntimes = make(map[string]*externalMCPServerRuntime)
+	}
+	name := strings.TrimSpace(mcpName)
+	if name == "" {
+		return nil
+	}
+	if rt := m.serverRuntimes[name]; rt != nil {
+		return rt
+	}
+	var sem chan struct{}
+	if m.resilience.MaxConcurrentPerServer > 0 {
+		sem = make(chan struct{}, m.resilience.MaxConcurrentPerServer)
+	}
+	rt := &externalMCPServerRuntime{semaphore: sem}
+	m.serverRuntimes[name] = rt
+	return rt
 }
 
 func (m *ExternalMCPManager) applyAbortUserNoteToCancelledToolResult(executionID string, result **ToolResult, err *error) (cancelledWithUserNote bool) {
@@ -762,6 +1013,11 @@ func (m *ExternalMCPManager) cleanupOldExecutions() {
 
 // GetExecution 获取执行记录（先从内存查找，再从数据库查找）
 func (m *ExternalMCPManager) GetExecution(id string) (*ToolExecution, bool) {
+	if m.executionService != nil {
+		if snap, err := m.executionService.Get(id); err == nil && snap != nil && snap.Execution != nil {
+			return snap.Execution, true
+		}
+	}
 	m.mu.RLock()
 	exec, exists := m.executions[id]
 	m.mu.RUnlock()
@@ -794,6 +1050,9 @@ func (m *ExternalMCPManager) unregisterRunningCancel(id string) {
 
 // CancelToolExecutionWithNote 取消外部 MCP 工具；note 非空时与已返回输出合并后交给模型。
 func (m *ExternalMCPManager) CancelToolExecutionWithNote(id string, note string) bool {
+	if m.executionService != nil && m.executionService.Cancel(id, note) {
+		return true
+	}
 	m.mu.Lock()
 	cancel, ok := m.runningCancels[id]
 	if !ok || cancel == nil {
@@ -820,6 +1079,11 @@ func (m *ExternalMCPManager) CancelToolExecution(id string) bool {
 func (m *ExternalMCPManager) ActiveRunningExecutionIDs() map[string]struct{} {
 	if m == nil {
 		return nil
+	}
+	if m.executionService != nil {
+		if ids := m.executionService.ActiveRunningExecutionIDs(); len(ids) > 0 {
+			return ids
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1312,12 +1576,21 @@ func (m *ExternalMCPManager) StartAllEnabled() {
 
 // StopAll 停止所有客户端
 func (m *ExternalMCPManager) StopAll() {
+	if m.executionService != nil {
+		m.executionService.CancelAll("外部 MCP 管理器正在停止")
+	}
+	clients := make(map[string]ExternalMCPClient)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	for name, client := range m.clients {
-		client.Close()
+		clients[name] = client
 		delete(m.clients, name)
+	}
+	m.mu.Unlock()
+
+	for name, client := range clients {
+		if client != nil {
+			_ = client.Close()
+		}
 		m.clearReconnectState(name)
 	}
 
@@ -1337,6 +1610,6 @@ func (m *ExternalMCPManager) StopAll() {
 		// 已经关闭，不需要再次关闭
 	default:
 		close(m.stopRefresh)
-		m.refreshWg.Wait()
 	}
+	m.refreshWg.Wait()
 }

@@ -1,0 +1,40 @@
+name: evil-winrm
+command: evil-winrm
+enabled: true
+short_description: WinRM 远程 shell（Windows 主机管理）
+description: '基于 WinRM 的 Windows 远程 shell 工具，支持脚本加载、文件传输。
+
+  **使用场景：** 拿到凭据后连接 Windows 主机、后渗透操作。
+
+
+  **安装：** `gem install evil-winrm`（若不可用先安装）。'
+parameters:
+  - name: ip
+    type: string
+    required: true
+    flag: -i
+    format: flag
+    description: 目标 IP
+  - name: user
+    type: string
+    required: true
+    flag: -u
+    format: flag
+    description: 用户名
+  - name: password
+    type: string
+    required: false
+    flag: -p
+    format: flag
+    description: 密码
+  - name: hash
+    type: string
+    required: false
+    flag: -H
+    format: flag
+    description: NTLM 哈希（Pass-the-Hash）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-s /scripts` `-e /exe`

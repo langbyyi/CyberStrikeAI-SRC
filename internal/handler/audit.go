@@ -6,6 +6,7 @@ import (
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -32,8 +33,8 @@ func (h *AuditHandler) Meta(c *gin.Context) {
 		retentionDays = h.audit.RetentionDays()
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"enabled":        enabled,
-		"retention_days": retentionDays,
+		"enabled":           enabled,
+		"retention_days":    retentionDays,
 		"default_page_size": 20,
 		"max_page_size":     100,
 		"max_export":        5000,
@@ -46,7 +47,7 @@ func (h *AuditHandler) Summary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database unavailable"})
 		return
 	}
-	base := auditFilterFromQuery(c)
+	base := auditFilterForAccess(c, auditFilterFromQuery(c))
 	total, err := h.db.CountAuditLogs(base)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -68,9 +69,9 @@ func (h *AuditHandler) Summary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"total":       total,
-		"failures":    failures,
-		"recent_7d":   recent7d,
+		"total":     total,
+		"failures":  failures,
+		"recent_7d": recent7d,
 		"has_filters": c.Query("category") != "" || c.Query("action") != "" || c.Query("result") != "" ||
 			c.Query("q") != "" || c.Query("since") != "" || c.Query("until") != "",
 	})
@@ -82,7 +83,7 @@ func (h *AuditHandler) ListLogs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database unavailable"})
 		return
 	}
-	filter := auditFilterFromQuery(c)
+	filter := auditFilterForAccess(c, auditFilterFromQuery(c))
 	page, pageSize := auditPaginationFromQuery(c)
 	filter.Limit = pageSize
 	filter.Offset = (page - 1) * pageSize
@@ -116,6 +117,10 @@ func (h *AuditHandler) GetLog(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "审计记录不存在"})
 		return
 	}
+	if session, ok := security.CurrentSession(c); !ok || (session.Scope != database.RBACScopeAll && row.Actor != session.Username) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
+		return
+	}
 	audit.ApplyResourceAvailability(h.db, row)
 	c.JSON(http.StatusOK, gin.H{"log": row})
 }
@@ -126,7 +131,7 @@ func (h *AuditHandler) ExportLogs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database unavailable"})
 		return
 	}
-	filter := auditFilterFromQuery(c)
+	filter := auditFilterForAccess(c, auditFilterFromQuery(c))
 	filter.Limit = 5000
 	filter.Offset = 0
 
@@ -144,4 +149,11 @@ func (h *AuditHandler) ExportLogs(c *gin.Context) {
 		"exported_at": time.Now().UTC().Format(time.RFC3339),
 		"logs":        logs,
 	})
+}
+
+func auditFilterForAccess(c *gin.Context, filter database.ListAuditLogsFilter) database.ListAuditLogsFilter {
+	if session, ok := security.CurrentSession(c); ok && session.Scope != database.RBACScopeAll {
+		filter.Actor = session.Username
+	}
+	return filter
 }

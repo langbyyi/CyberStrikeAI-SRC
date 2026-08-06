@@ -366,3 +366,5 @@ Test XSS entry point
 6. Note: **the same filter likely exists elsewhere** — if they filter `<script>` in search, do they filter it in file upload filename? In profile bio?
 
 **Key insight**: Filter presence = vulnerability exists, developer tried to patch. Chase that thread across the entire application.
+
+

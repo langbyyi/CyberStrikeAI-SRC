@@ -4,9 +4,7 @@ import "cyberstrike-ai/internal/config"
 
 const defaultAgentMaxIterations = 3000
 
-// agentMaxIterations 全局上限：仅使用 config.agent.max_iterations（与 internal/agent 共享的
-// AgentConfig 指针一致；热更新 ConfigHandler → UpdateMaxIterations 写同一字段）。
-// ≤0 时回落默认 3000。不再读取已删除的 Agent 内部缓存字段。
+// agentMaxIterations 全局上限：仅使用 config.agent.max_iterations；≤0 时与 config 默认一致为 3000。
 func agentMaxIterations(appCfg *config.Config) int {
 	if appCfg != nil && appCfg.Agent.MaxIterations > 0 {
 		return appCfg.Agent.MaxIterations

@@ -152,10 +152,11 @@ func convertOpenAIToClaude(payload interface{}) (*claudeRequest, error) {
 		req.Model = m
 	}
 
-	// max_tokens (Claude 必需)；兼容 OpenAI 新字段 max_completion_tokens
-	if mt, ok := oai["max_tokens"].(float64); ok && mt > 0 {
+	// Anthropic requires max_tokens. OpenAI-compatible clients prefer
+	// max_completion_tokens, so map it first and keep max_tokens as fallback.
+	if mt, ok := oai["max_completion_tokens"].(float64); ok && mt > 0 {
 		req.MaxTokens = int(mt)
-	} else if mt, ok := oai["max_completion_tokens"].(float64); ok && mt > 0 {
+	} else if mt, ok := oai["max_tokens"].(float64); ok && mt > 0 {
 		req.MaxTokens = int(mt)
 	} else {
 		req.MaxTokens = 8192 // Claude 默认最大输出（兼容 Haiku/Sonnet/Opus）
@@ -318,8 +319,71 @@ func convertOpenAIToClaude(payload interface{}) (*claudeRequest, error) {
 			req.OutputConfig = json.RawMessage(raw)
 		}
 	}
+	if err := validateClaudeToolPairs(req.Messages); err != nil {
+		return nil, err
+	}
 
 	return req, nil
+}
+
+// validateClaudeToolPairs prevents malformed OpenAI history from reaching
+// Anthropic/Bedrock. Every tool_use batch must be answered by the immediately
+// following user message, with exactly one tool_result for every ID.
+func validateClaudeToolPairs(messages []claudeMessage) error {
+	validatedResultMessages := make(map[int]struct{})
+	for i, msg := range messages {
+		expected := make(map[string]struct{})
+		for _, block := range msg.Content.Blocks {
+			if block.Type != "tool_use" {
+				continue
+			}
+			id := strings.TrimSpace(block.ID)
+			if id == "" {
+				return fmt.Errorf("claude bridge: assistant message %d has tool_use without id", i)
+			}
+			if _, duplicate := expected[id]; duplicate {
+				return fmt.Errorf("claude bridge: assistant message %d has duplicate tool_use id %q", i, id)
+			}
+			expected[id] = struct{}{}
+		}
+		if len(expected) == 0 {
+			continue
+		}
+		if i+1 >= len(messages) || messages[i+1].Role != "user" {
+			return fmt.Errorf("claude bridge: assistant message %d tool_use is not immediately followed by user tool_result", i)
+		}
+		seen := make(map[string]struct{}, len(expected))
+		for _, block := range messages[i+1].Content.Blocks {
+			if block.Type != "tool_result" {
+				continue
+			}
+			id := strings.TrimSpace(block.ToolUseID)
+			if _, ok := expected[id]; !ok {
+				return fmt.Errorf("claude bridge: user message %d has unexpected tool_result id %q", i+1, id)
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return fmt.Errorf("claude bridge: user message %d has duplicate tool_result id %q", i+1, id)
+			}
+			seen[id] = struct{}{}
+		}
+		for id := range expected {
+			if _, ok := seen[id]; !ok {
+				return fmt.Errorf("claude bridge: user message %d is missing tool_result for id %q", i+1, id)
+			}
+		}
+		validatedResultMessages[i+1] = struct{}{}
+	}
+	for i, msg := range messages {
+		if _, ok := validatedResultMessages[i]; ok {
+			continue
+		}
+		for _, block := range msg.Content.Blocks {
+			if block.Type == "tool_result" {
+				return fmt.Errorf("claude bridge: user message %d has orphan tool_result id %q", i, block.ToolUseID)
+			}
+		}
+	}
+	return nil
 }
 
 // ============================================================
@@ -829,7 +893,7 @@ func NewEinoHTTPClient(cfg *config.OpenAIConfig, base *http.Client) *http.Client
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	transport = &reasoningToolChoiceCompatRoundTripper{base: transport}
+	transport = &reasoningToolChoiceCompatRoundTripper{base: transport, cfg: cfg}
 	if isClaudeProvider(cfg) {
 		transport = &claudeRoundTripper{
 			base:   transport,

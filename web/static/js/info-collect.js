@@ -6,11 +6,149 @@ function _t(key, opts) {
 const FOFA_FORM_STORAGE_KEY = 'info-collect-fofa-form';
 const FOFA_HIDDEN_FIELDS_STORAGE_KEY = 'info-collect-fofa-hidden-fields';
 
+const INFO_COLLECT_PROVIDERS = {
+    fofa: {
+        label: 'FOFA',
+        placeholder: '例如：app="Apache" && country="CN"',
+        nlPlaceholder: '例如：找美国 Missouri 的 Apache 站点，标题包含 Home',
+        hint: '查询语法参考 FOFA 文档，支持 && / || / () 等。',
+        parseHint: '解析后会弹窗展示 FOFA 语法（可编辑），确认无误后再填入查询框并执行查询。',
+        maxSize: 10000,
+        sizeHint: 'FOFA 返回数量上限与账号权限相关，前端最多允许 10000。',
+        fullOption: {
+            label: '完整模式',
+            hint: '向 FOFA 传 full=true，返回更完整/更实时的数据，可能消耗更多额度。'
+        },
+        fields: 'host,ip,port,domain,title,protocol,country,province,city,server',
+        presets: [
+            ['Apache + 中国', 'app="Apache" && country="CN"'],
+            ['登录页 + 中国', 'title="登录" && country="CN"'],
+            ['指定域名', 'domain="example.com"'],
+            ['指定 IP', 'ip="1.1.1.1"']
+        ],
+        fieldPresets: [
+            ['最小字段', 'host,ip,port,domain'],
+            ['Web 常用', 'host,title,ip,port,domain,protocol,server,icp,country,province,city'],
+            ['情报增强', 'host,ip,port,domain,title,protocol,country,province,city,server,as_number,as_organization,icp,header,banner']
+        ],
+        syntaxGuide: {
+            summary: 'FOFA 使用 field="value" 精确匹配，支持 &&、||、! 和括号组合；字符串建议用双引号包裹。',
+            docsUrl: 'https://en.fofa.info/api',
+            sections: [
+                ['常用字段', ['app="Apache"', 'title="后台管理"', 'body="Powered by"', 'domain="example.com"', 'host="https://example.com"', 'ip="1.1.1.1"', 'port="443"', 'country="CN"', 'city="Hangzhou"', 'server="nginx"']],
+                ['组合写法', ['app="nginx" && country="CN"', 'title="login" || title="登录"', '(app="Apache" || app="nginx") && port="443"', 'domain="example.com" && !title="404"']],
+                ['场景示例', ['cert="example.com" && port="443"', 'header="JSESSIONID" && country="CN"', 'icon_hash="-247388890"', 'fid="sZyXkR9e" && domain="example.com"']]
+            ]
+        }
+    },
+    zoomeye: {
+        label: 'ZoomEye',
+        placeholder: '例如：app="Apache" && country="CN"',
+        nlPlaceholder: '例如：找中国的 SSH 服务，排除蜜罐',
+        hint: 'ZoomEye 支持 app/title/domain/ip/port/country/city 等语法。',
+        parseHint: '解析后会弹窗展示 ZoomEye 语法（可编辑），确认无误后再填入查询框并执行查询。',
+        maxSize: 10000,
+        sizeHint: 'ZoomEye pagesize 最高支持到 10000，实际额度以账号为准。',
+        fullOption: null,
+        fields: 'ip,port,domain,hostname,title,service,app,country,city',
+        presets: [
+            ['Apache + 中国', 'app="Apache" && country="CN"'],
+            ['SSH 服务', 'service="ssh"'],
+            ['指定域名', 'domain="example.com"'],
+            ['指定 IP', 'ip="1.1.1.1"']
+        ],
+        fieldPresets: [
+            ['最小字段', 'ip,port,domain,hostname'],
+            ['Web 常用', 'ip,port,domain,hostname,title,service,app,country,city'],
+            ['情报增强', 'ip,port,domain,hostname,title,service,app,country,city,org,isp,ssl']
+        ],
+        syntaxGuide: {
+            summary: 'ZoomEye 支持字段检索、引号短语、AND/OR/NOT 与括号组合；字段名以官方控制台实际支持为准。',
+            docsUrl: 'https://www.zoomeye.ai/help',
+            sections: [
+                ['常用字段', ['app="Apache"', 'service="ssh"', 'title="登录"', 'domain="example.com"', 'hostname="example.com"', 'ip="1.1.1.1"', 'port=443', 'country="CN"', 'city="Beijing"', 'org="Tencent"']],
+                ['组合写法', ['app="nginx" AND country="CN"', 'service="http" AND (title="login" OR title="登录")', 'domain="example.com" AND NOT app="cloudflare"', 'port=443 AND country="US"']],
+                ['场景示例', ['ssl.cert.fingerprint="SHA256值"', 'iconhash="-247388890"', 'service="rdp" AND country="CN"', 'app="Elasticsearch" AND port=9200']]
+            ]
+        }
+    },
+    quake: {
+        label: 'Quake',
+        placeholder: '例如：service.name:"http" AND country_cn:"中国"',
+        nlPlaceholder: '例如：找中国的 HTTP 服务，标题包含登录',
+        hint: 'Quake 使用 DSL 语法，常见字段如 service.name、domain、ip、port、country_cn。',
+        parseHint: '解析后会弹窗展示 Quake DSL（可编辑），确认无误后再填入查询框并执行查询。',
+        maxSize: 10000,
+        sizeHint: 'Quake size 会消耗积分，建议按需控制返回数量。',
+        fullOption: {
+            label: '最新数据',
+            hint: '向 Quake 传 latest=true，优先查询最新数据。'
+        },
+        fields: 'ip,port,domain,service.name,service.http.title,location.country_cn,location.province_cn,location.city_cn',
+        presets: [
+            ['HTTP + 中国', 'service.name:"http" AND country_cn:"中国"'],
+            ['443 端口', 'port:443'],
+            ['指定域名', 'domain:"example.com"'],
+            ['指定 IP', 'ip:"1.1.1.1"']
+        ],
+        fieldPresets: [
+            ['最小字段', 'ip,port,domain'],
+            ['Web 常用', 'ip,port,domain,service.name,service.http.title,location.country_cn,location.city_cn'],
+            ['情报增强', 'ip,port,domain,service.name,service.http.title,service.http.server,location.country_cn,location.province_cn,location.city_cn,asn']
+        ],
+        syntaxGuide: {
+            summary: 'Quake 使用 Lucene/DSL 风格查询，常见形式是 field:"value"，逻辑运算符通常使用 AND、OR、NOT。',
+            docsUrl: 'https://quake.360.net/quake/#/help',
+            sections: [
+                ['常用字段', ['service.name:"http"', 'service.http.title:"登录"', 'service.http.server:"nginx"', 'domain:"example.com"', 'ip:"1.1.1.1"', 'port:443', 'country_cn:"中国"', 'province_cn:"浙江"', 'city_cn:"杭州"']],
+                ['组合写法', ['service.name:"http" AND country_cn:"中国"', '(service.name:"http" OR service.name:"https") AND port:443', 'domain:"example.com" AND NOT service.http.title:"404"', 'service.http.title:"login" AND port:443']],
+                ['场景示例', ['service.http.favicon.hash:"-247388890"', 'service.http.response.header:"JSESSIONID"', 'service.name:"ssh" AND country_cn:"中国"', 'service.http.title:"Dashboard" AND NOT ip:"127.0.0.1"']]
+            ]
+        }
+    },
+    shodan: {
+        label: 'Shodan',
+        placeholder: '例如：product:nginx country:CN',
+        nlPlaceholder: '例如：找中国的 nginx 资产，端口 443',
+        hint: 'Shodan 使用 filter:value 语法，常见字段如 product、port、country、org。',
+        parseHint: '解析后会弹窗展示 Shodan filter 语法（可编辑），确认无误后再填入查询框并执行查询。',
+        maxSize: 1000,
+        sizeHint: 'Shodan 官方每页 100 条；后端会自动翻页聚合，单次最多 1000 条以控制额度消耗。',
+        fullOption: null,
+        fields: 'ip_str,port,hostnames,domains,org,isp,location.country_name,location.city,product,transport',
+        presets: [
+            ['Nginx + 中国', 'product:nginx country:CN'],
+            ['SSH 服务', 'port:22'],
+            ['证书域名', 'ssl.cert.subject.cn:example.com'],
+            ['Amazon 443', 'org:"Amazon" port:443']
+        ],
+        fieldPresets: [
+            ['最小字段', 'ip_str,port,hostnames,domains'],
+            ['Web 常用', 'ip_str,port,hostnames,domains,product,org,location.country_name,location.city'],
+            ['情报增强', 'ip_str,port,hostnames,domains,org,isp,asn,location.country_name,location.city,product,transport,ssl.cert.subject.cn']
+        ],
+        syntaxGuide: {
+            summary: 'Shodan 默认搜索 banner data；精确条件使用 filter:value，值含空格时用双引号，多个过滤器并列表示收窄结果。',
+            docsUrl: 'https://help.shodan.io/the-basics/search-query-fundamentals',
+            sections: [
+                ['常用过滤器', ['product:nginx', 'port:443', 'country:CN', 'city:Shanghai', 'org:"Amazon"', 'asn:AS15169', 'hostname:example.com', 'ssl.cert.subject.cn:example.com', 'http.title:"Dashboard"']],
+                ['组合写法', ['product:nginx country:CN', 'apache port:443 country:DE', 'org:"Amazon" port:443', 'ssl.cert.subject.cn:example.com port:443']],
+                ['场景示例', ['http.title:"login" country:CN', 'ssl:true port:443 hostname:example.com', 'vuln:CVE-2021-41773', 'has_screenshot:true product:nginx']]
+            ]
+        }
+    }
+};
+
 const infoCollectState = {
     currentPayload: null, // { fields, results, query, total, page, size }
     hiddenFields: new Set(),
     selectedRowIndexes: new Set(),
-    tableBound: false
+    tableBound: false,
+    providerSelectBound: false,
+    presetEventsBound: false,
+    syntaxGuideExpanded: false,
+    queryHeightFrame: null,
+    queryHeightResizeBound: false
 };
 
 // AI 解析（自然语言 -> FOFA）交互状态
@@ -31,6 +169,7 @@ if (typeof escapeHtml === 'undefined') {
 function getFofaFormElements() {
     return {
         query: document.getElementById('fofa-query'),
+        provider: document.getElementById('fofa-provider'),
         nl: document.getElementById('fofa-nl'),
         size: document.getElementById('fofa-size'),
         page: document.getElementById('fofa-page'),
@@ -43,6 +182,25 @@ function getFofaFormElements() {
         columnsPanel: document.getElementById('fofa-columns-panel'),
         columnsList: document.getElementById('fofa-columns-list')
     };
+}
+
+function getInfoCollectProvider() {
+    const provider = (document.getElementById('fofa-provider')?.value || 'fofa').trim().toLowerCase();
+    return INFO_COLLECT_PROVIDERS[provider] ? provider : 'fofa';
+}
+
+function providerLabel(provider) {
+    return (INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa).label;
+}
+
+function getInfoCollectFullOption(provider) {
+    const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
+    return cfg.fullOption || null;
+}
+
+function isInfoCollectFullEnabled(provider) {
+    const els = getFofaFormElements();
+    return !!(getInfoCollectFullOption(provider) && els.full && els.full.checked);
 }
 
 function loadHiddenFieldsFromStorage() {
@@ -94,13 +252,24 @@ function initInfoCollectPage() {
 
     // 恢复上次输入
     const saved = loadFofaFormFromStorage();
+    let shouldResetProviderFields = false;
     if (saved) {
+        if (typeof saved.provider === 'string' && els.provider && INFO_COLLECT_PROVIDERS[saved.provider]) els.provider.value = saved.provider;
         if (typeof saved.query === 'string') els.query.value = saved.query;
         if (typeof saved.size === 'number' || typeof saved.size === 'string') els.size.value = saved.size;
         if (typeof saved.page === 'number' || typeof saved.page === 'string') els.page.value = saved.page;
         if (typeof saved.fields === 'string') els.fields.value = saved.fields;
         if (typeof saved.full === 'boolean') els.full.checked = saved.full;
+        const provider = getInfoCollectProvider();
+        const savedFields = String(saved.fields || '').trim();
+        shouldResetProviderFields = provider !== 'fofa' && (
+            savedFields === INFO_COLLECT_PROVIDERS.fofa.fields ||
+            savedFields === 'host,ip,port,domain'
+        );
     }
+    initInfoCollectProviderSelect();
+    bindInfoCollectPresetEvents();
+    refreshInfoCollectProviderUI(shouldResetProviderFields);
 
     // 绑定 Enter 快捷查询（在 query 里用 Ctrl/Cmd+Enter）
     els.query.addEventListener('keydown', (e) => {
@@ -139,23 +308,391 @@ function initInfoCollectPage() {
         autoGrowTextarea(els.query);
         autoGrowTextarea(els.nl);
     }, 0);
+    setInfoCollectQueryMode('syntax', { focus: false });
+    if (!infoCollectState.queryHeightResizeBound) {
+        infoCollectState.queryHeightResizeBound = true;
+        window.addEventListener('resize', scheduleInfoCollectQueryCardHeightStabilize);
+    }
 
     // 绑定表格事件（事件委托，只绑定一次）
     bindFofaTableEvents();
     updateSelectedMeta();
 }
 
+function handleInfoCollectProviderChange() {
+    infoCollectState.syntaxGuideExpanded = false;
+    refreshInfoCollectProviderUI(true);
+}
+
+function setInfoCollectQueryMode(mode, options) {
+    const shouldFocus = options?.focus !== false;
+    const syntaxPanel = document.getElementById('info-collect-syntax-panel');
+    const naturalPanel = document.getElementById('info-collect-natural-panel');
+
+    if (syntaxPanel) {
+        syntaxPanel.hidden = false;
+        syntaxPanel.classList.add('is-active');
+        syntaxPanel.classList.add('is-generated-target');
+    }
+    if (naturalPanel) {
+        naturalPanel.hidden = false;
+        naturalPanel.classList.add('is-active');
+    }
+
+    const queryLabel = document.getElementById('info-collect-query-label');
+    const cfg = INFO_COLLECT_PROVIDERS[getInfoCollectProvider()] || INFO_COLLECT_PROVIDERS.fofa;
+    if (queryLabel) {
+        queryLabel.textContent = cfg.label + ' 查询语法（可编辑，可直接查询）';
+    }
+    const nlLabel = document.getElementById('info-collect-nl-label');
+    if (nlLabel) {
+        nlLabel.textContent = '自然语言（可选，AI 解析为 ' + cfg.label + ' 语法）';
+    }
+
+    if (shouldFocus) {
+        const focusTarget = mode === 'natural' ? document.getElementById('fofa-nl') : document.getElementById('fofa-query');
+        try { focusTarget?.focus(); } catch (e) { /* ignore */ }
+    }
+    scheduleInfoCollectQueryCardHeightStabilize();
+}
+
+function scheduleInfoCollectQueryCardHeightStabilize() {
+    if (infoCollectState.queryHeightFrame) {
+        cancelAnimationFrame(infoCollectState.queryHeightFrame);
+    }
+    infoCollectState.queryHeightFrame = requestAnimationFrame(() => {
+        infoCollectState.queryHeightFrame = null;
+        stabilizeInfoCollectQueryCardHeight();
+    });
+}
+
+function stabilizeInfoCollectQueryCardHeight() {
+    const card = document.querySelector('.info-collect-query-card');
+    if (!card) return;
+    const rect = card.getBoundingClientRect();
+    if (!rect.width) return;
+
+    const clone = card.cloneNode(true);
+    clone.style.position = 'absolute';
+    clone.style.visibility = 'hidden';
+    clone.style.pointerEvents = 'none';
+    clone.style.left = '-10000px';
+    clone.style.top = '0';
+    clone.style.width = rect.width + 'px';
+    clone.style.height = 'auto';
+    clone.style.minHeight = '0';
+    clone.style.maxHeight = 'none';
+
+    const naturalPanel = clone.querySelector('#info-collect-natural-panel');
+    if (naturalPanel) {
+        naturalPanel.hidden = false;
+        naturalPanel.classList.add('is-active');
+    }
+    const syntaxPanel = clone.querySelector('#info-collect-syntax-panel');
+    if (syntaxPanel) {
+        syntaxPanel.hidden = false;
+        syntaxPanel.classList.add('is-active', 'is-generated-target');
+    }
+    const queryLabel = clone.querySelector('#info-collect-query-label');
+    if (queryLabel) {
+        const cfg = INFO_COLLECT_PROVIDERS[getInfoCollectProvider()] || INFO_COLLECT_PROVIDERS.fofa;
+        queryLabel.textContent = cfg.label + ' 查询语法（可编辑，可直接查询）';
+    }
+
+    document.body.appendChild(clone);
+    const stableHeight = Math.ceil(clone.getBoundingClientRect().height);
+    clone.remove();
+    if (stableHeight > 0) {
+        card.style.minHeight = stableHeight + 'px';
+    }
+}
+
+function presetDataAttr(value) {
+    return escapeHtml(String(value == null ? '' : value))
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function bindInfoCollectPresetEvents() {
+    if (infoCollectState.presetEventsBound) return;
+    infoCollectState.presetEventsBound = true;
+    document.addEventListener('click', (event) => {
+        const queryBtn = event.target.closest?.('[data-info-query-preset]');
+        if (queryBtn) {
+            event.preventDefault();
+            applyFofaQueryPreset(queryBtn.getAttribute('data-info-query-preset') || '');
+            return;
+        }
+        const fieldsBtn = event.target.closest?.('[data-info-fields-preset]');
+        if (fieldsBtn) {
+            event.preventDefault();
+            applyFofaFieldsPreset(fieldsBtn.getAttribute('data-info-fields-preset') || '');
+            return;
+        }
+        const guideToggle = event.target.closest?.('[data-info-syntax-guide-toggle]');
+        if (guideToggle) {
+            event.preventDefault();
+            toggleInfoCollectSyntaxGuide();
+        }
+    });
+}
+
+function initInfoCollectProviderSelect() {
+    const els = getFofaFormElements();
+    const select = els.provider;
+    if (!select || infoCollectState.providerSelectBound) {
+        syncInfoCollectProviderSelect();
+        return;
+    }
+    infoCollectState.providerSelectBound = true;
+    select.classList.add('settings-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'settings-custom-select info-collect-provider-select';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'settings-custom-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const value = document.createElement('span');
+    value.className = 'settings-custom-select-value';
+    value.id = 'info-collect-provider-select-value';
+    const caret = document.createElement('span');
+    caret.className = 'settings-custom-select-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '▾';
+
+    const menu = document.createElement('div');
+    menu.className = 'settings-custom-select-menu';
+    menu.id = 'info-collect-provider-select-menu';
+    menu.setAttribute('role', 'listbox');
+
+    trigger.appendChild(value);
+    trigger.appendChild(caret);
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    wrapper.appendChild(select);
+
+    trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const willOpen = !wrapper.classList.contains('open');
+        closeInfoCollectProviderSelect();
+        wrapper.classList.toggle('open', willOpen);
+        trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+
+    trigger.addEventListener('keydown', (event) => {
+        const options = Array.prototype.filter.call(select.options, (option) => !option.disabled);
+        if (!options.length) return;
+        const current = Math.max(0, options.indexOf(select.options[select.selectedIndex]));
+        let next = current;
+        if (event.key === 'ArrowDown') next = Math.min(options.length - 1, current + 1);
+        else if (event.key === 'ArrowUp') next = Math.max(0, current - 1);
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = options.length - 1;
+        else if (event.key === 'Escape') {
+            closeInfoCollectProviderSelect();
+            return;
+        } else if (event.key === 'Enter' || event.key === ' ') {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+            event.preventDefault();
+            return;
+        } else {
+            return;
+        }
+        event.preventDefault();
+        const nextOption = options[next];
+        if (nextOption && select.value !== nextOption.value) {
+            select.value = nextOption.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncInfoCollectProviderSelect();
+    });
+
+    menu.addEventListener('click', (event) => {
+        const item = event.target.closest('.settings-custom-select-option');
+        if (!item || item.disabled) return;
+        event.stopPropagation();
+        const option = select.options[Number(item.dataset.index)];
+        if (option && !option.disabled && select.value !== option.value) {
+            select.value = option.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncInfoCollectProviderSelect();
+        closeInfoCollectProviderSelect();
+    });
+
+    select.addEventListener('change', syncInfoCollectProviderSelect);
+    document.addEventListener('click', closeInfoCollectProviderSelect);
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeInfoCollectProviderSelect();
+    });
+    syncInfoCollectProviderSelect();
+}
+
+function closeInfoCollectProviderSelect() {
+    const wrapper = document.querySelector('.info-collect-provider-select');
+    const trigger = wrapper?.querySelector('.settings-custom-select-trigger');
+    if (!wrapper) return;
+    wrapper.classList.remove('open');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function syncInfoCollectProviderSelect() {
+    const select = document.getElementById('fofa-provider');
+    const wrapper = document.querySelector('.info-collect-provider-select');
+    if (!select || !wrapper) return;
+    const value = wrapper.querySelector('.settings-custom-select-value');
+    const menu = wrapper.querySelector('.settings-custom-select-menu');
+    const selected = select.options[select.selectedIndex];
+    if (value) value.textContent = selected ? selected.textContent : '';
+    if (!menu) return;
+    menu.innerHTML = '';
+    Array.prototype.forEach.call(select.options, (option, index) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'settings-custom-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-index', String(index));
+        item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+        item.classList.toggle('is-selected', option.selected);
+        item.disabled = !!option.disabled;
+        const check = document.createElement('span');
+        check.className = 'settings-custom-select-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = '✓';
+        const label = document.createElement('span');
+        label.className = 'settings-custom-select-label';
+        label.textContent = option.textContent;
+        item.appendChild(check);
+        item.appendChild(label);
+        menu.appendChild(item);
+    });
+}
+
+function renderInfoCollectSyntaxGuide(cfg) {
+    const container = document.getElementById('info-collect-syntax-guide');
+    if (!container) return;
+    const guide = cfg.syntaxGuide;
+    if (!guide) {
+        container.innerHTML = '';
+        container.hidden = true;
+        return;
+    }
+    const docsLink = guide.docsUrl
+        ? `<a class="info-collect-doc-link" href="${presetDataAttr(guide.docsUrl)}" target="_blank" rel="noopener noreferrer">官方文档</a>`
+        : '';
+    const expanded = !!infoCollectState.syntaxGuideExpanded;
+    const sections = (guide.sections || []).map(([title, examples]) => {
+        const chips = (examples || []).map(example => {
+            return `<button class="syntax-example-chip" type="button" data-info-query-preset="${presetDataAttr(example)}" title="填入查询框">${escapeHtml(example)}</button>`;
+        }).join('');
+        return `<div class="syntax-guide-section"><div class="syntax-guide-title">${escapeHtml(title)}</div><div class="syntax-guide-examples">${chips}</div></div>`;
+    }).join('');
+    container.hidden = false;
+    container.classList.toggle('is-expanded', expanded);
+    container.innerHTML = `
+        <div class="syntax-guide-header">
+            <div class="syntax-guide-summary">${escapeHtml(guide.summary || '')}</div>
+            <div class="syntax-guide-actions">
+                ${docsLink}
+                <button class="syntax-guide-toggle" type="button" data-info-syntax-guide-toggle aria-expanded="${expanded ? 'true' : 'false'}">${expanded ? '收起示例' : '展开示例'}</button>
+            </div>
+        </div>
+        <div class="syntax-guide-body"${expanded ? '' : ' hidden'}>${sections}</div>
+    `;
+}
+
+function toggleInfoCollectSyntaxGuide() {
+    infoCollectState.syntaxGuideExpanded = !infoCollectState.syntaxGuideExpanded;
+    const provider = getInfoCollectProvider();
+    const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
+    renderInfoCollectSyntaxGuide(cfg);
+    scheduleInfoCollectQueryCardHeightStabilize();
+}
+
+function refreshInfoCollectProviderUI(resetProviderFields) {
+    const els = getFofaFormElements();
+    const provider = getInfoCollectProvider();
+    const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
+    const queryLabel = document.getElementById('info-collect-query-label');
+    const nlLabel = document.getElementById('info-collect-nl-label');
+    const queryHint = document.getElementById('info-collect-query-hint');
+    const parseHint = document.getElementById('info-collect-parse-hint');
+    const sizeHint = document.getElementById('info-collect-size-hint');
+    const parseBtn = document.getElementById('fofa-nl-parse-btn');
+    const presets = document.getElementById('info-collect-query-presets');
+    const fieldPresets = document.getElementById('info-collect-fields-presets');
+    const fullOption = document.getElementById('info-collect-full-option');
+    const fullText = fullOption ? fullOption.querySelector('.checkbox-text') : null;
+    const fullConfig = getInfoCollectFullOption(provider);
+    if (queryLabel) queryLabel.textContent = cfg.label + ' 查询语法';
+    if (nlLabel) nlLabel.textContent = '自然语言（AI 解析为 ' + cfg.label + ' 语法）';
+    if (queryHint) queryHint.textContent = cfg.hint;
+    if (parseHint) parseHint.textContent = cfg.parseHint;
+    if (sizeHint) sizeHint.textContent = cfg.sizeHint;
+    if (parseBtn && parseBtn.dataset.loading !== '1') parseBtn.title = '将自然语言解析为 ' + cfg.label + ' 查询语法';
+    if (els.query) els.query.placeholder = cfg.placeholder;
+    if (els.nl) els.nl.placeholder = cfg.nlPlaceholder;
+    if (els.size) {
+        els.size.max = String(cfg.maxSize || 10000);
+        const currentSize = parseInt(els.size.value, 10) || 100;
+        if (cfg.maxSize && currentSize > cfg.maxSize) els.size.value = cfg.maxSize;
+    }
+    if (fullOption) {
+        if (fullConfig) {
+            fullOption.hidden = false;
+            fullOption.title = fullConfig.hint || '';
+            if (fullText) fullText.textContent = fullConfig.label || _t('infoCollectPage.fullLabel');
+        } else {
+            fullOption.hidden = true;
+            fullOption.title = '';
+            if (els.full) els.full.checked = false;
+        }
+    }
+    if (els.fields && (resetProviderFields || !els.fields.value.trim())) els.fields.value = cfg.fields;
+    if (presets) {
+        presets.innerHTML = cfg.presets.map(([label, query]) => {
+            return `<button class="preset-chip" type="button" data-info-query-preset="${presetDataAttr(query)}" title="填入示例">${escapeHtml(label)}</button>`;
+        }).join('');
+    }
+    if (fieldPresets) {
+        fieldPresets.innerHTML = cfg.fieldPresets.map(([label, fields]) => {
+            return `<button class="preset-chip" type="button" data-info-fields-preset="${presetDataAttr(fields)}" title="填入字段模板">${escapeHtml(label)}</button>`;
+        }).join('');
+    }
+    renderInfoCollectSyntaxGuide(cfg);
+    saveFofaFormToStorage({
+        provider,
+        query: (els.query?.value || '').trim(),
+        size: parseInt(els.size?.value, 10) || 100,
+        page: parseInt(els.page?.value, 10) || 1,
+        fields: els.fields?.value || '',
+        full: isInfoCollectFullEnabled(provider)
+    });
+    setInfoCollectQueryMode('syntax', { focus: false });
+    scheduleInfoCollectQueryCardHeightStabilize();
+}
+
 function applyFofaQueryPreset(preset) {
     const els = getFofaFormElements();
     if (!els.query) return;
+    setInfoCollectQueryMode('syntax');
     els.query.value = (preset || '').trim();
     els.query.focus();
     saveFofaFormToStorage({
+        provider: getInfoCollectProvider(),
         query: els.query.value,
         size: parseInt(els.size?.value, 10) || 100,
         page: parseInt(els.page?.value, 10) || 1,
         fields: els.fields?.value || '',
-        full: !!els.full?.checked
+        full: isInfoCollectFullEnabled(getInfoCollectProvider())
     });
 }
 
@@ -165,54 +702,68 @@ function applyFofaFieldsPreset(preset) {
     els.fields.value = (preset || '').trim();
     els.fields.focus();
     saveFofaFormToStorage({
+        provider: getInfoCollectProvider(),
         query: (els.query?.value || '').trim(),
         size: parseInt(els.size?.value, 10) || 100,
         page: parseInt(els.page?.value, 10) || 1,
         fields: els.fields.value,
-        full: !!els.full?.checked
+        full: isInfoCollectFullEnabled(getInfoCollectProvider())
     });
 }
 
 function resetFofaForm() {
     const els = getFofaFormElements();
     if (!els.query) return;
+    const provider = getInfoCollectProvider();
+    const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
     els.query.value = '';
     if (els.size) els.size.value = 100;
     if (els.page) els.page.value = 1;
-    if (els.fields) els.fields.value = 'host,ip,port,domain,title,protocol,country,province,city,server';
+    if (els.fields) els.fields.value = cfg.fields;
     if (els.full) els.full.checked = false;
+    if (els.nl) els.nl.value = '';
+    setInfoCollectQueryMode('syntax');
     saveFofaFormToStorage({
+        provider,
         query: els.query.value,
         size: parseInt(els.size?.value, 10) || 100,
         page: parseInt(els.page?.value, 10) || 1,
         fields: els.fields?.value || '',
-        full: !!els.full?.checked
+        full: isInfoCollectFullEnabled(provider)
     });
     renderFofaResults({ query: '', fields: [], results: [], total: 0, page: 1, size: 0 });
 }
 
 async function submitFofaSearch() {
     const els = getFofaFormElements();
+    const provider = getInfoCollectProvider();
     const query = (els.query?.value || '').trim();
-    const size = parseInt(els.size?.value, 10) || 100;
+    const providerCfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
+    const maxSize = providerCfg.maxSize || 10000;
+    let size = parseInt(els.size?.value, 10) || 100;
+    if (size > maxSize) {
+        size = maxSize;
+        if (els.size) els.size.value = String(maxSize);
+        showInlineToast(providerCfg.label + ' 单次最多返回 ' + maxSize + ' 条，已自动调整。');
+    }
     const page = parseInt(els.page?.value, 10) || 1;
     const fields = (els.fields?.value || '').trim();
-    const full = !!els.full?.checked;
+    const full = isInfoCollectFullEnabled(provider);
 
     if (!query) {
         alert(_t('infoCollect.enterFofaQuery'));
         return;
     }
 
-    saveFofaFormToStorage({ query, size, page, fields, full });
-    setFofaMeta(_t('infoCollect.querying'));
+    saveFofaFormToStorage({ provider, query, size, page, fields, full });
+    setFofaMeta(providerLabel(provider) + ' ' + _t('infoCollect.querying'));
     setFofaLoading(true);
 
     try {
         const response = await apiFetch('/api/fofa/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, size, page, fields, full })
+            body: JSON.stringify({ provider, query, size, page, fields, full })
         });
 
         const result = await response.json().catch(() => ({}));
@@ -221,9 +772,9 @@ async function submitFofaSearch() {
         }
         renderFofaResults(result);
     } catch (e) {
-        console.error('FOFA 查询失败:', e);
+        console.error(providerLabel(provider) + ' 查询失败:', e);
         setFofaMeta(_t('infoCollect.queryFailed'));
-        renderFofaResults({ query, fields: [], results: [], total: 0, page: 1, size: 0 });
+        renderFofaResults({ provider, query, fields: [], results: [], total: 0, page: 1, size: 0 });
         alert(_t('infoCollect.queryFailed') + ': ' + (e && e.message ? e.message : String(e)));
     } finally {
         setFofaLoading(false);
@@ -232,6 +783,7 @@ async function submitFofaSearch() {
 
 async function parseFofaNaturalLanguage() {
     const els = getFofaFormElements();
+    const provider = getInfoCollectProvider();
     const text = (els.nl?.value || '').trim();
     if (!text) {
         alert(_t('infoCollect.enterNaturalLanguage'));
@@ -264,7 +816,7 @@ async function parseFofaNaturalLanguage() {
         const resp = await apiFetch('/api/fofa/parse', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify({ provider, text }),
             signal: fofaParseAbortController.signal
         });
         const result = await resp.json().catch(() => ({}));
@@ -309,9 +861,11 @@ function setFofaParseLoading(loading, statusText) {
             btn.setAttribute('aria-busy', 'true');
             btn.disabled = false;
         } else {
+            const provider = getInfoCollectProvider();
+            const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
             btn.classList.remove('btn-loading');
             btn.textContent = btn.dataset.originalText || _t('infoCollectPage.parseBtn');
-            btn.title = _t('infoCollect.parseToFofa');
+            btn.title = '将自然语言解析为 ' + cfg.label + ' 查询语法';
             btn.disabled = false;
             delete btn.dataset.loading;
             btn.removeAttribute('aria-busy');
@@ -333,13 +887,15 @@ function showFofaParseModal(nlText, parsed) {
     const existing = document.getElementById('fofa-parse-modal');
     if (existing) existing.remove();
 
+    const provider = getInfoCollectProvider();
+    const cfg = INFO_COLLECT_PROVIDERS[provider] || INFO_COLLECT_PROVIDERS.fofa;
     const safeNL = escapeHtml((nlText || '').trim());
     const warnings = Array.isArray(parsed?.warnings) ? parsed.warnings.filter(Boolean).map(x => String(x)) : [];
     const explanation = parsed?.explanation != null ? String(parsed.explanation) : '';
 
     const warningsHtml = warnings.length
-        ? `<ul style="margin: 8px 0 0 18px;">${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>`
-        : '<div class="muted" style="margin-top: 8px;">' + _t('infoCollect.none') + '</div>';
+        ? `<ul class="info-collect-parse-warnings-list">${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>`
+        : '<div class="muted info-collect-parse-warnings-empty">' + _t('infoCollect.none') + '</div>';
 
     const modal = document.createElement('div');
     modal.id = 'fofa-parse-modal';
@@ -348,37 +904,37 @@ function showFofaParseModal(nlText, parsed) {
     openAppModal(modal, { focus: false });
     deferModalContent(function () {
     modal.innerHTML = `
-        <div class="modal-content" style="max-width: 900px;">
+        <div class="modal-content info-collect-parse-modal-content" style="max-width: 900px;">
             <div class="modal-header">
                 <h2>${_t('infoCollect.parseResultTitle')}</h2>
                 <span class="modal-close" id="fofa-parse-modal-close" title="${_t('common.close')}">&times;</span>
             </div>
-            <div style="padding: 18px 28px; overflow: auto;">
+            <div class="info-collect-parse-modal-body">
                 <div class="form-group">
                     <label>${_t('infoCollect.naturalLanguageLabel')}</label>
-                    <div class="muted" style="margin-top: 6px; white-space: pre-wrap;">${safeNL || '-'}</div>
+                    <div class="muted info-collect-parse-nl-text">${safeNL || '-'}</div>
                 </div>
 
-                <div class="form-group" style="margin-top: 14px;">
-                    <label for="fofa-parse-query">${_t('infoCollect.fofaQueryEditable')}</label>
-                    <textarea id="fofa-parse-query" class="info-collect-query-input" rows="2" placeholder="${_t('infoCollect.queryPlaceholder')}"></textarea>
+                <div class="form-group info-collect-parse-form-group">
+                    <label for="fofa-parse-query">${escapeHtml(cfg.label)} 查询语法（可编辑）</label>
+                    <textarea id="fofa-parse-query" class="info-collect-query-input" rows="2" placeholder="${escapeHtml(cfg.placeholder)}"></textarea>
                     <small class="form-hint">${_t('infoCollect.confirmBeforeQuery')}</small>
                 </div>
 
-                <div class="form-group" style="margin-top: 14px;">
+                <div class="form-group info-collect-parse-form-group">
                     <label>${_t('infoCollect.reminder')}</label>
-                    <div style="background: #fff8e1; border: 1px solid #ffe8a3; border-radius: 10px; padding: 10px 12px;">
+                    <div class="info-collect-parse-warnings">
                         ${warningsHtml}
                     </div>
                 </div>
 
                 ${explanation ? `
-                <div class="form-group" style="margin-top: 14px;">
+                <div class="form-group info-collect-parse-form-group">
                     <label>${_t('infoCollect.explanation')}</label>
-                    <pre style="margin-top: 8px; white-space: pre-wrap; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 12px; font-size: 13px;">${escapeHtml(explanation)}</pre>
+                    <pre class="info-collect-parse-explanation">${escapeHtml(explanation)}</pre>
                 </div>` : ''}
             </div>
-            <div class="modal-footer" style="padding: 18px 28px;">
+            <div class="modal-footer info-collect-parse-modal-footer">
                 <button class="btn-secondary" type="button" id="fofa-parse-cancel">${_t('infoCollect.parseModalCancel')}</button>
                 <button class="btn-secondary" type="button" id="fofa-parse-apply">${_t('infoCollect.parseModalApply')}</button>
                 <button class="btn-primary" type="button" id="fofa-parse-apply-run">${_t('infoCollect.parseModalApplyRun')}</button>
@@ -420,7 +976,7 @@ function showFofaParseModal(nlText, parsed) {
             size: parseInt(els.size?.value, 10) || 100,
             page: parseInt(els.page?.value, 10) || 1,
             fields: (els.fields?.value || '').trim(),
-            full: !!els.full?.checked
+            full: isInfoCollectFullEnabled(getInfoCollectProvider())
         });
         close();
         if (run) submitFofaSearch();
@@ -445,6 +1001,22 @@ function setFofaMeta(text) {
     if (els.meta) {
         els.meta.textContent = text || '-';
     }
+}
+
+function buildInfoCollectResultsMeta(provider, total, count, page, size, expectedCount, shortfall) {
+    let text = providerLabel(provider) + ' · ' + _t('infoCollect.resultsMeta', { total, count, page, size });
+    if (provider === 'shodan') {
+        let expected = Number(expectedCount || 0);
+        if (!Number.isFinite(expected) || expected <= 0) {
+            const startOffset = Math.max(0, (Number(page) || 1) - 1) * 100;
+            expected = Math.min(Number(size) || 0, Math.max(0, (Number(total) || 0) - startOffset));
+        }
+        const missing = Number(shortfall || 0);
+        if (expected > 0 && (missing > 0 || count < expected)) {
+            text += ' · ' + _t('infoCollect.providerReturnedFewer', { expected, count });
+        }
+    }
+    return text;
 }
 
 function updateSelectedMeta() {
@@ -473,6 +1045,7 @@ function renderFofaResults(payload) {
 
     // 保存当前 payload 到 state
     infoCollectState.currentPayload = {
+        provider: payload.provider || getInfoCollectProvider(),
         query: payload.query || '',
         total: typeof payload.total === 'number' ? payload.total : 0,
         page: typeof payload.page === 'number' ? payload.page : 1,
@@ -496,7 +1069,15 @@ function renderFofaResults(payload) {
     const size = typeof payload.size === 'number' ? payload.size : 0;
     const page = typeof payload.page === 'number' ? payload.page : 1;
 
-    setFofaMeta(_t('infoCollect.resultsMeta', { total, count: results.length, page, size }));
+    setFofaMeta(buildInfoCollectResultsMeta(
+        infoCollectState.currentPayload.provider,
+        total,
+        results.length,
+        page,
+        size,
+        typeof payload.expected_count === 'number' ? payload.expected_count : 0,
+        typeof payload.shortfall === 'number' ? payload.shortfall : 0
+    ));
 
     // 可见字段
     const visibleFields = fields.filter(f => !infoCollectState.hiddenFields.has(f));
@@ -506,7 +1087,7 @@ function renderFofaResults(payload) {
 
     // 表头（左：勾选列；右：操作列固定）
     const headerCells = [
-        '<th class="info-collect-col-select"><input type="checkbox" id="fofa-select-all" title="' + escapeHtml(_t('infoCollect.selectAll')) + '"/></th>',
+        '<th class="info-collect-col-select"><input type="checkbox" id="fofa-select-all" class="theme-checkbox" title="' + escapeHtml(_t('infoCollect.selectAll')) + '"/></th>',
         ...visibleFields.map(f => `<th>${escapeHtml(String(f))}</th>`),
         '<th class="info-collect-col-actions">' + escapeHtml(_t('infoCollect.actions')) + '</th>'
     ].join('');
@@ -525,7 +1106,7 @@ function renderFofaResults(payload) {
         const encoded = encodeURIComponent(JSON.stringify(safeRow));
         const encodedTarget = encodeURIComponent(target || '');
 
-        const selectHtml = '<td class="info-collect-col-select"><input class="fofa-row-select" type="checkbox" data-index="' + idx + '" title="' + escapeHtml(_t('infoCollect.selectRow')) + '"/></td>';
+        const selectHtml = '<td class="info-collect-col-select"><input class="fofa-row-select theme-checkbox" type="checkbox" data-index="' + idx + '" title="' + escapeHtml(_t('infoCollect.selectRow')) + '"/></td>';
 
         const cellsHtml = visibleFields.map(f => {
             const val = safeRow[f];
@@ -556,6 +1137,9 @@ function renderFofaResults(payload) {
                         <path d="M16 8h3a4 4 0 0 1 0 8h-3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
                 </button>
+                <button class="btn-icon" data-require-permission="asset:write" onclick="importFofaRowAsset(${idx}); event.stopPropagation();" title="${escapeHtml(_t('assets.importOne'))}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 19h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
             </div>
         `;
 
@@ -566,6 +1150,7 @@ function renderFofaResults(payload) {
 
     // 更新全选框状态
     syncSelectAllCheckbox();
+    if (typeof applyRBACToUI === 'function') applyRBACToUI(els.tbody);
 }
 
 function inferTargetFromRow(row, fields) {
@@ -749,6 +1334,7 @@ function scanFofaRow(encodedRowJson, clickEvent) {
         }
         if (autoSend) {
             if (typeof sendMessage === 'function') {
+                window.__csNextChatFinalizationPolicy = { requireExecutionEvidence: true };
                 sendMessage();
             } else {
                 alert(_t('infoCollect.noSendMessage'));
@@ -764,7 +1350,8 @@ function buildScanMessage(target, row, options) {
     const fields = Array.isArray(opts.fields) ? opts.fields : [];
 
     const summary = formatFofaRowSummary(row || {}, fields);
-    return `对以下目标做信息收集与基础扫描：\n${target}\n\n要求：\n1) 识别服务/框架与关键指纹\n2) 枚举开放端口与常见管理入口\n3) 用 httpx/指纹/目录探测等方式快速确认可访问面\n4) 输出可复现的命令与结论\n\n已知信息（来自 FOFA 该行全部字段）：\n${summary}`.trim();
+    const provider = providerLabel(infoCollectState.currentPayload?.provider || getInfoCollectProvider());
+    return `对以下目标做信息收集与基础扫描：\n${target}\n\n要求：\n1) 识别服务/框架与关键指纹\n2) 枚举开放端口与常见管理入口\n3) 用 httpx/指纹/目录探测等方式快速确认可访问面\n4) 输出可复现的命令与结论\n\n已知信息（来自 ${provider} 该行全部字段）：\n${summary}`.trim();
 }
 
 function bindFofaTableEvents() {
@@ -922,12 +1509,14 @@ function exportFofaResults(format) {
 
     const fields = p.fields || [];
     const visibleFields = fields.filter(f => !infoCollectState.hiddenFields.has(f));
+    const provider = p.provider || 'fofa';
 
     const now = new Date();
     const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
 
     if (format === 'json') {
         const payload = {
+            provider,
             query: p.query || '',
             total: p.total || 0,
             page: p.page || 1,
@@ -935,7 +1524,7 @@ function exportFofaResults(format) {
             fields: fields,
             results: p.results
         };
-        downloadBlob(JSON.stringify(payload, null, 2), `fofa_results_${ts}.json`, 'application/json;charset=utf-8');
+        downloadBlob(JSON.stringify(payload, null, 2), `${provider}_results_${ts}.json`, 'application/json;charset=utf-8');
         return;
     }
 
@@ -952,7 +1541,7 @@ function exportFofaResults(format) {
         const ws = XLSX.utils.aoa_to_sheet(aoa);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, _t('infoCollect.batchScanTitle'));
-        XLSX.writeFile(wb, `fofa_results_${ts}.xlsx`);
+        XLSX.writeFile(wb, `${provider}_results_${ts}.xlsx`);
         return;
     }
 
@@ -964,7 +1553,7 @@ function exportFofaResults(format) {
     });
     const csv = [header.map(csvEscape).join(','), ...rows.map(cols => cols.join(','))].join('\n');
     const csvWithBom = '\uFEFF' + csv;
-    downloadBlob(csvWithBom, `fofa_results_${ts}.csv`, 'text/csv;charset=utf-8');
+    downloadBlob(csvWithBom, `${provider}_results_${ts}.csv`, 'text/csv;charset=utf-8');
 }
 
 function csvEscape(value) {
@@ -1070,13 +1659,19 @@ function showCellDetailModal(field, fullText) {
     const existing = document.getElementById('info-collect-cell-modal');
     if (existing) existing.remove();
 
+    const text = fullText == null ? '' : String(fullText);
+    const fieldName = field || _t('infoCollect.field');
+    const charCountLabel = _t('infoCollect.cellValueLength', { count: Array.from(text).length });
     const modal = document.createElement('div');
     modal.id = 'info-collect-cell-modal';
     modal.className = 'info-collect-cell-modal';
     modal.innerHTML = `
         <div class="info-collect-cell-modal-content" role="dialog" aria-modal="true">
             <div class="info-collect-cell-modal-header">
-                <div class="info-collect-cell-modal-title">${escapeHtml(field || _t('infoCollect.field'))}</div>
+                <div class="info-collect-cell-modal-heading">
+                    <div class="info-collect-cell-modal-title">${escapeHtml(fieldName)}</div>
+                    <div class="info-collect-cell-modal-subtitle">${escapeHtml(charCountLabel)}</div>
+                </div>
                 <button class="btn-icon" type="button" id="info-collect-cell-modal-close" title="${_t('common.close')}">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -1084,7 +1679,7 @@ function showCellDetailModal(field, fullText) {
                 </button>
             </div>
             <div class="info-collect-cell-modal-body">
-                <pre class="info-collect-cell-modal-pre">${escapeHtml(fullText || '')}</pre>
+                <pre class="info-collect-cell-modal-pre">${escapeHtml(text)}</pre>
             </div>
             <div class="info-collect-cell-modal-footer">
                 <button class="btn-secondary" type="button" id="info-collect-cell-modal-copy">${_t('common.copy')}</button>
@@ -1096,7 +1691,13 @@ function showCellDetailModal(field, fullText) {
     document.body.appendChild(modal);
     openAppModal(modal);
 
+    const onKey = (e) => {
+        if (e.key === 'Escape') {
+            close();
+        }
+    };
     const close = function () {
+        document.removeEventListener('keydown', onKey);
         closeAppModal(modal);
         modal.remove();
         syncAppModalBodyLock();
@@ -1107,16 +1708,10 @@ function showCellDetailModal(field, fullText) {
     document.getElementById('info-collect-cell-modal-close')?.addEventListener('click', close);
     document.getElementById('info-collect-cell-modal-ok')?.addEventListener('click', close);
     document.getElementById('info-collect-cell-modal-copy')?.addEventListener('click', () => {
-        navigator.clipboard.writeText(fullText || '').then(() => showInlineToast(_t('common.copied'))).catch(() => alert(_t('common.copyFailed')));
+        navigator.clipboard.writeText(text).then(() => showInlineToast(_t('common.copied'))).catch(() => alert(_t('common.copyFailed')));
     });
 
     // Esc 关闭
-    const onKey = (e) => {
-        if (e.key === 'Escape') {
-            close();
-            document.removeEventListener('keydown', onKey);
-        }
-    };
     document.addEventListener('keydown', onKey);
 }
 
@@ -1125,6 +1720,7 @@ window.initInfoCollectPage = initInfoCollectPage;
 window.resetFofaForm = resetFofaForm;
 window.submitFofaSearch = submitFofaSearch;
 window.parseFofaNaturalLanguage = parseFofaNaturalLanguage;
+window.setInfoCollectQueryMode = setInfoCollectQueryMode;
 window.scanFofaRow = scanFofaRow;
 window.copyFofaTarget = copyFofaTarget;
 window.copyFofaTargetEncoded = copyFofaTargetEncoded;
@@ -1147,4 +1743,3 @@ if (document.readyState === 'loading') {
 } else {
     updateSelectedMeta();
 }
-

@@ -11,6 +11,7 @@ var apiDocI18nTagToKey = map[string]string{
 	"知识库": "knowledgeBase", "MCP": "mcp",
 	"FOFA信息收集": "fofaRecon", "终端": "terminal", "WebShell管理": "webshellManagement",
 	"对话附件": "chatUploads", "机器人集成": "robotIntegration", "多代理Markdown": "markdownAgents",
+	"项目管理": "projectManagement", "资产管理": "assetManagement",
 }
 
 var apiDocI18nSummaryToKey = map[string]string{
@@ -42,7 +43,7 @@ var apiDocI18nSummaryToKey = map[string]string{
 	"设置对话置顶": "pinConversation", "设置分组置顶": "pinGroup", "设置分组中对话的置顶": "pinGroupConversation",
 	"获取分类": "getCategories", "列出知识项": "listKnowledgeItems", "创建知识项": "createKnowledgeItem",
 	"获取知识项": "getKnowledgeItem", "更新知识项": "updateKnowledgeItem", "删除知识项": "deleteKnowledgeItem",
-	"获取索引状态": "getIndexStatus", "重建索引": "rebuildIndex", "扫描知识库": "scanKnowledgeBase",
+	"获取索引状态": "getIndexStatus", "构建索引": "startKnowledgeIndex", "扫描知识库": "scanKnowledgeBase",
 	"搜索知识库": "searchKnowledgeBase", "基础搜索": "basicSearch", "按风险类型搜索": "searchByRiskType",
 	"获取检索日志": "getRetrievalLogs", "删除检索日志": "deleteRetrievalLog",
 	"MCP端点": "mcpEndpoint", "列出所有工具": "listAllTools", "调用工具": "invokeTool", "初始化连接": "initConnection",
@@ -60,7 +61,7 @@ var apiDocI18nSummaryToKey = map[string]string{
 	"获取连接状态": "getWebshellConnectionState", "保存连接状态": "saveWebshellConnectionState",
 	"获取AI对话历史": "getWebshellAIHistory", "列出AI对话": "listWebshellAIConversations",
 	"执行WebShell命令": "webshellExec", "WebShell文件操作": "webshellFileOp",
-	"列出附件": "listChatUploads", "上传附件": "uploadChatFile", "删除附件": "deleteChatUpload",
+	"列出附件": "listChatUploads", "导出附件": "exportChatUploads", "上传附件": "uploadChatFile", "删除附件": "deleteChatUpload",
 	"下载附件": "downloadChatUpload", "获取附件文本内容": "getChatUploadContent",
 	"写入附件文本内容": "putChatUploadContent", "创建附件目录": "mkdirChatUpload", "重命名附件": "renameChatUpload",
 	"企业微信回调验证": "wecomCallbackVerify", "企业微信消息回调": "wecomCallbackMessage",
@@ -70,6 +71,13 @@ var apiDocI18nSummaryToKey = map[string]string{
 	"列出技能包文件": "listSkillPackageFiles", "获取技能包文件内容": "getSkillPackageFile", "写入技能包文件": "putSkillPackageFile",
 	"批量获取工具名称": "batchGetToolNames",
 	"获取知识库统计":  "getKnowledgeStats",
+	"列出项目":     "listProjects", "创建项目": "createProject", "获取项目": "getProject",
+	"更新项目": "updateProject", "删除项目": "deleteProject",
+	"批量导入资产":        "importAssets",
+	"列出或按 key 获取事实": "listProjectFacts", "创建/更新事实": "upsertProjectFact",
+	"获取项目事实攻击路径图": "getProjectFactGraph", "列出项目全部事实边": "listProjectFactEdges",
+	"添加事实边": "createProjectFactEdge", "删除事实边": "deleteProjectFactEdge",
+	"将对话攻击链沉淀到项目事实图": "promoteAttackChainToProject",
 }
 
 var apiDocI18nResponseDescToKey = map[string]string{
@@ -97,6 +105,14 @@ var apiDocI18nResponseDescToKey = map[string]string{
 	"重命名成功": "renameSuccess", "验证成功，返回解密后的echostr": "wecomVerifySuccess",
 	"处理成功": "processSuccess", "代理不存在": "agentNotFound", "保存成功": "saveSuccess",
 	"操作结果": "operationResult", "执行结果": "executionResult", "连接不存在": "connectionNotFound",
+	"项目列表": "projectList", "项目详情": "projectDetail",
+	"事实列表或单条（可含 link_counts / outgoing_links）": "projectFactList",
+	"成功": "success", "nodes + edges": "factGraphNodesEdges",
+	"边列表": "edgeList", "边已创建": "edgeCreated",
+	"沉淀结果（facts/edges/graph）": "promoteAttackChainResult",
+	"导入完成":                    "assetImportCompleted", "数量或资产字段校验失败": "assetImportValidationFailed",
+	"缺少 asset:write 权限或无权访问指定项目": "assetImportForbidden",
+	"导入事务失败": "assetImportTransactionFailed",
 }
 
 // enrichSpecWithI18nKeys 在 spec 的每个 operation 上写入 x-i18n-tags、x-i18n-summary，

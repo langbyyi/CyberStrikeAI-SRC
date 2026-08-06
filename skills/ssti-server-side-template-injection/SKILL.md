@@ -338,3 +338,5 @@ When Flask **debug mode** (Werkzeug debugger) is exposed but **PIN-protected**, 
 6. **Compute PIN** — use established open-source PIN calculators that implement the same algorithm from these values
 
 > Use only on systems you are authorized to test; obtaining these values implies prior access or an additional info-disclosure vector.
+
+

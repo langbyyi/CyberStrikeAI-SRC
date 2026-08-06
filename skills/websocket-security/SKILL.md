@@ -6,7 +6,7 @@ description: >-
 
 # SKILL: WebSocket Security
 
-> **AI LOAD INSTRUCTION**: This skill covers WebSocket protocol basics, cross-site WebSocket hijacking (CSWSH), practical tooling bridges, and common vulnerability classes. Apply only in **authorized** tests; treat tokens and message content as sensitive. For REST/GraphQL companion testing, cross-load **[api-security](../api-security/SKILL.md)** when present in the workspace.
+> **AI LOAD INSTRUCTION**: This skill covers WebSocket protocol basics, cross-site WebSocket hijacking (CSWSH), practical tooling bridges, and common vulnerability classes. Apply only in **authorized** tests; treat tokens and message content as sensitive. For REST/GraphQL companion testing, cross-load **[api-security](../api-sec/SKILL.md)** when present in the workspace.
 
 ## QUICK START
 
@@ -169,19 +169,14 @@ Prefer **Sec-WebSocket-Protocol**, **first-message auth**, or **cookie + CSRF to
 - [ ] Reconnect with another user's cookie jar to test session binding and topic isolation
 - [ ] Verify subprotocol negotiation and custom header requirements
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests to test WebSocket handshake manipulation and Origin validation |
-| `http_repeater` | Replay and modify WebSocket upgrade requests to test CSWSH and authentication bypass |
-| `browser_agent_inspect` | Browser inspection to observe WebSocket connections, messages, and client-side behavior |
-| `burpsuite_alternative_scan` | Comprehensive web scanning to discover WebSocket endpoints and test common vulnerabilities |
+Use visible `http-framework-test` for handshake/header checks and `execute-python-script` or `exec` for a scoped WebSocket client when frame-level replay is required. Browser/proxy inspection is optional and only applies when the capability is visible; do not assume a repeater MCP exists.
 
 ---
 
 ## RELATED ROUTING
 
-- From **[api-security](../api-security/SKILL.md)** — authentication, authorization, IDOR, and rate limiting often **mirror** HTTP APIs behind the same WebSocket routes.
+- From **[api-security](../api-sec/SKILL.md)** — authentication, authorization, IDOR, and rate limiting often **mirror** HTTP APIs behind the same WebSocket routes.
 
 **Note**: WebSocket often shares session and authorization models with REST; align with `api-security` for the same backend's authentication and resource boundaries.

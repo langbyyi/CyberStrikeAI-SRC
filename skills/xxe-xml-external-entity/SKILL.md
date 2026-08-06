@@ -324,3 +324,5 @@ file:///usr/share/java/struts2-core-*.jar!/struts-2.5.dtd
 - But file:// to LOCAL files is usually allowed
 - Local DTD is trusted → entity overrides inject attacker-controlled definitions
 - Error messages or blind extraction via file:// still works
+
+

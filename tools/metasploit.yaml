@@ -1,60 +1,56 @@
-name: "metasploit"
-command: "python3"
+name: metasploit
+command: python3
 args:
-  - "-c"
-  - |
-    import json
-    import shlex
-    import subprocess
-    import sys
-
-    if len(sys.argv) < 2:
-        sys.stderr.write("缺少模块名称\n")
-        sys.exit(1)
-
-    module = sys.argv[1]
-    options_raw = sys.argv[2] if len(sys.argv) > 2 else "{}"
-    extra = sys.argv[3] if len(sys.argv) > 3 else ""
-
-    try:
-        options = json.loads(options_raw) if options_raw else {}
-    except json.JSONDecodeError as exc:
-        sys.stderr.write(f"选项解析失败: {exc}\n")
-        sys.exit(1)
-
-    commands = [f"use {module}"]
-    for key, value in options.items():
-        commands.append(f"set {key} {value}")
-    commands.append("run")
-    commands.append("exit")
-
-    cmd = ["msfconsole", "-q", "-x", "; ".join(commands)]
-    if extra:
-        cmd.extend(shlex.split(extra))
-
-    subprocess.run(cmd, check=False)
+  - -c
+  - "import json\nimport shlex\nimport subprocess\nimport sys\n\nif len(sys.argv) < 2:\n    sys.stderr.write(\"缺少模块名称\\n\")\n    sys.exit(1)\n\nmodule = sys.argv[1]\noptions_raw = sys.argv[2] if len(sys.argv) > 2 else \"{}\"\nextra = sys.argv[3] if len(sys.argv) > 3 else \"\"\n\ntry:\n    options = json.loads(options_raw) if options_raw else {}\nexcept json.JSONDecodeError as exc:\n    sys.stderr.write(f\"选项解析失败: {exc}\\n\")\n    sys.exit(1)\n\ncommands = [f\"use {module}\"]\nfor key, value in options.items():\n    commands.append(f\"set {key} {value}\")\ncommands.append(\"run\")\ncommands.append(\"exit\")\n\ncmd = [\"msfconsole\", \"-q\", \"-x\", \"; \".join(commands)]\nif extra:\n    cmd.extend(shlex.split(extra))\n\nsubprocess.run(cmd, check=False)\n"
 enabled: true
-short_description: "Metasploit渗透测试框架"
-description: |
-  通过 `msfconsole -q -x` 非交互执行模块。可提供JSON格式的模块选项，脚本自动构建 `set` 与 `run` 指令。
+short_description: Metasploit渗透测试框架
+description: '通过 `msfconsole -q -x` 非交互执行 Metasploit 模块。
+
+
+  **主要功能：**
+
+  - 加载并运行任意 Metasploit 模块（exploit/auxiliary/post）
+
+  - 支持 JSON 格式模块选项，自动构建 `set` 与 `run` 指令
+
+  - 无需启动交互式 msfconsole 界面
+
+
+  **使用场景：**
+
+  - 漏洞利用模块执行（如 ms17_010_eternalblue）
+
+  - auxiliary 扫描/枚举模块
+
+  - post 后渗透模块
+
+
+  **注意事项：**
+
+  - 需确认模块名完整有效
+
+  - 运行 exploit 前确认目标在授权范围
+
+  - 部分模块需要指定 PAYLOAD、LHOST 等选项'
 parameters:
-  - name: "module"
-    type: "string"
-    description: "要使用的Metasploit模块（例如 exploit/windows/smb/ms17_010_eternalblue）"
+  - name: module
+    type: string
+    description: 要使用的Metasploit模块（例如 exploit/windows/smb/ms17_010_eternalblue）
     required: true
     position: 0
-    format: "positional"
-  - name: "options"
-    type: "string"
-    description: "模块选项（JSON对象，键值对应 set 指令）"
+    format: positional
+  - name: options
+    type: string
+    description: 模块选项（JSON对象，键值对应 set 指令）
     required: false
-    default: "{}"
+    default: '{}'
     position: 1
-    format: "positional"
-  - name: "additional_args"
-    type: "string"
-    description: "额外的 msfconsole 参数（追加在命令末尾）"
+    format: positional
+  - name: additional_args
+    type: string
+    description: 额外的 msfconsole 参数（追加在命令末尾）
     required: false
-    default: ""
+    default: ''
     position: 2
-    format: "positional"
+    format: positional

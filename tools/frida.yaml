@@ -1,0 +1,34 @@
+name: frida
+command: frida
+enabled: true
+short_description: 动态插桩/调试框架（Hook 函数）
+description: '动态插桩框架，Hook Android/iOS/桌面应用函数。
+
+  **使用场景：** 移动 APP 动态调试、绕过检测、逆向分析。
+
+
+  **安装：** `pipx install frida-tools`（若不可用先安装）。'
+parameters:
+  - name: target
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 目标进程/设备，如 `-f com.app`(spawn) 或 `com.app`(attach)
+  - name: script
+    type: string
+    required: false
+    flag: -l
+    format: flag
+    description: 加载 JS 脚本文件
+  - name: device
+    type: string
+    required: false
+    flag: -D
+    format: flag
+    description: 指定设备（`-D usb` 或 `-D <id>`）
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-U`(USB设备) `-n`(按名称) `--no-pause`

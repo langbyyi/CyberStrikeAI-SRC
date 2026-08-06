@@ -1,6 +1,7 @@
 package multiagent
 
 import (
+	"context"
 	"fmt"
 
 	"cyberstrike-ai/internal/agent"
@@ -9,8 +10,11 @@ import (
 
 // newEinoExecuteMonitorCallbacks 在 Eino filesystem execute 开始/结束时写入 MCP 监控库并 recorder(executionId)，
 // 与 CallTool 路径一致，使监控页能展示「执行中」状态。
-func newEinoExecuteMonitorCallbacks(ag *agent.Agent, recorder einomcp.ExecutionRecorder) (
+func newEinoExecuteMonitorCallbacks(ctx context.Context, ag *agent.Agent, recorder einomcp.ExecutionRecorder) (
 	begin func(toolCallID, command string) string,
+	appendPartial func(executionID, toolCallID, chunk string),
+	registerCancel func(executionID string, cancel context.CancelFunc),
+	unregisterCancel func(executionID string),
 	finish func(executionID, toolCallID, command, stdout string, success bool, invokeErr error),
 ) {
 	begin = func(toolCallID, command string) string {
@@ -18,11 +22,29 @@ func newEinoExecuteMonitorCallbacks(ag *agent.Agent, recorder einomcp.ExecutionR
 			return ""
 		}
 		args := map[string]interface{}{"command": command}
-		id := ag.BeginLocalToolExecution("execute", args)
+		id := ag.BeginLocalToolExecution(ctx, "execute", args)
 		if id != "" && recorder != nil {
 			recorder(id, toolCallID)
 		}
 		return id
+	}
+	appendPartial = func(executionID, toolCallID, chunk string) {
+		if ag == nil || executionID == "" || chunk == "" {
+			return
+		}
+		ag.AppendLocalToolExecutionPartialOutput(executionID, chunk)
+	}
+	registerCancel = func(executionID string, cancel context.CancelFunc) {
+		if ag == nil || executionID == "" || cancel == nil {
+			return
+		}
+		ag.RegisterLocalToolExecutionCancel(executionID, cancel)
+	}
+	unregisterCancel = func(executionID string) {
+		if ag == nil || executionID == "" {
+			return
+		}
+		ag.UnregisterLocalToolExecutionCancel(executionID)
 	}
 	finish = func(executionID, toolCallID, command, stdout string, success bool, invokeErr error) {
 		if ag == nil {
@@ -37,10 +59,10 @@ func newEinoExecuteMonitorCallbacks(ag *agent.Agent, recorder einomcp.ExecutionR
 			}
 		}
 		args := map[string]interface{}{"command": command}
-		id := ag.FinishLocalToolExecution(executionID, "execute", args, stdout, err)
+		id := ag.FinishLocalToolExecution(ctx, executionID, "execute", args, stdout, err)
 		if id != "" && recorder != nil && executionID == "" {
 			recorder(id, toolCallID)
 		}
 	}
-	return begin, finish
+	return begin, appendPartial, registerCancel, unregisterCancel, finish
 }

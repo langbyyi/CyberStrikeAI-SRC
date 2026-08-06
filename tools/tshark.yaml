@@ -1,0 +1,34 @@
+name: tshark
+command: tshark
+enabled: true
+short_description: Wireshark 命令行流量分析
+description: 'Wireshark 命令行版本，支持抓包与 pcap 分析。
+
+  **使用场景：** 流量深度分析、协议解码、凭据提取。
+
+
+  **安装：** `apt install tshark`（若不可用先安装）。'
+parameters:
+  - name: filter
+    type: string
+    required: false
+    flag: -f
+    format: flag
+    description: 抓包过滤，如 `tcp port 80`
+  - name: read_file
+    type: string
+    required: false
+    flag: -r
+    format: flag
+    description: 读取 pcap 文件
+  - name: fields
+    type: string
+    required: false
+    flag: -T
+    format: flag
+    description: 输出字段，如 `-T fields -e ip.src -e http.host`
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-Y 'http.request'`(显示过滤) `-c 100`

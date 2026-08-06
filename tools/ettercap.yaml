@@ -1,0 +1,34 @@
+name: ettercap
+command: ettercap
+enabled: true
+short_description: 中间人攻击（ARP欺骗/流量劫持，需root）
+description: '网络中间人攻击工具，支持 ARP 欺骗、DNS 欺骗、流量嗅探。
+
+  **环境要求：** 需 root；文本模式（-T）无需 GUI，可在服务器运行。
+
+  **使用场景：** 局域网 MITM、凭据捕获、流量篡改。'
+parameters:
+  - name: mode
+    type: string
+    required: false
+    position: 0
+    format: positional
+    default: T
+    description: 模式：T(文本)/G(图形)/C(命令)
+  - name: interface
+    type: string
+    required: false
+    flag: -i
+    format: flag
+    description: 网卡接口
+  - name: targets
+    type: string
+    required: false
+    flag: -M
+    format: flag
+    description: ARP 欺骗目标，如 `-M arp:remote /1.2.3.4// /5.6.7.8//`
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数

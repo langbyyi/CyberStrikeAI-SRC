@@ -206,14 +206,9 @@ response.setHeader("Location", request.getParameter("url"));
 
 ---
 
-## MCP TOOLS
+## TARGET TOOL ADAPTATION
 
-| Tool | Use Case |
-|------|----------|
-| `http_framework_test` | Send crafted HTTP requests with CRLF payloads (`%0D%0A`) in URL parameters, headers, cookies, or POST body to test header injection and response splitting |
-| `http_repeater` | Replay and modify CRLF injection payloads in redirect URLs, Set-Cookie paths, and User-Agent/Referer headers to observe header/body injection effects |
-| `nuclei_scan` | Run CRLF-injection-specific Nuclei templates to automate detection of HTTP response splitting vulnerabilities across multiple endpoints |
-| `burpsuite_alternative_scan` | Comprehensive web scanning that can detect CRLF injection patterns in redirect parameters, cookie values, and custom headers during spidering |
+Use visible `http-framework-test` for path-preserving baseline/probe requests and `nuclei` only with a narrowly selected relevant template. Use `execute-python-script` for deterministic encoding variants when needed; do not assume repeater or Burp-alternative MCP calls exist.
 
 ## TESTING CHECKLIST
 
@@ -230,7 +225,7 @@ response.setHeader("Location", request.getParameter("url"));
 
 ## RELATED ROUTING
 
-- [xss](../xss/SKILL.md) — CRLF body injection escalates to stored XSS
+- [xss](../xss-cross-site-scripting/SKILL.md) — CRLF body injection escalates to stored XSS
 - [open-redirect](../open-redirect/SKILL.md) — CRLF in Location header hijacks redirects
 - [request-smuggling](../request-smuggling/SKILL.md) — CRLF is fundamental to HTTP request smuggling
-- [hpp](../hpp/SKILL.md) — HPP can complement CRLF header injection
+- [hpp](../http-parameter-pollution/SKILL.md) — HPP can complement CRLF header injection

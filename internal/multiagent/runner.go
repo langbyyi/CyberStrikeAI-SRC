@@ -5,9 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/agents"
@@ -35,6 +40,13 @@ type RunResult struct {
 	MCPExecutionIDs      []string
 	LastAgentTraceInput  string // 已序列化的消息带（JSON）：原生循环或 Eino 均写入，供续跑/攻击链等恢复上下文
 	LastAgentTraceOutput string // 本轮助手侧对外展示文本（摘要或最终回复）
+	Finalized            bool
+	Status               string
+	CompletionReason     string
+	EvidenceVerified     bool
+	EvidenceRefs         []string
+	PendingExecutionIDs  []string
+	MissingChecks        []string
 }
 
 // toolCallPendingInfo tracks a tool_call emitted to the UI so we can later
@@ -46,6 +58,8 @@ type toolCallPendingInfo struct {
 	EinoAgent  string
 	EinoRole   string
 }
+
+var fallbackToolCallSequence atomic.Uint64
 
 // RunDeepAgent 使用 Eino 多代理预置编排执行一轮对话（deep / plan_execute / supervisor；流式事件通过 progress 回调输出）。
 // orchestrationOverride 非空时优先（如聊天/WebShell 请求体）；否则用 multi_agent.orchestration（遗留 yaml）；皆空则按 deep。
@@ -72,6 +86,8 @@ func RunDeepAgent(
 		return nil, fmt.Errorf("multiagent: 配置或 Agent 为空")
 	}
 
+	runtimeUserMessage := prepareLatestUserMessageForModel(userMessage, appCfg, &ma.EinoMiddleware, conversationID, logger)
+
 	effectiveSubs := ma.SubAgents
 	var markdownLoad *agents.MarkdownDirLoad
 	var orch *agents.OrchestratorMarkdown
@@ -97,6 +113,14 @@ func RunDeepAgent(
 	if orchMode == "supervisor" && len(effectiveSubs) == 0 {
 		return nil, fmt.Errorf("multi_agent.orchestration=supervisor 时需至少配置一个子代理（sub_agents 或 agents 目录 Markdown）")
 	}
+	if orchMode == "supervisor" && len(effectiveSubs) == 1 && progress != nil {
+		progress("progress", "Supervisor 是专家路由模式；当前仅 1 个子代理，专家路由空间有限，仍会继续执行。", map[string]interface{}{
+			"conversationId": conversationID,
+			"source":         "eino",
+			"orchestration":  orchMode,
+			"kind":           "supervisor_boundary_hint",
+		})
+	}
 
 	einoLoc, einoSkillMW, einoFSTools, skillsRoot, einoErr := prepareEinoSkills(ctx, appCfg.SkillsDir, ma, logger)
 	if einoErr != nil {
@@ -118,7 +142,7 @@ func RunDeepAgent(
 		mcpIDs = append(mcpIDs, id)
 		mcpIDsMu.Unlock()
 	}
-	einoExecBegin, einoExecFinish := newEinoExecuteMonitorCallbacks(ag, recorder)
+	einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish := newEinoExecuteMonitorCallbacks(ctx, ag, recorder)
 
 	// 与单代理流式一致：在 response_start / response_delta 的 data 中带当前 mcpExecutionIds，供主聊天绑定复制与展示。
 	snapshotMCPIDs := func() []string {
@@ -130,21 +154,34 @@ func RunDeepAgent(
 	}
 
 	toolInvokeNotify := einomcp.NewToolInvokeNotifyHolder()
-	SetConversationRoleTools(conversationID, roleTools)
 	mainDefs := ag.ToolsForRole(roleTools)
 
-	// LLM client: short dial/header timeouts (see openai.NewLLMHTTPClient).
-	httpClient := openai.NewLLMHTTPClient()
+	httpClient := &http.Client{
+		Timeout: 30 * time.Minute,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   300 * time.Second,
+				KeepAlive: 300 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Minute,
+		},
+	}
 
 	// 若配置为 Claude provider，注入自动桥接 transport，对 Eino 透明走 Anthropic Messages API
 	httpClient = openai.NewEinoHTTPClient(&appCfg.OpenAI, httpClient)
 	openai.AttachSummarizationDiagTransport(httpClient, logger)
 
+	maxCompletionTokens := appCfg.OpenAI.MaxCompletionTokensEffective()
 	baseModelCfg := &einoopenai.ChatModelConfig{
-		APIKey:     appCfg.OpenAI.APIKey,
-		BaseURL:    strings.TrimSuffix(appCfg.OpenAI.BaseURL, "/"),
-		Model:      appCfg.OpenAI.Model,
-		HTTPClient: httpClient,
+		APIKey:              appCfg.OpenAI.APIKey,
+		BaseURL:             strings.TrimSuffix(appCfg.OpenAI.BaseURL, "/"),
+		Model:               appCfg.OpenAI.Model,
+		HTTPClient:          httpClient,
+		MaxCompletionTokens: &maxCompletionTokens,
 	}
 	reasoning.ApplyToEinoChatModelConfig(baseModelCfg, &appCfg.OpenAI, reasoningClient)
 
@@ -210,7 +247,7 @@ func RunDeepAgent(
 			}
 			if einoSkillMW != nil {
 				if einoFSTools && einoLoc != nil {
-					subFs, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, id, einoExecBegin, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+					subFs, fsErr := subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, id, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 					if fsErr != nil {
 						return nil, fmt.Errorf("子代理 %q filesystem 中间件: %w", id, fsErr)
 					}
@@ -219,11 +256,14 @@ func RunDeepAgent(
 				subHandlers = append(subHandlers, einoSkillMW)
 			}
 			subHandlers = appendEinoChatModelTailMiddlewares(subHandlers, einoChatModelTailConfig{
-				logger:         logger,
-				phase:          "sub_agent:" + id,
-				summarization:  subSumMw,
-				modelName:      appCfg.OpenAI.Model,
-				conversationID: conversationID,
+				logger:           logger,
+				phase:            "sub_agent:" + id,
+				summarization:    subSumMw,
+				modelName:        appCfg.OpenAI.Model,
+				maxTotalTokens:   appCfg.OpenAI.MaxTotalTokens,
+				toolMaxBytes:     toolMaxBytesFromMW(&ma.EinoMiddleware),
+				conversationID:   conversationID,
+				middlewareConfig: &ma.EinoMiddleware,
 			})
 
 			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready())
@@ -249,12 +289,12 @@ func RunDeepAgent(
 					ToolsNodeConfig: compose.ToolsNodeConfig{
 						Tools:               subToolsForCfg,
 						UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-						ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
-							MW:             &ma.EinoMiddleware,
-							SkillsRoot:     skillsRoot,
-							ConversationID: conversationID,
-							Logger:         logger,
-						}),
+						ToolCallMiddlewares: []compose.ToolMiddleware{
+							modelOutputExecutionGuardMiddleware(),
+							localToolRBACMiddleware(),
+							hitlToolCallMiddleware(),
+							softRecoveryToolMiddleware(),
+						},
 					},
 					EmitInternalEvents: true,
 				},
@@ -339,6 +379,7 @@ func RunDeepAgent(
 			sb.WriteString("\n- ")
 			sb.WriteString(sa.Name(ctx))
 		}
+		sb.WriteString("\n\nSupervisor 是专家路由模式：仅当任务确实需要不同专家分工时才 transfer；简单查询、单步工具调用或无需专业分流的任务由你直接完成。避免在同一子代理之间反复 transfer；除非有新的、具体的补充目标。专家返回后，你必须自行汇总、裁剪、校验证据，再用 exit 交付最终答案。")
 		sb.WriteString("\n\n当你已完成用户目标或需要将最终结论交付用户时，使用 exit 工具结束。")
 		supInstr = sb.String()
 	}
@@ -353,8 +394,12 @@ func RunDeepAgent(
 			einoAgentName:           orchestratorName,
 			outputChunk:             nil,
 			beginMonitor:            einoExecBegin,
+			appendPartialMonitor:    einoExecAppendPartial,
+			registerCancelMonitor:   einoExecRegisterCancel,
+			unregisterCancelMonitor: einoExecUnregisterCancel,
 			finishMonitor:           einoExecFinish,
 			toolTimeoutMinutes:      agentToolTimeoutMinutes(appCfg),
+			toolWaitTimeoutSeconds:  agentToolWaitTimeoutSeconds(appCfg),
 			shellNoOutputTimeoutSec: agentShellNoOutputTimeoutSeconds(appCfg),
 		}
 	}
@@ -362,23 +407,14 @@ func RunDeepAgent(
 	// noNestedTaskMiddleware 必须在最外层（最先拦截），防止 skill 或其他中间件内部触发 task 调用绕过检测。
 	deepHandlers := []adk.ChatModelAgentMiddleware{newNoNestedTaskMiddleware()}
 	var taskBlackboardSupplement string
-	var taskFactBodies string
 	if appCfg.Project.Enabled && db != nil {
 		if pid := strings.TrimSpace(projectID); pid != "" {
 			if block, err := project.BuildFactIndexBlock(db, pid, appCfg.Project); err == nil {
 				taskBlackboardSupplement = strings.TrimSpace(block)
 			}
-			if ma.EinoMiddleware.ExecutionBoostEffective() {
-				taskFactBodies = buildTaskFactBodies(db, pid, 4000)
-			}
 		}
 	}
-	if mw := newTaskContextEnrichMiddlewareExt(userMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement, taskEnrichOptions{
-		FactBodies:     taskFactBodies,
-		ConversationID: conversationID,
-		MW:             &ma.EinoMiddleware,
-		Logger:         logger,
-	}); mw != nil {
+	if mw := newTaskContextEnrichMiddleware(runtimeUserMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement); mw != nil {
 		deepHandlers = append(deepHandlers, mw)
 	}
 	if len(mainOrchestratorPre) > 0 {
@@ -388,12 +424,15 @@ func RunDeepAgent(
 		deepHandlers = append(deepHandlers, einoSkillMW)
 	}
 	deepHandlers = appendEinoChatModelTailMiddlewares(deepHandlers, einoChatModelTailConfig{
-		logger:         logger,
-		phase:          "deep_orchestrator",
-		summarization:  mainSumMw,
-		modelName:      appCfg.OpenAI.Model,
-		conversationID: conversationID,
-		trace:          modelFacingTrace,
+		logger:           logger,
+		phase:            "deep_orchestrator",
+		summarization:    mainSumMw,
+		modelName:        appCfg.OpenAI.Model,
+		maxTotalTokens:   appCfg.OpenAI.MaxTotalTokens,
+		toolMaxBytes:     toolMaxBytesFromMW(&ma.EinoMiddleware),
+		conversationID:   conversationID,
+		trace:            modelFacingTrace,
+		middlewareConfig: &ma.EinoMiddleware,
 	})
 
 	supHandlers := []adk.ChatModelAgentMiddleware{}
@@ -404,24 +443,27 @@ func RunDeepAgent(
 		supHandlers = append(supHandlers, einoSkillMW)
 	}
 	supHandlers = appendEinoChatModelTailMiddlewares(supHandlers, einoChatModelTailConfig{
-		logger:         logger,
-		phase:          "supervisor_orchestrator",
-		summarization:  mainSumMw,
-		modelName:      appCfg.OpenAI.Model,
-		conversationID: conversationID,
-		trace:          modelFacingTrace,
+		logger:           logger,
+		phase:            "supervisor_orchestrator",
+		summarization:    mainSumMw,
+		modelName:        appCfg.OpenAI.Model,
+		maxTotalTokens:   appCfg.OpenAI.MaxTotalTokens,
+		toolMaxBytes:     toolMaxBytesFromMW(&ma.EinoMiddleware),
+		conversationID:   conversationID,
+		trace:            modelFacingTrace,
+		middlewareConfig: &ma.EinoMiddleware,
 	})
 
 	mainToolsCfg := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-			ToolCallMiddlewares: buildExecutionToolMiddlewares(executionToolMiddlewareConfig{
-				MW:             &ma.EinoMiddleware,
-				SkillsRoot:     skillsRoot,
-				ConversationID: conversationID,
-				Logger:         logger,
-			}),
+			ToolCallMiddlewares: []compose.ToolMiddleware{
+				modelOutputExecutionGuardMiddleware(),
+				localToolRBACMiddleware(),
+				hitlToolCallMiddleware(),
+				softRecoveryToolMiddleware(),
+			},
 		},
 		EmitInternalEvents: true,
 	}
@@ -432,10 +474,11 @@ func RunDeepAgent(
 	switch orchMode {
 	case "plan_execute":
 		plannerModelCfg := &einoopenai.ChatModelConfig{
-			APIKey:     appCfg.OpenAI.APIKey,
-			BaseURL:    strings.TrimSuffix(appCfg.OpenAI.BaseURL, "/"),
-			Model:      appCfg.OpenAI.Model,
-			HTTPClient: httpClient,
+			APIKey:              appCfg.OpenAI.APIKey,
+			BaseURL:             strings.TrimSuffix(appCfg.OpenAI.BaseURL, "/"),
+			Model:               appCfg.OpenAI.Model,
+			HTTPClient:          httpClient,
+			MaxCompletionTokens: &maxCompletionTokens,
 		}
 		reasoning.ApplyPlanExecutePlannerModelConfig(plannerModelCfg, &appCfg.OpenAI)
 		peMainModel, perr := einoopenai.NewChatModel(ctx, plannerModelCfg)
@@ -454,7 +497,7 @@ func RunDeepAgent(
 		// 构建 filesystem 中间件（与 Deep sub-agent 一致）
 		var peFsMw adk.ChatModelAgentMiddleware
 		if einoSkillMW != nil && einoFSTools && einoLoc != nil {
-			peFsMw, err = subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, "executor", einoExecBegin, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+			peFsMw, err = subAgentFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, "executor", einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 			if err != nil {
 				return nil, fmt.Errorf("plan_execute filesystem 中间件: %w", err)
 			}
@@ -473,17 +516,21 @@ func RunDeepAgent(
 			ProjectID:            projectID,
 			Logger:               logger,
 			ModelName:            appCfg.OpenAI.Model,
+			// 与 Deep/Supervisor 主代理同源：patch / reduction / toolsearch / plantask（见 buildPlanExecuteExecutorHandlers）。
 			ExecPreMiddlewares:   mainOrchestratorPre,
 			SkillMiddleware:      einoSkillMW,
 			FilesystemMiddleware: peFsMw,
 			ModelFacingTrace:     modelFacingTrace,
 			PlannerReplannerRewriteHandlers: appendEinoChatModelTailMiddlewares(nil, einoChatModelTailConfig{
-				logger:         logger,
-				phase:          "plan_execute_planner_replanner",
-				summarization:  mainSumMw,
-				modelName:      appCfg.OpenAI.Model,
-				conversationID: conversationID,
-				skipTrace:      true,
+				logger:           logger,
+				phase:            "plan_execute_planner_replanner",
+				summarization:    mainSumMw,
+				modelName:        appCfg.OpenAI.Model,
+				maxTotalTokens:   appCfg.OpenAI.MaxTotalTokens,
+				toolMaxBytes:     toolMaxBytesFromMW(&ma.EinoMiddleware),
+				conversationID:   conversationID,
+				skipTrace:        true,
+				middlewareConfig: &ma.EinoMiddleware,
 			}),
 		})
 		if perr != nil {
@@ -546,7 +593,7 @@ func RunDeepAgent(
 	}
 
 	baseMsgs := historyToMessages(history, appCfg, &ma.EinoMiddleware)
-	baseMsgs = appendUserMessageIfNeeded(baseMsgs, userMessage)
+	baseMsgs = appendUserMessageIfNeeded(baseMsgs, runtimeUserMessage)
 
 	streamsMainAssistant := func(agent string) bool {
 		if orchMode == "plan_execute" {
@@ -585,7 +632,9 @@ func RunDeepAgent(
 		DA:                      da,
 		ModelFacingTrace:        modelFacingTrace,
 		EinoCallbacks:           &ma.EinoCallbacks,
-		MwCfg:                   &ma.EinoMiddleware,
+		MaxTotalTokens:          appCfg.OpenAI.MaxTotalTokens,
+		ToolMaxBytes:            toolMaxBytesFromMW(&ma.EinoMiddleware),
+		ModelName:               appCfg.OpenAI.Model,
 		EmptyResponseMessage: "(Eino multi-agent orchestration completed but no assistant text was captured. Check process details or logs.) " +
 			"（Eino 多代理编排已完成，但未捕获到助手文本输出。请查看过程详情或日志。）",
 	}, baseMsgs)
@@ -630,11 +679,19 @@ func chatToolCallsToSchema(tcs []agent.ToolCall) []schema.ToolCall {
 	return out
 }
 
-// historyToMessages 将轨迹恢复的 ChatMessage 转为 Eino ADK 消息：**不裁剪条数、不按 token 预算截断**，
-// 并保留 user / assistant（含仅 tool_calls）/ tool，与库中 last_react 轨迹一致。
+// historyToMessages 将已保存的 model-facing 轨迹转为 Eino ADK 消息。
+// 新轨迹应已是模型实际看到的内容；对旧版本遗留的超大 tool 正文再做一次上限规范化，
+// 防止原始工具输出通过 last_react/checkpoint 绕过 reduction。
 func historyToMessages(history []agent.ChatMessage, appCfg *config.Config, mwCfg *config.MultiAgentEinoMiddlewareConfig) []adk.Message {
-	_ = appCfg
-	_ = mwCfg
+	toolContentMax := config.MultiAgentEinoMiddlewareConfig{}.ReductionMaxLengthForTruncEffective()
+	userContentMaxRunes := config.MultiAgentEinoMiddlewareConfig{}.LatestUserMessageMaxRunesEffective()
+	if mwCfg != nil {
+		toolContentMax = mwCfg.ReductionMaxLengthForTruncEffective()
+		userContentMaxRunes = mwCfg.LatestUserMessageMaxRunesEffective()
+	}
+	if appCfg != nil {
+		userContentMaxRunes = minPositiveInt(userContentMaxRunes, modelFacingRuneBudget(appCfg.OpenAI.MaxTotalTokens, 0.20))
+	}
 	if len(history) == 0 {
 		return nil
 	}
@@ -644,7 +701,11 @@ func historyToMessages(history []agent.ChatMessage, appCfg *config.Config, mwCfg
 		switch role {
 		case "user":
 			if strings.TrimSpace(h.Content) != "" {
-				raw = append(raw, schema.UserMessage(h.Content))
+				content := h.Content
+				if !h.ModelFacingTrace {
+					content = normalizeRestoredUserContent(content, userContentMaxRunes)
+				}
+				raw = append(raw, schema.UserMessage(content))
 			}
 		case "assistant":
 			toolSchema := chatToolCallsToSchema(h.ToolCalls)
@@ -664,12 +725,57 @@ func historyToMessages(history []agent.ChatMessage, appCfg *config.Config, mwCfg
 			if tn := strings.TrimSpace(h.ToolName); tn != "" {
 				opts = append(opts, schema.WithToolName(tn))
 			}
-			raw = append(raw, schema.ToolMessage(h.Content, h.ToolCallID, opts...))
+			content := h.Content
+			if !h.ModelFacingTrace || (toolContentMax > 0 && len(content) > toolContentMax) {
+				content = normalizeRestoredToolContent(content, toolContentMax)
+			}
+			raw = append(raw, schema.ToolMessage(content, h.ToolCallID, opts...))
 		default:
 			continue
 		}
 	}
 	return raw
+}
+
+func normalizeRestoredUserContent(content string, maxRunes int) string {
+	if maxRunes <= 0 || utf8.RuneCountInString(content) <= maxRunes {
+		return content
+	}
+	runes := []rune(content)
+	const marker = "\n\n...[historical user input normalized to the model-facing budget]...\n\n"
+	markerRunes := []rune(marker)
+	budget := maxRunes - len(markerRunes)
+	if budget <= 0 {
+		end := maxRunes
+		if end > len(markerRunes) {
+			end = len(markerRunes)
+		}
+		return string(markerRunes[:end])
+	}
+	head := budget / 2
+	tail := budget - head
+	return string(runes[:head]) + marker + string(runes[len(runes)-tail:])
+}
+
+func normalizeRestoredToolContent(content string, maxBytes int) string {
+	if maxBytes <= 0 || len(content) <= maxBytes {
+		return content
+	}
+	const marker = "\n\n...[legacy tool output discarded during model-facing history migration]...\n\n"
+	budget := maxBytes - len(marker)
+	if budget <= 0 {
+		return marker
+	}
+	head := budget / 2
+	tail := budget - head
+	for head > 0 && !utf8.RuneStart(content[head]) {
+		head--
+	}
+	tailStart := len(content) - tail
+	for tailStart < len(content) && !utf8.RuneStart(content[tailStart]) {
+		tailStart++
+	}
+	return content[:head] + marker + content[tailStart:]
 }
 
 // mergeStreamingToolCallFragments 将流式多帧的 ToolCall 按 index 合并 arguments（与 schema.concatToolCalls 行为一致）。
@@ -774,7 +880,6 @@ func tryEmitToolCallsOnce(
 	seen map[string]struct{},
 	subAgentToolStep, mainAgentToolStep map[string]int,
 	markPending func(toolCallPendingInfo),
-	beginPendingBatch func(agentName string),
 ) {
 	if msg == nil || len(msg.ToolCalls) == 0 || progress == nil || seen == nil {
 		return
@@ -787,7 +892,7 @@ func tryEmitToolCallsOnce(
 		return
 	}
 	seen[sig] = struct{}{}
-	emitToolCallsFromMessage(msg, agentName, orchestratorName, conversationID, orchMode, progress, subAgentToolStep, mainAgentToolStep, markPending, beginPendingBatch)
+	emitToolCallsFromMessage(msg, agentName, orchestratorName, conversationID, orchMode, progress, subAgentToolStep, mainAgentToolStep, markPending)
 }
 
 func emitToolCallsFromMessage(
@@ -796,14 +901,9 @@ func emitToolCallsFromMessage(
 	progress func(string, string, interface{}),
 	subAgentToolStep, mainAgentToolStep map[string]int,
 	markPending func(toolCallPendingInfo),
-	beginPendingBatch func(agentName string),
 ) {
 	if msg == nil || len(msg.ToolCalls) == 0 || progress == nil {
 		return
-	}
-	// New tool batch for this agent: drop ghost pending IDs from prior stream/batches.
-	if beginPendingBatch != nil {
-		beginPendingBatch(agentName)
 	}
 	if subAgentToolStep == nil {
 		subAgentToolStep = make(map[string]int)
@@ -864,7 +964,10 @@ func emitToolCallsFromMessage(
 		display := toolCallDisplayName(tc)
 		toolCallID := tc.ID
 		if toolCallID == "" && tc.Index != nil {
-			toolCallID = fmt.Sprintf("eino-stream-%d", *tc.Index)
+			// Stream indexes restart from zero for every model turn. Include a
+			// process-wide sequence so pending/result de-duplication cannot collide
+			// with an earlier batch in the same agent run.
+			toolCallID = fmt.Sprintf("eino-stream-%d-%d", fallbackToolCallSequence.Add(1), *tc.Index)
 		}
 		// Record pending tool calls for later tool_result correlation / recovery flushing.
 		// We intentionally record even for unknown tools to avoid "running" badge getting stuck.

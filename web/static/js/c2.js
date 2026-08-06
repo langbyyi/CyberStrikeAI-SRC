@@ -14,10 +14,14 @@
         tasksPageSize: 10,
         tasksTotal: 0,
         tasksPendingQueuedCount: null,
+        tasksStatusCounts: { success: 0, failed: 0, pending: 0, cancelled: 0 },
+        tasksFilter: { status: '', task_type: '', session_id: '', since: '', timePreset: 'all' },
         events: [],
         eventsPage: 1,
         eventsPageSize: 10,
         eventsTotal: 0,
+        eventsLevelCounts: { info: 0, warn: 0, critical: 0 },
+        eventsFilter: { level: '', category: '', session_id: '', since: '', timePreset: 'all' },
         profiles: [],
         selectedSessionId: null,
         selectedListenerId: null,
@@ -45,6 +49,111 @@
     // API 基础路径
     const API_BASE = '/api/c2';
 
+    function activeC2ProjectId() {
+        try {
+            return (typeof getActiveProjectId === 'function' ? getActiveProjectId() : '') || '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function c2ResourceProjectId(item) {
+        return String((item && (item.project_id || item.projectId)) || '').trim();
+    }
+
+    function c2LooksLikeUuid(value) {
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+    }
+
+    function c2ProjectNameMap() {
+        try {
+            return (window.projectNameById && typeof window.projectNameById === 'object')
+                ? window.projectNameById
+                : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    /** 下拉展示用项目名：优先可读名称，绝不回退成 UUID */
+    function c2ProjectDisplayName(id, nameHint) {
+        const idStr = String(id || '').trim();
+        if (!idStr) return '';
+        let name = String(nameHint || '').trim();
+        if (!name || name === idStr || c2LooksLikeUuid(name)) {
+            const mapped = String(c2ProjectNameMap()[idStr] || '').trim();
+            if (mapped && mapped !== idStr && !c2LooksLikeUuid(mapped)) name = mapped;
+        }
+        if (!name || name === idStr || c2LooksLikeUuid(name)) {
+            if (typeof window.getProjectName === 'function') {
+                const viaFn = String(window.getProjectName(idStr) || '').trim();
+                if (viaFn && viaFn !== idStr && !c2LooksLikeUuid(viaFn)) name = viaFn;
+            }
+        }
+        if (!name || name === idStr || c2LooksLikeUuid(name)) {
+            return c2t('batchManageModal.unknownProject') || '未知项目';
+        }
+        return name;
+    }
+
+    function c2ProjectOptionsHtml(selectedId, projectList) {
+        const selected = String(selectedId || '').trim();
+        let html = `<option value="">${escapeHtml(c2t('assets.unboundProject') || '暂不绑定')}</option>`;
+        let entries = [];
+        if (Array.isArray(projectList) && projectList.length) {
+            entries = projectList
+                .filter((p) => p && p.id)
+                .map((p) => [String(p.id), String(p.name || '').trim()]);
+        } else {
+            entries = Object.entries(c2ProjectNameMap());
+        }
+        const seen = new Set();
+        entries.sort((a, b) => c2ProjectDisplayName(a[0], a[1]).localeCompare(c2ProjectDisplayName(b[0], b[1]), undefined, { sensitivity: 'base' }));
+        entries.forEach(([id, name]) => {
+            if (!id || seen.has(id)) return;
+            seen.add(id);
+            const label = c2ProjectDisplayName(id, name);
+            html += `<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+        });
+        if (selected && !seen.has(selected)) {
+            html += `<option value="${escapeHtml(selected)}" selected>${escapeHtml(c2ProjectDisplayName(selected))}</option>`;
+        }
+        return html;
+    }
+
+    function ensureC2ProjectsLoaded() {
+        if (typeof window.ensureProjectsLoaded === 'function') return window.ensureProjectsLoaded();
+        if (typeof window.fetchAllProjects === 'function') {
+            return window.fetchAllProjects(false).then((list) => {
+                if (typeof window.rebuildProjectNameMap === 'function') window.rebuildProjectNameMap(list || []);
+                return list || [];
+            });
+        }
+        return Promise.resolve([]);
+    }
+
+    /** 确保当前选中项目有可读名称（孤儿 / 未进缓存的 ID） */
+    function ensureC2SelectedProjectNamed(projectId) {
+        const id = String(projectId || '').trim();
+        if (!id) return Promise.resolve();
+        const mapped = String(c2ProjectNameMap()[id] || '').trim();
+        if (mapped && mapped !== id && !c2LooksLikeUuid(mapped)) return Promise.resolve();
+        if (typeof window.fetchProjectSummary !== 'function') return Promise.resolve();
+        return window.fetchProjectSummary(id).then((p) => {
+            if (p && p.id && typeof window.rememberProjectsInNameMap === 'function') {
+                window.rememberProjectsInNameMap([p]);
+            }
+        }).catch(function () { /* ignore */ });
+    }
+
+    function c2ProjectBindSelectHtml(listener) {
+        return `<select class="c2-project-bind-select" data-id="${escapeHtml(listener.id || '')}" title="${escapeHtml(c2t('assets.project') || '所属项目')}" onclick="event.stopPropagation()" onchange="C2.bindListenerProject(this.dataset.id, this.value)">${c2ProjectOptionsHtml(c2ResourceProjectId(listener))}</select>`;
+    }
+
+    function withC2ProjectQuery(url) {
+        return url;
+    }
+
     window.__c2DownloadPayload = function(filename) {
         const url = `${API_BASE}/payloads/${filename}/download`;
         const fetchFn = (typeof apiFetch === 'function') ? apiFetch : fetch;
@@ -70,6 +179,162 @@
         } catch (e) {}
         return key;
     }
+
+    const c2FormSelectMap = {};
+    let c2FormSelectDocBound = false;
+    const C2_FORM_SELECT_CARET = '<svg class="c2-form-select-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const C2_FORM_SELECT_HANDLERS = {
+        'c2-listener-type': function () {
+            C2.syncListenerProfileRowForType();
+        }
+    };
+
+    function closeAllC2FormSelects() {
+        Object.keys(c2FormSelectMap).forEach(function (id) {
+            const reg = c2FormSelectMap[id];
+            if (!reg || !reg.wrapper) return;
+            reg.wrapper.classList.remove('open');
+            if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
+        });
+    }
+
+    function syncC2FormSelect(selectId) {
+        const reg = c2FormSelectMap[selectId];
+        if (!reg) return;
+        const select = reg.select;
+        const dropdown = reg.dropdown;
+        const trigger = reg.trigger;
+        const valueSpan = trigger.querySelector('.c2-form-select-value');
+
+        dropdown.innerHTML = '';
+        Array.prototype.forEach.call(select.options, function (opt) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'c2-form-select-option';
+            item.setAttribute('role', 'option');
+            item.setAttribute('data-value', opt.value);
+            if (opt.value === select.value) {
+                item.classList.add('is-selected');
+                item.setAttribute('aria-selected', 'true');
+            } else {
+                item.setAttribute('aria-selected', 'false');
+            }
+            const check = document.createElement('span');
+            check.className = 'c2-form-select-check';
+            check.setAttribute('aria-hidden', 'true');
+            check.textContent = '✓';
+            const label = document.createElement('span');
+            label.className = 'c2-form-select-label';
+            label.textContent = opt.textContent;
+            item.appendChild(check);
+            item.appendChild(label);
+            dropdown.appendChild(item);
+        });
+
+        const selectedOpt = select.options[select.selectedIndex];
+        if (valueSpan) {
+            valueSpan.textContent = selectedOpt ? selectedOpt.textContent : '';
+        }
+        trigger.disabled = !!select.disabled;
+        reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+    }
+
+    function enhanceC2FormSelect(select) {
+        if (!select || !select.id) return;
+        const existing = c2FormSelectMap[select.id];
+        if (existing && existing.select !== select) {
+            delete c2FormSelectMap[select.id];
+        }
+        if (select.dataset.c2FormCustom === '1') {
+            syncC2FormSelect(select.id);
+            return;
+        }
+        select.dataset.c2FormCustom = '1';
+        select.classList.add('c2-form-native-select');
+        select.tabIndex = -1;
+        select.setAttribute('aria-hidden', 'true');
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'c2-form-select-ui';
+
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'c2-form-select-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'c2-form-select-value';
+        trigger.appendChild(valueSpan);
+        trigger.insertAdjacentHTML('beforeend', C2_FORM_SELECT_CARET);
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'c2-form-select-dropdown';
+        dropdown.setAttribute('role', 'listbox');
+
+        const parent = select.parentNode;
+        parent.insertBefore(wrapper, select);
+        wrapper.appendChild(trigger);
+        wrapper.appendChild(dropdown);
+        wrapper.appendChild(select);
+
+        c2FormSelectMap[select.id] = { wrapper: wrapper, trigger: trigger, dropdown: dropdown, select: select };
+
+        trigger.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (select.disabled) return;
+            const open = wrapper.classList.contains('open');
+            closeAllC2FormSelects();
+            if (!open) {
+                wrapper.classList.add('open');
+                trigger.setAttribute('aria-expanded', 'true');
+            }
+        });
+
+        dropdown.addEventListener('click', function (e) {
+            const opt = e.target.closest('.c2-form-select-option');
+            if (!opt) return;
+            e.stopPropagation();
+            const val = opt.getAttribute('data-value');
+            if (val === null) return;
+            if (select.value !== val) {
+                select.value = val;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            wrapper.classList.remove('open');
+            trigger.setAttribute('aria-expanded', 'false');
+            syncC2FormSelect(select.id);
+        });
+
+        select.addEventListener('change', function () {
+            syncC2FormSelect(select.id);
+        });
+
+        if (!select.dataset.c2FormFilterBound) {
+            select.dataset.c2FormFilterBound = '1';
+            const handler = C2_FORM_SELECT_HANDLERS[select.id];
+            if (typeof handler === 'function') {
+                select.addEventListener('change', handler);
+            }
+        }
+
+        syncC2FormSelect(select.id);
+    }
+
+    C2.refreshFormSelects = function (root) {
+        const container = root || document.getElementById('c2-modal-content');
+        if (!container) return;
+        Object.keys(c2FormSelectMap).forEach(function (id) {
+            if (!document.getElementById(id)) delete c2FormSelectMap[id];
+        });
+        container.querySelectorAll('select.c2-form-select-native').forEach(enhanceC2FormSelect);
+        if (!c2FormSelectDocBound) {
+            c2FormSelectDocBound = true;
+            document.addEventListener('click', closeAllC2FormSelects);
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') closeAllC2FormSelects();
+            });
+        }
+    };
 
     function listenerTypeLabel(type) {
         if (!type) return '';
@@ -181,56 +446,116 @@
         return String(os || '?').substring(0, 3).toLowerCase();
     }
 
+    function isEmptyInfoValue(value) {
+        if (value == null) return true;
+        const s = String(value).trim();
+        if (!s || s === '-') return true;
+        const lower = s.toLowerCase();
+        return lower === 'unknown' || lower === 'n/a' || lower === 'null' || lower === 'undefined';
+    }
+
+    function displayInfoValue(value, fallback) {
+        if (isEmptyInfoValue(value)) return fallback != null ? fallback : '—';
+        return String(value);
+    }
+
+    function sessionMetaLine(s) {
+        const user = displayInfoValue(s.username, '');
+        const os = displayInfoValue(s.os, '');
+        const arch = displayInfoValue(s.arch, '');
+        const right = [os, arch].filter(Boolean).join('/') || '—';
+        if (!user) return right;
+        return user + '@' + right;
+    }
+
     function sessionInfoRow(label, value, opts) {
+        const empty = isEmptyInfoValue(value);
+        const display = empty ? '—' : String(value);
         const valueClasses = ['c2-session-info-dl__value'];
         if (opts && opts.mono) valueClasses.push('is-mono');
-        if (opts && opts.accent) valueClasses.push('is-accent');
-        if (opts && opts.warn) valueClasses.push('is-warn');
+        if (opts && opts.accent && !empty) valueClasses.push('is-accent');
+        if (opts && opts.warn && !empty) valueClasses.push('is-warn');
+        if (empty) valueClasses.push('is-empty');
         const rowCls = opts && opts.full ? ' c2-session-info-dl__row--full' : '';
+        const copyBtn = (opts && opts.copy && !empty)
+            ? `<button type="button" class="c2-session-info-copy" title="${escapeHtml(c2t('c2.sessions.infoCopy'))}" aria-label="${escapeHtml(c2t('c2.sessions.infoCopy'))}" onclick="event.stopPropagation(); C2.copyText(${JSON.stringify(String(value))})">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+               </button>`
+            : '';
         return `
             <div class="c2-session-info-dl__row${rowCls}">
                 <dt class="c2-session-info-dl__label">${escapeHtml(label)}</dt>
-                <dd class="${valueClasses.join(' ')}">${escapeHtml(value == null || value === '' ? '-' : String(value))}</dd>
+                <dd class="${valueClasses.join(' ')}">
+                    <span class="c2-session-info-dl__text" title="${escapeHtml(empty ? '' : display)}">${escapeHtml(display)}</span>
+                    ${copyBtn}
+                </dd>
             </div>`;
     }
 
     function renderSessionInfoPanel(s, adminVal, sleepLine) {
         const lastCheckin = formatTime(s.lastCheckIn);
         const lastRel = formatRelativeTime(s.lastCheckIn);
-        const checkinDisplay = lastRel ? `${lastCheckin} (${lastRel})` : lastCheckin;
+        const checkinDisplay = lastRel ? `${lastCheckin} · ${lastRel}` : lastCheckin;
+        const noteText = s.note && String(s.note).trim() ? String(s.note) : '';
+        const noteEmpty = !noteText;
         return `
             <div class="c2-session-info-panel">
-                <section class="c2-session-info-block">
-                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionIdentity'))}</div>
-                    <dl class="c2-session-info-dl">
-                        ${sessionInfoRow(c2t('c2.sessions.infoSessionId'), s.id, { mono: true, accent: true, full: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoImplantUuid'), s.implantUuid, { mono: true, full: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoHostname'), s.hostname)}
-                        ${sessionInfoRow(c2t('c2.sessions.infoUsername'), s.username)}
-                    </dl>
-                </section>
-                <section class="c2-session-info-block">
-                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionSystem'))}</div>
-                    <dl class="c2-session-info-dl">
-                        ${sessionInfoRow(c2t('c2.sessions.infoOs'), s.os)}
-                        ${sessionInfoRow(c2t('c2.sessions.infoArch'), s.arch, { mono: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoPid'), s.pid, { mono: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoProcess'), s.processName || '-', { mono: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoAdmin'), adminVal, { warn: s.isAdmin, full: true })}
-                    </dl>
-                </section>
-                <section class="c2-session-info-block">
-                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionNetwork'))}</div>
-                    <dl class="c2-session-info-dl">
-                        ${sessionInfoRow(c2t('c2.sessions.infoInternalIp'), s.internalIp || '-', { mono: true, accent: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoSleep'), sleepLine)}
-                        ${sessionInfoRow(c2t('c2.sessions.infoFirstSeen'), formatTime(s.firstSeenAt), { mono: true })}
-                        ${sessionInfoRow(c2t('c2.sessions.infoLastCheckin'), checkinDisplay, { mono: true, accent: true })}
-                    </dl>
-                </section>
-                <section class="c2-session-info-block c2-session-info-block--note">
-                    <div class="c2-session-info-block__head">${escapeHtml(c2t('c2.sessions.infoSectionNote'))}</div>
-                    <div class="c2-session-info-note">${escapeHtml(s.note || c2t('c2.sessions.infoNoteEmpty'))}</div>
+                <div class="c2-session-info-grid">
+                    <section class="c2-session-info-block">
+                        <div class="c2-session-info-block__head">
+                            <span class="c2-session-info-block__icon c2-session-info-block__icon--id" aria-hidden="true"></span>
+                            <span>${escapeHtml(c2t('c2.sessions.infoSectionIdentity'))}</span>
+                        </div>
+                        <dl class="c2-session-info-dl">
+                            ${sessionInfoRow(c2t('c2.sessions.infoSessionId'), s.id, { mono: true, accent: true, copy: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoImplantUuid'), s.implantUuid, { mono: true, copy: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoHostname'), s.hostname)}
+                            ${sessionInfoRow(c2t('c2.sessions.infoUsername'), s.username)}
+                        </dl>
+                    </section>
+                    <section class="c2-session-info-block">
+                        <div class="c2-session-info-block__head">
+                            <span class="c2-session-info-block__icon c2-session-info-block__icon--sys" aria-hidden="true"></span>
+                            <span>${escapeHtml(c2t('c2.sessions.infoSectionSystem'))}</span>
+                        </div>
+                        <dl class="c2-session-info-dl">
+                            ${sessionInfoRow(c2t('c2.sessions.infoOs'), s.os)}
+                            ${sessionInfoRow(c2t('c2.sessions.infoArch'), s.arch, { mono: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoPid'), s.pid, { mono: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoProcess'), s.processName || '-', { mono: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoAdmin'), adminVal, { warn: !!s.isAdmin })}
+                        </dl>
+                    </section>
+                    <section class="c2-session-info-block">
+                        <div class="c2-session-info-block__head">
+                            <span class="c2-session-info-block__icon c2-session-info-block__icon--net" aria-hidden="true"></span>
+                            <span>${escapeHtml(c2t('c2.sessions.infoSectionNetwork'))}</span>
+                        </div>
+                        <dl class="c2-session-info-dl">
+                            ${sessionInfoRow(c2t('c2.sessions.infoInternalIp'), s.internalIp || '-', { mono: true, accent: true, copy: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoSleep'), sleepLine)}
+                            ${sessionInfoRow(c2t('c2.sessions.infoFirstSeen'), formatTime(s.firstSeenAt), { mono: true })}
+                            ${sessionInfoRow(c2t('c2.sessions.infoLastCheckin'), checkinDisplay, { mono: true, accent: true })}
+                        </dl>
+                    </section>
+                </div>
+                <section class="c2-session-info-block c2-session-info-block--note${noteEmpty ? ' is-empty' : ''}" id="c2-session-note-block">
+                    <div class="c2-session-info-block__head">
+                        <span class="c2-session-info-block__icon c2-session-info-block__icon--note" aria-hidden="true"></span>
+                        <span>${escapeHtml(c2t('c2.sessions.infoSectionNote'))}</span>
+                        <button type="button" class="c2-session-note-edit-btn" data-require-permission="c2:write" onclick='C2.beginEditSessionNote(${JSON.stringify(s.id)})'>${escapeHtml(c2t('c2.sessions.noteEdit'))}</button>
+                    </div>
+                    <div class="c2-session-info-note${noteEmpty ? ' is-empty' : ''}" id="c2-session-note-view">${escapeHtml(noteText || c2t('c2.sessions.infoNoteEmpty'))}</div>
+                    <div class="c2-session-note-editor" id="c2-session-note-editor" hidden>
+                        <textarea id="c2-session-note-input" class="c2-session-note-textarea" maxlength="2000" rows="4" placeholder="${escapeHtml(c2t('c2.sessions.notePlaceholder'))}">${escapeHtml(noteText)}</textarea>
+                        <div class="c2-session-note-editor__footer">
+                            <span class="c2-session-note-counter" id="c2-session-note-counter">${noteText.length}/2000</span>
+                            <div class="c2-session-note-editor__actions">
+                                <button type="button" class="btn-secondary btn-sm" onclick="C2.cancelEditSessionNote()">${escapeHtml(c2t('common.cancel'))}</button>
+                                <button type="button" class="btn-primary btn-sm" id="c2-session-note-save" onclick='C2.saveSessionNote(${JSON.stringify(s.id)})'>${escapeHtml(c2t('common.save'))}</button>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             </div>`;
     }
@@ -240,6 +565,7 @@
     // ============================================================================
 
     function apiRequest(method, url, data) {
+        if (method === 'GET') url = withC2ProjectQuery(url);
         const options = {
             method: method,
             headers: { 'Content-Type': 'application/json' }
@@ -288,6 +614,21 @@
         if (ms < 1000) return c2t('c2.fmt.durationMs', { n: ms });
         if (ms < 60000) return c2t('c2.fmt.durationSec', { n: (ms / 1000).toFixed(1) });
         return c2t('c2.fmt.durationMin', { n: (ms / 60000).toFixed(1) });
+    }
+
+    function formatBytes(n) {
+        const num = Number(n);
+        if (!Number.isFinite(num) || num < 0) return String(n == null ? '-' : n);
+        if (num < 1024) return String(Math.round(num)) + ' B';
+        const units = ['KB', 'MB', 'GB', 'TB'];
+        let v = num / 1024;
+        let i = 0;
+        while (v >= 1024 && i < units.length - 1) {
+            v /= 1024;
+            i += 1;
+        }
+        const digits = v >= 100 ? 0 : (v >= 10 ? 1 : 2);
+        return v.toFixed(digits) + ' ' + units[i];
     }
 
     function escapeHtml(text) {
@@ -398,6 +739,11 @@
         }
     }
 
+    C2.copyText = function(text) {
+        if (text == null || text === '') return;
+        copyToClipboard(String(text));
+    };
+
     // ============================================================================
     // 页面初始化
     // ============================================================================
@@ -424,6 +770,7 @@
                 C2.loadTasks();
                 break;
             case 'c2-payloads':
+                C2.refreshFormSelects(document.getElementById('page-c2-payloads'));
                 C2.loadListenersForPayload();
                 break;
             case 'c2-events':
@@ -452,7 +799,8 @@
     C2.loadListeners = function() {
         Promise.all([
             apiRequest('GET', `${API_BASE}/listeners`),
-            apiRequest('GET', `${API_BASE}/profiles`).catch(function() { return {}; })
+            apiRequest('GET', `${API_BASE}/profiles`).catch(function() { return {}; }),
+            ensureC2ProjectsLoaded().catch(function() { return []; })
         ]).then(function(results) {
             var ldata = results[0];
             var pdata = results[1];
@@ -491,7 +839,7 @@
                     </svg>
                     <h3 style="margin-bottom:8px;font-size:18px;font-weight:700;">${escapeHtml(c2t('c2.listeners.emptyTitle'))}</h3>
                     <p style="font-size:14px;">${escapeHtml(c2t('c2.listeners.emptyHint'))}</p>
-                    <button class="btn-primary" onclick="C2.showCreateListenerModal()" style="margin-top:20px;">
+                    <button class="btn-primary" data-require-permission="c2:write" onclick="C2.showCreateListenerModal()" style="margin-top:20px;">
                         ${escapeHtml(c2t('c2.listeners.headerCreateBtn'))}
                     </button>
                 </div>`;
@@ -511,6 +859,7 @@
                 ? '<div class="c2-listener-kv"><span class="c2-listener-kv-label">' + escapeHtml(c2t('c2.listeners.callbackShort')) + '</span><span class="c2-listener-kv-val c2-listener-mono">' + escapeHtml(cb) + '</span></div>'
                 : '';
             const remarkRow = l.remark ? '<div class="c2-listener-remark">' + escapeHtml(l.remark) + '</div>' : '';
+            const projectRow = '<div class="c2-listener-kv"><span class="c2-listener-kv-label">' + escapeHtml(c2t('assets.project') || '所属项目') + '</span><span class="c2-listener-kv-val">' + c2ProjectBindSelectHtml(l) + '</span></div>';
             const startedHtml = formatListenerStartedHtml(l.startedAt);
             const pillLabel = escapeHtml(listenerCardStatusPillLabel(st));
             const typeMark = escapeHtml(listenerTypeShortLabel(l.type));
@@ -538,20 +887,22 @@
                         <span class="c2-listener-kv-val c2-listener-mono"><span class="c2-status-dot ${escapeHtml(st)}"></span>${bindVal}</span>
                     </div>
                     ${cbRow}
+                    ${projectRow}
                     ${profileBadge}
                     ${remarkRow}
                     ${startedHtml}
                 </div>
                 <div class="c2-listener-card-actions">
                     ${l.status === 'stopped'
-                        ? `<button type="button" class="btn-primary btn-sm" onclick="C2.startListener('${l.id}')">▶ ${escapeHtml(c2t('c2.listeners.start'))}</button>`
-                        : `<button type="button" class="btn-secondary btn-sm" onclick="C2.stopListener('${l.id}')">⏹ ${escapeHtml(c2t('c2.listeners.stop'))}</button>`
+                        ? `<button type="button" class="btn-primary btn-sm" data-require-permission="c2:write" onclick="C2.startListener('${l.id}')">▶ ${escapeHtml(c2t('c2.listeners.start'))}</button>`
+                        : `<button type="button" class="btn-secondary btn-sm" data-require-permission="c2:write" onclick="C2.stopListener('${l.id}')">⏹ ${escapeHtml(c2t('c2.listeners.stop'))}</button>`
                     }
-                    <button type="button" class="btn-secondary btn-sm" onclick="C2.editListener('${l.id}')">${escapeHtml(c2t('c2.listeners.edit'))}</button>
-                    <button type="button" class="btn-danger btn-sm" onclick="C2.deleteListener('${l.id}')">${escapeHtml(c2t('c2.listeners.delete'))}</button>
+                    <button type="button" class="btn-secondary btn-sm" data-require-permission="c2:write" onclick="C2.editListener('${l.id}')">${escapeHtml(c2t('c2.listeners.edit'))}</button>
+                    <button type="button" class="btn-danger btn-sm" data-require-permission="c2:delete" onclick="C2.deleteListener('${l.id}')">${escapeHtml(c2t('c2.listeners.delete'))}</button>
                 </div>
             </article>`;
         }).join('');
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(container);
     };
 
     C2.getListenerCallbackHost = function(l) {
@@ -591,11 +942,18 @@
             </div>
         `;
 
-        C2.ensureProfilesLoaded().then(() => {
+        const createSelectedProjectId = activeC2ProjectId();
+        Promise.all([
+            C2.ensureProfilesLoaded(),
+            ensureC2ProjectsLoaded().catch(() => []),
+            ensureC2SelectedProjectNamed(createSelectedProjectId)
+        ]).then(function (results) {
+            const projects = results[1] || [];
             const profileOpts = listenerProfileSelectHtml('');
+            const projectOpts = c2ProjectOptionsHtml(createSelectedProjectId, projects);
             const emptyProfHintCreate = (C2.profiles && C2.profiles.length > 0)
                 ? ''
-                : `<div class="form-hint" style="margin-bottom:6px;color:#b45309;">${escapeHtml(c2t('c2.listeners.malleableProfileEmptyListHint'))}</div>`;
+                : `<div class="form-hint form-hint--warning" style="margin-bottom:6px;">${escapeHtml(c2t('c2.listeners.malleableProfileEmptyListHint'))}</div>`;
             content.innerHTML = `
             <div class="c2-modal-header">
                 <h3>${escapeHtml(c2t('c2.listeners.modalCreateTitle'))}</h3>
@@ -609,13 +967,17 @@
                     </div>
                     <div class="c2-form-group">
                         <label>${escapeHtml(c2t('c2.listeners.type'))}</label>
-                        <select id="c2-listener-type" class="form-control c2-native-select" onchange="C2.syncListenerProfileRowForType()">
+                        <select id="c2-listener-type" class="form-control c2-form-select-native">
                             <option value="http_beacon">HTTP Beacon</option>
                             <option value="https_beacon">HTTPS Beacon</option>
                             <option value="tcp_reverse">TCP Reverse</option>
                             <option value="websocket">WebSocket</option>
                         </select>
                     </div>
+                </div>
+                <div class="c2-form-group">
+                    <label>${escapeHtml(c2t('assets.project') || '所属项目')}</label>
+                    <select id="c2-listener-project-id" class="form-control c2-form-select-native">${projectOpts}</select>
                 </div>
                 <div class="c2-form-row">
                     <div class="c2-form-group">
@@ -631,7 +993,7 @@
                 <div class="c2-form-group" id="c2-listener-profile-group">
                     <label>${escapeHtml(c2t('c2.listeners.malleableProfile'))}</label>
                     ${emptyProfHintCreate}
-                    <select id="c2-listener-profile-id" class="form-control c2-native-select">${profileOpts}</select>
+                    <select id="c2-listener-profile-id" class="form-control c2-form-select-native">${profileOpts}</select>
                     <div class="form-hint">${escapeHtml(c2t('c2.listeners.malleableProfileHint'))}</div>
                 </div>
                 <div class="c2-form-group">
@@ -648,7 +1010,7 @@
                         <input type="checkbox" id="c2-listener-legacy-shell">
                         ${escapeHtml(c2t('c2.listeners.allowLegacyShell'))}
                     </label>
-                    <div class="form-hint" style="color:#b45309;">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
+                    <div class="form-hint form-hint--warning">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
                 </div>
             </div>
             <div class="c2-modal-footer">
@@ -657,6 +1019,7 @@
             </div>
         `;
             C2.syncListenerProfileRowForType();
+            C2.refreshFormSelects(content);
         }).catch(() => {
             showToast(c2t('c2.listeners.toastProfilesLoadFailed'), 'error');
             C2.closeModal();
@@ -681,6 +1044,8 @@
         if (legacyRow) {
             legacyRow.style.display = t === 'tcp_reverse' ? '' : 'none';
         }
+        syncC2FormSelect('c2-listener-type');
+        syncC2FormSelect('c2-listener-profile-id');
     };
 
     C2.createListener = function() {
@@ -701,6 +1066,7 @@
         const body = {
             name, type, bind_host: bindHost, bind_port: bindPort, remark,
             callback_host: callbackHost,
+            project_id: (document.getElementById('c2-listener-project-id')?.value || '').trim(),
             profile_id: profileId
         };
         if (type === 'tcp_reverse' && legacyShell) {
@@ -746,6 +1112,38 @@
         });
     };
 
+    C2.bindListenerProject = function(id, projectId) {
+        if (typeof requirePermission === 'function' && !requirePermission('c2:write')) {
+            C2.renderListeners();
+            return;
+        }
+        const listener = C2.listeners.find(x => x.id === id);
+        if (!listener) return;
+        const cfg = C2.getListenerConfig(listener);
+        const body = {
+            name: listener.name || '',
+            bind_host: listener.bindHost || '127.0.0.1',
+            bind_port: parseInt(listener.bindPort, 10) || 0,
+            remark: listener.remark || '',
+            callback_host: C2.getListenerCallbackHost(listener),
+            project_id: String(projectId || '').trim(),
+            profile_id: listenerResolvedProfileId(listener),
+            config: cfg
+        };
+        apiRequest('PUT', `${API_BASE}/listeners/${id}`, body).then(data => {
+            if (data && data.error) {
+                showToast(data.error, 'error');
+                C2.renderListeners();
+                return;
+            }
+            showToast(c2t('projects.projectBound') || '已绑定项目', 'success');
+            C2.loadListeners();
+        }).catch(err => {
+            showToast(err && err.message ? err.message : '绑定项目失败', 'error');
+            C2.renderListeners();
+        });
+    };
+
     C2.editListener = function(id) {
         const l = C2.listeners.find(x => x.id === id);
         if (!l) return;
@@ -768,16 +1166,23 @@
             </div>
         `;
 
-        C2.ensureProfilesLoaded().then(() => {
+        const editSelectedProjectId = c2ResourceProjectId(l);
+        Promise.all([
+            C2.ensureProfilesLoaded(),
+            ensureC2ProjectsLoaded().catch(() => []),
+            ensureC2SelectedProjectNamed(editSelectedProjectId)
+        ]).then(function (results) {
+            const projects = results[1] || [];
             const resolvedPid = listenerResolvedProfileId(l);
             const profileOpts = listenerProfileSelectHtml(resolvedPid);
+            const projectOpts = c2ProjectOptionsHtml(editSelectedProjectId, projects);
             const lt = String(l.type || '').toLowerCase();
             const httpHint = (lt === 'http_beacon' || lt === 'https_beacon')
                 ? ''
                 : `<div class="form-hint" style="margin-bottom:6px;">${escapeHtml(c2t('c2.listeners.malleableProfileNonHttpHint'))}</div>`;
             const emptyProfHint = (C2.profiles && C2.profiles.length > 0)
                 ? ''
-                : `<div class="form-hint" style="margin-bottom:6px;color:#b45309;">${escapeHtml(c2t('c2.listeners.malleableProfileEmptyListHint'))}</div>`;
+                : `<div class="form-hint form-hint--warning" style="margin-bottom:6px;">${escapeHtml(c2t('c2.listeners.malleableProfileEmptyListHint'))}</div>`;
             content.innerHTML = `
             <div class="c2-modal-header">
                 <h3>${escapeHtml(c2t('c2.listeners.editTitle'))}</h3>
@@ -787,6 +1192,10 @@
                 <div class="c2-form-group">
                     <label>${escapeHtml(c2t('c2.listeners.name'))}</label>
                     <input type="text" id="c2-listener-name" class="form-control" value="${escapeHtml(l.name)}">
+                </div>
+                <div class="c2-form-group">
+                    <label>${escapeHtml(c2t('assets.project') || '所属项目')}</label>
+                    <select id="c2-listener-project-id" class="form-control c2-form-select-native">${projectOpts}</select>
                 </div>
                 <div class="c2-form-row">
                     <div class="c2-form-group">
@@ -801,7 +1210,7 @@
                 <div class="c2-form-group" id="c2-listener-profile-group">
                     <label>${escapeHtml(c2t('c2.listeners.malleableProfile'))}</label>
                     ${httpHint}${emptyProfHint}
-                    <select id="c2-listener-profile-id" class="form-control c2-native-select">${profileOpts}</select>
+                    <select id="c2-listener-profile-id" class="form-control c2-form-select-native">${profileOpts}</select>
                     <div class="form-hint">${escapeHtml(c2t('c2.listeners.malleableProfileHint'))}</div>
                 </div>
                 <div class="c2-form-group">
@@ -819,7 +1228,7 @@
                         <input type="checkbox" id="c2-listener-legacy-shell"${legacyShell ? ' checked' : ''}>
                         ${escapeHtml(c2t('c2.listeners.allowLegacyShell'))}
                     </label>
-                    <div class="form-hint" style="color:#b45309;">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
+                    <div class="form-hint form-hint--warning">${escapeHtml(c2t('c2.listeners.allowLegacyShellHint'))}</div>
                 </div>` : ''}
             </div>
             <div class="c2-modal-footer">
@@ -827,6 +1236,7 @@
                 <button class="btn-primary" onclick="C2.saveListener('${l.id}')">${escapeHtml(c2t('common.save'))}</button>
             </div>
         `;
+            C2.refreshFormSelects(content);
         }).catch(() => {
             showToast(c2t('c2.listeners.toastProfilesLoadFailed'), 'error');
             C2.closeModal();
@@ -845,6 +1255,7 @@
         const body = {
             name, bind_host: bindHost, bind_port: bindPort, remark,
             callback_host: callbackHost,
+            project_id: (document.getElementById('c2-listener-project-id')?.value || '').trim(),
             profile_id: profileId
         };
         if (legacyEl) {
@@ -955,9 +1366,16 @@
         const batchBtn = document.getElementById('c2-sessions-batch-delete');
         const filteredBtn = document.getElementById('c2-sessions-delete-filtered');
         const ids = C2.collectCheckedSessionIds();
-        if (batchBtn) batchBtn.disabled = ids.length === 0;
+        if (batchBtn) {
+            batchBtn.disabled = ids.length === 0;
+            batchBtn.classList.toggle('btn-danger', ids.length > 0);
+            batchBtn.classList.toggle('btn-secondary', ids.length === 0);
+        }
         const total = (C2.sessions || []).length;
-        if (filteredBtn) filteredBtn.disabled = total === 0;
+        if (filteredBtn) {
+            filteredBtn.disabled = total === 0;
+            filteredBtn.classList.toggle('is-danger-soft', total > 0);
+        }
         const countEl = document.getElementById('c2-sessions-count');
         if (countEl) {
             countEl.textContent = c2t('c2.sessions.filterCount', { n: total, selected: ids.length });
@@ -1027,7 +1445,12 @@
             return;
         }
 
-        list.innerHTML = C2.sessions.map(s => `
+        list.innerHTML = C2.sessions.map(s => {
+            const userLabel = displayInfoValue(s.username, '—');
+            const osArch = [displayInfoValue(s.os, ''), displayInfoValue(s.arch, '')].filter(Boolean).join('/') || '—';
+            const userEmpty = isEmptyInfoValue(s.username);
+            const osEmpty = isEmptyInfoValue(s.os) && isEmptyInfoValue(s.arch);
+            return `
             <div class="c2-session-item ${s.id === C2.selectedSessionId ? 'active' : ''}" 
                  data-status="${escapeHtml(s.status || '')}"
                  onclick="C2.selectSession('${s.id}')">
@@ -1042,21 +1465,21 @@
                         <span class="c2-session-status ${s.status}">${escapeHtml(sessionStatusLabel(s.status))}</span>
                     </div>
                     <div class="c2-session-chips">
-                        <span class="c2-session-chip">${escapeHtml(s.username)}</span>
-                        <span class="c2-session-chip c2-session-chip--mono">${escapeHtml(s.os)}/${escapeHtml(s.arch)}</span>
+                        <span class="c2-session-chip${userEmpty ? ' c2-session-chip--empty' : ''}">${escapeHtml(userLabel)}</span>
+                        <span class="c2-session-chip c2-session-chip--mono${osEmpty ? ' c2-session-chip--empty' : ''}">${escapeHtml(osArch)}</span>
                         ${s.isAdmin ? '<span class="c2-session-chip c2-session-chip--warn">' + escapeHtml(c2t('c2.sessions.rootBadge')) + '</span>' : ''}
                     </div>
                     <div class="c2-session-chips c2-session-chips--sub">
-                        <span class="c2-session-chip c2-session-chip--dim">${escapeHtml(s.internalIp || '-')}</span>
-                        <span class="c2-session-chip c2-session-chip--dim">PID ${s.pid}</span>
+                        <span class="c2-session-chip c2-session-chip--dim">${escapeHtml(s.internalIp || '—')}</span>
+                        <span class="c2-session-chip c2-session-chip--dim">PID ${escapeHtml(String(s.pid != null ? s.pid : '—'))}</span>
                     </div>
                     <div class="c2-session-item-footer">
                         <span class="c2-session-meta c2-session-item-time" title="${escapeHtml(formatTime(s.lastCheckIn))}">${escapeHtml(formatRelativeTime(s.lastCheckIn) || formatTime(s.lastCheckIn))}</span>
-                        <button type="button" class="c2-session-card-delete" onclick="event.stopPropagation(); C2.deleteSessionRecord('${s.id}');">${escapeHtml(c2t('c2.sessions.cardDeleteSession'))}</button>
+                        <button type="button" class="c2-session-card-delete" data-require-permission="c2:delete" onclick="event.stopPropagation(); C2.deleteSessionRecord('${s.id}');">${escapeHtml(c2t('c2.sessions.cardDeleteSession'))}</button>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            </div>`;
+        }).join('');
 
         if (C2.selectedSessionId && !C2.sessions.find(s => s.id === C2.selectedSessionId)) {
             C2.selectedSessionId = null;
@@ -1065,6 +1488,7 @@
             C2.selectSession(C2.sessions[0].id);
         }
         C2.syncSessionsToolbar();
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(list);
     };
 
     C2.selectSession = function(id) {
@@ -1105,11 +1529,11 @@
                                 <span class="c2-session-badge ${escapeHtml(s.status || '')}">${escapeHtml(sessionStatusLabel(s.status))}</span>
                                 ${s.isAdmin ? '<span class="c2-session-hero-root">' + escapeHtml(c2t('c2.sessions.rootBadge')) + '</span>' : ''}
                             </div>
-                            <div class="c2-session-hero__sub">${escapeHtml(s.username)}@${escapeHtml(s.os)}/${escapeHtml(s.arch)}</div>
+                            <div class="c2-session-hero__sub${isEmptyInfoValue(s.username) && isEmptyInfoValue(s.os) ? ' is-muted' : ''}">${escapeHtml(sessionMetaLine(s))}</div>
                             <div class="c2-session-hero__chips">
                                 <span class="c2-session-hero-chip is-mono" title="${escapeHtml(c2t('c2.sessions.infoSessionId'))}">${escapeHtml(s.id)}</span>
-                                <span class="c2-session-hero-chip">${escapeHtml(s.internalIp || '-')}</span>
-                                <span class="c2-session-hero-chip">PID ${s.pid}</span>
+                                <span class="c2-session-hero-chip">${escapeHtml(s.internalIp || '—')}</span>
+                                <span class="c2-session-hero-chip">PID ${escapeHtml(String(s.pid != null ? s.pid : '—'))}</span>
                             </div>
                         </div>
                     </div>
@@ -1120,8 +1544,8 @@
                             <span class="c2-session-hero__heartbeat-value">${escapeHtml(heartbeatRel)}</span>
                         </div>
                         <div class="c2-session-actions">
-                            <button class="btn-secondary btn-sm" onclick="C2.setSessionSleep('${s.id}')">${escapeHtml(c2t('c2.sessions.btnSleep'))}</button>
-                            <button class="btn-danger btn-sm" onclick="C2.killSession('${s.id}')">${escapeHtml(c2t('c2.sessions.kill'))}</button>
+                            <button class="btn-secondary btn-sm" data-require-permission="c2:write" onclick="C2.setSessionSleep('${s.id}')">${escapeHtml(c2t('c2.sessions.btnSleep'))}</button>
+                            <button class="btn-danger btn-sm" data-require-permission="c2:write" onclick="C2.killSession('${s.id}')">${escapeHtml(c2t('c2.sessions.kill'))}</button>
                         </div>
                     </div>
                 </div>
@@ -1147,7 +1571,7 @@
                             <div class="c2-file-toolbar">
                                 <button class="btn-ghost btn-sm" onclick="C2.goToParentDirectory()">${escapeHtml(c2t('c2.files.parent'))}</button>
                                 <button class="btn-ghost btn-sm" onclick="C2.refreshFiles()">${escapeHtml(c2t('c2.files.refresh'))}</button>
-                                <button type="button" class="btn-ghost btn-sm" id="c2-file-upload-btn" onclick="C2.openFileUploadPicker()" title="${escapeHtml(c2t('c2.files.upload'))}">${escapeHtml(c2t('c2.files.upload'))}</button>
+                                <button type="button" class="btn-ghost btn-sm" id="c2-file-upload-btn" data-require-permission="c2:write" onclick="C2.openFileUploadPicker()" title="${escapeHtml(c2t('c2.files.upload'))}">${escapeHtml(c2t('c2.files.upload'))}</button>
                                 <input type="file" id="c2-file-upload-input" style="display:none" onchange="C2.onC2FileUploadPick(event)" />
                                 <span id="c2-current-path" class="c2-path-breadcrumb">/</span>
                             </div>
@@ -1191,6 +1615,7 @@
             });
             requestAnimationFrame(function () { C2.fitTerminal(); });
         }, 0);
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(container);
     };
 
     C2.switchTab = function(tab) {
@@ -1432,6 +1857,88 @@
             }
         }).catch(function () {
             if (submitBtn) submitBtn.disabled = false;
+        });
+    };
+
+    C2.beginEditSessionNote = function(id) {
+        const block = document.getElementById('c2-session-note-block');
+        const view = document.getElementById('c2-session-note-view');
+        const editor = document.getElementById('c2-session-note-editor');
+        const input = document.getElementById('c2-session-note-input');
+        const editBtn = block && block.querySelector('.c2-session-note-edit-btn');
+        if (!view || !editor || !input) return;
+        const s = (C2.sessions || []).find(x => x.id === id);
+        const note = s && s.note ? String(s.note) : '';
+        input.value = note;
+        view.hidden = true;
+        editor.hidden = false;
+        if (block) block.classList.remove('is-empty');
+        if (editBtn) editBtn.hidden = true;
+        C2.syncSessionNoteCounter();
+        if (!input.dataset.boundCounter) {
+            input.dataset.boundCounter = '1';
+            input.addEventListener('input', function () { C2.syncSessionNoteCounter(); });
+        }
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+    };
+
+    C2.syncSessionNoteCounter = function() {
+        const input = document.getElementById('c2-session-note-input');
+        const counter = document.getElementById('c2-session-note-counter');
+        if (!input || !counter) return;
+        counter.textContent = String(input.value.length) + '/2000';
+    };
+
+    C2.cancelEditSessionNote = function() {
+        const block = document.getElementById('c2-session-note-block');
+        const view = document.getElementById('c2-session-note-view');
+        const editor = document.getElementById('c2-session-note-editor');
+        const editBtn = block && block.querySelector('.c2-session-note-edit-btn');
+        if (!view || !editor) return;
+        editor.hidden = true;
+        view.hidden = false;
+        if (editBtn) editBtn.hidden = false;
+        if (block) {
+            const s = (C2.sessions || []).find(x => x.id === C2.selectedSessionId);
+            const empty = !(s && s.note && String(s.note).trim());
+            block.classList.toggle('is-empty', empty);
+        }
+    };
+
+    C2.saveSessionNote = function(id) {
+        if (!id) return;
+        const input = document.getElementById('c2-session-note-input');
+        const saveBtn = document.getElementById('c2-session-note-save');
+        if (!input) return;
+        const note = String(input.value || '').trim();
+        if (note.length > 2000) {
+            showToast(c2t('c2.sessions.toastNoteTooLong'), 'warn');
+            return;
+        }
+        if (saveBtn) saveBtn.disabled = true;
+        apiRequest('PUT', `${API_BASE}/sessions/${encodeURIComponent(id)}/note`, { note: note }).then(data => {
+            if (saveBtn) saveBtn.disabled = false;
+            if (data.error) {
+                showToast(String(data.error), 'error');
+                return;
+            }
+            const saved = data.note != null ? String(data.note) : note;
+            const s = (C2.sessions || []).find(x => x.id === id);
+            if (s) s.note = saved;
+            showToast(c2t('c2.sessions.toastNoteSaved'), 'success');
+            const block = document.getElementById('c2-session-note-block');
+            const view = document.getElementById('c2-session-note-view');
+            const empty = !saved.trim();
+            if (view) {
+                view.textContent = empty ? c2t('c2.sessions.infoNoteEmpty') : saved;
+                view.classList.toggle('is-empty', empty);
+            }
+            if (block) block.classList.toggle('is-empty', empty);
+            C2.cancelEditSessionNote();
+        }).catch(err => {
+            if (saveBtn) saveBtn.disabled = false;
+            showToast(err.message || String(err), 'error');
         });
     };
 
@@ -1906,6 +2413,8 @@
         });
         container.setAttribute('tabindex', '0');
 
+        C2.bindTerminalScrollbarAutoHide(container);
+
         C2.terminalInstance = term;
 
         if (C2.terminalResizeObserver) {
@@ -1922,6 +2431,42 @@
                 term.focus();
             });
         });
+    };
+
+    C2.bindTerminalScrollbarAutoHide = function(container) {
+        if (!container) return;
+        if (C2._terminalScrollbarHideTimer) {
+            clearTimeout(C2._terminalScrollbarHideTimer);
+            C2._terminalScrollbarHideTimer = null;
+        }
+        const show = function () {
+            container.classList.add('is-scrollbar-visible');
+            if (C2._terminalScrollbarHideTimer) clearTimeout(C2._terminalScrollbarHideTimer);
+            C2._terminalScrollbarHideTimer = setTimeout(function () {
+                container.classList.remove('is-scrollbar-visible');
+                C2._terminalScrollbarHideTimer = null;
+            }, 900);
+        };
+        const bindViewport = function () {
+            const vp = container.querySelector('.xterm-viewport');
+            if (!vp) return false;
+            if (vp.dataset.scrollbarBound === '1') return true;
+            vp.dataset.scrollbarBound = '1';
+            vp.addEventListener('scroll', show, { passive: true });
+            return true;
+        };
+        if (!container.dataset.scrollbarUiBound) {
+            container.dataset.scrollbarUiBound = '1';
+            container.addEventListener('wheel', show, { passive: true });
+            container.addEventListener('touchmove', show, { passive: true });
+        }
+        if (!bindViewport()) {
+            const mo = new MutationObserver(function () {
+                if (bindViewport()) mo.disconnect();
+            });
+            mo.observe(container, { childList: true, subtree: true });
+            setTimeout(function () { mo.disconnect(); }, 3000);
+        }
     };
 
     C2.fitTerminal = function() {
@@ -2226,18 +2771,22 @@
                 </thead>
                 <tbody>
                     ${entries.map(function(entry) {
+                        const sizeLabel = entry.isDir ? '—' : formatBytes(entry.size);
+                        const iconCls = entry.isDir ? 'c2-file-icon c2-file-icon--dir' : 'c2-file-icon c2-file-icon--file';
                         return `
                             <tr>
-                                <td class="c2-file-name">
-                                    <span class="c2-file-icon">${entry.isDir ? '📁' : '📄'}</span>
-                                    ${escapeHtml(entry.name)}
+                                <td>
+                                    <div class="c2-file-name">
+                                        <span class="${iconCls}" aria-hidden="true"></span>
+                                        <span class="c2-file-name-text" title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</span>
+                                    </div>
                                 </td>
-                                <td>${escapeHtml(entry.size)}</td>
+                                <td title="${escapeHtml(String(entry.size || ''))}">${escapeHtml(sizeLabel)}</td>
                                 <td>${escapeHtml(entry.mode)}</td>
                                 <td>
                                     ${entry.isDir
-                                        ? `<button class="btn-ghost btn-sm" onclick='C2.openDirectory(${JSON.stringify(entry.name)})'>${escapeHtml(c2t('c2.files.open'))}</button>`
-                                        : `<button class="btn-ghost btn-sm" onclick='C2.downloadFile(${JSON.stringify(entry.name)})'>${escapeHtml(c2t('c2.files.download'))}</button>`
+                                        ? `<button class="btn-ghost btn-sm c2-file-action-btn" onclick='C2.openDirectory(${JSON.stringify(entry.name)})'>${escapeHtml(c2t('c2.files.open'))}</button>`
+                                        : `<button class="btn-ghost btn-sm c2-file-action-btn" onclick='C2.downloadFile(${JSON.stringify(entry.name)})'>${escapeHtml(c2t('c2.files.download'))}</button>`
                                     }
                                 </td>
                             </tr>
@@ -2551,16 +3100,20 @@
     // ============================================================================
 
     C2.loadTasks = function(page) {
+        bindTasksFilterUiOnce();
+        readTasksFilterFromDom();
         const p = page != null ? page : (C2.tasksPage || 1);
         C2.tasksPage = p;
         const ps = C2.tasksPageSize || 10;
-        apiRequest('GET', `${API_BASE}/tasks?page=${encodeURIComponent(String(p))}&page_size=${encodeURIComponent(String(ps))}`).then(data => {
+        const qs = buildTasksQueryParams(p, ps);
+        apiRequest('GET', `${API_BASE}/tasks?${qs}`).then(data => {
             if (data.error) {
                 showToast(String(data.error), 'error');
                 return;
             }
             C2.tasks = data.tasks || [];
             C2.tasksTotal = typeof data.total === 'number' ? data.total : (C2.tasks.length || 0);
+            C2.tasksStatusCounts = data.status_counts || { success: 0, failed: 0, pending: 0, cancelled: 0 };
             if (typeof data.pending_queued_count === 'number') {
                 C2.tasksPendingQueuedCount = data.pending_queued_count;
             }
@@ -2570,8 +3123,10 @@
                 return;
             }
             C2.renderTasks();
+            C2.renderTasksSummary();
             C2.renderTasksPagination();
             C2.syncTasksToolbar();
+            syncTasksTimePresetButtons();
         }).catch(err => {
             showToast(err.message || String(err), 'error');
         });
@@ -2691,6 +3246,105 @@
         }).catch(err => showToast(err.message || String(err), 'error'));
     };
 
+    function readTasksFilterFromDom() {
+        const statusEl = document.getElementById('c2-tasks-filter-status');
+        const typeEl = document.getElementById('c2-tasks-filter-type');
+        const sessionEl = document.getElementById('c2-tasks-filter-session');
+        C2.tasksFilter = C2.tasksFilter || { status: '', task_type: '', session_id: '', since: '', timePreset: 'all' };
+        C2.tasksFilter.status = statusEl ? statusEl.value.trim() : '';
+        C2.tasksFilter.task_type = typeEl ? typeEl.value.trim() : '';
+        C2.tasksFilter.session_id = sessionEl ? sessionEl.value.trim() : '';
+    }
+
+    function buildTasksQueryParams(page, pageSize) {
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        params.set('page_size', String(pageSize));
+        const f = C2.tasksFilter || {};
+        if (f.status) params.set('status', f.status);
+        if (f.task_type) params.set('task_type', f.task_type);
+        if (f.session_id) params.set('session_id', f.session_id);
+        if (f.since) params.set('since', f.since);
+        return params.toString();
+    }
+
+    function tasksTimePresetToSince(preset) {
+        if (!preset || preset === 'all') return '';
+        const now = Date.now();
+        const map = { '15m': 15 * 60 * 1000, '1h': 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000, '7d': 7 * 24 * 60 * 60 * 1000 };
+        const ms = map[preset];
+        if (!ms) return '';
+        return new Date(now - ms).toISOString();
+    }
+
+    function syncTasksTimePresetButtons() {
+        const wrap = document.getElementById('c2-tasks-time-presets');
+        if (!wrap) return;
+        const active = (C2.tasksFilter && C2.tasksFilter.timePreset) || 'all';
+        wrap.querySelectorAll('.c2-tasks-time-preset-btn').forEach(btn => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-preset') === active);
+        });
+    }
+
+    function bindTasksFilterUiOnce() {
+        if (document.documentElement.dataset.c2TasksFilterBound === '1') return;
+        document.documentElement.dataset.c2TasksFilterBound = '1';
+
+        const presets = document.getElementById('c2-tasks-time-presets');
+        if (presets) {
+            presets.addEventListener('click', (e) => {
+                const btn = e.target.closest('.c2-tasks-time-preset-btn');
+                if (!btn) return;
+                const preset = btn.getAttribute('data-preset') || 'all';
+                C2.tasksFilter = C2.tasksFilter || { status: '', task_type: '', session_id: '', since: '', timePreset: 'all' };
+                C2.tasksFilter.timePreset = preset;
+                C2.tasksFilter.since = tasksTimePresetToSince(preset);
+                syncTasksTimePresetButtons();
+                C2.loadTasks(1);
+            });
+        }
+
+        const sessionInput = document.getElementById('c2-tasks-filter-session');
+        if (sessionInput) {
+            sessionInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') C2.applyTasksFilters();
+            });
+        }
+    }
+
+    C2.applyTasksFilters = function() {
+        readTasksFilterFromDom();
+        C2.loadTasks(1);
+    };
+
+    C2.resetTasksFilters = function() {
+        C2.tasksFilter = { status: '', task_type: '', session_id: '', since: '', timePreset: 'all' };
+        const statusEl = document.getElementById('c2-tasks-filter-status');
+        const typeEl = document.getElementById('c2-tasks-filter-type');
+        const sessionEl = document.getElementById('c2-tasks-filter-session');
+        if (statusEl) statusEl.value = '';
+        if (typeEl) typeEl.value = '';
+        if (sessionEl) sessionEl.value = '';
+        syncTasksTimePresetButtons();
+        C2.loadTasks(1);
+    };
+
+    C2.renderTasksSummary = function() {
+        const summary = document.getElementById('c2-tasks-summary');
+        if (!summary) return;
+        const total = C2.tasksTotal || 0;
+        const counts = C2.tasksStatusCounts || { success: 0, failed: 0, pending: 0 };
+        const set = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = String(val);
+        };
+        set('c2-tasks-stat-total', total);
+        set('c2-tasks-stat-success', counts.success || 0);
+        set('c2-tasks-stat-failed', counts.failed || 0);
+        set('c2-tasks-stat-pending', counts.pending || 0);
+        summary.hidden = total === 0;
+    };
+
     C2.loadSessionTasks = function(sessionId) {
         apiRequest('GET', `${API_BASE}/tasks?session_id=${encodeURIComponent(sessionId)}&limit=50`).then(data => {
             const container = document.getElementById('c2-session-tasks-list');
@@ -2775,7 +3429,7 @@
         }
 
         if (C2.tasks.length === 0) {
-            container.innerHTML = '<div class="c2-empty">' + escapeHtml(c2t('c2.tasks.emptyAll')) + '</div>';
+            container.innerHTML = '<div class="c2-tasks-empty">' + escapeHtml(c2t('c2.tasks.emptyAll')) + '</div>';
             if (selAll) selAll.disabled = true;
             C2.syncTasksToolbar();
             return;
@@ -2783,59 +3437,76 @@
         if (selAll) selAll.disabled = false;
 
         const delTitle = escapeHtml(c2t('c2.tasks.deleteOne'));
+        const cancelTitle = escapeHtml(c2t('c2.tasks.cancelBtn'));
+        const dash = '<span class="c2-tasks-cell-muted">—</span>';
+        const deleteIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+
         container.innerHTML = `
-            <table class="c2-task-table">
+            <table class="c2-tasks-table">
                 <thead>
                     <tr>
-                        <th class="c2-task-table-col-check"></th>
-                        <th>${escapeHtml(c2t('c2.tasks.colTask'))}</th>
-                        <th>${escapeHtml(c2t('c2.tasks.colSession'))}</th>
+                        <th class="c2-tasks-table-col-check">
+                            <label class="c2-task-check-label" title="${escapeHtml(c2t('c2.tasks.selectAll'))}">
+                                <input type="checkbox" id="c2-tasks-select-all" onchange="C2.onTasksSelectAll(this.checked)">
+                            </label>
+                        </th>
+                        <th>${escapeHtml(c2t('c2.tasks.colCreated'))}</th>
+                        <th>${escapeHtml(c2t('c2.tasks.colStatus'))}</th>
                         <th>${escapeHtml(c2t('c2.tasks.colType'))}</th>
                         <th>${escapeHtml(c2t('c2.tasks.colCommand'))}</th>
-                        <th>${escapeHtml(c2t('c2.tasks.colStatus'))}</th>
+                        <th>${escapeHtml(c2t('c2.tasks.colSession'))}</th>
+                        <th>${escapeHtml(c2t('c2.tasks.colTask'))}</th>
                         <th>${escapeHtml(c2t('c2.tasks.colDuration'))}</th>
-                        <th>${escapeHtml(c2t('c2.tasks.colCreated'))}</th>
-                        <th class="c2-task-table-col-actions">${escapeHtml(c2t('c2.tasks.colActions'))}</th>
+                        <th class="c2-tasks-table-col-actions">${escapeHtml(c2t('c2.tasks.colActions'))}</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${C2.tasks.map(t => {
                         const rawId = t.id || '';
-                        const shortTaskId = rawId.length > 14 ? escapeHtml(rawId.substring(0, 12)) + '\u2026' : escapeHtml(rawId);
-                        const sid = t.sessionId ? escapeHtml(String(t.sessionId).substring(0, 8)) + '\u2026' : '-';
+                        const tid = escapeHtml(rawId);
+                        const status = String(t.status || '');
+                        const rowStatus = escapeHtml(status || 'queued');
+                        const typeCat = taskTypeCategory(t.taskType);
+                        const sessionFull = t.sessionId ? String(t.sessionId) : '';
+                        const sessionShort = sessionFull
+                            ? escapeHtml(sessionFull.substring(0, 10)) + (sessionFull.length > 10 ? '\u2026' : '')
+                            : '';
+                        const taskShort = rawId
+                            ? escapeHtml(rawId.substring(0, 10)) + (rawId.length > 10 ? '\u2026' : '')
+                            : '';
                         const cmd = formatTaskCommand(t);
-                        const cmdShort = truncateCommand(cmd, 48);
+                        const cmdEsc = escapeHtml(cmd);
+                        const canCancel = status === 'queued' || status === 'sent';
                         return `
-                        <tr>
-                            <td class="c2-task-table-col-check">
-                                <label class="c2-task-check-label" onclick="event.stopPropagation();">
-                                    <input type="checkbox" class="c2-task-row-check" data-id="${escapeHtml(rawId)}" onchange="C2.syncTasksToolbar()">
+                        <tr class="c2-tasks-row c2-tasks-row--${rowStatus}" data-task-id="${tid}" onclick="C2.viewTask('${tid}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();C2.viewTask('${tid}')}" role="button" tabindex="0">
+                            <td class="c2-tasks-table-col-check" onclick="event.stopPropagation();">
+                                <label class="c2-task-check-label">
+                                    <input type="checkbox" class="c2-task-row-check" data-id="${tid}" onchange="C2.syncTasksToolbar()">
                                 </label>
                             </td>
-                            <td>${shortTaskId}</td>
-                            <td>${sid}</td>
-                            <td>${escapeHtml(t.taskType || '')}</td>
-                            <td class="c2-task-command-cell" title="${escapeHtml(cmd)}">${cmdShort ? escapeHtml(cmdShort) : '<span class="c2-muted">-</span>'}</td>
-                            <td><span class="c2-status-badge ${escapeHtml(t.status || '')}">${escapeHtml(taskStatusLabel(t.status))}</span></td>
-                            <td>${formatDuration(t.durationMs)}</td>
-                            <td>${formatTime(t.createdAt)}</td>
-                            <td class="c2-task-table-col-actions">
-                                <div class="c2-task-table-actions">
-                                <button type="button" class="btn-secondary btn-small" data-c2-task-action="view" data-task-id="${escapeHtml(rawId)}">${escapeHtml(c2t('c2.tasks.view'))}</button>
-                                ${t.status === 'queued' || t.status === 'sent'
-                                    ? `<button type="button" class="btn-danger btn-small" data-c2-task-action="cancel" data-task-id="${escapeHtml(rawId)}">${escapeHtml(c2t('c2.tasks.cancelBtn'))}</button>`
-                                    : ''}
-                                <button type="button" class="btn-danger btn-small" data-c2-task-action="delete" data-task-id="${escapeHtml(rawId)}" title="${delTitle}" aria-label="${delTitle}">${escapeHtml(c2t('c2.tasks.deleteBtn'))}</button>
+                            <td class="c2-tasks-col-time">${escapeHtml(formatTime(t.createdAt))}</td>
+                            <td><span class="c2-status-badge ${escapeHtml(status)}">${escapeHtml(taskStatusLabel(status))}</span></td>
+                            <td><span class="c2-task-type-badge c2-task-type-badge--${typeCat}">${escapeHtml(t.taskType || '-')}</span></td>
+                            <td class="c2-tasks-col-command" title="${cmdEsc}">${cmdEsc || dash}</td>
+                            <td class="c2-tasks-col-mono" title="${escapeHtml(sessionFull)}">${sessionShort || dash}</td>
+                            <td class="c2-tasks-col-mono" title="${tid}">${taskShort || dash}</td>
+                            <td class="c2-tasks-col-duration">${formatDuration(t.durationMs)}</td>
+                            <td class="c2-tasks-table-col-actions" onclick="event.stopPropagation();">
+                                <div class="c2-tasks-row-actions">
+                                    ${canCancel
+                                        ? `<button type="button" class="c2-tasks-cancel-btn" data-c2-task-action="cancel" data-task-id="${tid}" title="${cancelTitle}" aria-label="${cancelTitle}">${escapeHtml(c2t('c2.tasks.cancelBtn'))}</button>`
+                                        : ''}
+                                    <button type="button" class="c2-tasks-delete-btn" data-require-permission="c2:delete" data-c2-task-action="delete" data-task-id="${tid}" title="${delTitle}" aria-label="${delTitle}">${deleteIcon}</button>
                                 </div>
                             </td>
-                        </tr>
-                    `;
+                        </tr>`;
                     }).join('')}
                 </tbody>
             </table>
         `;
         C2.syncTasksToolbar();
         if (typeof applyTranslations === 'function') applyTranslations(container);
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(container);
     };
 
     C2.viewTask = function(id) {
@@ -3016,6 +3687,7 @@
                 return '<option value="' + k.value + '">' + k.label + '</option>';
             }).join('');
         }
+        C2.refreshFormSelects(document.getElementById('page-c2-payloads'));
     };
 
     C2.updateLoopbackBuildHint = function() {
@@ -3084,6 +3756,7 @@
         if (buildBtn && !buildBtn.disabled) buildBtn.textContent = c2t('c2.payloads.buildBeaconBtn');
         const genBtn = document.getElementById('c2-generate-oneliner-btn');
         if (genBtn) genBtn.textContent = c2t('c2.payloads.generateOnelinerBtn');
+        C2.refreshFormSelects(document.getElementById('page-c2-payloads'));
     };
 
     C2.generateOneliner = function() {
@@ -3177,25 +3850,218 @@
     // 事件审计
     // ============================================================================
 
+    function eventLevelLabel(level) {
+        const key = 'c2.events.' + (level || 'info');
+        const translated = c2t(key);
+        return translated !== key ? translated : (level || 'info');
+    }
+
+    function eventCategoryLabel(category) {
+        const key = 'c2.events.' + (category || '');
+        const translated = c2t(key);
+        return translated !== key ? translated : (category || '-');
+    }
+
+    function eventLevelBadgeClass(level) {
+        if (level === 'warn') return 'c2-event-level-badge--warn';
+        if (level === 'critical') return 'c2-event-level-badge--critical';
+        return 'c2-event-level-badge--info';
+    }
+
+    function eventCategoryBadgeClass(category) {
+        return 'c2-event-category-badge c2-event-category-badge--' + (category || 'default');
+    }
+
+    function readEventsFilterFromDom() {
+        const levelEl = document.getElementById('c2-events-filter-level');
+        const catEl = document.getElementById('c2-events-filter-category');
+        const sessionEl = document.getElementById('c2-events-filter-session');
+        C2.eventsFilter = C2.eventsFilter || { level: '', category: '', session_id: '', since: '', timePreset: 'all' };
+        C2.eventsFilter.level = levelEl ? levelEl.value.trim() : '';
+        C2.eventsFilter.category = catEl ? catEl.value.trim() : '';
+        C2.eventsFilter.session_id = sessionEl ? sessionEl.value.trim() : '';
+    }
+
+    function buildEventsQueryParams(page, pageSize) {
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        params.set('page_size', String(pageSize));
+        const f = C2.eventsFilter || {};
+        if (f.level) params.set('level', f.level);
+        if (f.category) params.set('category', f.category);
+        if (f.session_id) params.set('session_id', f.session_id);
+        if (f.since) params.set('since', f.since);
+        return params.toString();
+    }
+
+    function eventsTimePresetToSince(preset) {
+        if (!preset || preset === 'all') return '';
+        const now = Date.now();
+        const map = { '15m': 15 * 60 * 1000, '1h': 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000, '7d': 7 * 24 * 60 * 60 * 1000 };
+        const ms = map[preset];
+        if (!ms) return '';
+        return new Date(now - ms).toISOString();
+    }
+
+    function syncEventsTimePresetButtons() {
+        const wrap = document.getElementById('c2-events-time-presets');
+        if (!wrap) return;
+        const active = (C2.eventsFilter && C2.eventsFilter.timePreset) || 'all';
+        wrap.querySelectorAll('.c2-events-time-preset-btn').forEach(btn => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-preset') === active);
+        });
+    }
+
+    function bindEventsFilterUiOnce() {
+        if (document.documentElement.dataset.c2EventsFilterBound === '1') return;
+        document.documentElement.dataset.c2EventsFilterBound = '1';
+
+        const presets = document.getElementById('c2-events-time-presets');
+        if (presets) {
+            presets.addEventListener('click', (e) => {
+                const btn = e.target.closest('.c2-events-time-preset-btn');
+                if (!btn) return;
+                const preset = btn.getAttribute('data-preset') || 'all';
+                C2.eventsFilter = C2.eventsFilter || { level: '', category: '', session_id: '', since: '', timePreset: 'all' };
+                C2.eventsFilter.timePreset = preset;
+                C2.eventsFilter.since = eventsTimePresetToSince(preset);
+                syncEventsTimePresetButtons();
+                C2.loadEvents(1);
+            });
+        }
+
+        const sessionInput = document.getElementById('c2-events-filter-session');
+        if (sessionInput) {
+            sessionInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') C2.applyEventsFilters();
+            });
+        }
+    }
+
+    C2.applyEventsFilters = function() {
+        readEventsFilterFromDom();
+        C2.loadEvents(1);
+    };
+
+    C2.resetEventsFilters = function() {
+        C2.eventsFilter = { level: '', category: '', session_id: '', since: '', timePreset: 'all' };
+        const levelEl = document.getElementById('c2-events-filter-level');
+        const catEl = document.getElementById('c2-events-filter-category');
+        const sessionEl = document.getElementById('c2-events-filter-session');
+        if (levelEl) levelEl.value = '';
+        if (catEl) catEl.value = '';
+        if (sessionEl) sessionEl.value = '';
+        syncEventsTimePresetButtons();
+        C2.loadEvents(1);
+    };
+
+    C2.renderEventsSummary = function() {
+        const summary = document.getElementById('c2-events-summary');
+        if (!summary) return;
+        const total = C2.eventsTotal || 0;
+        const counts = C2.eventsLevelCounts || { info: 0, warn: 0, critical: 0 };
+        const set = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = String(val);
+        };
+        set('c2-events-stat-total', total);
+        set('c2-events-stat-info', counts.info || 0);
+        set('c2-events-stat-warn', counts.warn || 0);
+        set('c2-events-stat-critical', counts.critical || 0);
+        summary.hidden = total === 0;
+    };
+
+    C2.viewEvent = function(id) {
+        const event = (C2.events || []).find(e => e.id === id);
+        if (!event) return;
+        const modal = document.getElementById('c2-modal');
+        const content = document.getElementById('c2-modal-content');
+        if (!content || !modal) return;
+
+        const modalBox = modal.querySelector('.c2-modal');
+        if (modalBox) modalBox.classList.add('c2-modal--wide');
+
+        const hasData = event.data && typeof event.data === 'object' && Object.keys(event.data).length > 0;
+        const levelCls = eventLevelBadgeClass(event.level);
+        const catCls = eventCategoryBadgeClass(event.category);
+
+        content.innerHTML = `
+            <div class="c2-modal-header c2-event-modal-header">
+                <div class="c2-event-modal-heading">
+                    <h3>${escapeHtml(c2t('c2.events.detailTitle'))}</h3>
+                    <span class="c2-event-level-badge ${levelCls}">${escapeHtml(eventLevelLabel(event.level))}</span>
+                    <span class="${catCls}">${escapeHtml(eventCategoryLabel(event.category))}</span>
+                </div>
+                <button class="c2-modal-close" onclick="C2.closeModal()">&times;</button>
+            </div>
+            <div class="c2-modal-body">
+                <div class="c2-event-detail">
+                    <div class="c2-event-detail-grid">
+                        <div class="c2-event-kv">
+                            <span class="c2-event-kv__label">${escapeHtml(c2t('c2.events.time'))}</span>
+                            <span class="c2-event-kv__value">${escapeHtml(formatTime(event.createdAt))}</span>
+                        </div>
+                        <div class="c2-event-kv">
+                            <span class="c2-event-kv__label">${escapeHtml(c2t('c2.events.colSession'))}</span>
+                            <span class="c2-event-kv__value c2-event-kv__value--mono">${escapeHtml(event.sessionId || '-')}</span>
+                        </div>
+                        <div class="c2-event-kv">
+                            <span class="c2-event-kv__label">${escapeHtml(c2t('c2.events.colTask'))}</span>
+                            <span class="c2-event-kv__value c2-event-kv__value--mono">${escapeHtml(event.taskId || '-')}</span>
+                        </div>
+                        <div class="c2-event-kv">
+                            <span class="c2-event-kv__label">${escapeHtml(c2t('c2.events.colId'))}</span>
+                            <span class="c2-event-kv__value c2-event-kv__value--mono">${escapeHtml(event.id || '-')}</span>
+                        </div>
+                    </div>
+                    <div class="c2-event-message-block">
+                        <div class="c2-event-message-block__label">${escapeHtml(c2t('c2.events.message'))}</div>
+                        <div class="c2-event-message-block__body">${escapeHtml(event.message || '-')}</div>
+                    </div>
+                    ${hasData ? `
+                        <div class="c2-event-data-block">
+                            <div class="c2-event-data-block__header">
+                                <span>${escapeHtml(c2t('c2.events.detailData'))}</span>
+                                <button type="button" class="btn-ghost btn-sm" onclick="C2.copyTaskBlock('c2-event-data-pre')">${escapeHtml(c2t('common.copy'))}</button>
+                            </div>
+                            <pre class="c2-event-data-pre" id="c2-event-data-pre">${escapeHtml(JSON.stringify(event.data, null, 2))}</pre>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+            <div class="c2-modal-footer">
+                <button class="btn-secondary" onclick="C2.closeModal()">${escapeHtml(c2t('common.close'))}</button>
+            </div>
+        `;
+        openAppModal('c2-modal');
+        if (typeof applyTranslations === 'function') applyTranslations(content);
+    };
+
     C2.loadEvents = function(page) {
+        bindEventsFilterUiOnce();
+        readEventsFilterFromDom();
         const p = page != null ? page : (C2.eventsPage || 1);
         C2.eventsPage = p;
         const ps = C2.eventsPageSize || 10;
-        apiRequest('GET', `${API_BASE}/events?page=${encodeURIComponent(String(p))}&page_size=${encodeURIComponent(String(ps))}`).then(data => {
+        const qs = buildEventsQueryParams(p, ps);
+        apiRequest('GET', `${API_BASE}/events?${qs}`).then(data => {
             if (data.error) {
                 showToast(String(data.error), 'error');
                 return;
             }
             C2.events = data.events || [];
             C2.eventsTotal = typeof data.total === 'number' ? data.total : (C2.events.length || 0);
+            C2.eventsLevelCounts = data.level_counts || { info: 0, warn: 0, critical: 0 };
             const maxPage = Math.max(1, Math.ceil(C2.eventsTotal / ps));
             if (p > maxPage) {
                 C2.loadEvents(maxPage);
                 return;
             }
             C2.renderEvents();
+            C2.renderEventsSummary();
             C2.renderEventsPagination();
             C2.syncEventsToolbar();
+            syncEventsTimePresetButtons();
         }).catch(err => {
             showToast(err.message || String(err), 'error');
         });
@@ -3331,7 +4197,7 @@
         }
 
         if (C2.events.length === 0) {
-            container.innerHTML = '<div class="c2-empty">' + escapeHtml(c2t('c2.events.empty')) + '</div>';
+            container.innerHTML = '<div class="c2-events-empty">' + escapeHtml(c2t('c2.events.empty')) + '</div>';
             if (selAll) selAll.disabled = true;
             C2.syncEventsToolbar();
             return;
@@ -3339,27 +4205,61 @@
         if (selAll) selAll.disabled = false;
 
         const delTitle = escapeHtml(c2t('c2.events.deleteOne'));
-        container.innerHTML = C2.events.map(e => {
-            const eid = escapeHtml(e.id || '');
-            return `
-            <div class="c2-event-item">
-                <label class="c2-event-check-label" onclick="event.stopPropagation();">
-                    <input type="checkbox" class="c2-event-check" data-id="${eid}" onchange="C2.syncEventsToolbar()">
-                </label>
-                <div class="c2-event-level ${escapeHtml(e.level || '')}"></div>
-                <div class="c2-event-content">
-                    <div class="c2-event-message">${escapeHtml(e.message)}</div>
-                    <div class="c2-event-meta">
-                        ${formatTime(e.createdAt)} · ${escapeHtml(e.category || '')}${e.sessionId ? ' · ' + escapeHtml(String(e.sessionId).substring(0, 8)) : ''}
-                    </div>
-                </div>
-                <button type="button" class="btn-secondary c2-event-row-delete" onclick="event.stopPropagation();C2.deleteEventById('${eid}')" title="${delTitle}" aria-label="${delTitle}">🗑</button>
-            </div>
+        const dash = '<span class="c2-events-cell-muted">—</span>';
+        const deleteIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+
+        container.innerHTML = `
+            <table class="c2-events-table">
+                <thead>
+                    <tr>
+                        <th class="c2-events-table-col-check">
+                            <label class="c2-event-check-label" title="${escapeHtml(c2t('c2.events.selectAll'))}">
+                                <input type="checkbox" id="c2-events-select-all" onchange="C2.onEventsSelectAll(this.checked)">
+                            </label>
+                        </th>
+                        <th>${escapeHtml(c2t('c2.events.time'))}</th>
+                        <th>${escapeHtml(c2t('c2.events.level'))}</th>
+                        <th>${escapeHtml(c2t('c2.events.category'))}</th>
+                        <th>${escapeHtml(c2t('c2.events.message'))}</th>
+                        <th>${escapeHtml(c2t('c2.events.colSession'))}</th>
+                        <th>${escapeHtml(c2t('c2.events.colTask'))}</th>
+                        <th class="c2-events-table-col-actions">${escapeHtml(c2t('common.actions'))}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${C2.events.map(e => {
+                        const eid = escapeHtml(e.id || '');
+                        const levelCls = eventLevelBadgeClass(e.level);
+                        const catCls = eventCategoryBadgeClass(e.category);
+                        const sessionShort = e.sessionId ? escapeHtml(String(e.sessionId).substring(0, 10)) + (String(e.sessionId).length > 10 ? '\u2026' : '') : '';
+                        const taskShort = e.taskId ? escapeHtml(String(e.taskId).substring(0, 10)) + (String(e.taskId).length > 10 ? '\u2026' : '') : '';
+                        const msg = escapeHtml(e.message || '');
+                        const rowLevel = escapeHtml(e.level || 'info');
+                        return `
+                        <tr class="c2-events-row c2-events-row--${rowLevel}" data-event-id="${eid}" onclick="C2.viewEvent('${eid}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();C2.viewEvent('${eid}')}" role="button" tabindex="0">
+                            <td class="c2-events-table-col-check" onclick="event.stopPropagation();">
+                                <label class="c2-event-check-label">
+                                    <input type="checkbox" class="c2-event-check" data-id="${eid}" onchange="C2.syncEventsToolbar()">
+                                </label>
+                            </td>
+                            <td class="c2-events-col-time">${escapeHtml(formatTime(e.createdAt))}</td>
+                            <td><span class="c2-event-level-badge ${levelCls}">${escapeHtml(eventLevelLabel(e.level))}</span></td>
+                            <td><span class="${catCls}">${escapeHtml(eventCategoryLabel(e.category))}</span></td>
+                            <td class="c2-events-col-message" title="${msg}">${msg || dash}</td>
+                            <td class="c2-events-col-mono" title="${escapeHtml(e.sessionId || '')}">${sessionShort || dash}</td>
+                            <td class="c2-events-col-mono" title="${escapeHtml(e.taskId || '')}">${taskShort || dash}</td>
+                            <td class="c2-events-table-col-actions" onclick="event.stopPropagation();">
+                                <button type="button" class="c2-events-delete-btn" data-require-permission="c2:delete" onclick="C2.deleteEventById('${eid}')" title="${delTitle}" aria-label="${delTitle}">${deleteIcon}</button>
+                            </td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
         `;
-        }).join('');
 
         C2.syncEventsToolbar();
         if (typeof applyTranslations === 'function') applyTranslations(container);
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(container);
     };
 
     C2.connectEventStream = function() {
@@ -3464,7 +4364,7 @@
             <div class="c2-profile-card">
                 <div class="c2-profile-header">
                     <h4>${escapeHtml(p.name)}</h4>
-                    <button class="btn-danger btn-sm" onclick="C2.deleteProfile('${p.id}')">${escapeHtml(c2t('common.delete'))}</button>
+                    <button class="btn-danger btn-sm" data-require-permission="c2:delete" onclick="C2.deleteProfile('${p.id}')">${escapeHtml(c2t('common.delete'))}</button>
                 </div>
                 <div class="c2-profile-info">
                     <div><strong>UA:</strong> ${escapeHtml(p.userAgent || defVal)}</div>
@@ -3473,6 +4373,7 @@
                 </div>
             </div>
         `).join('');
+        if (typeof rbacAfterDynamicRender === 'function') rbacAfterDynamicRender(container);
     };
 
     C2.showCreateProfileModal = function() {
@@ -3580,6 +4481,7 @@
     };
 
     C2.closeModal = function() {
+        closeAllC2FormSelects();
         const modal = document.getElementById('c2-modal');
         if (modal) {
             const modalBox = modal.querySelector('.c2-modal');
@@ -3619,6 +4521,9 @@
             if (!window.currentPageId || !String(window.currentPageId).startsWith('c2')) return;
             if (typeof applyTranslations === 'function') applyTranslations(document);
             C2.init();
+            if (isAppModalOpen('c2-modal')) {
+                C2.refreshFormSelects();
+            }
             if (C2.selectedSessionId && (window.currentPageId === 'c2-sessions')) {
                 C2.renderSessions();
                 C2.renderSessionDetail(C2.selectedSessionId);

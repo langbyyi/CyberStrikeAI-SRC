@@ -1,0 +1,22 @@
+name: searchsploit
+command: searchsploit
+enabled: true
+short_description: ExploitDB 漏洞利用数据库检索
+description: '在本地 ExploitDB 数据库中搜索已知漏洞利用代码。
+
+  **使用场景：** 软件版本→已知 exploit 关联、漏洞利用参考。
+
+
+  **安装：** `apt install exploitdb`（若不可用先安装）。'
+parameters:
+  - name: query
+    type: string
+    required: true
+    position: 0
+    format: positional
+    description: 搜索关键词，如 `tomcat` `php 7.2`
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-x`(查看详情) `--exclude='dos'` `-j`(JSON)

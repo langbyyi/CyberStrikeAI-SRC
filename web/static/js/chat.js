@@ -1,7 +1,13 @@
 let currentConversationId = null;
 let loadConversationRequestSeq = 0;
 
-/** 轻量会话 LRU 缓存：来回切换已加载会话时避免重复网络 + 全量 DOM 重建 */
+/**
+ * 轻量会话 LRU 缓存。
+ *
+ * 缓存只用作请求失败时的降级数据，不能先于服务端响应直接渲染：
+ * 运行中会话的 process details 会持续写入，直接渲染旧快照会让
+ * UI 暂时回退到旧轮次，等 task-events 接管后又突然跳到最新轮次。
+ */
 const CONVERSATION_LITE_CACHE_MAX = 12;
 const conversationLiteCache = new Map();
 
@@ -50,6 +56,7 @@ const mentionState = {
 
 // IME输入法状态跟踪
 let isComposing = false;
+let compositionEndTimer = null;
 
 // 输入框草稿保存相关
 const DRAFT_STORAGE_KEY = 'cyberstrike-chat-draft';
@@ -73,11 +80,17 @@ let chatAttachmentSeq = 0;
 
 // 对话模式：eino_single = Eino ADK 单代理（/api/eino-agent/stream）；deep / plan_execute / supervisor = Eino 多代理（/api/multi-agent/stream，请求体 orchestration）
 const AGENT_MODE_STORAGE_KEY = 'cyberstrike-chat-agent-mode';
+const AGENT_MODE_CONVERSATION_STORAGE_PREFIX = 'cyberstrike-chat-agent-mode:conversation';
+const AI_CHANNEL_STORAGE_KEY = 'cyberstrike-chat-ai-channel';
 const REASONING_MODE_LS = 'cyberstrike-chat-reasoning-mode';
 const REASONING_EFFORT_LS = 'cyberstrike-chat-reasoning-effort';
+const CHAT_AI_CHANNEL_SUMMARY_NAME_MAX = 10;
 const CHAT_AGENT_MODE_EINO_SINGLE = 'eino_single';
 const CHAT_AGENT_EINO_MODES = ['deep', 'plan_execute', 'supervisor'];
 let multiAgentAPIEnabled = false;
+let chatAIChannels = {};
+let chatDefaultAIChannel = '';
+let chatAIChannelIdByNormalizedId = {};
 
 // 人机协同（HITL）会话级配置
 const HITL_STORAGE_PREFIX = 'cyberstrike-chat-hitl';
@@ -89,6 +102,190 @@ const HITL_MODE_APPROVAL = 'approval';
 const HITL_MODE_REVIEW_EDIT = 'review_edit';
 const HITL_MODE_OPTIONS = [HITL_MODE_OFF, HITL_MODE_APPROVAL, HITL_MODE_REVIEW_EDIT];
 let hitlApplyFeedbackTimer = null;
+let hitlAutoSaveTimer = null;
+const sessionSettingsSelects = new Map();
+let sessionSettingsSelectDocBound = false;
+
+function sessionSettingsSelectLabel(option) {
+    return option ? (option.textContent || option.label || option.value || '') : '';
+}
+
+function syncSessionSettingsSelect(select) {
+    const reg = sessionSettingsSelects.get(select);
+    if (!reg) return;
+    const selected = select.options[select.selectedIndex];
+    reg.value.textContent = sessionSettingsSelectLabel(selected);
+    reg.trigger.disabled = !!select.disabled;
+    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
+    reg.menu.innerHTML = '';
+
+    Array.prototype.forEach.call(select.options, function (option, index) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'session-settings-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('data-index', String(index));
+        item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+        item.disabled = !!option.disabled;
+        item.classList.toggle('is-selected', !!option.selected);
+
+        const label = document.createElement('span');
+        label.className = 'session-settings-select-option-label';
+        label.textContent = sessionSettingsSelectLabel(option);
+        item.appendChild(label);
+        reg.menu.appendChild(item);
+    });
+}
+
+function closeSessionSettingsSelect(select) {
+    const reg = sessionSettingsSelects.get(select);
+    if (!reg) return;
+    reg.wrapper.classList.remove('open');
+    reg.trigger.setAttribute('aria-expanded', 'false');
+}
+
+function closeAllSessionSettingsSelects() {
+    sessionSettingsSelects.forEach(function (_reg, select) {
+        closeSessionSettingsSelect(select);
+    });
+}
+
+function enhanceSessionSettingsSelect(select) {
+    if (!select || select.dataset.sessionSettingsSelect === '1') {
+        if (select) syncSessionSettingsSelect(select);
+        return;
+    }
+    const panel = select.closest && select.closest('.conversation-reasoning-card');
+    if (!panel) return;
+
+    select.dataset.sessionSettingsSelect = '1';
+    select.classList.add('session-settings-native-select');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'session-settings-select';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'session-settings-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const value = document.createElement('span');
+    value.className = 'session-settings-select-value';
+    const caret = document.createElement('span');
+    caret.className = 'session-settings-select-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '⌄';
+    trigger.appendChild(value);
+    trigger.appendChild(caret);
+
+    const menu = document.createElement('div');
+    menu.className = 'session-settings-select-menu';
+    menu.setAttribute('role', 'listbox');
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    wrapper.appendChild(select);
+    sessionSettingsSelects.set(select, { wrapper: wrapper, trigger: trigger, value: value, menu: menu });
+
+    trigger.addEventListener('click', function (event) {
+        event.stopPropagation();
+        if (select.disabled) return;
+        const willOpen = !wrapper.classList.contains('open');
+        closeAllSessionSettingsSelects();
+        wrapper.classList.toggle('open', willOpen);
+        trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    });
+
+    trigger.addEventListener('keydown', function (event) {
+        if (select.disabled) return;
+        const enabled = Array.prototype.filter.call(select.options, function (option) { return !option.disabled; });
+        if (!enabled.length) return;
+        const currentOption = select.options[select.selectedIndex];
+        const current = Math.max(0, enabled.indexOf(currentOption));
+        let next = current;
+        if (event.key === 'ArrowDown') next = Math.min(enabled.length - 1, current + 1);
+        else if (event.key === 'ArrowUp') next = Math.max(0, current - 1);
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = enabled.length - 1;
+        else if (event.key === 'Escape') {
+            closeSessionSettingsSelect(select);
+            return;
+        } else if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+            return;
+        } else {
+            return;
+        }
+        event.preventDefault();
+        const nextOption = enabled[next];
+        if (nextOption && select.value !== nextOption.value) {
+            select.value = nextOption.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncSessionSettingsSelect(select);
+    });
+
+    menu.addEventListener('click', function (event) {
+        const item = event.target.closest('.session-settings-select-option');
+        if (!item || item.disabled) return;
+        event.stopPropagation();
+        const option = select.options[Number(item.dataset.index)];
+        if (option && !option.disabled && select.value !== option.value) {
+            select.value = option.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncSessionSettingsSelect(select);
+        closeSessionSettingsSelect(select);
+    });
+
+    select.addEventListener('change', function () {
+        syncSessionSettingsSelect(select);
+    });
+    syncSessionSettingsSelect(select);
+}
+
+function initSessionSettingsSelects() {
+    const panel = document.getElementById('conversation-reasoning-body');
+    if (!panel) return;
+    panel.querySelectorAll('select').forEach(enhanceSessionSettingsSelect);
+    if (!sessionSettingsSelectDocBound) {
+        document.addEventListener('click', closeAllSessionSettingsSelects);
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') closeAllSessionSettingsSelects();
+        });
+        sessionSettingsSelectDocBound = true;
+    }
+}
+
+function refreshSessionSettingsSelects() {
+    sessionSettingsSelects.forEach(function (_reg, select) {
+        syncSessionSettingsSelect(select);
+    });
+}
+
+function syncChatReasoningBarHeight() {
+    const inputBar = document.getElementById('chat-input-container');
+    const reasoning = document.getElementById('chat-reasoning-wrapper');
+    if (!inputBar || !reasoning) return;
+    const h = Math.ceil(inputBar.getBoundingClientRect().height || 0);
+    if (h > 0) {
+        reasoning.style.setProperty('--chat-input-bar-height', h + 'px');
+    }
+}
+
+function initChatReasoningBarHeightSync() {
+    syncChatReasoningBarHeight();
+    window.addEventListener('resize', syncChatReasoningBarHeight);
+    const inputBar = document.getElementById('chat-input-container');
+    if (inputBar && typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(syncChatReasoningBarHeight);
+        ro.observe(inputBar);
+    }
+}
 
 /** 非阻塞提示（与 chat-files-toast 样式共用） */
 function showChatToast(message, type) {
@@ -137,9 +334,12 @@ function normalizeHitlMode(mode) {
 }
 
 function defaultHitlConfig() {
+    const serverReviewer = (typeof window !== 'undefined' && window.csaiHitlDefaultReviewer)
+        ? window.csaiHitlDefaultReviewer
+        : 'human';
     return {
         mode: HITL_MODE_OFF,
-        reviewer: 'human',
+        reviewer: normalizeHitlReviewer(serverReviewer),
         sensitiveTools: '',
         updatedAt: ''
     };
@@ -315,16 +515,18 @@ async function onHitlReviewerChanged(reviewer) {
     const cfg = readHitlConfigFromForm();
     const cid = typeof currentConversationId === 'string' ? currentConversationId.trim() : '';
     saveHitlConfigForConversation(cid, cfg, { syncGlobalLast: true });
-    if (cid && typeof window.saveHitlConversationConfig === 'function') {
-        try {
+    try {
+        if (cid && typeof window.saveHitlConversationConfig === 'function') {
             await window.saveHitlConversationConfig(cid, cfg);
-            const ok = typeof window.t === 'function' ? window.t('hitl.pageReviewerSaved') : '审批方已保存。';
-            showChatToast(ok, 'success');
-        } catch (e) {
-            console.warn('onHitlReviewerChanged', e);
-            const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
-            showChatToast(prefix, 'error');
+        } else if (typeof window.putHitlDefaultReviewer === 'function') {
+            await window.putHitlDefaultReviewer(cfg.reviewer);
         }
+        const ok = typeof window.t === 'function' ? window.t('hitl.pageReviewerSaved') : '审批方已保存。';
+        showChatToast(ok, 'success');
+    } catch (e) {
+        console.warn('onHitlReviewerChanged', e);
+        const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
+        showChatToast(prefix, 'error');
     }
 }
 
@@ -379,7 +581,7 @@ function readHitlConfigFromForm() {
 }
 
 function updateHitlStatusUI(_cfg) {
-    /* 侧栏已改为「应用」按钮生效，不再用角标展示模式 */
+    /* 侧栏已改为自动保存，不再用角标展示模式 */
 }
 
 function applyHitlConfigToUI(cfg) {
@@ -397,6 +599,7 @@ function applyHitlConfigToUI(cfg) {
     }
     if (toolsEl) toolsEl.value = toolsVal;
     updateHitlStatusUI(conf);
+    refreshSessionSettingsSelects();
 }
 
 function bindHitlSidebarModeListener() {
@@ -405,6 +608,9 @@ function bindHitlSidebarModeListener() {
     modeEl.dataset.hitlModeBound = '1';
     modeEl.addEventListener('change', function () {
         applyHitlConfigToUI(readHitlConfigFromForm());
+        refreshSessionSettingsSelects();
+        scheduleHitlSidebarAutosave(0);
+        updateChatReasoningSummary();
     });
 }
 
@@ -446,7 +652,7 @@ function showHitlApplyFeedback(text, isError, partial) {
     }
 }
 
-/** 侧栏人机协同：修改模式/白名单后点此写入本地、合并展示并同步服务端 */
+/** 侧栏人机协同：自动写入本地、合并展示并尽量同步服务端 */
 async function applyHitlSidebarConfig() {
     const btn = document.getElementById('hitl-apply-btn');
     showHitlApplyFeedback('', false);
@@ -474,7 +680,7 @@ async function applyHitlSidebarConfig() {
             const ok = typeof window.t === 'function' ? window.t('chat.hitlApplyOkSync') : '人机协同配置已保存并同步到服务器。';
             showHitlApplyFeedback(ok, false);
         } else if (yamlMerged) {
-            const okYaml = typeof window.t === 'function' ? window.t('chat.hitlApplyOkWhitelistYaml') : '免审批工具已合并进 config.yaml 并生效。协同模式、超时等仍须选中会话后再点「应用」才会写入服务器。';
+            const okYaml = typeof window.t === 'function' ? window.t('chat.hitlApplyOkWhitelistYaml') : '免审批工具已合并进 config.yaml 并生效。会话配置会自动保存。';
             showHitlApplyFeedback(okYaml, false);
         } else {
             const localOnly = typeof window.t === 'function' ? window.t('chat.hitlApplyOkLocal') : '已保存到本浏览器。';
@@ -493,6 +699,29 @@ async function applyHitlSidebarConfig() {
     }
 }
 
+function scheduleHitlSidebarAutosave(delayMs) {
+    if (hitlAutoSaveTimer) {
+        clearTimeout(hitlAutoSaveTimer);
+        hitlAutoSaveTimer = null;
+    }
+    hitlAutoSaveTimer = setTimeout(function () {
+        hitlAutoSaveTimer = null;
+        applyHitlSidebarConfig();
+    }, typeof delayMs === 'number' ? delayMs : 500);
+}
+
+function bindHitlSensitiveToolsAutosaveListener() {
+    const toolsEl = document.getElementById('hitl-sensitive-tools');
+    if (!toolsEl || toolsEl.dataset.hitlAutosaveBound === '1') return;
+    toolsEl.dataset.hitlAutosaveBound = '1';
+    toolsEl.addEventListener('input', function () {
+        scheduleHitlSidebarAutosave(700);
+    });
+    toolsEl.addEventListener('blur', function () {
+        scheduleHitlSidebarAutosave(0);
+    });
+}
+
 /** 将 localStorage 规范为 eino_single | deep | plan_execute | supervisor */
 function chatAgentModeNormalizeStored(stored, cfg) {
     const pub = cfg && cfg.multi_agent ? cfg.multi_agent : null;
@@ -505,8 +734,47 @@ function chatAgentModeNormalizeStored(stored, cfg) {
     return CHAT_AGENT_MODE_EINO_SINGLE;
 }
 
+function normalizeConversationAgentModeForUI(mode) {
+    const v = String(mode || '').trim().toLowerCase().replace(/-/g, '_');
+    if (chatAgentModeIsEinoSingle(v)) return v;
+    if (chatAgentModeIsEino(v)) {
+        return multiAgentAPIEnabled ? v : CHAT_AGENT_MODE_EINO_SINGLE;
+    }
+    return '';
+}
+
+function conversationAgentModeStorageKey(conversationId) {
+    return `${AGENT_MODE_CONVERSATION_STORAGE_PREFIX}:${String(conversationId || '').trim()}`;
+}
+
+function readConversationAgentModePreference(conversationId) {
+    if (!conversationId) return '';
+    try {
+        return normalizeConversationAgentModeForUI(localStorage.getItem(conversationAgentModeStorageKey(conversationId)) || '');
+    } catch (e) {
+        return '';
+    }
+}
+
+function saveConversationAgentModePreference(conversationId, mode) {
+    const normalized = normalizeConversationAgentModeForUI(mode);
+    if (!conversationId || !normalized) return;
+    try {
+        localStorage.setItem(conversationAgentModeStorageKey(conversationId), normalized);
+    } catch (e) { /* ignore */ }
+}
+
+function applyConversationAgentMode(conversationId, conversation) {
+    const saved = readConversationAgentModePreference(conversationId);
+    const fromServer = normalizeConversationAgentModeForUI(conversation && (conversation.agentMode || conversation.agent_mode));
+    const mode = saved || fromServer;
+    if (!mode) return;
+    syncAgentModeFromValue(mode);
+}
+
 if (typeof window !== 'undefined') {
     window.csaiHitlGlobalToolWhitelist = window.csaiHitlGlobalToolWhitelist || [];
+    window.csaiHitlDefaultReviewer = window.csaiHitlDefaultReviewer || 'human';
     window.csaiChatAgentMode = {
         EINO_MODES: CHAT_AGENT_EINO_MODES,
         EINO_SINGLE: CHAT_AGENT_MODE_EINO_SINGLE,
@@ -518,10 +786,12 @@ if (typeof window !== 'undefined') {
     window.applyHitlSidebarConfig = applyHitlSidebarConfig;
     window.readHitlConfigFromForm = readHitlConfigFromForm;
     window.applyHitlConfigToUI = applyHitlConfigToUI;
+    window.refreshHitlConfigByCurrentConversation = refreshHitlConfigByCurrentConversation;
     window.saveHitlConfigForConversation = saveHitlConfigForConversation;
     window.getHitlConfigForConversation = getHitlConfigForConversation;
     bindHitlSidebarModeListener();
     bindHitlReviewerToggleListeners();
+    bindHitlSensitiveToolsAutosaveListener();
     window.setHitlReviewerUI = setHitlReviewerUI;
     window.onHitlReviewerChanged = onHitlReviewerChanged;
     window.bindHitlReviewerToggleListeners = bindHitlReviewerToggleListeners;
@@ -624,8 +894,83 @@ function syncReasoningRowVisibility(modeVal) {
     if (!show) {
         closeChatReasoningPanel();
     } else {
+        syncChatReasoningBarHeight();
         updateChatReasoningSummary();
     }
+}
+
+function normalizeChatAIChannelId(s) {
+    return String(s || '').trim().toLowerCase().replace(/_/g, '-').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function resolveChatAIChannelId(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return '';
+    if (chatAIChannels[raw]) return raw;
+    const normalized = normalizeChatAIChannelId(raw);
+    return normalized && chatAIChannelIdByNormalizedId[normalized] ? chatAIChannelIdByNormalizedId[normalized] : '';
+}
+
+function populateChatAIChannelSelect(ai) {
+    const select = document.getElementById('chat-ai-channel-select');
+    if (!select) return;
+    const cfg = ai && typeof ai === 'object' ? ai : {};
+    chatAIChannels = cfg.channels && typeof cfg.channels === 'object' ? cfg.channels : {};
+    chatAIChannelIdByNormalizedId = {};
+    Object.keys(chatAIChannels).forEach(function (id) {
+        const normalized = normalizeChatAIChannelId(id);
+        if (normalized && !chatAIChannelIdByNormalizedId[normalized]) {
+            chatAIChannelIdByNormalizedId[normalized] = id;
+        }
+    });
+    chatDefaultAIChannel = resolveChatAIChannelId(cfg.default_channel || '');
+    select.innerHTML = '';
+    const fallbackOpt = document.createElement('option');
+    fallbackOpt.value = '';
+    fallbackOpt.textContent = typeof window.t === 'function' ? window.t('chat.aiChannelDefault') : '跟随默认通道';
+    select.appendChild(fallbackOpt);
+    Object.keys(chatAIChannels).sort().forEach(function (id) {
+        const ch = chatAIChannels[id] || {};
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = (ch.name || id) + (ch.model ? ' · ' + ch.model : '');
+        select.appendChild(opt);
+    });
+    let stored = '';
+    try { stored = localStorage.getItem(AI_CHANNEL_STORAGE_KEY) || ''; } catch (e) {}
+    stored = resolveChatAIChannelId(stored);
+    select.value = stored || '';
+    refreshSessionSettingsSelects();
+    updateChatReasoningSummary();
+}
+
+function selectedChatAIChannelId() {
+    const select = document.getElementById('chat-ai-channel-select');
+    return resolveChatAIChannelId(select ? select.value : '');
+}
+
+function currentChatAIChannelLabel() {
+    const id = selectedChatAIChannelId() || chatDefaultAIChannel;
+    const ch = id ? chatAIChannels[id] : null;
+    if (!ch) {
+        return typeof window.t === 'function' ? window.t('chat.aiChannelDefaultShort') : '默认通道';
+    }
+    return ch.name || id;
+}
+
+function truncateChatAIChannelSummaryLabel(label) {
+    const chars = Array.from(String(label || ''));
+    if (chars.length <= CHAT_AI_CHANNEL_SUMMARY_NAME_MAX) return chars.join('');
+    return chars.slice(0, CHAT_AI_CHANNEL_SUMMARY_NAME_MAX).join('') + '...';
+}
+
+function persistChatAIChannelPref() {
+    const id = selectedChatAIChannelId();
+    try {
+        if (id) localStorage.setItem(AI_CHANNEL_STORAGE_KEY, id);
+        else localStorage.removeItem(AI_CHANNEL_STORAGE_KEY);
+    } catch (e) {}
+    updateChatReasoningSummary();
 }
 
 function reasoningSummaryModeLabel(mode) {
@@ -648,8 +993,18 @@ function updateChatReasoningSummary() {
     const effort = effEl && effEl.value ? String(effEl.value).trim() : '';
     const t = (typeof window.t === 'function') ? window.t : function (k) { return k; };
     const modePart = reasoningSummaryModeLabel(mode);
-    const effPart = effort || t('chat.reasoningSummaryDash');
-    el.textContent = modePart + ' / ' + effPart;
+    const reasoningPart = effort || modePart || t('chat.reasoningSummaryDash');
+    let hitlPart = '';
+    try {
+        const hitlCfg = readHitlConfigFromForm();
+        hitlPart = getHitlModeLabel(hitlCfg.mode);
+    } catch (e) {
+        hitlPart = '';
+    }
+    const channelPart = currentChatAIChannelLabel();
+    const parts = [truncateChatAIChannelSummaryLabel(channelPart), reasoningPart, hitlPart].filter(Boolean);
+    el.textContent = parts.join(' / ');
+    el.title = [channelPart, reasoningPart, hitlPart].filter(Boolean).join(' / ');
 }
 
 function closeChatReasoningPanel() {
@@ -663,6 +1018,7 @@ function toggleConversationReasoningCard() {
     const wrap = document.getElementById('chat-reasoning-wrapper');
     const toggle = document.getElementById('conversation-reasoning-toggle');
     if (!wrap || !toggle) return;
+    syncChatReasoningBarHeight();
     wrap.classList.toggle('conversation-reasoning-collapsed');
     const collapsed = wrap.classList.contains('conversation-reasoning-collapsed');
     toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -697,6 +1053,7 @@ function restoreChatReasoningControlsFromStorage() {
                 e.value = v;
             }
         }
+        refreshSessionSettingsSelects();
         updateChatReasoningSummary();
     } catch (err) { /* ignore */ }
 }
@@ -707,6 +1064,7 @@ function persistChatReasoningPrefs() {
         const elEff = document.getElementById('chat-reasoning-effort');
         if (m) localStorage.setItem(REASONING_MODE_LS, m.value || 'default');
         if (elEff) localStorage.setItem(REASONING_EFFORT_LS, elEff.value || '');
+        refreshSessionSettingsSelects();
         updateChatReasoningSummary();
     } catch (err) { /* ignore */ }
 }
@@ -732,12 +1090,15 @@ function buildReasoningRequestPayload() {
 }
 
 if (typeof window !== 'undefined') {
+    window.persistChatAIChannelPref = persistChatAIChannelPref;
+    window.populateChatAIChannelSelect = populateChatAIChannelSelect;
     window.persistChatReasoningPrefs = persistChatReasoningPrefs;
     window.buildReasoningRequestPayload = buildReasoningRequestPayload;
     window.closeChatReasoningPanel = closeChatReasoningPanel;
     window.toggleChatReasoningPanel = toggleChatReasoningPanel;
     window.toggleConversationReasoningCard = toggleConversationReasoningCard;
     window.updateChatReasoningSummary = updateChatReasoningSummary;
+    window.refreshSessionSettingsSelects = refreshSessionSettingsSelects;
 }
 
 function closeAgentModePanel() {
@@ -776,6 +1137,7 @@ function toggleAgentModePanel() {
 function selectAgentMode(mode) {
     const ok = chatAgentModeIsEinoSingle(mode) || chatAgentModeIsEino(mode);
     if (!ok) return;
+    saveConversationAgentModePreference(currentConversationId, mode);
     try {
         localStorage.setItem(AGENT_MODE_STORAGE_KEY, mode);
     } catch (e) { /* ignore */ }
@@ -812,6 +1174,7 @@ async function initChatAgentModeFromConfig() {
         if (!r.ok) return;
         const cfg = await r.json();
         multiAgentAPIEnabled = !!(cfg.multi_agent && cfg.multi_agent.enabled);
+        populateChatAIChannelSelect(cfg.ai || {});
         if (typeof window !== 'undefined') {
             window.__csaiMultiAgentPublic = cfg.multi_agent || null;
             const tw = cfg.hitl && cfg.hitl.tool_whitelist;
@@ -1028,9 +1391,23 @@ async function sendMessage() {
         conversationId: currentConversationId,
         role: typeof getCurrentRole === 'function' ? getCurrentRole() : ''
     };
+    if (window.__csNextChatFinalizationPolicy && typeof window.__csNextChatFinalizationPolicy === 'object') {
+        body.finalization = window.__csNextChatFinalizationPolicy;
+        window.__csNextChatFinalizationPolicy = null;
+    }
+    let streamConversationId = body.conversationId ? String(body.conversationId) : null;
+    const isStreamStillVisibleForRequest = function () {
+        if (!document.getElementById(progressId)) return false;
+        if (!streamConversationId) return currentConversationId === body.conversationId;
+        return currentConversationId === streamConversationId;
+    };
     if (!currentConversationId && typeof getActiveProjectId === 'function') {
         const pid = getActiveProjectId();
         if (pid) body.projectId = pid;
+    }
+    const aiChannelId = selectedChatAIChannelId();
+    if (aiChannelId) {
+        body.aiChannelId = aiChannelId;
     }
     const hitlCfg = readHitlConfigFromForm();
     if (normalizeHitlMode(hitlCfg.mode) !== HITL_MODE_OFF) {
@@ -1064,7 +1441,7 @@ async function sendMessage() {
         window.CyberStrikeChatScroll.onUserSendMessage();
     }
     const progressElement = document.getElementById(progressId);
-    registerProgressTask(progressId, currentConversationId);
+    registerProgressTask(progressId, streamConversationId);
     loadActiveTasks();
     let assistantMessageId = null;
     let mcpExecutionIds = [];
@@ -1072,6 +1449,7 @@ async function sendMessage() {
     try {
         const modeSel = document.getElementById('agent-mode-select');
         let modeVal = modeSel ? modeSel.value : CHAT_AGENT_MODE_EINO_SINGLE;
+        saveConversationAgentModePreference(streamConversationId || currentConversationId, modeVal);
         const useMulti = multiAgentAPIEnabled && chatAgentModeIsEino(modeVal);
         const streamPath = useMulti ? '/api/multi-agent/stream' : '/api/eino-agent/stream';
         if (useMulti && modeVal) {
@@ -1091,17 +1469,38 @@ async function sendMessage() {
 
         window.__csAgentLiveStream = {
             active: true,
-            conversationId: currentConversationId || null,
+            conversationId: streamConversationId || null,
             progressId: progressId
         };
         try {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            let streamSawDone = false;
             const dispatchStreamEvent = function (eventData) {
+                if (eventData && eventData.type === 'done') {
+                    streamSawDone = true;
+                }
+                const eventConvId = eventData && eventData.data && eventData.data.conversationId
+                    ? String(eventData.data.conversationId)
+                    : '';
+                let justBoundConversation = false;
+                if (eventConvId) {
+                    if (streamConversationId && streamConversationId !== eventConvId) {
+                        return;
+                    }
+                    if (!streamConversationId && eventData.type === 'conversation') {
+                        streamConversationId = eventConvId;
+                        justBoundConversation = true;
+                    }
+                }
+                if (!justBoundConversation && !isStreamStillVisibleForRequest()) {
+                    return;
+                }
                 handleStreamEvent(eventData, progressElement, progressId,
                     () => assistantMessageId, (id) => { assistantMessageId = id; },
-                    () => mcpExecutionIds, (ids) => { mcpExecutionIds = ids; });
+                    () => mcpExecutionIds, (ids) => { mcpExecutionIds = ids; },
+                    { conversationId: streamConversationId });
             };
             const processSseLines = typeof processSseDataLinesYielding === 'function'
                 ? processSseDataLinesYielding
@@ -1135,6 +1534,23 @@ async function sendMessage() {
                 const lines = buffer.split('\n');
                 await processSseLines(lines, dispatchStreamEvent);
             }
+            if (!streamSawDone) {
+                if (typeof loadActiveTasks === 'function') {
+                    loadActiveTasks();
+                }
+                const convId = streamConversationId || (body && body.conversationId) || null;
+                let attached = false;
+                if (convId && typeof window.attachRunningTaskEventStream === 'function') {
+                    window.__csAgentLiveStream = { active: false, conversationId: null, progressId: null };
+                    attached = await window.attachRunningTaskEventStream(convId).catch(() => false);
+                }
+                if (!attached && isStreamStillVisibleForRequest()) {
+                    const hint = typeof window.t === 'function'
+                        ? window.t('chat.streamEndedWithoutDone')
+                        : '连接提前结束，未收到任务完成信号。任务可能仍在后端执行，请查看顶部运行中任务或刷新当前对话。';
+                    addMessage('system', hint);
+                }
+            }
         } finally {
             window.__csAgentLiveStream = { active: false, conversationId: null, progressId: null };
             if (window.CyberStrikeChatScroll) {
@@ -1151,6 +1567,12 @@ async function sendMessage() {
         }
         
     } catch (error) {
+        if (!isStreamStillVisibleForRequest()) {
+            if (typeof loadActiveTasks === 'function') {
+                loadActiveTasks();
+            }
+            return;
+        }
         removeMessage(progressId);
         const msg = error && error.message != null ? String(error.message) : String(error);
         const isNetwork = /network|fetch|Failed to fetch|aborted|AbortError|load failed|NetworkError/i.test(msg);
@@ -1542,8 +1964,9 @@ function handleChatInputClick(event) {
 
 function handleChatInputKeydown(event) {
     // 如果正在使用输入法输入（IME），回车键应该用于确认候选词，而不是发送消息
-    // 使用 event.isComposing 或 isComposing 标志来判断
-    if (event.isComposing || isComposing) {
+    // Safari 可能在确认候选词时先触发 compositionend，再触发 Enter keydown，
+    // 因此这里同时使用全局状态和 keyCode 229 兜底。
+    if (event.isComposing || isComposing || event.keyCode === 229) {
         return;
     }
 
@@ -2020,6 +2443,19 @@ function refreshSystemReadyMessageBubbles() {
     });
 }
 
+function createMessageAvatar(role) {
+    const avatar = document.createElement('div');
+    avatar.className = 'message-avatar';
+    if (role === 'user') {
+        avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    } else if (role === 'assistant') {
+        avatar.innerHTML = '<img src="/static/logo.png" alt="" class="message-avatar-img">';
+    } else {
+        avatar.textContent = 'S';
+    }
+    return avatar;
+}
+
 // 添加消息（options.systemReadyMessage 为 true 时，语言切换会刷新该条文案）
 function addMessage(role, content, mcpExecutionIds = null, progressId = null, createdAt = null, options = null) {
     const messagesDiv = document.getElementById('chat-messages');
@@ -2030,16 +2466,7 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     messageDiv.className = 'message ' + role;
     
     // 创建头像
-    const avatar = document.createElement('div');
-    avatar.className = 'message-avatar';
-    if (role === 'user') {
-        avatar.textContent = 'U';
-    } else if (role === 'assistant') {
-        avatar.textContent = 'A';
-    } else {
-        avatar.textContent = 'S';
-    }
-    messageDiv.appendChild(avatar);
+    messageDiv.appendChild(createMessageAvatar(role));
     
     // 创建消息内容容器
     const contentWrapper = document.createElement('div');
@@ -2140,19 +2567,20 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
         timeDiv.dataset.messageTime = messageTime.toISOString();
     } catch (e) { /* ignore */ }
     contentWrapper.appendChild(timeDiv);
+    messageDiv.appendChild(contentWrapper);
     
     // 有 MCP 执行记录且非流式占位消息时展示调用按钮；带 progressId 的流式占位不挂此条（与进度卡片一致，结束时 integrate 再创建）
     if (role === 'assistant' && (mcpExecutionIds && Array.isArray(mcpExecutionIds) && mcpExecutionIds.length > 0) && !progressId) {
         if (options && options.deferMcpButtons) {
             try {
-                messageDiv.dataset.pendingMcpExecutionIds = JSON.stringify(mcpExecutionIds);
+                const ids = cacheMcpExecutionIds(messageDiv, mcpExecutionIds);
+                messageDiv.dataset.pendingMcpExecutionIds = JSON.stringify(ids);
             } catch (e) { /* ignore */ }
         } else {
-            appendMcpCallButtons(messageDiv, mcpExecutionIds);
+            setMcpCallExecutionIds(messageDiv, mcpExecutionIds);
         }
     }
     
-    messageDiv.appendChild(contentWrapper);
     // 标记「系统就绪」占位消息，便于切换语言后刷新文案
     if (options && options.systemReadyMessage) {
         messageDiv.setAttribute('data-system-ready-message', '1');
@@ -2338,11 +2766,19 @@ async function syncAssistantReasoningContentFromServer(backendMessageId, domAssi
         const msg = conv.messages.find((m) => m && String(m.id) === String(backendMessageId));
         if (!msg || !msg.reasoningContent) return;
         setMessageReasoningContent(domAssistantId, msg.reasoningContent);
-        const pdRes = await apiFetch(`/api/messages/${encodeURIComponent(String(backendMessageId))}/process-details`);
-        const pdJson = await pdRes.json().catch(() => ({}));
-        const details = pdRes.ok && Array.isArray(pdJson.processDetails) ? pdJson.processDetails : [];
-        if (typeof renderProcessDetails === 'function') {
-            renderProcessDetails(domAssistantId, details);
+        // 最终回复到达后同样必须完整恢复过程详情；无参数接口默认仅返回前 50 条，
+        // 否则这里会把 task-events 恢复出的完整时间线再次覆盖成第一页。
+        if (typeof window.loadProcessDetailsPaginated === 'function') {
+            await window.loadProcessDetailsPaginated(domAssistantId, String(backendMessageId));
+        } else {
+            const pdRes = await apiFetch(
+                `/api/messages/${encodeURIComponent(String(backendMessageId))}/process-details?full=1`
+            );
+            const pdJson = await pdRes.json().catch(() => ({}));
+            const details = pdRes.ok && Array.isArray(pdJson.processDetails) ? pdJson.processDetails : [];
+            if (typeof renderProcessDetails === 'function') {
+                renderProcessDetails(domAssistantId, details);
+            }
         }
     } catch (e) {
         console.warn('syncAssistantReasoningContentFromServer failed', e);
@@ -2365,7 +2801,10 @@ function isEinoAgentHeartbeatProgress(detail) {
 
 function filterNoiseProcessDetails(details) {
     if (!Array.isArray(details)) return details;
-    return details.filter(function (d) { return !isEinoAgentHeartbeatProgress(d); });
+    return details.filter(function (d) {
+        if (isEinoAgentHeartbeatProgress(d)) return false;
+        return !(d && d.eventType === 'tool_calls_detected');
+    });
 }
 
 function dedupeConsecutiveProcessDetailRows(details) {
@@ -2400,14 +2839,92 @@ function processDetailRowFingerprint(d) {
     return et + '\0' + msg + '\0' + dataKey;
 }
 
+function compactWorkflowProcessDetails(details) {
+    if (!Array.isArray(details) || details.length === 0) return details || [];
+    return details.filter((detail) => {
+        const eventType = detail && detail.eventType ? String(detail.eventType) : '';
+        // workflow_node_start 已经表达了节点进入；这些事件只用于实时状态，落到详情里会让 Agent 节点看起来重复启动。
+        return eventType !== 'workflow_agent_start';
+    });
+}
+
+function isProcessDetailsUserExpanded(messageId) {
+    const container = document.getElementById('process-details-' + messageId);
+    return !!(container && container.dataset && container.dataset.userExpanded === '1');
+}
+
+function messageHasConversationContent(messageElement) {
+    if (!messageElement || !messageElement.classList || !messageElement.classList.contains('assistant')) return false;
+    if (messageElement.hasAttribute('data-system-ready-message')) return false;
+    if (messageElement.dataset && String(messageElement.dataset.backendMessageId || '').trim()) return true;
+    const raw = messageElement.dataset ? String(messageElement.dataset.originalContent || '').trim() : '';
+    if (raw) return true;
+    const bubble = messageElement.querySelector('.message-bubble');
+    if (!bubble) return false;
+    const clone = bubble.cloneNode(true);
+    clone.querySelectorAll('.message-copy-btn').forEach((btn) => btn.remove());
+    return String(clone.textContent || '').trim().length > 0;
+}
+
+function syncProcessDetailButtonLabels(messageId, expanded) {
+    const expandT = typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情';
+    const collapseT = typeof window.t === 'function' ? window.t('tasks.collapseDetail') : '收起详情';
+    const label = expanded ? collapseT : expandT;
+    document.querySelectorAll('#' + messageId + ' .process-detail-btn').forEach((btn) => {
+        btn.innerHTML = '<span>' + label + '</span>';
+    });
+}
+
+/** 懒加载占位提示可点击，与工具栏「展开详情」行为一致 */
+function bindProcessDetailsLazyHint(hostEl, messageId) {
+    if (!hostEl || !messageId) return;
+    const emptyEl = hostEl.classList && hostEl.classList.contains('progress-timeline-empty')
+        ? hostEl
+        : hostEl.querySelector('.progress-timeline-empty');
+    if (!emptyEl || emptyEl.dataset.lazyHintBound === '1') return;
+    emptyEl.dataset.lazyHintBound = '1';
+    emptyEl.classList.add('progress-timeline-lazy-clickable');
+    emptyEl.setAttribute('role', 'button');
+    emptyEl.setAttribute('tabindex', '0');
+    const activate = () => {
+        if (typeof toggleProcessDetails === 'function') {
+            toggleProcessDetails(null, messageId);
+        }
+    };
+    emptyEl.addEventListener('click', activate);
+    emptyEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            activate();
+        }
+    });
+}
+window.bindProcessDetailsLazyHint = bindProcessDetailsLazyHint;
+
 // 渲染过程详情
 // options.append=true 时分页追加；options.markLoaded=false 时保留 lazy 标记（分页加载中）
 function renderProcessDetails(messageId, processDetails, options) {
     const renderOpts = options || {};
     const appendMode = !!renderOpts.append;
+    const prependMode = !!renderOpts.prepend;
     const markLoaded = renderOpts.markLoaded !== false;
+    const toolStatusByProcessDetailId = new Map();
+    if (Array.isArray(renderOpts.toolExecutions)) {
+        renderOpts.toolExecutions.forEach((execution) => {
+            if (!execution || !execution.processDetailId) return;
+            toolStatusByProcessDetailId.set(String(execution.processDetailId), String(execution.status || '').toLowerCase());
+        });
+    }
     const messageElement = document.getElementById(messageId);
     if (!messageElement) {
+        return;
+    }
+    const isLazyRequest = (processDetails === null);
+    const reasoningFromMessage = getMessageReasoningContent(messageElement);
+    const backendId = messageElement.dataset ? String(messageElement.dataset.backendMessageId || '').trim() : '';
+    const hasConversationContent = !!renderOpts.force || messageHasConversationContent(messageElement);
+    if (isLazyRequest && !reasoningFromMessage && !backendId && getMcpExecutionCount(messageElement) <= 0 && !hasConversationContent) {
+        pruneEmptyMcpCallSection(messageElement);
         return;
     }
     
@@ -2462,14 +2979,14 @@ function renderProcessDetails(messageId, processDetails, options) {
     }
     
     // processDetails === null 表示“尚未加载（懒加载）”；messages.reasoningContent 可先展示
-    const isLazyNotLoaded = (processDetails === null);
-    const reasoningFromMessage = getMessageReasoningContent(messageElement);
+    const isLazyNotLoaded = isLazyRequest;
     if (isLazyNotLoaded && !reasoningFromMessage) {
         detailsContainer.dataset.lazyNotLoaded = '1';
         detailsContainer.dataset.loaded = '0';
         const expandLabel = typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情';
         let lazyHint = expandLabel + '（点击后加载迭代详情）';
         timeline.innerHTML = '<div class="progress-timeline-empty">' + lazyHint + '</div>';
+        bindProcessDetailsLazyHint(timeline, messageId);
         timeline.classList.remove('expanded');
         prefetchProcessDetailsSummaryHint(messageId, messageElement);
         return;
@@ -2488,19 +3005,36 @@ function renderProcessDetails(messageId, processDetails, options) {
     processDetails = mergeMessageReasoningContentIntoProcessDetails(processDetails, reasoningFromMessage);
     processDetails = filterNoiseProcessDetails(processDetails);
     processDetails = dedupeConsecutiveProcessDetailRows(processDetails);
+    const renderedMcpIds = collectMcpExecutionIdsFromProcessDetails(processDetails);
+    if (renderedMcpIds.length > 0) {
+        setPendingMcpExecutionIds(messageElement, renderedMcpIds);
+    }
+    const renderedToolCount = processDetails.filter((d) => d && d.eventType === 'tool_call').length;
+    if (renderedToolCount > 0) {
+        setMcpExecutionSummaryCount(messageElement, renderedToolCount);
+    }
     if (typeof window.coalesceProcessDetailsToolPairs === 'function') {
         processDetails = window.coalesceProcessDetailsToolPairs(processDetails);
     }
+    processDetails = compactWorkflowProcessDetails(processDetails);
     // 如果没有processDetails或为空，显示空状态
     if (!processDetails || processDetails.length === 0) {
-        if (!appendMode) {
+        if (!appendMode && !prependMode) {
             timeline.innerHTML = '<div class="progress-timeline-empty">' + (typeof window.t === 'function' ? window.t('chat.noProcessDetail') : '暂无过程详情（可能执行过快或未触发详细事件）') + '</div>';
-            timeline.classList.remove('expanded');
+            if (!isProcessDetailsUserExpanded(messageId)) {
+                timeline.classList.remove('expanded');
+            }
         }
         return;
     }
     
-    if (!appendMode) {
+    const prependAnchor = prependMode ? timeline.firstChild : null;
+    const prependScrollBox = prependMode ? document.getElementById('chat-messages') : null;
+    const prependScrollHeight = prependScrollBox ? prependScrollBox.scrollHeight : 0;
+    const prependScrollTop = prependScrollBox ? prependScrollBox.scrollTop : 0;
+    const prependedIds = [];
+
+    if (!appendMode && !prependMode) {
         timeline.innerHTML = '';
     }
     
@@ -2511,6 +3045,83 @@ function renderProcessDetails(messageId, processDetails, options) {
         return s ? ('[' + s + '] ') : '';
     }
 
+    function formatProcessDetailEinoRunRetryKind(kind) {
+        if (typeof window.formatEinoRunRetryKind === 'function') {
+            return window.formatEinoRunRetryKind(kind);
+        }
+        const key = String(kind || '').trim();
+        if (!key) return '';
+        const labels = {
+            rate_limit: '限流 / 请求过多',
+            retryable_http: '可重试 HTTP 错误',
+            upstream_server: '上游服务错误',
+            http_error: 'HTTP 错误',
+            upstream_busy: '上游繁忙',
+            network: '网络连接异常',
+            stream: '流式读取异常',
+            transient: '临时异常'
+        };
+        if (typeof window.t === 'function') {
+            const translated = window.t('chat.einoRunRetryKind_' + key);
+            if (translated && translated !== 'chat.einoRunRetryKind_' + key) return translated;
+        }
+        return labels[key] || key;
+    }
+
+    function formatProcessDetailEinoRunRetryTitle(data) {
+        if (typeof window.formatEinoRunRetryTitle === 'function') {
+            return window.formatEinoRunRetryTitle(data);
+        }
+        const d = data && typeof data === 'object' ? data : {};
+        const base = typeof window.t === 'function'
+            ? window.t('chat.einoRunRetryTitle')
+            : '🔁 临时错误重试';
+        const attempt = Number(d.attempt || 0);
+        const maxAttempts = Number(d.maxAttempts || 0);
+        if (Number.isFinite(attempt) && attempt > 0 && Number.isFinite(maxAttempts) && maxAttempts > 0) {
+            return base + '（' + attempt + '/' + maxAttempts + '）';
+        }
+        return base;
+    }
+
+    function formatProcessDetailEinoRunRetryMessage(message, data) {
+        if (typeof window.formatEinoRunRetryMessage === 'function') {
+            return window.formatEinoRunRetryMessage(message, data);
+        }
+        const d = data && typeof data === 'object' ? data : {};
+        const base = String(message || '').trim();
+        const errRaw = d.errorSummary != null && String(d.errorSummary).trim() !== ''
+            ? String(d.errorSummary).trim()
+            : (d.error != null ? String(d.error).trim() : '');
+        const lines = [];
+        if (base) lines.push(base);
+        const attempt = Number(d.attempt || 0);
+        const maxAttempts = Number(d.maxAttempts || 0);
+        const backoffSec = Number(d.backoffSec || 0);
+        const kind = formatProcessDetailEinoRunRetryKind(d.errorKind);
+        if (Number.isFinite(attempt) && attempt > 0 && Number.isFinite(maxAttempts) && maxAttempts > 0) {
+            const retryPlan = typeof window.t === 'function'
+                ? window.t('chat.einoRunRetryPlan', { attempt: attempt, maxAttempts: maxAttempts, backoffSec: Number.isFinite(backoffSec) && backoffSec > 0 ? backoffSec : '-' })
+                : ('重试进度：第 ' + attempt + '/' + maxAttempts + ' 次，等待 ' + (Number.isFinite(backoffSec) && backoffSec > 0 ? backoffSec : '-') + ' 秒');
+            if (!base || base.indexOf(String(attempt) + '/' + String(maxAttempts)) === -1) {
+                lines.push(retryPlan);
+            }
+        }
+        if (kind) {
+            const kindLabel = typeof window.t === 'function'
+                ? window.t('chat.einoRunRetryReasonKind')
+                : '原因类型';
+            lines.push(kindLabel + '：' + kind);
+        }
+        if (errRaw && (!base || base.indexOf(errRaw) === -1)) {
+            const detailLabel = typeof window.t === 'function'
+                ? window.t('chat.einoRunRetryErrorDetail')
+                : '错误详情';
+            lines.push(detailLabel + '：' + errRaw);
+        }
+        return lines.join('\n');
+    }
+
     function renderOneProcessDetail(detail) {
         const eventType = detail.eventType || '';
         const title = detail.message || '';
@@ -2518,7 +3129,44 @@ function renderProcessDetails(messageId, processDetails, options) {
         const agPx = processDetailAgentPrefix(data);
         
         let itemTitle = title;
-        if (eventType === 'iteration') {
+        if (eventType === 'workflow_start') {
+            const name = data.workflowName || data.workflowId || '';
+            itemTitle = '🧭 工作流开始' + (name ? (' · ' + name) : '');
+        } else if (eventType === 'workflow_done') {
+            const name = data.workflowName || data.workflowId || '';
+            itemTitle = '✅ 工作流完成' + (name ? (' · ' + name) : '');
+        } else if (eventType === 'workflow_node_start') {
+            const label = data.label || title || data.nodeId || '';
+            itemTitle = '▶ 节点开始' + (label ? (' · ' + label) : '');
+        } else if (eventType === 'workflow_node_result') {
+            const label = data.label || data.nodeId || '';
+            const status = data.status || '';
+            const nodeType = data.nodeType != null ? String(data.nodeType).toLowerCase() : '';
+            if (nodeType === 'condition') {
+                const matched = data.matched === true || data.matched === 'true' || (data.output && (data.output.matched === true || data.output.matched === 'true'));
+                itemTitle = (matched ? '✅' : '🔀') + ' 条件判断' + (label ? (' · ' + label) : '') + ' → ' + (matched ? '是' : '否');
+            } else {
+                const icon = status === 'failed' ? '❌' : (status === 'skipped' ? '⏭️' : '✅');
+                itemTitle = icon + ' 节点完成' + (label ? (' · ' + label) : '') + (status ? ('（' + status + '）') : '');
+            }
+        } else if (eventType === 'workflow_branch_taken' || eventType === 'workflow_branch_skipped') {
+            const branch = data.branchLabel || '';
+            const target = data.targetLabel || data.targetId || '';
+            const taken = eventType === 'workflow_branch_taken';
+            itemTitle = (taken ? '➡️' : '⏭️') + (taken ? ' 执行分支' : ' 跳过分支') + (branch ? (' · ' + branch) : '') + (target ? (' → ' + target) : '');
+        } else if (eventType === 'workflow_tool_start') {
+            const tool = data.tool || data.toolName || '';
+            itemTitle = '🔧 工具节点' + (tool ? (' · ' + tool) : '');
+        } else if (eventType === 'workflow_agent_output') {
+            const label = data.label || data.nodeId || '';
+            itemTitle = '🤖 Agent 输出' + (label ? (' · ' + label) : '');
+        } else if (eventType === 'workflow_hitl_checkpoint') {
+            itemTitle = '🧑‍⚖️ 人工确认检查点';
+        } else if (eventType === 'workflow_hitl_waiting') {
+            itemTitle = '🧑‍⚖️ 工作流等待审批';
+        } else if (eventType === 'workflow_paused') {
+            itemTitle = '⏸️ 工作流已暂停';
+        } else if (eventType === 'iteration') {
             const n = data.iteration || 1;
             if (data.orchestration === 'plan_execute' && data.einoScope === 'main') {
                 const phase = typeof window.translatePlanExecuteAgentName === 'function'
@@ -2560,9 +3208,18 @@ function renderProcessDetails(messageId, processDetails, options) {
             itemTitle = agPx + '🔧 ' + callTitle;
         } else if (eventType === 'tool_result') {
             const toolName = data.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
-            const success = data.success !== false;
-            const statusIcon = success ? '✅' : '❌';
-            const execText = success ? (typeof window.t === 'function' ? window.t('chat.toolExecComplete', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行完成') : (typeof window.t === 'function' ? window.t('chat.toolExecFailed', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行失败');
+            const noResultText = typeof window.t === 'function' ? window.t('timeline.noResult') : '无结果';
+            const result = data.result != null ? data.result : (data.error != null ? data.error : (data.resultPreview != null ? data.resultPreview : noResultText));
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+            const displayState = typeof window.getToolResultDisplayState === 'function'
+                ? window.getToolResultDisplayState(data, { rawText: resultStr })
+                : { kind: (data.success !== false ? 'success' : 'error'), isError: data.success === false };
+            const backgroundRunning = displayState.kind === 'background_running';
+            const success = !displayState.isError && !backgroundRunning;
+            const statusIcon = backgroundRunning ? '⏳' : (success ? '✅' : '❌');
+            const execText = backgroundRunning
+                ? ((typeof window.getBackgroundRunningToolLabel === 'function' ? window.getBackgroundRunningToolLabel() : '后台执行中') + ': ' + escapeHtml(toolName))
+                : (success ? (typeof window.t === 'function' ? window.t('chat.toolExecComplete', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行完成') : (typeof window.t === 'function' ? window.t('chat.toolExecFailed', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行失败'));
             let execLine = statusIcon + ' ' + execText;
             if (toolName === BuiltinTools.SEARCH_KNOWLEDGE_BASE && success) {
                 execLine = '📚 ' + execLine + ' - ' + (typeof window.t === 'function' ? window.t('chat.knowledgeRetrievalTag') : '知识检索');
@@ -2575,19 +3232,8 @@ function renderProcessDetails(messageId, processDetails, options) {
                 ? window.t('chat.einoEmptyResponseContinueTitle')
                 : '🔁 自动续跑（无助手正文）';
         } else if (eventType === 'eino_run_retry') {
-            itemTitle = typeof window.t === 'function'
-                ? window.t('chat.einoRunRetryTitle')
-                : '🔁 临时错误重试';
-            const errRaw = data && data.error != null ? String(data.error).trim() : '';
-            if (errRaw) {
-                const detailLabel = typeof window.t === 'function'
-                    ? window.t('chat.einoRunRetryErrorDetail')
-                    : '错误详情';
-                if (!title || String(title).indexOf(errRaw) === -1) {
-                    const merged = title ? (String(title) + '\n' + detailLabel + '：' + errRaw) : (detailLabel + '：' + errRaw);
-                    detail.message = merged;
-                }
-            }
+            itemTitle = formatProcessDetailEinoRunRetryTitle(data);
+            detail.message = formatProcessDetailEinoRunRetryMessage(title, data);
         } else if (eventType === 'knowledge_retrieval') {
             itemTitle = '📚 ' + (typeof window.t === 'function' ? window.t('chat.knowledgeRetrieval') : '知识检索');
         } else if (eventType === 'error') {
@@ -2609,12 +3255,39 @@ function renderProcessDetails(messageId, processDetails, options) {
             title: itemTitle,
             message: detail.message || '',
             data: data,
+            processDetailId: detail.id || '',
             createdAt: detail.createdAt
         };
         if (eventType === 'tool_call' && data._mergedResult) {
             timelineOpts.mergedResult = data._mergedResult;
+            if (typeof window.getToolResultDisplayState === 'function') {
+                const displayState = window.getToolResultDisplayState(data._mergedResult);
+                if (displayState && displayState.kind === 'background_running') {
+                    timelineOpts.toolStatus = 'background_running';
+                }
+            }
         }
-        addTimelineItem(timeline, eventType, timelineOpts);
+        if (!timelineOpts.toolStatus && eventType === 'tool_call' && detail.id && toolStatusByProcessDetailId.has(String(detail.id))) {
+            timelineOpts.toolStatus = toolStatusByProcessDetailId.get(String(detail.id));
+        }
+        const itemId = addTimelineItem(timeline, eventType, timelineOpts);
+        if (prependMode && itemId) {
+            prependedIds.push(itemId);
+        }
+    }
+
+    function finishPrependRender() {
+        if (!prependMode || prependedIds.length === 0) return;
+        const fragment = document.createDocumentFragment();
+        prependedIds.forEach((id) => {
+            const node = document.getElementById(id);
+            if (node) fragment.appendChild(node);
+        });
+        timeline.insertBefore(fragment, prependAnchor || timeline.firstChild);
+        if (prependScrollBox) {
+            const delta = prependScrollBox.scrollHeight - prependScrollHeight;
+            prependScrollBox.scrollTop = prependScrollTop + delta;
+        }
     }
 
     const TIMELINE_RENDER_BATCH = 40;
@@ -2626,13 +3299,17 @@ function renderProcessDetails(messageId, processDetails, options) {
         if (endIdx < processDetails.length) {
             requestAnimationFrame(() => renderTimelineBatch(endIdx));
         } else if (markLoaded) {
+            finishPrependRender();
             finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoaded, timeline);
+        } else {
+            finishPrependRender();
         }
     };
     if (processDetails.length > TIMELINE_RENDER_BATCH) {
         renderTimelineBatch(0);
     } else {
         processDetails.forEach(renderOneProcessDetail);
+        finishPrependRender();
         if (markLoaded) {
             finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoaded, timeline);
         }
@@ -2646,17 +3323,26 @@ function finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoa
         lazyHint.textContent = (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') +
             '（点击后加载完整过程详情）';
         timeline.appendChild(lazyHint);
+        bindProcessDetailsLazyHint(lazyHint, messageElement.id);
     }
     
     const hasPendingHitlInDetails = processDetails.some(d => d && d.eventType === 'hitl_interrupt');
+    const hasPendingWorkflowHitl = processDetails.some(d => d && d.eventType === 'workflow_hitl_waiting');
     const hasErrorOrCancelled = processDetails.some(d => 
         d.eventType === 'error' || d.eventType === 'cancelled'
     );
-    if (hasErrorOrCancelled && !hasPendingHitlInDetails) {
+    const userExpanded = isProcessDetailsUserExpanded(messageElement.id);
+    if (userExpanded) {
+        timeline.classList.add('expanded');
+        syncProcessDetailButtonLabels(messageElement.id, true);
+    } else if (hasErrorOrCancelled && !hasPendingHitlInDetails && !hasPendingWorkflowHitl) {
         timeline.classList.remove('expanded');
-        const processDetailBtn = messageElement.querySelector('.process-detail-btn');
-        if (processDetailBtn) {
-            processDetailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情') + '</span>';
+        syncProcessDetailButtonLabels(messageElement.id, false);
+    }
+    if (hasPendingWorkflowHitl && messageElement && messageElement.id) {
+        const convId = typeof window.currentConversationId === 'string' ? window.currentConversationId : '';
+        if (convId && typeof window.restoreWorkflowHitlInlineForConversation === 'function') {
+            window.restoreWorkflowHitlInlineForConversation(convId);
         }
     }
 }
@@ -2674,6 +3360,19 @@ function prefetchProcessDetailsSummaryHint(messageId, messageElement) {
             const j = await res.json().catch(() => ({}));
             if (!res.ok || !j.summary) return;
             const s = j.summary;
+            const toolCount = parseInt(s.toolCount, 10) || 0;
+            const summaryMcpIds = Array.isArray(s.mcpExecutionIds) ? s.mcpExecutionIds : [];
+            const summaryTools = Array.isArray(s.toolExecutions) ? s.toolExecutions : [];
+            if (summaryTools.length > 0) {
+                setPendingToolExecutionSummaries(messageElement, summaryTools);
+            }
+            if (summaryMcpIds.length > 0) {
+                setPendingMcpExecutionIds(messageElement, summaryMcpIds);
+            }
+            const buttonToolCount = summaryTools.length > 0 ? summaryTools.length : (toolCount || summaryMcpIds.length);
+            if (buttonToolCount > 0) {
+                setMcpExecutionSummaryCount(messageElement, buttonToolCount);
+            }
             const timeline = detailsContainer.querySelector('.progress-timeline');
             if (!timeline || detailsContainer.dataset.loaded === '1') return;
             const expandLabel = typeof window.t === 'function' ? window.t('chat.expandDetail') : '展开详情';
@@ -2686,6 +3385,7 @@ function prefetchProcessDetailsSummaryHint(messageId, messageElement) {
             const empty = timeline.querySelector('.progress-timeline-empty');
             if (empty) {
                 empty.textContent = hint;
+                bindProcessDetailsLazyHint(timeline, messageId);
             }
         })
         .catch(() => {});
@@ -2708,10 +3408,20 @@ if (chatInput) {
     chatInput.addEventListener('focus', handleChatInputClick);
     // IME输入法事件监听，用于跟踪输入法状态
     chatInput.addEventListener('compositionstart', () => {
+        if (compositionEndTimer) {
+            clearTimeout(compositionEndTimer);
+            compositionEndTimer = null;
+        }
         isComposing = true;
     });
     chatInput.addEventListener('compositionend', () => {
-        isComposing = false;
+        if (compositionEndTimer) {
+            clearTimeout(compositionEndTimer);
+        }
+        compositionEndTimer = setTimeout(() => {
+            isComposing = false;
+            compositionEndTimer = null;
+        }, 0);
     });
     chatInput.addEventListener('blur', () => {
         setTimeout(() => {
@@ -2735,23 +3445,6 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
-// 异步获取工具名称并更新按钮文本
-async function updateButtonWithToolName(button, executionId, index) {
-    try {
-        const response = await apiFetch(`/api/monitor/execution/${executionId}`);
-        if (response.ok) {
-            const exec = await response.json();
-            const toolName = exec.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
-            // 格式化工具名称（如果是 name::toolName 格式，只显示 toolName 部分）
-            const displayToolName = toolName.includes('::') ? toolName.split('::')[1] : toolName;
-            button.querySelector('span').textContent = `${displayToolName} #${index}`;
-        }
-    } catch (error) {
-        // 如果获取失败，保持原有文本不变
-        console.error('获取工具名称失败:', error);
-    }
-}
-
 function getPendingMcpExecutionCount(messageElement) {
     if (!messageElement || !messageElement.dataset || !messageElement.dataset.pendingMcpExecutionIds) {
         return 0;
@@ -2764,14 +3457,206 @@ function getPendingMcpExecutionCount(messageElement) {
     }
 }
 
+function getPendingToolExecutionSummaryCount(messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.pendingToolExecutionSummaries) {
+        return 0;
+    }
+    try {
+        const tools = JSON.parse(messageElement.dataset.pendingToolExecutionSummaries);
+        return Array.isArray(tools) ? tools.length : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
 function getMcpExecutionCount(messageElement) {
-    const pending = getPendingMcpExecutionCount(messageElement);
-    if (pending > 0) return pending;
+    const pendingSummaries = getPendingToolExecutionSummaryCount(messageElement);
+    if (pendingSummaries > 0) return pendingSummaries;
     const toolList = messageElement && messageElement.querySelector('.mcp-tool-list');
     if (toolList) {
-        return toolList.querySelectorAll('.mcp-detail-btn[data-exec-id]').length;
+        const rendered = toolList.querySelectorAll('.mcp-detail-btn').length;
+        if (rendered > 0) return rendered;
     }
+    if (messageElement && messageElement.dataset && messageElement.dataset.mcpExecutionCount) {
+        const summaryCount = parseInt(messageElement.dataset.mcpExecutionCount, 10) || 0;
+        if (summaryCount > 0) return summaryCount;
+    }
+    const pending = getPendingMcpExecutionCount(messageElement);
+    if (pending > 0) return pending;
     return 0;
+}
+
+function getExistingMcpCallSectionChrome(messageElement) {
+    if (!messageElement) return null;
+    const mcpSection = messageElement.querySelector('.mcp-call-section');
+    if (!mcpSection) return null;
+    return {
+        mcpSection: mcpSection,
+        toolbar: mcpSection.querySelector('.mcp-call-toolbar'),
+        toolList: mcpSection.querySelector('.mcp-tool-list')
+    };
+}
+
+function pruneEmptyMcpCallSection(messageElement) {
+    const chrome = getExistingMcpCallSectionChrome(messageElement);
+    if (!chrome || !chrome.mcpSection) return;
+    const hasDetails = !!chrome.mcpSection.querySelector('.process-details-container');
+    const hasProcessDetailButton = !!(chrome.toolbar && chrome.toolbar.querySelector('.process-detail-btn'));
+    const hasToolButtons = !!(chrome.toolList && chrome.toolList.querySelector('.mcp-detail-btn'));
+    const hasPendingTools = getPendingMcpExecutionCount(messageElement) > 0 ||
+        getPendingToolExecutionSummaryCount(messageElement) > 0 ||
+        getMcpExecutionCount(messageElement) > 0;
+    if (!hasDetails && !hasProcessDetailButton && !hasToolButtons && !hasPendingTools) {
+        chrome.mcpSection.remove();
+    }
+}
+
+function collectMcpExecutionIdsFromProcessDetails(processDetails) {
+    if (!Array.isArray(processDetails)) return [];
+    const seen = new Set();
+    const ids = [];
+    const add = (value) => {
+        const id = value == null ? '' : String(value).trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        ids.push(id);
+    };
+    processDetails.forEach((detail) => {
+        const data = detail && detail.data && typeof detail.data === 'object' ? detail.data : null;
+        if (!data) return;
+        add(data.executionId);
+        const merged = data._mergedResult && typeof data._mergedResult === 'object' ? data._mergedResult : null;
+        if (merged) add(merged.executionId);
+    });
+    return ids;
+}
+
+function normalizeMcpExecutionIds(executionIds) {
+    if (!Array.isArray(executionIds)) return [];
+    const seen = new Set();
+    return executionIds.reduce((ids, value) => {
+        const id = value == null ? '' : String(value).trim();
+        if (id && !seen.has(id)) {
+            seen.add(id);
+            ids.push(id);
+        }
+        return ids;
+    }, []);
+}
+
+function cacheMcpExecutionIds(messageElement, executionIds) {
+    if (!messageElement || !messageElement.dataset) return [];
+    const ids = normalizeMcpExecutionIds(executionIds);
+    if (ids.length > 0) {
+        messageElement.dataset.mcpExecutionIds = JSON.stringify(ids);
+    } else {
+        delete messageElement.dataset.mcpExecutionIds;
+    }
+    return ids;
+}
+
+function getCachedMcpExecutionIds(messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.mcpExecutionIds) return [];
+    try {
+        return normalizeMcpExecutionIds(JSON.parse(messageElement.dataset.mcpExecutionIds));
+    } catch (e) {
+        delete messageElement.dataset.mcpExecutionIds;
+        return [];
+    }
+}
+
+function setPendingMcpExecutionIds(messageElement, executionIds) {
+    if (!messageElement || !messageElement.dataset || !Array.isArray(executionIds)) return;
+    const ids = cacheMcpExecutionIds(messageElement, executionIds);
+    if (ids.length > 0) {
+        messageElement.dataset.pendingMcpExecutionIds = JSON.stringify(ids);
+    } else {
+        delete messageElement.dataset.pendingMcpExecutionIds;
+    }
+    const renderedToolList = messageElement.querySelector('.mcp-tool-list');
+    if (ids.length > 0 && renderedToolList && renderedToolList.querySelector('.mcp-detail-btn')) {
+        renderMcpCallButtons(messageElement);
+    }
+    if (typeof syncMcpToolsToggleButton === 'function') {
+        syncMcpToolsToggleButton(messageElement);
+    }
+}
+
+function normalizeToolExecutionSummaryForButton(raw) {
+    const data = raw && typeof raw === 'object' ? raw : {};
+	return {
+	    toolName: data.toolName || data.name || '',
+	    status: data.status || '',
+	    executionId: data.executionId || '',
+	    toolCallId: data.toolCallId || '',
+	    processDetailId: data.processDetailId || '',
+	    resultDetailId: data.resultDetailId || ''
+	};
+}
+
+function cacheToolExecutionSummaries(messageElement, summaries) {
+    if (!messageElement || !messageElement.dataset || !Array.isArray(summaries)) return [];
+    const normalized = summaries
+        .map(normalizeToolExecutionSummaryForButton)
+        .filter((item) => item.toolName || item.executionId || item.toolCallId);
+    if (normalized.length > 0) {
+        messageElement.dataset.toolExecutionSummaries = JSON.stringify(normalized);
+    } else {
+        delete messageElement.dataset.toolExecutionSummaries;
+    }
+    return normalized;
+}
+
+function getCachedToolExecutionSummaries(messageElement) {
+    if (!messageElement || !messageElement.dataset || !messageElement.dataset.toolExecutionSummaries) return [];
+    try {
+        const parsed = JSON.parse(messageElement.dataset.toolExecutionSummaries);
+        return Array.isArray(parsed) ? parsed.map(normalizeToolExecutionSummaryForButton) : [];
+    } catch (e) {
+        delete messageElement.dataset.toolExecutionSummaries;
+        return [];
+    }
+}
+
+function selectToolExecutionSummariesForButtons(summaries, executionIds) {
+    const normalizedSummaries = Array.isArray(summaries)
+        ? summaries.map(normalizeToolExecutionSummaryForButton)
+        : [];
+    const normalizedIds = normalizeMcpExecutionIds(executionIds);
+    if (normalizedSummaries.length > 0) return normalizedSummaries;
+    if (normalizedIds.length === 0) return normalizedSummaries;
+    return normalizedIds.map((executionId) => normalizeToolExecutionSummaryForButton({ executionId }));
+}
+
+function setPendingToolExecutionSummaries(messageElement, summaries) {
+    if (!messageElement || !messageElement.dataset || !Array.isArray(summaries)) return;
+    const normalized = cacheToolExecutionSummaries(messageElement, summaries);
+    if (normalized.length > 0) {
+        messageElement.dataset.pendingToolExecutionSummaries = JSON.stringify(normalized);
+    } else {
+        delete messageElement.dataset.pendingToolExecutionSummaries;
+    }
+    const renderedToolList = messageElement.querySelector('.mcp-tool-list');
+    if (normalized.length > 0 && renderedToolList && renderedToolList.querySelector('.mcp-detail-btn')) {
+        setMcpCallSummaries(messageElement, normalized);
+        delete messageElement.dataset.pendingToolExecutionSummaries;
+    }
+    if (typeof syncMcpToolsToggleButton === 'function') {
+        syncMcpToolsToggleButton(messageElement);
+    }
+}
+
+function setMcpExecutionSummaryCount(messageElement, count) {
+    if (!messageElement || !messageElement.dataset) return;
+    const n = parseInt(count, 10) || 0;
+    if (n > 0) {
+        messageElement.dataset.mcpExecutionCount = String(n);
+    } else {
+        delete messageElement.dataset.mcpExecutionCount;
+    }
+    if (typeof syncMcpToolsToggleButton === 'function') {
+        syncMcpToolsToggleButton(messageElement);
+    }
 }
 
 function formatMcpToolsToggleLabel(count, expanded) {
@@ -2800,29 +3685,22 @@ function ensureMcpCallSectionChrome(messageElement, messageId) {
         mcpSection.className = 'mcp-call-section';
         const mcpLabel = document.createElement('div');
         mcpLabel.className = 'mcp-call-label';
-        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
+        mcpLabel.textContent = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '任务执行详情');
         mcpSection.appendChild(mcpLabel);
         contentWrapper.appendChild(mcpSection);
     } else {
         const mcpLabel = mcpSection.querySelector('.mcp-call-label');
-        const labelText = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '渗透测试详情');
+        const labelText = '📋 ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestDetail') : '任务执行详情');
         if (mcpLabel && mcpLabel.textContent !== labelText) {
             mcpLabel.textContent = labelText;
         }
     }
 
     let toolbar = mcpSection.querySelector('.mcp-call-toolbar');
-    const legacyButtons = mcpSection.querySelector('.mcp-call-buttons');
     if (!toolbar) {
         toolbar = document.createElement('div');
         toolbar.className = 'mcp-call-toolbar';
-        if (legacyButtons) {
-            const processBtn = legacyButtons.querySelector('.process-detail-btn');
-            if (processBtn) toolbar.appendChild(processBtn);
-            mcpSection.replaceChild(toolbar, legacyButtons);
-        } else {
-            mcpSection.appendChild(toolbar);
-        }
+        mcpSection.appendChild(toolbar);
     }
 
     let toolList = mcpSection.querySelector('.mcp-tool-list');
@@ -2835,11 +3713,6 @@ function ensureMcpCallSectionChrome(messageElement, messageId) {
         } else {
             toolbar.after(toolList);
         }
-    }
-
-    if (legacyButtons && legacyButtons.parentNode === mcpSection) {
-        legacyButtons.querySelectorAll('.mcp-detail-btn[data-exec-id]').forEach((btn) => toolList.appendChild(btn));
-        legacyButtons.remove();
     }
 
     const clientId = messageId || messageElement.id;
@@ -2856,13 +3729,19 @@ function ensureMcpCallSectionChrome(messageElement, messageId) {
 
 function syncMcpToolsToggleButton(messageElement) {
     if (!messageElement) return;
-    const chrome = ensureMcpCallSectionChrome(messageElement, messageElement.id);
+    const count = getMcpExecutionCount(messageElement);
+    let chrome = getExistingMcpCallSectionChrome(messageElement);
+    if (!chrome || (count > 0 && (!chrome.toolbar || !chrome.toolList))) {
+        if (count <= 0) return;
+        chrome = ensureMcpCallSectionChrome(messageElement, messageElement.id);
+    }
     if (!chrome) return;
     const { toolbar, toolList } = chrome;
-    const count = getMcpExecutionCount(messageElement);
+    if (!toolbar || !toolList) return;
     let toolsToggle = toolbar.querySelector('.mcp-tools-toggle-btn');
     if (count <= 0) {
         if (toolsToggle) toolsToggle.remove();
+        pruneEmptyMcpCallSection(messageElement);
         return;
     }
     if (!toolsToggle) {
@@ -2879,15 +3758,147 @@ function syncMcpToolsToggleButton(messageElement) {
     toolsToggle.innerHTML = '<span>' + formatMcpToolsToggleLabel(count, expanded) + '</span>';
 }
 
+function cssEscapeValue(value) {
+    const s = String(value || '');
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+        return CSS.escape(s);
+    }
+    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+async function ensureProcessDetailsForToolFocus(messageElement, anchorId) {
+    if (!messageElement || !messageElement.id) return null;
+    const detailsId = 'process-details-' + messageElement.id;
+    let detailsContainer = document.getElementById(detailsId);
+    const backendId = messageElement.dataset ? String(messageElement.dataset.backendMessageId || '').trim() : '';
+    if (detailsContainer && detailsContainer.dataset && detailsContainer.dataset.lazyNotLoaded === '1' && backendId && typeof window.loadProcessDetailsPaginated === 'function') {
+        await window.loadProcessDetailsPaginated(messageElement.id, backendId, { autoLoadAll: false, anchorId: anchorId || '' });
+        detailsContainer = document.getElementById(detailsId);
+    } else if (!detailsContainer && backendId && typeof renderProcessDetails === 'function') {
+        renderProcessDetails(messageElement.id, null);
+        detailsContainer = document.getElementById(detailsId);
+        if (detailsContainer && typeof window.loadProcessDetailsPaginated === 'function') {
+            await window.loadProcessDetailsPaginated(messageElement.id, backendId, { autoLoadAll: false, anchorId: anchorId || '' });
+            detailsContainer = document.getElementById(detailsId);
+        }
+    }
+    if (typeof window.expandProcessDetailsTimeline === 'function') {
+        window.expandProcessDetailsTimeline(messageElement.id);
+    } else if (typeof toggleProcessDetails === 'function') {
+        const timeline = detailsContainer && detailsContainer.querySelector('.progress-timeline');
+        if (!timeline || !timeline.classList.contains('expanded')) {
+            toggleProcessDetails(null, messageElement.id);
+        }
+    }
+    return document.getElementById(detailsId);
+}
+
+async function focusToolExecutionInProcessDetails(messageElement, summary, index) {
+    const item = normalizeToolExecutionSummaryForButton(summary);
+    let detailsContainer = await ensureProcessDetailsForToolFocus(messageElement, item.processDetailId || '');
+    let timeline = detailsContainer && detailsContainer.querySelector('.progress-timeline');
+    if (!timeline) return;
+    let target = null;
+    if (item.processDetailId) {
+        target = timeline.querySelector('[data-process-detail-id="' + cssEscapeValue(item.processDetailId) + '"]');
+    }
+    if (!target && item.toolCallId) {
+        target = timeline.querySelector('[data-tool-call-id="' + cssEscapeValue(item.toolCallId) + '"]');
+    }
+    if (!target) {
+        const toolItems = timeline.querySelectorAll('.timeline-item-tool_call');
+        target = toolItems[index] || null;
+    }
+    if (!target && item.processDetailId && messageElement.dataset && messageElement.dataset.backendMessageId && typeof window.loadProcessDetailsPaginated === 'function') {
+        await window.loadProcessDetailsPaginated(messageElement.id, messageElement.dataset.backendMessageId, {
+            autoLoadAll: false,
+            anchorId: item.processDetailId
+        });
+        detailsContainer = document.getElementById('process-details-' + messageElement.id);
+        timeline = detailsContainer && detailsContainer.querySelector('.progress-timeline');
+        target = timeline ? timeline.querySelector('[data-process-detail-id="' + cssEscapeValue(item.processDetailId) + '"]') : null;
+    }
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('timeline-item-focus-pulse');
+    void target.offsetWidth;
+    target.classList.add('timeline-item-focus-pulse');
+    setTimeout(() => {
+        target.classList.remove('timeline-item-focus-pulse');
+    }, 2200);
+}
+
+async function findToolExecutionTimelineItem(messageElement, summary, index) {
+    const item = normalizeToolExecutionSummaryForButton(summary);
+    let detailsContainer = await ensureProcessDetailsForToolFocus(messageElement, item.processDetailId || '');
+    let timeline = detailsContainer && detailsContainer.querySelector('.progress-timeline');
+    if (!timeline) return null;
+    let target = null;
+    if (item.processDetailId) {
+        target = timeline.querySelector('[data-process-detail-id="' + cssEscapeValue(item.processDetailId) + '"]');
+    }
+    if (!target && item.toolCallId) {
+        target = timeline.querySelector('[data-tool-call-id="' + cssEscapeValue(item.toolCallId) + '"]');
+    }
+    if (!target && item.processDetailId && messageElement.dataset && messageElement.dataset.backendMessageId && typeof window.loadProcessDetailsPaginated === 'function') {
+        await window.loadProcessDetailsPaginated(messageElement.id, messageElement.dataset.backendMessageId, {
+            autoLoadAll: false,
+            anchorId: item.processDetailId
+        });
+        detailsContainer = document.getElementById('process-details-' + messageElement.id);
+        timeline = detailsContainer && detailsContainer.querySelector('.progress-timeline');
+        target = timeline ? timeline.querySelector('[data-process-detail-id="' + cssEscapeValue(item.processDetailId) + '"]') : null;
+    }
+    return target;
+}
+
+async function resolveToolExecutionSummaryForFocus(messageElement, executionId, index) {
+    const wantedExecutionId = executionId == null ? '' : String(executionId).trim();
+    let summaries = getCachedToolExecutionSummaries(messageElement);
+    let item = wantedExecutionId
+        ? summaries.find((summary) => summary.executionId === wantedExecutionId)
+        : summaries[index];
+    if (item && (item.processDetailId || item.toolCallId)) return item;
+
+    const backendId = messageElement && messageElement.dataset
+        ? String(messageElement.dataset.backendMessageId || '').trim()
+        : '';
+    if (!backendId || typeof apiFetch !== 'function') return item || null;
+    try {
+        const res = await apiFetch('/api/messages/' + encodeURIComponent(backendId) + '/process-details?summary=1');
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || !payload.summary || !Array.isArray(payload.summary.toolExecutions)) {
+            return item || null;
+        }
+        summaries = cacheToolExecutionSummaries(messageElement, payload.summary.toolExecutions);
+        item = wantedExecutionId
+            ? summaries.find((summary) => summary.executionId === wantedExecutionId)
+            : summaries[index];
+        return item || null;
+    } catch (e) {
+        return item || null;
+    }
+}
+
 function toggleMcpToolList(assistantMessageId) {
     const messageEl = document.getElementById(assistantMessageId);
     if (!messageEl) return;
     const chrome = ensureMcpCallSectionChrome(messageEl, assistantMessageId);
     if (!chrome) return;
     const { toolList } = chrome;
+    if (
+        !getPendingMcpExecutionCount(messageEl) &&
+        !getPendingToolExecutionSummaryCount(messageEl) &&
+        !toolList.querySelector('.mcp-detail-btn')
+    ) {
+        if (typeof toggleProcessDetails === 'function') {
+            toggleProcessDetails(null, assistantMessageId);
+        }
+        return;
+    }
     const willExpand = !toolList.classList.contains('expanded');
     if (willExpand) {
-        ensureMcpCallButtons(messageEl);
+        renderPendingMcpCallButtons(messageEl);
         toolList.classList.add('expanded');
     } else {
         toolList.classList.remove('expanded');
@@ -2897,58 +3908,335 @@ function toggleMcpToolList(assistantMessageId) {
 
 window.toggleMcpToolList = toggleMcpToolList;
 window.syncMcpToolsToggleButton = syncMcpToolsToggleButton;
+window.isProcessDetailsUserExpanded = isProcessDetailsUserExpanded;
+window.syncProcessDetailButtonLabels = syncProcessDetailButtonLabels;
 window.ensureMcpCallSectionChrome = ensureMcpCallSectionChrome;
+window.setMcpExecutionSummaryCount = setMcpExecutionSummaryCount;
+window.setPendingMcpExecutionIds = setPendingMcpExecutionIds;
+window.setPendingToolExecutionSummaries = setPendingToolExecutionSummaries;
 
-/** 将 MCP 工具按钮挂到独立工具列表，并批量解析工具名 */
-function appendMcpCallButtons(messageElement, executionIds) {
-    if (!messageElement || !Array.isArray(executionIds) || executionIds.length === 0) {
+async function fetchProcessDetailDataForModal(detailId) {
+    const id = detailId != null ? String(detailId).trim() : '';
+    if (!id || typeof apiFetch !== 'function') return null;
+    const res = await apiFetch('/api/process-details/' + encodeURIComponent(id));
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+    const detail = j && j.processDetail ? j.processDetail : null;
+    return detail && detail.data ? detail.data : null;
+}
+
+async function fetchProcessDetailForModal(detailId) {
+    const id = detailId != null ? String(detailId).trim() : '';
+    if (!id || typeof apiFetch !== 'function') return null;
+    const res = await apiFetch('/api/process-details/' + encodeURIComponent(id));
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+    return j && j.processDetail ? j.processDetail : null;
+}
+
+function processToolResultTextFromData(resultData) {
+    if (!resultData) return '';
+    const noResultText = typeof window.t === 'function' ? window.t('timeline.noResult') : '无结果';
+    const result = resultData.result != null
+        ? resultData.result
+        : (resultData.error != null ? resultData.error : (resultData.resultPreview != null ? resultData.resultPreview : noResultText));
+    return typeof result === 'string' ? result : JSON.stringify(result);
+}
+
+function processToolResultToMCPResult(resultData, rawText) {
+    if (!resultData) return null;
+    const displayState = typeof window.getToolResultDisplayState === 'function'
+        ? window.getToolResultDisplayState(resultData, { rawText: rawText })
+        : { kind: ((resultData.isError || resultData.success === false) ? 'error' : 'success'), isError: !!(resultData.isError || resultData.success === false) };
+    const isError = !!displayState.isError;
+    let text = rawText;
+    if (text == null || String(text) === '') {
+        text = processToolResultTextFromData(resultData);
+    }
+    return {
+        content: [{ type: 'text', text: String(text || '') }],
+        isError: isError
+    };
+}
+
+async function showMCPDetailFromProcessToolItem(messageElement, summary, index) {
+    const item = normalizeToolExecutionSummaryForButton(summary);
+    if (item.processDetailId) {
+        const callDetail = await fetchProcessDetailForModal(item.processDetailId);
+        const callData = callDetail && callDetail.data ? callDetail.data : null;
+        if (callData) {
+            const args = typeof window.parseToolCallArgsFromData === 'function'
+                ? window.parseToolCallArgsFromData(callData)
+                : (callData.argumentsObj || {});
+            let resultData = callData._mergedResult || null;
+            let resultDetailId = item.resultDetailId || callData._mergedResultDetailId || '';
+            let rawText = resultData ? processToolResultTextFromData(resultData) : '';
+            const resultPayloadDeferred = resultData && resultData._payloadDeferred === true;
+            const resultOnlyHasPreview = resultData && resultData.result == null && resultData.error == null && resultData.resultPreview != null;
+            if (resultDetailId && (!resultData || resultPayloadDeferred || resultOnlyHasPreview)) {
+                const resultDetail = await fetchProcessDetailForModal(resultDetailId);
+                const fullResult = resultDetail && resultDetail.data ? resultDetail.data : null;
+                if (fullResult) {
+                    resultData = fullResult;
+                    rawText = processToolResultTextFromData(fullResult);
+                }
+            }
+            const displayState = resultData && typeof window.getToolResultDisplayState === 'function'
+                ? window.getToolResultDisplayState(resultData, { rawText: rawText })
+                : null;
+            const backgroundRunning = (displayState && displayState.kind === 'background_running') || String(item.status || '').toLowerCase() === 'background_running';
+            const success = resultData
+                ? !(displayState ? displayState.isError : (resultData.isError || resultData.success === false))
+                : String(item.status || '').toLowerCase() !== 'failed';
+            const status = backgroundRunning
+                ? 'background_running'
+                : (resultData || item.status
+                    ? (success ? 'completed' : 'failed')
+                    : 'running');
+            const exec = {
+                id: (resultData && resultData.executionId) || item.executionId || callData.executionId || '',
+                toolName: item.toolName || callData.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具'),
+                status: status,
+                startTime: callDetail.createdAt || '',
+                arguments: args || {},
+                result: processToolResultToMCPResult(resultData, rawText),
+                error: resultData && resultData.error ? String(resultData.error) : ''
+            };
+            openAppModal('mcp-detail-modal', { focus: false });
+            deferModalContent(function () {
+                renderMCPDetailModal(exec);
+            });
+            return;
+        }
+    }
+
+    const target = await findToolExecutionTimelineItem(messageElement, summary, index);
+    if (!target) {
+        alert(typeof window.t === 'function'
+            ? window.t('chat.toolExecutionDetailPending')
+            : '工具执行详情尚未同步，请稍后重试。');
         return;
     }
+    const state = typeof window.getToolCallDetailState === 'function'
+        ? window.getToolCallDetailState(target)
+        : {};
+    let args = state.args;
+    let resultData = state.resultData;
+    let rawText = state.rawText;
+    if ((!args || Object.keys(args).length === 0) && state.processDetailId) {
+        const fullCall = await fetchProcessDetailDataForModal(state.processDetailId);
+        if (fullCall) {
+            args = typeof window.parseToolCallArgsFromData === 'function'
+                ? window.parseToolCallArgsFromData(fullCall)
+                : (fullCall.argumentsObj || {});
+        }
+    }
+    const resultDetailId = state.resultDetailId || target.dataset.toolResultDetailId || '';
+    const resultPayloadDeferred = resultData && resultData._payloadDeferred === true;
+    const resultOnlyHasPreview = resultData && resultData.result == null && resultData.error == null && resultData.resultPreview != null;
+    if (resultDetailId && (!resultData || resultPayloadDeferred || resultOnlyHasPreview)) {
+        const fullResult = await fetchProcessDetailDataForModal(resultDetailId);
+        if (fullResult) {
+            resultData = fullResult;
+            rawText = processToolResultTextFromData(fullResult);
+        }
+    }
+    const toolName = (summary && summary.toolName) || target.dataset.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
+    const displayState = resultData && typeof window.getToolResultDisplayState === 'function'
+        ? window.getToolResultDisplayState(resultData, { rawText: rawText })
+        : null;
+    const backgroundRunning = (displayState && displayState.kind === 'background_running') || target.dataset.toolDisplayStatus === 'background_running';
+    const success = resultData ? !(displayState ? displayState.isError : (resultData.isError || resultData.success === false)) : target.dataset.toolSuccess !== '0';
+    const status = backgroundRunning
+        ? 'background_running'
+        : (resultData || target.classList.contains('tool-call-completed') || target.classList.contains('tool-call-failed')
+            ? (success ? 'completed' : 'failed')
+            : 'running');
+    const exec = {
+        id: (resultData && resultData.executionId) || (summary && summary.executionId) || '',
+        toolName: toolName,
+        status: status,
+        startTime: target.dataset.createdAtIso || '',
+        arguments: args || {},
+        result: processToolResultToMCPResult(resultData, rawText),
+        error: resultData && resultData.error ? String(resultData.error) : ''
+    };
+    openAppModal('mcp-detail-modal', { focus: false });
+    deferModalContent(function () {
+        renderMCPDetailModal(exec);
+    });
+}
+
+async function openTaskToolExecutionDetail(messageElement, item, index) {
+    let detailItem = item;
+    if (!detailItem.executionId) {
+        const refreshedItem = await resolveToolExecutionSummaryForFocus(messageElement, '', index);
+        detailItem = refreshedItem || detailItem;
+    }
+    if (detailItem.executionId) {
+        await showMCPDetail(detailItem.executionId);
+        return;
+    }
+    await showMCPDetailFromProcessToolItem(messageElement, detailItem, index);
+}
+
+/**
+ * 声明式渲染工具调用列表。
+ * 过程摘要提供完整展示入口；executionIds 只补充可直接打开监控详情的 ID。
+ * 每次更新整体替换列表，避免增量追加产生双重状态。
+ */
+function renderMcpCallButtons(messageElement) {
+    if (!messageElement) return;
     const chrome = ensureMcpCallSectionChrome(messageElement, messageElement.id);
     if (!chrome) return;
     const toolList = chrome.toolList;
+    const executionIds = getCachedMcpExecutionIds(messageElement);
+    const summaries = getCachedToolExecutionSummaries(messageElement);
+    const items = selectToolExecutionSummariesForButtons(summaries, executionIds);
 
-    executionIds.forEach((execId, index) => {
-        if (toolList.querySelector('.mcp-detail-btn[data-exec-id="' + CSS.escape(String(execId)) + '"]')) {
-            return;
+    const renderVersion = String((parseInt(toolList.dataset.renderVersion, 10) || 0) + 1);
+    toolList.dataset.renderVersion = renderVersion;
+    const fragment = document.createDocumentFragment();
+    items.forEach((item, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mcp-detail-btn';
+        btn.dataset.execIndex = String(index + 1);
+        if (item.executionId) {
+            btn.dataset.execId = item.executionId;
         }
-        const detailBtn = document.createElement('button');
-        detailBtn.className = 'mcp-detail-btn';
-        detailBtn.dataset.execId = execId;
-        detailBtn.dataset.execIndex = String(index + 1);
-        detailBtn.innerHTML = '<span>' + (typeof window.t === 'function' ? window.t('chat.callNumber', { n: index + 1 }) : '调用 #' + (index + 1)) + '</span>';
-        detailBtn.onclick = () => showMCPDetail(execId);
-        toolList.appendChild(detailBtn);
+        if (item.toolCallId) {
+            btn.dataset.toolCallId = item.toolCallId;
+        }
+        btn.onclick = () => openTaskToolExecutionDetail(messageElement, item, index);
+        if (item.toolName) {
+            renderToolExecutionButtonContent(btn, item.toolName, String(index + 1), item.status);
+        } else {
+            btn.innerHTML = '<span>' + (typeof window.t === 'function'
+                ? window.t('chat.callNumber', { n: index + 1 })
+                : '调用 #' + (index + 1)) + '</span>';
+        }
+        fragment.appendChild(btn);
     });
-    batchUpdateButtonToolNames(toolList, executionIds);
+    toolList.replaceChildren(fragment);
+
+    if (summaries.length === 0 && executionIds.length > 0) {
+        batchUpdateButtonToolNames(toolList, executionIds, renderVersion);
+    }
     syncMcpToolsToggleButton(messageElement);
 }
 
-/** 历史会话懒加载：用户展开工具列表时再渲染工具按钮 */
-function ensureMcpCallButtons(messageElement) {
-    if (!messageElement || !messageElement.dataset || !messageElement.dataset.pendingMcpExecutionIds) {
-        return;
-    }
-    let executionIds;
-    try {
-        executionIds = JSON.parse(messageElement.dataset.pendingMcpExecutionIds);
-    } catch (e) {
-        delete messageElement.dataset.pendingMcpExecutionIds;
-        return;
-    }
-    if (!Array.isArray(executionIds) || executionIds.length === 0) {
-        delete messageElement.dataset.pendingMcpExecutionIds;
-        return;
-    }
-    appendMcpCallButtons(messageElement, executionIds);
-    delete messageElement.dataset.pendingMcpExecutionIds;
+function setMcpCallExecutionIds(messageElement, executionIds) {
+    if (!messageElement || !Array.isArray(executionIds)) return;
+    cacheMcpExecutionIds(messageElement, executionIds);
+    renderMcpCallButtons(messageElement);
 }
 
-window.ensureMcpCallButtons = ensureMcpCallButtons;
-window.appendMcpCallButtons = appendMcpCallButtons;
+function setMcpCallSummaries(messageElement, summaries) {
+    if (!messageElement || !Array.isArray(summaries)) return;
+    cacheToolExecutionSummaries(messageElement, summaries);
+    renderMcpCallButtons(messageElement);
+}
 
-// 批量获取工具名称并更新按钮（消除 N 次单独 API 请求，合并为 1 次）
-async function batchUpdateButtonToolNames(buttonsContainer, executionIds) {
+/** 懒加载：用户展开工具列表时提交待渲染的数据模型。 */
+function renderPendingMcpCallButtons(messageElement) {
+    if (!messageElement || !messageElement.dataset) {
+        return;
+    }
+    let renderedSummaryExecutions = false;
+    if (messageElement.dataset.pendingToolExecutionSummaries) {
+        let summaries;
+        try {
+            summaries = JSON.parse(messageElement.dataset.pendingToolExecutionSummaries);
+        } catch (e) {
+            delete messageElement.dataset.pendingToolExecutionSummaries;
+            summaries = [];
+        }
+        if (Array.isArray(summaries) && summaries.length > 0) {
+            setMcpCallSummaries(messageElement, summaries);
+            renderedSummaryExecutions = true;
+        }
+        delete messageElement.dataset.pendingToolExecutionSummaries;
+    }
+    if (renderedSummaryExecutions) {
+        return;
+    }
+    if (messageElement.dataset.pendingMcpExecutionIds) {
+        let executionIds;
+        try {
+            executionIds = JSON.parse(messageElement.dataset.pendingMcpExecutionIds);
+        } catch (e) {
+            delete messageElement.dataset.pendingMcpExecutionIds;
+            executionIds = [];
+        }
+        if (Array.isArray(executionIds) && executionIds.length > 0) {
+            setMcpCallExecutionIds(messageElement, executionIds);
+        }
+        delete messageElement.dataset.pendingMcpExecutionIds;
+    }
+}
+
+window.setMcpCallExecutionIds = setMcpCallExecutionIds;
+
+function normalizeToolExecutionSummary(raw) {
+    if (typeof raw === 'string') {
+        return { toolName: raw, status: '' };
+    }
+    if (raw && typeof raw === 'object') {
+        return {
+            toolName: raw.toolName || raw.name || '',
+            status: raw.status || ''
+        };
+    }
+    return { toolName: '', status: '' };
+}
+
+function getToolExecutionStatusLabel(status) {
+    const normalized = String(status || '').toLowerCase();
+    if (typeof window.t === 'function') {
+        const keyMap = {
+            completed: 'mcpMonitor.statusSuccess',
+            failed: 'mcpMonitor.statusFailed',
+            running: 'mcpMonitor.statusRunning',
+            cancelled: 'mcpMonitor.statusCancelled',
+            pending: 'mcpMonitor.statusPending',
+            result_missing: 'timeline.resultMissing'
+        };
+        const key = keyMap[normalized];
+        if (key) {
+            const translated = window.t(key);
+            if (translated && translated !== key) return translated;
+        }
+    }
+    const fallback = {
+        completed: '成功',
+        failed: '失败',
+        running: '运行中',
+        cancelled: '已取消',
+        pending: '等待中',
+        result_missing: '结果记录缺失'
+    };
+    return fallback[normalized] || '';
+}
+
+function renderToolExecutionButtonContent(btn, displayToolName, index, status) {
+    const safeToolName = escapeHtml(displayToolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具'));
+    const safeIndex = escapeHtml(index || '');
+    const statusText = getToolExecutionStatusLabel(status);
+    const normalizedStatus = String(status || '').toLowerCase();
+    const label = safeIndex ? `${safeToolName} #${safeIndex}` : safeToolName;
+    btn.innerHTML = '<span class="mcp-tool-name">' + label + '</span>';
+    if (!statusText) {
+        btn.removeAttribute('data-status');
+        btn.removeAttribute('title');
+        return;
+    }
+    btn.dataset.status = normalizedStatus;
+    btn.title = statusText;
+}
+
+// 批量获取工具摘要并更新按钮（消除 N 次单独 API 请求，合并为 1 次）
+async function batchUpdateButtonToolNames(buttonsContainer, executionIds, renderVersion) {
     if (!executionIds || executionIds.length === 0) return;
     try {
         const response = await apiFetch('/api/monitor/executions/names', {
@@ -2957,26 +4245,25 @@ async function batchUpdateButtonToolNames(buttonsContainer, executionIds) {
             body: JSON.stringify({ ids: executionIds }),
         });
         if (!response.ok) return;
-        const nameMap = await response.json(); // { execId: toolName }
+        const nameMap = await response.json(); // { execId: toolName } 或 { execId: { toolName, status } }
+        // 等待请求期间如果摘要触发了新一轮渲染，旧响应不得覆盖新状态。
+        if (renderVersion && buttonsContainer.dataset.renderVersion !== renderVersion) return;
         // 更新对应按钮的文本
         const buttons = buttonsContainer.querySelectorAll('.mcp-detail-btn[data-exec-id]');
         buttons.forEach(btn => {
             const execId = btn.dataset.execId;
             const index = btn.dataset.execIndex;
-            const toolName = nameMap[execId];
+            const summary = normalizeToolExecutionSummary(nameMap[execId]);
+            const toolName = summary.toolName;
             if (toolName) {
                 const displayToolName = toolName.includes('::') ? toolName.split('::')[1] : toolName;
-                const span = btn.querySelector('span');
-                if (span) span.textContent = `${displayToolName} #${index}`;
+                renderToolExecutionButtonContent(btn, displayToolName, index, summary.status);
             }
         });
     } catch (error) {
         console.error('批量获取工具名称失败:', error);
     }
 }
-
-// 显示MCP调用详情
-const MCP_DETAIL_MAX_CHARS = 120000;
 
 function extractMCPResultText(result) {
     if (!result) return '';
@@ -2994,37 +4281,148 @@ function extractMCPResultText(result) {
     return '';
 }
 
-function truncateMCPDetailText(text, maxChars) {
+function formatMCPDetailText(text) {
     if (text == null) return '';
-    const s = String(text);
-    if (s.length <= maxChars) return s;
-    const hint = typeof window.t === 'function'
-        ? window.t('mcpDetailModal.contentTruncated')
-        : '…（展示已截断；完整内容见 persisted-output 中的文件路径，用 read_file 读取）';
-    return s.slice(0, maxChars) + '\n\n' + hint;
+    return String(text);
 }
 
-/** 响应结果区 JSON 展示（过大时截断 content 内 text，避免 stringify 卡死页面） */
-function formatMCPResultJsonForDisplay(result, maxChars) {
+function formatMCPResultJsonForDisplay(result) {
     if (!result) return '{}';
     const payload = {
         content: result.content,
         isError: !!result.isError
     };
-    let json = JSON.stringify(payload, null, 2);
-    if (json.length <= maxChars) {
-        return json;
-    }
-    const text = extractMCPResultText(result);
-    const truncatedPayload = {
-        content: [{ type: 'text', text: truncateMCPDetailText(text, Math.min(maxChars - 800, MCP_DETAIL_MAX_CHARS)) }],
-        isError: !!result.isError
+    return JSON.stringify(payload, null, 2);
+}
+
+function switchMCPResultDetailTab(tabName) {
+    const normalized = tabName === 'raw' ? 'raw' : 'success';
+    const tabs = {
+        success: document.getElementById('detail-result-tab-success'),
+        raw: document.getElementById('detail-result-tab-raw')
     };
-    json = JSON.stringify(truncatedPayload, null, 2);
-    if (json.length > maxChars) {
-        return json.slice(0, maxChars) + '\n…';
+    const panels = {
+        success: document.getElementById('detail-result-panel-success'),
+        raw: document.getElementById('detail-result-panel-raw')
+    };
+    Object.keys(tabs).forEach(function (key) {
+        const isActive = key === normalized;
+        if (tabs[key]) {
+            tabs[key].classList.toggle('active', isActive);
+            tabs[key].setAttribute('aria-selected', isActive ? 'true' : 'false');
+        }
+        if (panels[key]) {
+            panels[key].classList.toggle('active', isActive);
+            panels[key].hidden = !isActive;
+        }
+    });
+}
+
+function setMCPResultDetailTabs(defaultTab, hasSuccessContent) {
+    const successTab = document.getElementById('detail-result-tab-success');
+    if (successTab) {
+        successTab.disabled = !hasSuccessContent;
+        successTab.classList.toggle('disabled', !hasSuccessContent);
     }
-    return json;
+    switchMCPResultDetailTab(hasSuccessContent && defaultTab !== 'raw' ? 'success' : 'raw');
+}
+
+function copyActiveMCPResultDetail(triggerBtn = null) {
+    const activePanel = document.querySelector('#mcp-detail-modal .detail-result-panel.active');
+    const activeBlock = activePanel ? activePanel.querySelector('.code-block') : null;
+    copyDetailBlock(activeBlock ? activeBlock.id : 'detail-response', triggerBtn);
+}
+
+function renderMCPDetailModal(exec) {
+    exec = exec || {};
+    document.getElementById('detail-tool-name').textContent = exec.toolName || (typeof window.t === 'function' ? window.t('mcpDetailModal.unknown') : 'Unknown');
+    document.getElementById('detail-execution-id').textContent = exec.id || 'N/A';
+    const statusEl = document.getElementById('detail-status');
+    const normalizedStatus = (exec.status || 'unknown').toLowerCase();
+    statusEl.textContent = getStatusText(exec.status);
+    const statusClass = normalizedStatus === 'background_running' ? 'running' : normalizedStatus;
+    statusEl.className = `status-chip status-${statusClass}`;
+    try {
+        statusEl.dataset.detailStatus = (exec.status || '') + '';
+    } catch (e) { /* ignore */ }
+    const detailTimeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
+    const detailTimeEl = document.getElementById('detail-time');
+    if (detailTimeEl) {
+        detailTimeEl.textContent = exec.startTime
+            ? new Date(exec.startTime).toLocaleString(detailTimeLocale)
+            : '—';
+        try {
+            detailTimeEl.dataset.detailTimeIso = exec.startTime ? new Date(exec.startTime).toISOString() : '';
+        } catch (e) { /* ignore */ }
+    }
+
+    const requestData = {
+        tool: exec.toolName,
+        arguments: exec.arguments
+    };
+    document.getElementById('detail-request').textContent = JSON.stringify(requestData, null, 2);
+
+    const responseElement = document.getElementById('detail-response');
+    const successElement = document.getElementById('detail-success');
+    const errorSection = document.getElementById('detail-error-section');
+    const errorElement = document.getElementById('detail-error');
+
+    responseElement.className = 'code-block';
+    responseElement.textContent = '';
+    if (successElement) {
+        successElement.className = 'code-block';
+        successElement.textContent = '';
+    }
+    if (errorSection && errorElement) {
+        errorSection.style.display = 'none';
+        errorElement.textContent = '';
+    }
+    setMCPResultDetailTabs('raw', false);
+
+    if (exec.result) {
+        const agentVisibleText = formatMCPDetailText(extractMCPResultText(exec.result));
+        const emptyText = typeof window.t === 'function' ? window.t('mcpDetailModal.execSuccessNoContent') : '执行成功，未返回可展示的文本内容。';
+
+        if (exec.result.isError) {
+            responseElement.className = 'code-block error';
+            responseElement.textContent = formatMCPResultJsonForDisplay(exec.result);
+            if (successElement) {
+                successElement.textContent = '';
+            }
+            setMCPResultDetailTabs('raw', false);
+            if (exec.error && errorSection && errorElement) {
+                errorSection.style.display = 'block';
+                errorElement.textContent = exec.error;
+            }
+        } else {
+            responseElement.className = 'code-block';
+            responseElement.textContent = formatMCPResultJsonForDisplay(exec.result);
+            if (successElement) {
+                successElement.textContent = agentVisibleText || emptyText;
+            }
+            setMCPResultDetailTabs('success', true);
+        }
+    } else {
+        if (normalizedStatus === 'running' || normalizedStatus === 'background_running') {
+            responseElement.textContent = typeof window.t === 'function' ? window.t('mcpDetailModal.runningNoResponseYet') : '尚无返回，工具可能仍在执行。若长时间无响应，可在下方终止本次调用。';
+        } else {
+            responseElement.textContent = typeof window.t === 'function' ? window.t('chat.noResponseData') : '暂无响应数据';
+        }
+        setMCPResultDetailTabs('raw', false);
+    }
+
+    const abortSection = document.getElementById('detail-abort-section');
+    const abortBtn = document.getElementById('detail-abort-btn');
+    if (abortSection && abortBtn) {
+        if ((normalizedStatus === 'running' || normalizedStatus === 'background_running') && exec.id) {
+            abortSection.style.display = 'block';
+            abortBtn.dataset.execId = exec.id || '';
+            abortBtn.textContent = typeof window.t === 'function' ? window.t('mcpDetailModal.abortBtn') : '终止工具';
+        } else {
+            abortSection.style.display = 'none';
+            delete abortBtn.dataset.execId;
+        }
+    }
 }
 
 async function showMCPDetail(executionId) {
@@ -3040,92 +4438,7 @@ async function showMCPDetail(executionId) {
         }
 
         deferModalContent(function () {
-            // 填充模态框内容
-            document.getElementById('detail-tool-name').textContent = exec.toolName || (typeof window.t === 'function' ? window.t('mcpDetailModal.unknown') : 'Unknown');
-            document.getElementById('detail-execution-id').textContent = exec.id || 'N/A';
-            const statusEl = document.getElementById('detail-status');
-            const normalizedStatus = (exec.status || 'unknown').toLowerCase();
-            statusEl.textContent = getStatusText(exec.status);
-            statusEl.className = `status-chip status-${normalizedStatus}`;
-            try {
-                statusEl.dataset.detailStatus = (exec.status || '') + '';
-            } catch (e) { /* ignore */ }
-            const detailTimeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
-            const detailTimeEl = document.getElementById('detail-time');
-            if (detailTimeEl) {
-                detailTimeEl.textContent = exec.startTime
-                    ? new Date(exec.startTime).toLocaleString(detailTimeLocale)
-                    : '—';
-                try {
-                    detailTimeEl.dataset.detailTimeIso = exec.startTime ? new Date(exec.startTime).toISOString() : '';
-                } catch (e) { /* ignore */ }
-            }
-            
-            // 请求参数
-            const requestData = {
-                tool: exec.toolName,
-                arguments: exec.arguments
-            };
-            document.getElementById('detail-request').textContent = JSON.stringify(requestData, null, 2);
-            
-            // 响应结果 + 正确信息 / 错误信息
-            const responseElement = document.getElementById('detail-response');
-            const successSection = document.getElementById('detail-success-section');
-            const successElement = document.getElementById('detail-success');
-            const errorSection = document.getElementById('detail-error-section');
-            const errorElement = document.getElementById('detail-error');
-
-            // 重置状态
-            responseElement.className = 'code-block';
-            responseElement.textContent = '';
-            if (successSection && successElement) {
-                successSection.style.display = 'none';
-                successElement.textContent = '';
-            }
-            if (errorSection && errorElement) {
-                errorSection.style.display = 'none';
-                errorElement.textContent = '';
-            }
-
-            if (exec.result) {
-                const agentVisibleText = truncateMCPDetailText(extractMCPResultText(exec.result), MCP_DETAIL_MAX_CHARS);
-                const emptyText = typeof window.t === 'function' ? window.t('mcpDetailModal.execSuccessNoContent') : '执行成功，未返回可展示的文本内容。';
-
-                if (exec.result.isError) {
-                    responseElement.className = 'code-block error';
-                    responseElement.textContent = formatMCPResultJsonForDisplay(exec.result, MCP_DETAIL_MAX_CHARS);
-                    if (exec.error && errorSection && errorElement) {
-                        errorSection.style.display = 'block';
-                        errorElement.textContent = exec.error;
-                    }
-                } else {
-                    responseElement.className = 'code-block';
-                    responseElement.textContent = formatMCPResultJsonForDisplay(exec.result, MCP_DETAIL_MAX_CHARS);
-                    if (successSection && successElement) {
-                        successSection.style.display = 'block';
-                        successElement.textContent = agentVisibleText || emptyText;
-                    }
-                }
-            } else {
-                if (normalizedStatus === 'running') {
-                    responseElement.textContent = typeof window.t === 'function' ? window.t('mcpDetailModal.runningNoResponseYet') : '尚无返回，工具可能仍在执行。若长时间无响应，可在下方终止本次调用。';
-                } else {
-                    responseElement.textContent = typeof window.t === 'function' ? window.t('chat.noResponseData') : '暂无响应数据';
-                }
-            }
-
-            const abortSection = document.getElementById('detail-abort-section');
-            const abortBtn = document.getElementById('detail-abort-btn');
-            if (abortSection && abortBtn) {
-                if (normalizedStatus === 'running') {
-                    abortSection.style.display = 'block';
-                    abortBtn.dataset.execId = exec.id || '';
-                    abortBtn.textContent = typeof window.t === 'function' ? window.t('mcpDetailModal.abortBtn') : '终止工具';
-                } else {
-                    abortSection.style.display = 'none';
-                    delete abortBtn.dataset.execId;
-                }
-            }
+            renderMCPDetailModal(exec);
         });
     } catch (error) {
         closeMCPDetail();
@@ -3559,7 +4872,7 @@ async function prefetchLastAssistantProcessDetails() {
         await window.loadProcessDetailsPaginated(last.id, backendId);
         return;
     }
-    const res = await apiFetch('/api/messages/' + encodeURIComponent(String(backendId)) + '/process-details');
+    const res = await apiFetch('/api/messages/' + encodeURIComponent(String(backendId)) + '/process-details?full=1');
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !Array.isArray(j.processDetails) || j.processDetails.length === 0) return;
     if (typeof renderProcessDetails === 'function') {
@@ -3571,32 +4884,24 @@ async function loadConversation(conversationId) {
     const seq = ++loadConversationRequestSeq;
     try {
         const cachedConversation = getConversationLiteFromCache(conversationId);
-        const fetchPromise = apiFetch(`/api/conversations/${conversationId}?include_process_details=0`)
-            .then(async (response) => {
-                const data = await response.json();
-                return { response, data };
-            });
-
-        let conversation;
-        let response;
-        if (cachedConversation) {
+        let conversation = null;
+        let response = null;
+        try {
+            response = await apiFetch(`/api/conversations/${conversationId}?include_process_details=0`);
+            conversation = await response.json();
+        } catch (fetchError) {
+            if (!cachedConversation) throw fetchError;
+            console.warn('加载最新对话失败，使用本地缓存:', fetchError);
             conversation = cachedConversation;
-            fetchPromise.then(({ response: freshResp, data }) => {
-                if (freshResp.ok && data && seq === loadConversationRequestSeq && currentConversationId === conversationId) {
-                    putConversationLiteCache(conversationId, data);
-                }
-            }).catch(() => {});
-        } else {
-            const fetched = await fetchPromise;
-            response = fetched.response;
-            conversation = fetched.data;
-            if (seq !== loadConversationRequestSeq) {
-                return;
-            }
-            if (!response.ok) {
-                showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
-                return;
-            }
+        }
+        if (seq !== loadConversationRequestSeq) {
+            return;
+        }
+        if (response && !response.ok) {
+            showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
+            return;
+        }
+        if (response && response.ok) {
             putConversationLiteCache(conversationId, conversation);
         }
         if (seq !== loadConversationRequestSeq) {
@@ -3641,6 +4946,11 @@ async function loadConversation(conversationId) {
         // 更新当前对话ID
         currentConversationId = conversationId;
         window._loadedConversationProjectId = conversation.projectId || conversation.project_id || '';
+        const conversationRoleName = conversation.roleName || conversation.role_name || '';
+        if (typeof window.setCurrentRole === 'function') {
+            window.setCurrentRole(conversationRoleName || '默认');
+        }
+        applyConversationAgentMode(conversationId, conversation);
         try {
             window.currentConversationId = conversationId;
         } catch (e) { /* ignore */ }
@@ -4210,6 +5520,7 @@ function renderAttackChain(chainData) {
     const nodeCount = chainData.nodes.length;
     const edgeCount = chainData.edges.length;
     const isComplexGraph = nodeCount > 15 || edgeCount > 25;
+    const isDarkTheme = document.documentElement.getAttribute('data-theme') === 'dark';
     
     // 优化节点标签：智能截断和换行
     chainData.nodes.forEach(node => {
@@ -4313,6 +5624,29 @@ function renderAttackChain(chainData) {
             iconType = 'vulnerability';
         }
 
+        const labelTextColor = isDarkTheme ? '#E5E7EB' : '#0F172A';
+        if (isDarkTheme) {
+            typeColor = '#E5E7EB';
+            bgGradientStart = '#111827';
+            if (nodeType === 'target') {
+                bgGradientEnd = '#1E1B4B';
+            } else if (nodeType === 'action') {
+                bgGradientEnd = accentColor === '#10B981' ? '#052E2B' : '#172033';
+            } else if (nodeType === 'vulnerability') {
+                if (riskScore >= 80) {
+                    bgGradientEnd = '#3F101C';
+                } else if (riskScore >= 60) {
+                    bgGradientEnd = '#3B1D0D';
+                } else if (riskScore >= 40) {
+                    bgGradientEnd = '#3A2A0A';
+                } else {
+                    bgGradientEnd = '#063A36';
+                }
+            } else {
+                bgGradientEnd = '#172033';
+            }
+        }
+
         // 为每个节点生成图标 background-image（data URL）
         const iconSvg = _acBuildNodeIconDataUrl(iconType, accentColor, accentDark);
 
@@ -4345,6 +5679,7 @@ function renderAttackChain(chainData) {
                 accentDark: accentDark,
                 bgGradientStart: bgGradientStart,
                 bgGradientEnd: bgGradientEnd,
+                labelTextColor: labelTextColor,
                 iconDataUrl: iconSvg,
                 badgeText: badgeText,
                 riskScore: riskScore,
@@ -4444,7 +5779,9 @@ function renderAttackChain(chainData) {
                     },
                     'border-opacity': 0.5,
                     // 文字样式
-                    'color': '#0f172a',
+                    'color': function(ele) {
+                        return ele.data('labelTextColor') || '#0f172a';
+                    },
                     'font-size': function(ele) {
                         return isComplexGraph ? '13px' : '14px';
                     },
@@ -5048,7 +6385,7 @@ function showNodeDetails(nodeData) {
         if (nodeData.metadata.ai_analysis) {
             html += `
                 <div class="node-detail-item">
-                    <strong>AI分析:</strong> <div style="margin-top: 5px; padding: 8px; background: #f5f5f5; border-radius: 4px;">${escapeHtml(nodeData.metadata.ai_analysis)}</div>
+                    <strong>AI分析:</strong> <div class="node-detail-ai-analysis">${escapeHtml(nodeData.metadata.ai_analysis)}</div>
                 </div>
             `;
         }
@@ -6166,6 +7503,9 @@ const CONVERSATION_PROJECT_FILTER_NONE = '__none__';
 const CONVERSATION_PROJECT_FILTER_SELECT_ID = 'conversation-project-filter';
 const CONVERSATION_PROJECT_FILTER_CARET = '<svg class="conversation-project-filter-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const BATCH_PROJECT_FILTER_SELECT_ID = 'batch-project-filter';
+const BATCH_GROUP_FILTER_SELECT_ID = 'batch-move-group-select';
+const BATCH_GROUP_HEADER_FILTER_SELECT_ID = 'batch-group-filter';
+const BATCH_GROUP_NONE = '__none__';
 const projectFilterCustomSelectRegistry = {};
 let projectFilterCustomSelectDocBound = false;
 
@@ -6352,6 +7692,117 @@ function syncProjectFilterCustomSelect(selectId) {
         valueSpan.textContent = selectedText;
         valueSpan.title = selectedText;
     }
+}
+
+function ensureSimpleCustomSelectOptionsUi(reg) {
+    if (reg.optionsList) return;
+    reg.dropdown.innerHTML = '';
+    const optionsList = document.createElement('div');
+    optionsList.className = 'conversation-project-filter-options';
+    reg.dropdown.appendChild(optionsList);
+    reg.optionsList = optionsList;
+}
+
+function renderSimpleCustomSelectOptions(reg) {
+    ensureSimpleCustomSelectOptionsUi(reg);
+    const { select, optionsList } = reg;
+    optionsList.innerHTML = '';
+    Array.prototype.forEach.call(select.options, (opt) => {
+        optionsList.appendChild(createProjectFilterOptionButton(opt.value, opt.textContent || '', select.value));
+    });
+}
+
+function syncSimpleCustomSelect(selectId) {
+    const reg = projectFilterCustomSelectRegistry[selectId];
+    if (!reg) return;
+    const { select, trigger } = reg;
+    const valueSpan = trigger.querySelector('.conversation-project-filter-value');
+    const selectedOpt = select.options[select.selectedIndex];
+    const selectedText = selectedOpt ? (selectedOpt.textContent || '') : '';
+    if (valueSpan) {
+        valueSpan.textContent = selectedText;
+        valueSpan.title = selectedText;
+    }
+}
+
+function initSimpleCustomSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    if (select.dataset.projectCustomSelect === '1') {
+        syncSimpleCustomSelect(selectId);
+        return;
+    }
+    select.dataset.projectCustomSelect = '1';
+    select.classList.add('conversation-project-filter-native');
+    select.tabIndex = -1;
+    select.setAttribute('aria-hidden', 'true');
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'conversation-project-filter-ui';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'conversation-project-filter-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'conversation-project-filter-value';
+    trigger.appendChild(valueSpan);
+    trigger.insertAdjacentHTML('beforeend', CONVERSATION_PROJECT_FILTER_CARET);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'conversation-project-filter-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+
+    const parent = select.parentNode;
+    parent.insertBefore(wrapper, select);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(dropdown);
+    wrapper.appendChild(select);
+
+    projectFilterCustomSelectRegistry[selectId] = { wrapper, trigger, dropdown, select };
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = wrapper.classList.contains('open');
+        closeAllProjectFilterCustomSelects();
+        if (!open) {
+            wrapper.classList.add('open');
+            trigger.setAttribute('aria-expanded', 'true');
+            renderSimpleCustomSelectOptions(projectFilterCustomSelectRegistry[selectId]);
+        }
+    });
+
+    dropdown.addEventListener('click', (e) => {
+        const opt = e.target.closest('.conversation-project-filter-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const val = opt.getAttribute('data-value');
+        if (val === null) return;
+        if (select.value !== val) {
+            select.value = val;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        closeProjectFilterCustomSelect(selectId);
+        syncSimpleCustomSelect(selectId);
+    });
+
+    if (!projectFilterCustomSelectDocBound) {
+        projectFilterCustomSelectDocBound = true;
+        document.addEventListener('click', closeAllProjectFilterCustomSelects);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeAllProjectFilterCustomSelects();
+        });
+    }
+    syncSimpleCustomSelect(selectId);
+}
+
+function initBatchGroupCustomSelect() {
+    initSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
+}
+
+function initBatchGroupHeaderFilterCustomSelect() {
+    initSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
 }
 
 function initProjectFilterCustomSelect(selectId) {
@@ -8344,6 +9795,7 @@ function navigateToVulnerabilitiesForContextConversation() {
 
 // 从上下文菜单删除对话
 function deleteConversationFromContext() {
+    if (typeof requirePermission === 'function' && !requirePermission('chat:delete')) return;
     const convId = contextMenuConversationId;
     if (!convId) return;
 
@@ -8394,6 +9846,22 @@ function getConversationProjectLabel(conv) {
     return typeof window.t === 'function' ? window.t('batchManageModal.unknownProject') : '未知项目';
 }
 
+function getConversationGroupId(conv) {
+    return (conv && conversationGroupMappingCache[conv.id]) || '';
+}
+
+function getConversationGroupLabel(conv) {
+    const groupId = getConversationGroupId(conv);
+    if (!groupId) {
+        return typeof window.t === 'function' ? window.t('batchManageModal.noGroup') : '无分组';
+    }
+    const group = Array.isArray(groupsCache) ? groupsCache.find(g => g.id === groupId) : null;
+    if (group) {
+        return `${group.icon || '📁'} ${group.name}`;
+    }
+    return typeof window.t === 'function' ? window.t('batchManageModal.unknownGroup') : '未知分组';
+}
+
 async function prefetchProjectNamesForConversations(conversations) {
     const missing = new Set();
     for (const conv of conversations || []) {
@@ -8423,9 +9891,83 @@ async function refreshBatchProjectFilter() {
     syncProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
 }
 
+async function refreshBatchGroupSelect() {
+    const sel = document.getElementById('batch-move-group-select');
+    if (!sel) return;
+
+    if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
+        await loadGroups();
+    }
+
+    const saved = sel.value || BATCH_GROUP_NONE;
+    sel.innerHTML = '';
+
+    const noneOpt = document.createElement('option');
+    noneOpt.value = BATCH_GROUP_NONE;
+    noneOpt.textContent = projectFilterT('batchManageModal.noGroupOption', '无分组');
+    sel.appendChild(noneOpt);
+
+    (groupsCache || []).forEach((group) => {
+        const opt = document.createElement('option');
+        opt.value = group.id;
+        opt.textContent = `${group.icon || '📁'} ${group.name}`;
+        sel.appendChild(opt);
+    });
+
+    if (saved === BATCH_GROUP_NONE || (groupsCache || []).some((group) => group.id === saved)) {
+        sel.value = saved;
+    } else {
+        sel.value = BATCH_GROUP_NONE;
+    }
+    syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
+}
+
+function appendBatchGroupHeaderFilterNativeOptions(sel) {
+    const allLabel = projectFilterT('batchManageModal.filterAllGroups', '全部分组');
+    const ungroupedLabel = projectFilterT('batchManageModal.filterUngrouped', '无分组');
+    sel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '';
+    allOpt.textContent = allLabel;
+    allOpt.setAttribute('data-i18n', 'batchManageModal.filterAllGroups');
+    sel.appendChild(allOpt);
+    const ungroupedOpt = document.createElement('option');
+    ungroupedOpt.value = BATCH_GROUP_NONE;
+    ungroupedOpt.textContent = ungroupedLabel;
+    ungroupedOpt.setAttribute('data-i18n', 'batchManageModal.filterUngrouped');
+    sel.appendChild(ungroupedOpt);
+}
+
+async function refreshBatchGroupHeaderFilter() {
+    const sel = document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
+    if (!sel) return;
+
+    if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
+        await loadGroups();
+    }
+
+    const saved = sel.value || '';
+    appendBatchGroupHeaderFilterNativeOptions(sel);
+
+    (groupsCache || []).forEach((group) => {
+        const opt = document.createElement('option');
+        opt.value = group.id;
+        opt.textContent = `${group.icon || '📁'} ${group.name}`;
+        sel.appendChild(opt);
+    });
+
+    if (saved === '' || saved === BATCH_GROUP_NONE || (groupsCache || []).some((group) => group.id === saved)) {
+        sel.value = saved;
+    } else {
+        sel.value = '';
+    }
+    syncSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
+}
+
 function getBatchFilteredConversations() {
     const query = (document.getElementById('batch-search-input')?.value || '').trim().toLowerCase();
     const projectFilter = (document.getElementById('batch-project-filter')?.value || '').trim();
+    const groupFilter = (document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID)?.value || '').trim();
     return allConversationsForBatch.filter((conv) => {
         const pid = getConversationProjectId(conv);
         if (projectFilter) {
@@ -8435,10 +9977,19 @@ function getBatchFilteredConversations() {
                 return false;
             }
         }
+        const gid = getConversationGroupId(conv);
+        if (groupFilter) {
+            if (groupFilter === BATCH_GROUP_NONE) {
+                if (gid) return false;
+            } else if (gid !== groupFilter) {
+                return false;
+            }
+        }
         if (!query) return true;
         const title = (conv.title || '').toLowerCase();
         const projectName = getConversationProjectLabel(conv).toLowerCase();
-        return title.includes(query) || projectName.includes(query);
+        const groupName = getConversationGroupLabel(conv).toLowerCase();
+        return title.includes(query) || projectName.includes(query) || groupName.includes(query);
     });
 }
 
@@ -8461,8 +10012,16 @@ async function showBatchManageModal() {
     try {
         initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
         allConversationsForBatch = await fetchAllConversations('');
-        await prefetchProjectNamesForConversations(allConversationsForBatch);
+        await Promise.all([
+            prefetchProjectNamesForConversations(allConversationsForBatch),
+            loadGroups(),
+            loadConversationGroupMapping(),
+        ]);
         await refreshBatchProjectFilter();
+        initBatchGroupHeaderFilterCustomSelect();
+        await refreshBatchGroupHeaderFilter();
+        initBatchGroupCustomSelect();
+        await refreshBatchGroupSelect();
         const sidebarFilter = getConversationProjectFilter();
         const batchSel = document.getElementById('batch-project-filter');
         if (batchSel && sidebarFilter && (
@@ -8478,8 +10037,10 @@ async function showBatchManageModal() {
     } catch (error) {
         console.error('加载对话列表失败:', error);
         initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
+        initBatchGroupHeaderFilterCustomSelect();
+        initBatchGroupCustomSelect();
         allConversationsForBatch = [];
-        await refreshBatchProjectFilter();
+        await Promise.all([refreshBatchProjectFilter(), refreshBatchGroupHeaderFilter(), refreshBatchGroupSelect()]);
         applyBatchConversationFilters();
         openAppModal('batch-manage-modal', { focus: false });
     }
@@ -8539,7 +10100,7 @@ function renderBatchConversations(filtered = null) {
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.className = 'batch-conversation-checkbox';
+        checkbox.className = 'batch-conversation-checkbox theme-checkbox';
         checkbox.dataset.conversationId = conv.id;
         checkbox.addEventListener('change', syncSelectAllBatchCheckbox);
 
@@ -8562,6 +10123,16 @@ function renderBatchConversations(filtered = null) {
         project.title = projectLabel;
         if (!getConversationProjectId(conv)) {
             project.classList.add('is-unbound');
+        }
+
+        const group = document.createElement('div');
+        group.className = 'batch-table-col-group';
+        const groupLabel = getConversationGroupLabel(conv);
+        const truncatedGroup = safeTruncateText(groupLabel, 24);
+        group.textContent = truncatedGroup;
+        group.title = groupLabel;
+        if (!getConversationGroupId(conv)) {
+            group.classList.add('is-unbound');
         }
 
         const time = document.createElement('div');
@@ -8599,6 +10170,7 @@ function renderBatchConversations(filtered = null) {
         row.appendChild(checkboxCol);
         row.appendChild(name);
         row.appendChild(project);
+        row.appendChild(group);
         row.appendChild(time);
         row.appendChild(action);
 
@@ -8646,8 +10218,136 @@ function syncSelectAllBatchCheckbox() {
     }
 }
 
+// 批量设置对话分组（选「无分组」即移出）
+async function applyBatchGroupChange() {
+    const checkboxes = document.querySelectorAll('.batch-conversation-checkbox:checked');
+    if (checkboxes.length === 0) {
+        alert(typeof window.t === 'function' ? window.t('batchManageModal.confirmGroupChangeNone') : '请先选择要操作的对话');
+        return;
+    }
+
+    const groupSelect = document.getElementById('batch-move-group-select');
+    const groupId = (groupSelect?.value || BATCH_GROUP_NONE).trim();
+
+    if (groupId === BATCH_GROUP_NONE) {
+        const items = Array.from(checkboxes).map((cb) => ({
+            id: cb.dataset.conversationId,
+            groupId: conversationGroupMappingCache[cb.dataset.conversationId] || '',
+        })).filter((item) => item.groupId);
+
+        if (items.length === 0) {
+            alert(typeof window.t === 'function' ? window.t('batchManageModal.confirmRemoveNoGroup') : '所选对话均未归属分组');
+            return;
+        }
+
+        const confirmMsg = typeof window.t === 'function'
+            ? window.t('batchManageModal.confirmRemoveN', { count: items.length })
+            : `确定将选中的 ${items.length} 条对话移出分组吗？`;
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+
+        try {
+            for (const item of items) {
+                await apiFetch(`/api/groups/${item.groupId}/conversations/${item.id}`, {
+                    method: 'DELETE',
+                });
+
+                delete conversationGroupMappingCache[item.id];
+                delete pendingGroupMappings[item.id];
+
+                if (currentConversationId === item.id) {
+                    currentConversationGroupId = null;
+                }
+            }
+
+            await finishBatchGroupChangeAfterRemove();
+        } catch (error) {
+            console.error('批量移出分组失败:', error);
+            await loadConversationGroupMapping();
+            applyBatchConversationFilters();
+            const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.removeFailed') : '移出失败';
+            const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
+            alert(failedMsg + ': ' + (error.message || unknownErr));
+        }
+        return;
+    }
+
+    const targetGroup = (groupsCache || []).find((group) => group.id === groupId);
+    const groupName = targetGroup ? targetGroup.name : groupId;
+    const confirmMsg = typeof window.t === 'function'
+        ? window.t('batchManageModal.confirmMoveN', { count: checkboxes.length, group: groupName })
+        : `确定将选中的 ${checkboxes.length} 条对话移动到「${groupName}」吗？`;
+    if (!confirm(confirmMsg)) {
+        return;
+    }
+
+    const ids = Array.from(checkboxes).map((cb) => cb.dataset.conversationId);
+
+    try {
+        for (const id of ids) {
+            await apiFetch('/api/groups/conversations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    conversationId: id,
+                    groupId,
+                }),
+            });
+
+            conversationGroupMappingCache[id] = groupId;
+            pendingGroupMappings[id] = groupId;
+
+            if (currentConversationId === id) {
+                currentConversationGroupId = groupId;
+            }
+        }
+
+        if (currentGroupId) {
+            await loadGroupConversations(currentGroupId);
+        }
+        await loadConversationsWithGroups();
+        await loadGroups();
+        resetBatchSelectionAfterGroupChange();
+    } catch (error) {
+        console.error('批量移动对话失败:', error);
+        await loadConversationGroupMapping();
+        applyBatchConversationFilters();
+        const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.moveFailed') : '移动失败';
+        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
+        alert(failedMsg + ': ' + (error.message || unknownErr));
+    }
+}
+
+function resetBatchSelectionAfterGroupChange() {
+    applyBatchConversationFilters();
+    const selectAll = document.getElementById('batch-select-all');
+    if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+    }
+}
+
+async function finishBatchGroupChangeAfterRemove() {
+    if (currentGroupId) {
+        await loadGroupConversations(currentGroupId);
+    }
+    await loadConversationGroupMapping();
+    await loadGroups();
+
+    const savedGroupId = currentGroupId;
+    currentGroupId = null;
+    await loadConversationsWithGroups();
+    currentGroupId = savedGroupId;
+
+    resetBatchSelectionAfterGroupChange();
+}
+
 // 删除选中的对话
 async function deleteSelectedConversations() {
+    if (typeof requirePermission === 'function' && !requirePermission('chat:delete')) return;
     const checkboxes = document.querySelectorAll('.batch-conversation-checkbox:checked');
     if (checkboxes.length === 0) {
         alert(typeof window.t === 'function' ? window.t('batchManageModal.confirmDeleteNone') : '请先选择要删除的对话');
@@ -8681,6 +10381,7 @@ async function deleteSelectedConversations() {
 
 // 关闭批量管理模态框
 function closeBatchManageModal() {
+    closeAllProjectFilterCustomSelects();
     closeAppModal('batch-manage-modal');
     const selectAll = document.getElementById('batch-select-all');
     if (selectAll) {
@@ -8691,6 +10392,12 @@ function closeBatchManageModal() {
     if (searchInput) searchInput.value = '';
     const batchProj = document.getElementById('batch-project-filter');
     if (batchProj) batchProj.value = '';
+    const batchGroupFilter = document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
+    if (batchGroupFilter) batchGroupFilter.value = '';
+    syncSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
+    const batchGroup = document.getElementById('batch-move-group-select');
+    if (batchGroup) batchGroup.value = BATCH_GROUP_NONE;
+    syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
     allConversationsForBatch = [];
 }
 
@@ -8771,6 +10478,12 @@ document.addEventListener('languagechange', function () {
                 applyBatchConversationFilters();
             }
         });
+    }
+    if (typeof refreshBatchGroupSelect === 'function') {
+        refreshBatchGroupSelect().then(() => syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID));
+    }
+    if (typeof refreshBatchGroupHeaderFilter === 'function') {
+        refreshBatchGroupHeaderFilter();
     }
     // 侧边栏最近对话等列表的时间戳会随语言变化（24h/12h 等），重新拉列表以统一格式
     if (typeof loadConversationsWithGroups === 'function') {
@@ -8903,6 +10616,8 @@ function applyCustomIcon() {
 
 // 自定义图标输入框回车键处理
 document.addEventListener('DOMContentLoaded', function() {
+    initSessionSettingsSelects();
+    initChatReasoningBarHeightSync();
     const customInput = document.getElementById('custom-icon-input');
     if (customInput) {
         customInput.addEventListener('keydown', function(e) {
@@ -8962,6 +10677,7 @@ document.addEventListener('click', function(event) {
 
 // 创建分组
 async function createGroup(event) {
+    if (typeof requirePermission === 'function' && !requirePermission('group:write')) return;
     // 阻止事件冒泡
     if (event) {
         event.preventDefault();
@@ -9395,6 +11111,7 @@ async function editGroup() {
 
 // 删除分组
 async function deleteGroup() {
+    if (typeof requirePermission === 'function' && !requirePermission('group:delete')) return;
     if (!currentGroupId) return;
 
     const deleteConfirmMsg = typeof window.t === 'function' ? window.t('chat.deleteGroupConfirm') : '确定要删除此分组吗？分组中的对话不会被删除，但会从分组中移除。';
@@ -9553,6 +11270,7 @@ async function pinGroupFromContext() {
 
 // 从上下文菜单删除分组
 async function deleteGroupFromContext() {
+    if (typeof requirePermission === 'function' && !requirePermission('group:delete')) return;
     const groupId = contextMenuGroupId;
     if (!groupId) return;
 

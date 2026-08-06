@@ -1,9 +1,12 @@
 ---
-name: API Fuzzing for Bug Bounty
-description: This skill should be used when the user asks to "test API security", "fuzz APIs", "find IDOR vulnerabilities", "test REST API", "test GraphQL", "API penetration testing", "bug bounty API testing", or needs guidance on API security assessment techniques.
+name: api-fuzzing
+description: API fuzzing for bug bounty. Use when the user asks to test API security,
+  fuzz APIs, find IDOR/authorization vulnerabilities, test REST/GraphQL endpoints,
+  or needs API penetration testing guidance — even if they don't explicitly say 'fuzz'
+  or 'API'.
 metadata:
   author: zebbern
-  version: "1.1"
+  version: '1.1'
 ---
 
 # API Fuzzing for Bug Bounty
@@ -431,3 +434,13 @@ curl -X POST https://target.com/graphql \
 | GraphQL introspection disabled | Use clairvoyance for schema reconstruction |
 | Rate limited | Use IP rotation or batch requests |
 | Can't find endpoints | Check Swagger, archive.org, JS files |
+
+---
+
+## Related Routing
+
+- GraphQL-specific testing → [graphql-and-hidden-parameters](../graphql-and-hidden-parameters/SKILL.md)
+- REST endpoint discovery → [recon-and-methodology](../recon-and-methodology/SKILL.md)
+- Auth/authorization gaps on APIs → [authbypass-authentication-flaws](../authbypass-authentication-flaws/SKILL.md) / [idor-broken-object-authorization](../idor-broken-object-authorization/SKILL.md)
+- Injection via API params → [sqli-sql-injection](../sqli-sql-injection/SKILL.md) / [xss-cross-site-scripting](../xss-cross-site-scripting/SKILL.md)
+- Burp replay / response diff → [burp-mcp-vuln-check](../burp-mcp-vuln-check/SKILL.md)

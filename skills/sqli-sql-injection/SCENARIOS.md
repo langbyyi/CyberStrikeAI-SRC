@@ -573,3 +573,5 @@ ALTER TABLE flag RENAME TO words;
 ALTER TABLE words ADD COLUMN id INT DEFAULT 1;
 -- App query: SELECT * FROM words WHERE id=1 → returns flag data
 ```
+
+

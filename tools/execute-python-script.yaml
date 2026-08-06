@@ -97,7 +97,7 @@ parameters:
       额外的execute-python-script参数。用于传递未在参数列表中定义的execute-python-script选项。
 
       **示例值：**
-      - 根据工具特性添加常用参数示例
+      - 无额外参数（直接提供 python_code 脚本体）
 
       **注意事项：**
       - 多个参数用空格分隔
@@ -105,21 +105,4 @@ parameters:
       - 此参数会直接追加到命令末尾
     required: false
     format: "positional"
-    default: ""
-  - name: "confirmed"
-    type: "string"
-    description: |
-      敏感接口硬闸放行（兼容旧参数）：用户同意后填完整 URL，须与本次目标匹配。
-      更推荐：confirm_destructive=true + confirm_token=拦截消息中的令牌。
-    required: false
-    default: ""
-  - name: "confirm_destructive"
-    type: "boolean"
-    description: "敏感接口硬闸放行开关。仅在工具返回 [sensitive_http_gate] blocked 且用户明确同意后设为 true，并配合 confirm_token。"
-    required: false
-    default: false
-  - name: "confirm_token"
-    type: "string"
-    description: "敏感接口硬闸令牌。来自拦截消息中的 confirm_token，与 method+target 绑定，不可跨接口复用。"
-    required: false
     default: ""

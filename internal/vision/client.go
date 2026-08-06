@@ -60,11 +60,13 @@ func (c *Client) Analyze(ctx context.Context, img ImagePayload, question string)
 	}
 	httpClient = openai.NewEinoHTTPClient(&oa, httpClient)
 
+	maxCompletionTokens := oa.MaxCompletionTokensEffective()
 	modelCfg := &einoopenai.ChatModelConfig{
-		APIKey:     oa.APIKey,
-		BaseURL:    strings.TrimSuffix(oa.BaseURL, "/"),
-		Model:      oa.Model,
-		HTTPClient: httpClient,
+		APIKey:              oa.APIKey,
+		BaseURL:             strings.TrimSuffix(oa.BaseURL, "/"),
+		Model:               oa.Model,
+		HTTPClient:          httpClient,
+		MaxCompletionTokens: &maxCompletionTokens,
 	}
 	chatModel, err := einoopenai.NewChatModel(ctx, modelCfg)
 	if err != nil {

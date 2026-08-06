@@ -6,8 +6,10 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/audit"
+	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -24,22 +26,49 @@ type multiAgentPrepared struct {
 	UserMessageID      string
 }
 
+func chatRequestAgentMode(req *ChatRequest, source string) string {
+	if strings.HasPrefix(strings.TrimSpace(source), "multi_agent") {
+		return config.NormalizeMultiAgentOrchestration(req.Orchestration)
+	}
+	return "eino_single"
+}
+
 func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context, source string) (*multiAgentPrepared, error) {
 	if len(req.Attachments) > maxAttachments {
 		return nil, fmt.Errorf("附件最多 %d 个", maxAttachments)
 	}
 
 	conversationID := strings.TrimSpace(req.ConversationID)
+	projectID := strings.TrimSpace(effectiveProjectID(h.config, req.ProjectID))
+	webshellID := strings.TrimSpace(req.WebShellConnectionID)
+	session, hasSession := security.CurrentSession(c)
+	if !hasSession || !session.Permissions["chat:write"] {
+		return nil, fmt.Errorf("无权写入对话")
+	}
+	canAccess := func(resourceType, resourceID string) bool {
+		if !hasSession || h.db == nil || strings.TrimSpace(resourceID) == "" {
+			return false
+		}
+		return h.db.UserCanAccessResource(session.UserID, session.Scope, resourceType, resourceID)
+	}
+	if projectID != "" && (!session.Permissions["project:read"] || !canAccess("project", projectID)) {
+		return nil, fmt.Errorf("无权访问目标项目")
+	}
+	if webshellID != "" && (!session.Permissions["webshell:write"] || !canAccess("webshell", webshellID)) {
+		return nil, fmt.Errorf("无权访问该 WebShell 连接")
+	}
 	createdNew := false
 	if conversationID == "" {
 		title := safeTruncateString(req.Message, 50)
 		var conv *database.Conversation
 		var err error
 		meta := audit.ConversationCreateMetaFromGin(c, source)
-		meta.ProjectID = effectiveProjectID(h.config, req.ProjectID)
-		if strings.TrimSpace(req.WebShellConnectionID) != "" {
+		meta.ProjectID = projectID
+		meta.RoleName = req.Role
+		meta.AgentMode = chatRequestAgentMode(req, source)
+		if webshellID != "" {
 			meta.Source = source + "_webshell"
-			meta.WebShellConnectionID = strings.TrimSpace(req.WebShellConnectionID)
+			meta.WebShellConnectionID = webshellID
 			conv, err = h.db.CreateConversationWithWebshell(meta.WebShellConnectionID, title, meta)
 		} else {
 			conv, err = h.db.CreateConversation(title, meta)
@@ -49,10 +78,23 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		}
 		conversationID = conv.ID
 		createdNew = true
+		if hasSession {
+			_ = h.db.SetResourceOwner("conversation", conversationID, session.UserID)
+			_ = h.db.AssignResourceToUser(session.UserID, "conversation", conversationID)
+		}
 	} else {
 		if _, err := h.db.GetConversation(conversationID); err != nil {
 			return nil, fmt.Errorf("对话不存在")
 		}
+		if !canAccess("conversation", conversationID) {
+			return nil, fmt.Errorf("无权访问该对话")
+		}
+	}
+	if err := h.db.SetConversationRoleName(conversationID, req.Role); err != nil {
+		h.logger.Warn("更新对话角色失败", zap.String("conversationId", conversationID), zap.String("role", req.Role), zap.Error(err))
+	}
+	if err := h.db.SetConversationAgentMode(conversationID, chatRequestAgentMode(req, source)); err != nil {
+		h.logger.Warn("更新对话模式失败", zap.String("conversationId", conversationID), zap.String("source", source), zap.String("orchestration", req.Orchestration), zap.Error(err))
 	}
 
 	agentHistoryMessages, err := h.loadHistoryFromAgentTrace(conversationID)
@@ -67,8 +109,8 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 
 	finalMessage := req.Message
 	var roleTools []string
-	if req.WebShellConnectionID != "" {
-		conn, errConn := h.db.GetWebshellConnection(strings.TrimSpace(req.WebShellConnectionID))
+	if webshellID != "" {
+		conn, errConn := h.db.GetWebshellConnection(webshellID)
 		if errConn != nil || conn == nil {
 			h.logger.Warn("WebShell AI 助手：未找到连接", zap.String("id", req.WebShellConnectionID), zap.Error(errConn))
 			return nil, fmt.Errorf("未找到该 WebShell 连接")
@@ -85,22 +127,22 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		} else {
 			finalMessage = webshellContext
 		}
-		// WebShell：工具集仅来自角色定义；未选角色或角色无 tools 时拒绝全量 MCP（避免绕过角色白名单）。
-		if req.Role != "" && req.Role != "默认" && h.config != nil && h.config.Roles != nil {
-			if role, exists := h.config.Roles[req.Role]; exists && role.Enabled && len(role.Tools) > 0 {
-				roleTools = append([]string(nil), role.Tools...)
-			}
-		}
-		if len(roleTools) == 0 {
-			// 兼容：无角色 tools 时使用 webshell 专用最小集（非编排 hardcode 扫描器；仅会话型 webshell 能力）
-			roleTools = []string{
-				builtin.ToolWebshellExec,
-				builtin.ToolWebshellFileList,
-				builtin.ToolWebshellFileRead,
-				builtin.ToolWebshellFileWrite,
-			}
-			h.logger.Info("WebShell AI：未配置角色 tools，使用 webshell 最小工具集",
-				zap.String("connection_id", req.WebShellConnectionID))
+		roleTools = []string{
+			builtin.ToolWebshellExec,
+			builtin.ToolWebshellFileList,
+			builtin.ToolWebshellFileRead,
+			builtin.ToolWebshellFileWrite,
+			builtin.ToolRecordVulnerability,
+			builtin.ToolListVulnerabilities,
+			builtin.ToolGetVulnerability,
+			builtin.ToolUpsertProjectFact,
+			builtin.ToolGetProjectFact,
+			builtin.ToolListProjectFacts,
+			builtin.ToolSearchProjectFacts,
+			builtin.ToolDeprecateProjectFact,
+			builtin.ToolRestoreProjectFact,
+			builtin.ToolListKnowledgeRiskTypes,
+			builtin.ToolSearchKnowledgeBase,
 		}
 	} else if req.Role != "" && req.Role != "默认" && h.config != nil && h.config.Roles != nil {
 		if role, exists := h.config.Roles[req.Role]; exists && role.Enabled {

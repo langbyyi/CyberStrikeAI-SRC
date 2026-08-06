@@ -1,0 +1,40 @@
+name: dnsrecon
+command: dnsrecon
+enabled: true
+short_description: DNS 综合枚举（记录/子域/区域传送/缓存）
+description: 'DNS 综合枚举工具，支持多种查询模式。
+
+  **功能：** A/AAAA/NS/MX/SOA 记录、子域名爆破、区域传送（AXFR）测试、反向查询、缓存欺骗检测。
+
+  **使用场景：** 子域名发现、DNS 记录收集、区域传送漏洞测试。'
+parameters:
+  - name: domain
+    type: string
+    required: true
+    flag: -d
+    format: flag
+    description: 目标域名
+  - name: mode
+    type: string
+    required: false
+    format: template
+    template: -{value}
+    default: std
+    options:
+      - std
+      - rvs
+      - brt
+      - srv
+      - axfr
+    description: 扫描模式：std(标准)/rvs(反向)/brt(爆破)/srv(SRV)/axfr(区域传送)
+  - name: wordlist
+    type: string
+    required: false
+    flag: -w
+    format: flag
+    description: 爆破字典路径
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-t 8`(线程) `--no-whois`

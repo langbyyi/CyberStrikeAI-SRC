@@ -1,0 +1,49 @@
+name: httpx
+command: httpx
+enabled: true
+short_description: HTTP 探活与指纹（标题/状态码/技术栈/CDN）
+description: 'HTTP 探活与指纹识别工具，批量检测 URL 存活并提取标题、状态码、服务器、技术栈、CDN。
+
+  **使用场景：** 子域名存活验证、Web 资产指纹、批量 URL 探活。
+
+
+  **安装：** `go install github.com/projectdiscovery/httpx/cmd/httpx@latest`。注意系统可能装有 python 版 httpx，若输出不是 projectdiscovery 格式请用 go 版全路径。'
+parameters:
+  - name: targets
+    type: string
+    required: true
+    format: flag
+    description: 目标 URL/域名（可多个空格分隔），传给 -u。示例：`-u https://example.com http://1.2.3.4`
+    flag: -u
+  - name: threads
+    type: int
+    required: false
+    flag: -t
+    format: flag
+    default: 50
+    description: 线程数
+  - name: status_codes
+    type: string
+    required: false
+    flag: -sc
+    format: flag
+    description: 显示状态码，如 `200,301,302,401,403`
+  - name: title
+    type: bool
+    required: false
+    flag: -title
+    format: flag
+    default: false
+    description: 提取页面标题
+  - name: tech_detect
+    type: bool
+    required: false
+    flag: -td
+    format: flag
+    default: false
+    description: 技术栈指纹检测
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: 额外参数，如 `-silent` `-follow-redirects` `-json`

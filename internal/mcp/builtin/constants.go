@@ -4,20 +4,19 @@ package builtin
 // 所有代码中使用内置工具名称的地方都应该使用这些常量，而不是硬编码字符串
 const (
 	// 漏洞管理工具
-	ToolRecordVulnerability          = "record_vulnerability"
-	ToolRecordVulnerabilityCandidate = "record_vulnerability_candidate" // L1 探索候选（宽松门槛）
-	ToolListVulnerabilities          = "list_vulnerabilities"
-	ToolGetVulnerability             = "get_vulnerability"
-	ToolUpdateVulnerability          = "update_vulnerability" // 按 ID 更新已落库记录
-	ToolDeleteVulnerability          = "delete_vulnerability" // 按 ID 删除已落库记录
+	ToolRecordVulnerability = "record_vulnerability"
+	ToolListVulnerabilities = "list_vulnerabilities"
+	ToolGetVulnerability    = "get_vulnerability"
+	ToolUpdateVulnerability = "update_vulnerability" // 按 ID 更新已记录漏洞（同项目跨会话，freed-CRUD）
+	ToolDeleteVulnerability = "delete_vulnerability" // 按 ID 删除已记录漏洞（同项目跨会话，freed-CRUD）
 
-	// 执行覆盖 / 门闩（会话级，不靠 system prompt 约束结束）
-	ToolUpsertExecutionCoverage  = "upsert_execution_coverage"
-	ToolGetExecutionCoverage     = "get_execution_coverage"
-	ToolShouldContinueExecution  = "should_continue_execution"
-
-	// 业务逻辑轨：差分探针（双身份 / 参数篡改 / 跳步 / 并行）
-	ToolLogicProbeDiff = "logic_probe_diff"
+	// 资产管理工具
+	ToolCreateAsset       = "create_asset"
+	ToolGetAsset          = "get_asset"
+	ToolQueryAssets       = "query_assets"
+	ToolUpdateAsset       = "update_asset"
+	ToolDeleteAsset       = "delete_asset"
+	ToolCompleteAssetScan = "complete_asset_scan"
 
 	// 项目黑板（事实）工具
 	ToolUpsertProjectFact    = "upsert_project_fact"
@@ -33,6 +32,17 @@ const (
 
 	// 视觉分析（本地图片 → VL 模型 → 文本摘要）
 	ToolAnalyzeImage = "analyze_image"
+
+	// 网络空间测绘（共享 FOFA runtime；有网络外发，必须受角色与 RBAC 门控）
+	ToolFOFASearch = "fofa_search"
+
+	// 联网搜索（供历史 CVE / 漏洞情报 / 实时资讯检索；有网络外发，必须受角色与 RBAC 门控）
+	ToolWebSearch = "web_search"
+
+	// 长耗时工具执行控制（后台 execution 查询/等待/取消）
+	ToolGetToolExecution    = "get_tool_execution"
+	ToolWaitToolExecution   = "wait_tool_execution"
+	ToolCancelToolExecution = "cancel_tool_execution"
 
 	// WebShell 助手工具（AI 在 WebShell 管理 - AI 助手 中使用）
 	ToolWebshellExec      = "webshell_exec"
@@ -77,15 +87,16 @@ const (
 func IsBuiltinTool(toolName string) bool {
 	switch toolName {
 	case ToolRecordVulnerability,
-		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
 		ToolUpdateVulnerability,
 		ToolDeleteVulnerability,
-		ToolUpsertExecutionCoverage,
-		ToolGetExecutionCoverage,
-		ToolShouldContinueExecution,
-		ToolLogicProbeDiff,
+		ToolCreateAsset,
+		ToolGetAsset,
+		ToolQueryAssets,
+		ToolUpdateAsset,
+		ToolDeleteAsset,
+		ToolCompleteAssetScan,
 		ToolUpsertProjectFact,
 		ToolGetProjectFact,
 		ToolListProjectFacts,
@@ -95,6 +106,11 @@ func IsBuiltinTool(toolName string) bool {
 		ToolListKnowledgeRiskTypes,
 		ToolSearchKnowledgeBase,
 		ToolAnalyzeImage,
+		ToolFOFASearch,
+		ToolWebSearch,
+		ToolGetToolExecution,
+		ToolWaitToolExecution,
+		ToolCancelToolExecution,
 		ToolWebshellExec,
 		ToolWebshellFileList,
 		ToolWebshellFileRead,
@@ -136,15 +152,16 @@ func IsBuiltinTool(toolName string) bool {
 func GetAllBuiltinTools() []string {
 	return []string{
 		ToolRecordVulnerability,
-		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
 		ToolUpdateVulnerability,
 		ToolDeleteVulnerability,
-		ToolUpsertExecutionCoverage,
-		ToolGetExecutionCoverage,
-		ToolShouldContinueExecution,
-		ToolLogicProbeDiff,
+		ToolCreateAsset,
+		ToolGetAsset,
+		ToolQueryAssets,
+		ToolUpdateAsset,
+		ToolDeleteAsset,
+		ToolCompleteAssetScan,
 		ToolUpsertProjectFact,
 		ToolGetProjectFact,
 		ToolListProjectFacts,
@@ -154,6 +171,11 @@ func GetAllBuiltinTools() []string {
 		ToolListKnowledgeRiskTypes,
 		ToolSearchKnowledgeBase,
 		ToolAnalyzeImage,
+		ToolFOFASearch,
+		ToolWebSearch,
+		ToolGetToolExecution,
+		ToolWaitToolExecution,
+		ToolCancelToolExecution,
 		ToolWebshellExec,
 		ToolWebshellFileList,
 		ToolWebshellFileRead,

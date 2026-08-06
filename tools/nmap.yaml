@@ -1,7 +1,7 @@
 name: "nmap"
 command: "nmap"
-# 默认：TCP 连接扫描 + 版本检测 + 默认 NSE；host-timeout 防止死站拖死并行工具批次（ADK 会等全部 tool end）
-args: ["-sT", "-sV", "-sC", "--host-timeout", "60s", "--max-retries", "1"]
+# 默认：TCP 连接扫描 + 版本检测 + 默认 NSE 脚本（无 root 也可用）
+args: ["-sT", "-sV", "-sC"]
 enabled: true
 short_description: "网络扫描：端口/服务/脚本；可选时序、自定义 NSE、OS 检测（需 root）"
 description: |
@@ -11,29 +11,19 @@ description: |
   - `-sT` TCP 连接扫描（无需 root）
   - `-sV` 版本检测
   - `-sC` 默认 NSE 脚本
-  - `--host-timeout 60s` / `--max-retries 1`：目标不可达或 RST 时尽快结束，避免拖死同批并行工具与下一轮 LLM
 
   **可选增强：**
   - `timing`：`-T0`～`-T5` 时序
   - `nse_scripts`：`--script` 自定义脚本（如 `vuln`、`http-*`）
   - `os_detection`：`-O` **必须 root**，否则 nmap 会 QUITTING
   - `aggressive`：`-A` **必须 root**（含 OS 检测）
-  - `scan_type`：若传入则**整段替换**默认扫描选项（不含 host-timeout，请自行补上）
-  - `host_timeout`：覆盖默认主机超时（如 `30s`、`2m`）
+  - `scan_type`：若传入则**整段替换**上述默认 `-sT -sV -sC`，需自行写上需要的选项（如 `-sT -sV`）
 
   **注意事项：**
   - `-sS` SYN 扫描需要 root；无 root 请用默认或 `-sT`
   - 扫描全端口 `1-65535` 非常慢，建议先常用端口
   - 请确保有权限扫描目标
-  - Agent 并行调用多工具时会等最慢的一个；nmap 卡住会阻塞下一轮模型调用
 parameters:
-  - name: "host_timeout"
-    type: "string"
-    description: "单主机超时，传给 --host-timeout。默认已在全局 args 中为 60s；可覆盖为 30s/2m 等"
-    required: false
-    flag: "--host-timeout"
-    format: "flag"
-
   - name: "target"
     type: "string"
     description: |
