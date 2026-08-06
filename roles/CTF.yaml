@@ -84,4 +84,5 @@ tools:
 - zsteg
 - volatility3
 - one-gadget
+- web_search
 enabled: true

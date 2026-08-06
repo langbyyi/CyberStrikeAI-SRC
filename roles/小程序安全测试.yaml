@@ -41,4 +41,5 @@ tools:
 - dnslog
 - dalfox
 - jwt-analyzer
+- web_search
 enabled: true
