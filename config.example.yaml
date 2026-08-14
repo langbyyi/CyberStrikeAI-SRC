@@ -380,9 +380,22 @@ mcp:
   auth_header: "X-MCP-Token" # 可选的全局服务凭证 Header；普通调用请使用用户 Authorization: Bearer Token
   auth_header_value: "" # 全局服务凭证值，仅 allow_global_access=true 时生效
   allow_global_access: false # 高风险兼容模式：静态密钥映射为全局服务身份；默认请使用用户 Bearer Token
-# 外部 MCP 配置
+# 外部 MCP 配置：兼容 Claude Desktop / Cursor / VS Code 格式，支持 stdio / sse / http 传输，
+# 字符串支持 ${VAR} 环境变量展开；启用后可在 Web 管理页启停单个服务器与工具。
 external_mcp:
   servers: {}
+  # ── 浏览器自动化示例（Playwright 官方 MCP）：启用时把上面 servers: {} 替换为下面内容 ──
+  # servers:
+  #   playwright:
+  #     command: npx            # 需 Node.js；首次运行自动下载 Chromium（约 150MB）
+  #     args: ["-y", "@playwright/mcp@latest"]
+  #
+  # 装好后 agent 获得 browser_navigate / browser_click / browser_type / browser_snapshot /
+  # browser_screenshot 等工具，可自主完成：SPA 与登录态交互、双账号越权对比、
+  # DOM XSS 渲染取证、验证码登录（截图 → ddddocr 识别 → 回填）。
+  # 打法见 skills/browser-assisted-hunting；浏览器工具调用同样计入可复现证据链。
+  # 默认浏览器操作走 HITL 审批；只读类（navigate/snapshot）可按实际工具名加入
+  # hitl.tool_whitelist 减少打断，点击/输入等写操作建议保留审批。
 # 内置 C2：本机仅做对话/知识库时可设为 false，不启动监听器、不注册 C2 MCP 工具；省略本段时默认启用
 c2:
   enabled: true
