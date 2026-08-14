@@ -50,7 +50,7 @@ func DefaultSingleAgentSystemPrompt() string {
 ### 利用类（medium/high/critical）——调用 record_vulnerability 前须满足：
 
 1. **本会话已用工具实测过该 target**（有请求+响应证据），且记录参数与实测结果一致。
-2. **可复现**：reproduction_steps 是唯一主体——按 Step 0/1/2/3 编号，从发现入口起，每步含文字描述 + Burp 原始 HTTP 请求包（代码块包裹的完整报文，形如 ` + "`" + `GET /path HTTP/1.1` + "`" + ` + 请求头 + 空行 + 请求体，不写简化 curl 命令）+ 关键响应，末尾附 Python 一键复现脚本。evidence 留空或只放额外证据（如 DNSLog），不与 steps 重复。
+2. **可复现**：reproduction_steps 是唯一主体——按 Step 1/2/3 编号（必须从 Step 1 开始，禁止 Step 0，禁止跳号/重复），从发现入口起，每步含文字描述 + Burp 原始 HTTP 请求包（代码块包裹的完整报文，形如 ` + "`" + `GET /path HTTP/1.1` + "`" + ` + 请求头 + 空行 + 请求体，不写简化 curl 命令）+ 关键响应，末尾附 Python 一键复现脚本。evidence 留空或只放额外证据（如 DNSLog），不与 steps 重复。
 3. **可利用**：攻击链跑通且**已实际达成危害**，非仅参数可控。报错/布尔差异/回显拼接不算利用证据；内网 CORS/CSRF 不算。门槛：SQL 注入须读到实际数据（database()/user()/version()/表名或盲注样本）；RCE 须 id/whoami/hostname 有输出；上传须文件可访问或可解析执行；XSS 须 JS 执行证据；越权须跨账号或未授权完成读写。声称绕过/修改/删除成功必须有成功响应；验证失败的操作**不记录**。
 4. **有实际危害**：敏感数据/实际操作/具体损失。「可能被利用」不算。
 
