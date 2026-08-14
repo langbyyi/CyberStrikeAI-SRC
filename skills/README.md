@@ -10,6 +10,7 @@
 - `web-attack-methods`、`attack-surface-recon` 等宽 Skill 负责总览、分流和跨类型攻击链。
 - SQLi、SSRF、IDOR、业务逻辑等细分 Skill 是对应漏洞类型的方法、差分、证据和停止条件的权威来源；自动 Skill Router 优先加载细分包。
 - `pentest-verification` 负责证据质量，`pentest-output-standards` 负责弱信号(`upsert_project_fact`)/正式漏洞(`record_vulnerability`)分级、去重 update 与用户可见报告格式；其他 Skill 不维护另一套报告门槛。
+- `authorized-attack-scope` 负责行为基调：授权资产与 SRC 收录范围内技法不设限、被拦换路；范围外（未授权内网、社工、破坏性手段）只记录为 Fact 留待授权扩展，不主动攻击。
 - Skill 只提供方法，工具是否可见以及能否执行仍由角色白名单、RBAC/HITL 和运行时 vulnerability policy 决定。
 
 ## 外部工具降级
