@@ -35,6 +35,11 @@
 - **orphan tool 消息规范化**：修复工具返回后偶发网关 400（移植自 v1.6.52-src）。
 - **剔除治理层**：移除 execution_controller / skill_router / session_intent / coverage / finalization / depth_force / evidence_policy 等 ~20 个控制层，释放 agent 链式挖掘自主性。保留可复现 + 敏感接口两道硬门。
 
+## 已同步官方更新
+
+- **v1.7.13-src（对应官方 v1.7.13）**：HITL 审计 Agent 默认放行基调（攻击性 payload 必放行、仅不可逆破坏 reject、规则编号可追溯）；`upsert_project_fact` / `get_project_fact` 进免审批白名单；流式重复 tool_call index 恢复；项目对话刷新续流 / 工具状态恢复 / HITL 卡死重启；Agent 任务进度列表（plantask + 悬浮进度 UI）；Quake `code` 字符串容错；官方 21 个方法论 skill 更新。
+- 更早版本：平台 RBAC、机器人接入、工作流包导入导出、资产管理、ZoomEye/Quake/Shodan 多源测绘、工具后台执行、会话角色保存、AI 通道等均已包含。
+
 ## 快速开始
 
 ### 环境要求

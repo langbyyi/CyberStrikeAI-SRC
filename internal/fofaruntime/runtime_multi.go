@@ -131,6 +131,25 @@ func runNative(ctx context.Context, snap *snapshot, request SearchRequest, fn na
 	return nil, lastErr
 }
 
+// isQuakeSuccessCode 判断 Quake 返回 code 是否为成功（0）；
+// Quake 偶尔以字符串形式返回 code，需同时容忍数字与 "0" 字符串。
+func isQuakeSuccessCode(code interface{}) bool {
+	switch v := code.(type) {
+	case nil:
+		return false
+	case int:
+		return v == quakeSuccessCode
+	case int64:
+		return v == quakeSuccessCode
+	case float64:
+		return v == quakeSuccessCode
+	case string:
+		return strings.TrimSpace(v) == "0"
+	default:
+		return false
+	}
+}
+
 // SearchQuakeNative 按 Quake 原生协议搜索：POST JSON，header X-QuakeToken，
 // body {query,size,start,latest,include}，解析 code/message/total_count/data。
 func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey string, request SearchRequest) (*SearchResponse, error) {
@@ -169,7 +188,7 @@ func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey
 		return nil, err
 	}
 	var apiResp struct {
-		Code       int                      `json:"code"`
+		Code       interface{}              `json:"code"`
 		Message    string                   `json:"message"`
 		TotalCount int                      `json:"total_count"`
 		Data       []map[string]interface{} `json:"data"`
@@ -182,7 +201,7 @@ func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey
 	if err := json.Unmarshal(data, &apiResp); err != nil {
 		return nil, errors.New("解析 Quake 响应失败: " + err.Error())
 	}
-	if apiResp.Code != quakeSuccessCode {
+	if !isQuakeSuccessCode(apiResp.Code) {
 		msg := strings.TrimSpace(apiResp.Message)
 		if msg == "" {
 			msg = "Quake 返回错误"

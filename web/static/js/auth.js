@@ -333,6 +333,15 @@ async function refreshAppData(showTaskErrors = false) {
         loadConversations(),
         loadActiveTasks(showTaskErrors),
     ]);
+    // 未登录首屏的项目侧栏可能先收到 401 并显示失败；认证完成后必须主动重试。
+    // 放在对话/任务刷新之后，确保最终渲染一定使用有效登录态且不会被早期失败覆盖。
+    if (typeof window.refreshChatProjectSelector === 'function') {
+        try {
+            await window.refreshChatProjectSelector({ reloadFolders: true });
+        } catch (error) {
+            console.warn('刷新项目侧栏失败:', error);
+        }
+    }
 }
 
 async function bootstrapApp() {
@@ -632,6 +641,18 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function escapeJsString(text) {
+    return JSON.stringify(String(text == null ? '' : text));
+}
+
+function escapeAttr(text) {
+    return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function escapeJsStringAttr(text) {
+    return escapeAttr(escapeJsString(text));
+}
+
 /** @param {string} text @param {{ profile?: 'chat'|'timeline' }} [options] */
 function formatMarkdown(text, options) {
     if (typeof window.csMarkdownSanitize !== 'undefined') {
@@ -863,7 +884,7 @@ async function loadRobotAccountBindings() {
                 <div class="robot-binding-account-name"><strong>${escapeHtml(platformLabels[binding.platform] || binding.platform || '-')}</strong><span>已连接</span></div>
                 <small>账号标识 ${escapeHtml(binding.external_user_hint || '-')} · 更新于 ${escapeHtml(formatRobotBindingTime(binding.updated_at))}</small>
             </div>
-            <button type="button" class="btn-secondary btn-small robot-binding-unbind-btn" onclick="deleteRobotAccountBinding('${escapeHtml(binding.id || '')}')">解除绑定</button>
+            <button type="button" class="btn-secondary btn-small robot-binding-unbind-btn" onclick="deleteRobotAccountBinding(${escapeJsStringAttr(binding.id || '')})">解除绑定</button>
         </div>`).join('');
 	if (typeof window.loadVulnerabilityAlertSubscription === 'function') {
 		window.loadVulnerabilityAlertSubscription();
