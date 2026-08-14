@@ -34,6 +34,8 @@
 - **提示词 SRC 化**：四条铁律 + 分级记录 + 攻击面优先级 + 利用链 + 赏金心态，针对授权 SRC 场景优化。
 - **orphan tool 消息规范化**：修复工具返回后偶发网关 400（移植自 v1.6.52-src）。
 - **剔除治理层**：移除 execution_controller / skill_router / session_intent / coverage / finalization / depth_force / evidence_policy 等 ~20 个控制层，释放 agent 链式挖掘自主性。保留可复现 + 敏感接口两道硬门。
+- **浏览器交互式挖洞**：`browser-assisted-hunting` skill 提供双账号越权对比 / DOM XSS 渲染取证 / 验证码登录 / 前端隐藏功能绕过打法，`external_mcp` 一段配置接入 Playwright 官方 MCP（示例见 config.example.yaml），浏览器工具调用同样计入可复现证据链。
+- **弱模型报告净化**：双重转义的字面换行写库前统一还原（已含真实换行的字段跳过、Windows 路径与凭据字段保护），导出文件名分类前缀去重，复现步骤强制 Step 1 起步。
 
 ## 已同步官方更新
 
