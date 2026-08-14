@@ -21,6 +21,22 @@ import (
 	"go.uber.org/zap"
 )
 
+func withTempWorkingDir(t *testing.T) string {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(old)
+	})
+	return dir
+}
+
 func TestDetachedAgentContextRetainsPrincipalWithoutParentCancellation(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	parent = authctx.WithPrincipal(parent, authctx.NewPrincipal("u1", "user", database.RBACScopeAssigned, map[string]bool{"agent:execute": true}))
@@ -149,6 +165,7 @@ func TestChatUploadPathAuthorizationFollowsConversationAccess(t *testing.T) {
 }
 
 func TestChatUploadsListIncludesAuthorizedProjectWorkspaceFiles(t *testing.T) {
+	withTempWorkingDir(t)
 	db, user := setupConversationRBACTest(t)
 	fsBase := t.TempDir()
 	workspaceBase := filepath.Join(fsBase, "workspace")
