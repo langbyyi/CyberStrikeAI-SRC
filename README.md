@@ -39,6 +39,7 @@
 
 ## 已同步官方更新
 
+- **v1.7.14-src（对应官方 v1.7.14）**：Eino 框架升级 v0.9.14 + Agentic 模型组件（`agenticopenai`），单代理 / Deep / Supervisor / plan_execute Executor 全线切到 Agentic typed agent；模型韧性运营化——原生 retry（429/5xx/网络抖动/空流自动退避）+ failover 备用通道（`model_failover_channels`，主渠道限流不再断跑）；1259 行 run loop 巨石拆为 40+ 单一职责组件；run 级 token 用量核算（`eino_usage_summary` 时间线）；上下文超限单次激进压缩续跑；设置页暴露 retry/failover 参数。
 - **v1.7.13-src（对应官方 v1.7.13）**：HITL 审计 Agent 默认放行基调（攻击性 payload 必放行、仅不可逆破坏 reject、规则编号可追溯）；`upsert_project_fact` / `get_project_fact` 进免审批白名单；流式重复 tool_call index 恢复；项目对话刷新续流 / 工具状态恢复 / HITL 卡死重启；Agent 任务进度列表（plantask + 悬浮进度 UI）；Quake `code` 字符串容错；官方 21 个方法论 skill 更新。
 - 更早版本：平台 RBAC、机器人接入、工作流包导入导出、资产管理、ZoomEye/Quake/Shodan 多源测绘、工具后台执行、会话角色保存、AI 通道等均已包含。
 

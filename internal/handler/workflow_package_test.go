@@ -13,6 +13,7 @@ import (
 
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/security"
+	workflowrunner "cyberstrike-ai/internal/workflow"
 	workflowpkg "cyberstrike-ai/internal/workflow/package"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,7 @@ import (
 
 func TestWorkflowPackageHandlerInspectionAndCreateImport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	workflowrunner.SetCheckpointDir(filepath.Join(t.TempDir(), "workflow-checkpoints"))
 	db, err := database.NewDB(filepath.Join(t.TempDir(), "workflow-package-handler.db"), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)

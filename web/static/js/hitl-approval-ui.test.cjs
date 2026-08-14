@@ -164,6 +164,15 @@ test('项目文件夹汇总始终为绿色且只有具体对话按剩余时间�
     assert.equal(urgencyLevel(0, false), 'normal');
 });
 
+test('工具详情延迟 payload 使用实时事件中的 processDetailId 回补参数', () => {
+    assert.match(chat, /const processDetailId = detail\.id \|\| data\.processDetailId \|\| ''/);
+    assert.match(chat, /processDetailId: processDetailId/);
+    assert.match(monitor, /resultDetailId: data\._mergedResultDetailId \|\| \(merged && merged\.processDetailId\) \|\| ''/);
+    assert.match(monitor, /if \(state\.payloadDeferred && !state\.payloadLoaded && \(state\.processDetailId \|\| state\.resultDetailId\)\)/);
+    assert.match(monitor, /const fullCall = await fetchFullProcessDetailData\(state\.processDetailId\)/);
+    assert.match(monitor, /state\.args = parseToolCallArgsFromData\(fullCall\)/);
+});
+
 test('切换对话后主按钮只读取当前可见对话的运行状态', () => {
     assert.match(chat, /function getVisibleChatConversationId\(\)/);
     assert.match(chat, /function shouldTreatLiveChatTaskAsCurrent\(/);
@@ -244,8 +253,8 @@ test('多对话并发时释放隐藏主流且旧请求不能覆盖新对话状�
     assert.match(chat, /let loadConversationAbortController = null/);
     assert.match(chat, /cancelPendingConversationLoad\(\);[\s\S]{0,220}const conversationLoadController = new AbortController\(\)/);
     assert.match(chat, /signal: conversationLoadController\.signal/);
-    assert.match(template, /monitor\.js\?v=20260813-9/);
-    assert.match(template, /chat-scroll\.js\?v=20260813-6/);
+    assert.match(template, /monitor\.js\?v=20260815-1/);
+    assert.match(template, /chat-scroll\.js\?v=20260815-1/);
     assert.match(template, /chat\.js\?v=20260813-4/);
     assert.match(template, /style\.css\?v=20260813-6/);
 });
