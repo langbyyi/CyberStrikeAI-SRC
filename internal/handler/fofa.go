@@ -132,16 +132,32 @@ func (h *FofaHandler) resolveAPIKey(provider string) string {
 	return ""
 }
 
+// canonicalizeSpaceSearchBaseURL 迁移引擎旧域名（api.zoomeye.org → api.zoomeye.ai、
+// quake.360.cn → quake.360.net），用户 config.yaml 里的旧地址自动改写。
+func canonicalizeSpaceSearchBaseURL(provider, raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return v
+	}
+	switch normalizeSpaceSearchProvider(provider) {
+	case "zoomeye":
+		v = strings.Replace(v, "://api.zoomeye.org", "://api.zoomeye.ai", 1)
+	case "quake":
+		v = strings.Replace(v, "://quake.360.cn", "://quake.360.net", 1)
+	}
+	return v
+}
+
 func (h *FofaHandler) resolveBaseURL(provider string) string {
 	if h.cfg != nil {
 		switch normalizeSpaceSearchProvider(provider) {
 		case "zoomeye":
 			if v := strings.TrimSpace(h.cfg.ZoomEye.BaseURL); v != "" {
-				return v
+				return canonicalizeSpaceSearchBaseURL(provider, v)
 			}
 		case "quake":
 			if v := strings.TrimSpace(h.cfg.Quake.BaseURL); v != "" {
-				return v
+				return canonicalizeSpaceSearchBaseURL(provider, v)
 			}
 		case "shodan":
 			if v := strings.TrimSpace(h.cfg.Shodan.BaseURL); v != "" {
@@ -155,9 +171,9 @@ func (h *FofaHandler) resolveBaseURL(provider string) string {
 	}
 	switch normalizeSpaceSearchProvider(provider) {
 	case "zoomeye":
-		return "https://api.zoomeye.org/v2/search"
+		return "https://api.zoomeye.ai/v2/search"
 	case "quake":
-		return "https://quake.360.cn/api/v3/search/quake_service"
+		return "https://quake.360.net/api/v3/search/quake_service"
 	case "shodan":
 		return "https://api.shodan.io"
 	default:

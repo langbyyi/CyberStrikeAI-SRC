@@ -39,6 +39,7 @@
 
 ## 已同步官方更新
 
+- **v1.7.16-src（对应官方 v1.7.16）**：Claude 通道原生化——移除 1293 行 OpenAI→Claude HTTP 桥接层，`provider: claude` 直接走 Eino 原生 `agenticclaude`（通道连通性测试同步切换）；并行 Eino 工具调用结果丢失修复（Tool 流先收齐再按 CallID 合并，并行 nmap 1/2、2/2 丢 ID 也能按工具名回填）；tool_call/tool_result 配对防御中间件（orphan pruner + pair reconciler，孤儿工具消息进模型前自动清理配对）；HITL 安全只读工具白名单扩充（+`ls` / `list_project_facts` / `search_project_facts` / `list_vulnerabilities` / `get_vulnerability` / `get_asset` / `query_assets` / `get_tool_execution` / `wait_tool_execution` / `batch_task_list` / `batch_task_get` 等 15 项，只读操作不再打断审批）；ZoomEye 域名迁移 `api.zoomeye.org→api.zoomeye.ai`、Quake `quake.360.cn→quake.360.net`（旧配置地址自动改写，本分支 fofaruntime 多引擎路径同步落地）；ZoomEye code 字符串/零值容错；多会话任务栏抖动、会话跳回与「彻底停止」失效修复；人工审批长内容遮挡及刷新审批人状态异常修复；会话过程详情 tool_result 同名匹配与 `background_running` 状态回填。
 - **v1.7.14-src（对应官方 v1.7.14）**：Eino 框架升级 v0.9.14 + Agentic 模型组件（`agenticopenai`），单代理 / Deep / Supervisor / plan_execute Executor 全线切到 Agentic typed agent；模型韧性运营化——原生 retry（429/5xx/网络抖动/空流自动退避）+ failover 备用通道（`model_failover_channels`，主渠道限流不再断跑）；1259 行 run loop 巨石拆为 40+ 单一职责组件；run 级 token 用量核算（`eino_usage_summary` 时间线）；上下文超限单次激进压缩续跑；设置页暴露 retry/failover 参数。
 - **v1.7.13-src（对应官方 v1.7.13）**：HITL 审计 Agent 默认放行基调（攻击性 payload 必放行、仅不可逆破坏 reject、规则编号可追溯）；`upsert_project_fact` / `get_project_fact` 进免审批白名单；流式重复 tool_call index 恢复；项目对话刷新续流 / 工具状态恢复 / HITL 卡死重启；Agent 任务进度列表（plantask + 悬浮进度 UI）；Quake `code` 字符串容错；官方 21 个方法论 skill 更新。
 - 更早版本：平台 RBAC、机器人接入、工作流包导入导出、资产管理、ZoomEye/Quake/Shodan 多源测绘、工具后台执行、会话角色保存、AI 通道等均已包含。

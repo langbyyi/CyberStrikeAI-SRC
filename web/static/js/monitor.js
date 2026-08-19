@@ -6,6 +6,7 @@ const ACTIVE_TASK_REFRESH_INTERVAL = 2000; // 运行态与审批态需要及时�
 const TASK_FINAL_STATUSES = new Set(['failed', 'timeout', 'cancelled', 'completed']);
 const hitlInterruptToolItemMap = new Map();
 let activeTasksLoadPromise = null;
+let activeTasksVisualSignature = '';
 const CHAT_TASK_SYNC_CHANNEL_NAME = 'cyberstrike-chat-task-sync-v1';
 let chatTaskSyncChannel = null;
 let visibleConversationReplaySyncPromise = null;
@@ -1432,7 +1433,7 @@ async function submitUserInterruptHardCancel() {
     const { progressId, conversationId } = userInterruptModalPending;
     closeUserInterruptModal();
     if (progressId) {
-        await performHardCancelProgressTask(progressId);
+        await performHardCancelProgressTask(progressId, conversationId);
         return;
     }
     if (!conversationId) {
@@ -1448,11 +1449,12 @@ async function submitUserInterruptHardCancel() {
 }
 
 /** 彻底停止任务（原「停止任务」行为） */
-async function performHardCancelProgressTask(progressId) {
+async function performHardCancelProgressTask(progressId, conversationId = '') {
     const state = progressTaskState.get(progressId);
     const stopBtn = document.getElementById(`${progressId}-stop-btn`);
+    const targetConversationId = String(conversationId || (state && state.conversationId) || '').trim();
 
-    if (!state || !state.conversationId) {
+    if (!targetConversationId) {
         if (stopBtn) {
             stopBtn.disabled = true;
             setTimeout(() => {
@@ -1463,7 +1465,7 @@ async function performHardCancelProgressTask(progressId) {
         return;
     }
 
-    if (state.cancelling) {
+    if (state && state.cancelling) {
         return;
     }
 
@@ -1474,7 +1476,7 @@ async function performHardCancelProgressTask(progressId) {
     }
 
     try {
-        await requestCancel(state.conversationId);
+        await requestCancel(targetConversationId);
         loadActiveTasks();
     } catch (error) {
         console.error('取消任务失败:', error);
@@ -1610,6 +1612,9 @@ function toggleProgressDetails(progressId) {
     } else {
         timeline.classList.add('expanded');
         toggleBtns.forEach((btn) => { btn.textContent = collapseT; });
+    }
+    if (typeof updateProcessDetailsReturnLatestControl === 'function') {
+        updateProcessDetailsReturnLatestControl(timeline);
     }
     syncProgressElapsedSummary(progressId);
 }
@@ -1800,11 +1805,169 @@ function integrateProgressToMCPSection(progressId, assistantMessageId, mcpExecut
 
 const PROCESS_DETAILS_PAGE_SIZE = 50;
 const processDetailsAutoLoadObservers = new WeakMap();
+const processDetailsReturnLatestControls = new WeakMap();
 const processDetailsLatestFollowStates = new Map();
 const PROCESS_DETAILS_RESTORE_FOLLOW_MS = 6000;
 const PROCESS_DETAILS_FOLLOW_SCROLLBAR_GUTTER_PX = 18;
 // 只有用户真正滚到底部才恢复自动跟随；保留 2px 兼容亚像素滚动。
 const PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX = 2;
+
+function processDetailsReturnLatestLabel() {
+    if (typeof window.t !== 'function') return '回到最新迭代';
+    const value = window.t('chat.returnToLatestProcessDetail');
+    return value && value !== 'chat.returnToLatestProcessDetail' ? value : '回到最新迭代';
+}
+
+function processDetailsDistanceFromLatest(timeline) {
+    if (!timeline) return 0;
+    return Math.max(0, timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop);
+}
+
+function isProcessDetailsTimelineStreaming(container) {
+    if (!container) return false;
+    if (container.classList && container.classList.contains('is-streaming')) return true;
+    return !!(container.closest && container.closest('.progress-container.is-streaming, .process-details-container.is-streaming'));
+}
+
+function getProcessDetailsLatestFollowStateForTimeline(timeline) {
+    let matched = null;
+    processDetailsLatestFollowStates.forEach(function (state) {
+        if (!matched && state && state.timeline === timeline && !state.stopped) {
+            matched = state;
+        }
+    });
+    return matched;
+}
+
+function updateProcessDetailsReturnLatestControl(timeline) {
+    const state = processDetailsReturnLatestControls.get(timeline);
+    if (!state || !state.button) return false;
+    const scrollable = timeline.scrollHeight > timeline.clientHeight + 2;
+    const awayFromLatest = processDetailsDistanceFromLatest(timeline) > PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX;
+    const expanded = timeline.classList && timeline.classList.contains('expanded');
+    const followState = getProcessDetailsLatestFollowStateForTimeline(timeline);
+    // 运行中粘底会在 MutationObserver 与下一帧滚底之间短暂离底；
+    // 只要用户还没主动上滑 detached，就不要把“回到最新迭代”按钮闪出来。
+    const followingLatest = !!(followState && !followState.detached);
+    const shouldShow = !followingLatest && expanded && scrollable && awayFromLatest;
+    const label = processDetailsReturnLatestLabel();
+    state.button.hidden = !shouldShow;
+    state.button.title = label;
+    state.button.setAttribute('aria-label', label);
+    state.button.classList.toggle('has-pending-new', shouldShow && state.hasPendingNewBelow);
+    state.button.classList.toggle('is-streaming', shouldShow && isProcessDetailsTimelineStreaming(state.container));
+    return shouldShow;
+}
+
+function syncProcessDetailsLatestFollowAfterManualReturn(timeline) {
+    processDetailsLatestFollowStates.forEach(function (state) {
+        if (!state || state.timeline !== timeline) return;
+        state.detached = false;
+        state.hasPendingNewBelow = false;
+        state.lastScrollTop = timeline.scrollTop;
+        if (!state.stopped && typeof state.scheduleFollowLatest === 'function') {
+            state.scheduleFollowLatest();
+        }
+    });
+}
+
+function markProcessDetailsReturnLatestPending(timeline) {
+    const state = processDetailsReturnLatestControls.get(timeline);
+    if (!state) return false;
+    if (processDetailsDistanceFromLatest(timeline) > PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX) {
+        state.hasPendingNewBelow = true;
+    }
+    updateProcessDetailsReturnLatestControl(timeline);
+    return true;
+}
+
+function ensureProcessDetailsReturnLatestControl(timeline) {
+    if (!timeline || timeline.nodeType !== 1) return false;
+    let state = processDetailsReturnLatestControls.get(timeline);
+    if (state) {
+        updateProcessDetailsReturnLatestControl(timeline);
+        return true;
+    }
+
+    const container = timeline.closest
+        ? timeline.closest('.progress-container, .process-details-container')
+        : null;
+    const host = (container && container.querySelector && container.querySelector('.process-details-content')) || container || timeline.parentElement;
+    if (!host) return false;
+    host.classList.add('process-details-return-latest-host');
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'process-details-return-latest';
+    button.hidden = true;
+    button.innerHTML = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5.5 7.5 10 12l4.5-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    host.appendChild(button);
+
+    state = {
+        container: container || host,
+        host: host,
+        button: button,
+        hasPendingNewBelow: false,
+        resizeObserver: null,
+        mutationObserver: null
+    };
+    processDetailsReturnLatestControls.set(timeline, state);
+
+    const clearPointer = function (event) {
+        if (event) event.stopPropagation();
+    };
+    const scrollToLatest = function (event) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const targetTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight);
+        if (typeof timeline.scrollTo === 'function') {
+            timeline.scrollTo({ top: targetTop, behavior: 'smooth' });
+        } else {
+            timeline.scrollTop = targetTop;
+        }
+        state.hasPendingNewBelow = false;
+        syncProcessDetailsLatestFollowAfterManualReturn(timeline);
+        updateProcessDetailsReturnLatestControl(timeline);
+        setTimeout(function () {
+            if (timeline.isConnected) {
+                updateProcessDetailsReturnLatestControl(timeline);
+            }
+        }, 360);
+        button.blur();
+    };
+    const onScroll = function () {
+        if (processDetailsDistanceFromLatest(timeline) <= PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX) {
+            state.hasPendingNewBelow = false;
+        }
+        updateProcessDetailsReturnLatestControl(timeline);
+    };
+
+    button.addEventListener('pointerdown', clearPointer);
+    button.addEventListener('mousedown', clearPointer);
+    button.addEventListener('touchstart', clearPointer, { passive: true });
+    button.addEventListener('click', scrollToLatest);
+    timeline.addEventListener('scroll', onScroll, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+        state.resizeObserver = new ResizeObserver(function () {
+            updateProcessDetailsReturnLatestControl(timeline);
+        });
+        state.resizeObserver.observe(timeline);
+    }
+    if (typeof MutationObserver === 'function') {
+        state.mutationObserver = new MutationObserver(function () {
+            updateProcessDetailsReturnLatestControl(timeline);
+        });
+        state.mutationObserver.observe(timeline, { childList: true, subtree: true, characterData: true });
+    }
+    updateProcessDetailsReturnLatestControl(timeline);
+    return true;
+}
+
+window.ensureProcessDetailsReturnLatestControl = ensureProcessDetailsReturnLatestControl;
+window.updateProcessDetailsReturnLatestControl = updateProcessDetailsReturnLatestControl;
+window.markProcessDetailsReturnLatestPending = markProcessDetailsReturnLatestPending;
 
 function processDetailsContinuousLabel(kind) {
     if (kind === 'older') {
@@ -1943,6 +2106,11 @@ function scrollProcessDetailsToLatest(assistantMessageId, smooth = true) {
     } else {
         timeline.scrollTop = targetTop;
     }
+    const state = processDetailsReturnLatestControls.get(timeline);
+    if (state) {
+        state.hasPendingNewBelow = false;
+        updateProcessDetailsReturnLatestControl(timeline);
+    }
     return true;
 }
 
@@ -1985,6 +2153,7 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
     if (!container || !timeline) return false;
 
     stopProcessDetailsLatestFollow(key);
+    ensureProcessDetailsReturnLatestControl(timeline);
     const persistent = !!opts.persistent;
     const durationMs = Number.isFinite(Number(opts.durationMs))
         ? Math.max(250, Number(opts.durationMs))
@@ -1993,6 +2162,8 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
         stopped: false,
         detached: false,
         persistent: persistent,
+        timeline: timeline,
+        hasPendingNewBelow: false,
         lastScrollTop: timeline.scrollTop,
         userScrollIntentUntil: 0,
         touchLastY: null,
@@ -2010,6 +2181,7 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
             cancelAnimationFrame(state.rafId);
             state.rafId = 0;
         }
+        updateProcessDetailsReturnLatestControl(timeline);
     };
     const onWheel = function (event) {
         if (!event) return;
@@ -2071,9 +2243,14 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
             distance <= PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX
         ) {
             state.detached = false;
+            state.hasPendingNewBelow = false;
             scheduleFollowLatest();
         }
+        if (distance <= PROCESS_DETAILS_FOLLOW_RESUME_THRESHOLD_PX) {
+            state.hasPendingNewBelow = false;
+        }
         state.lastScrollTop = currentTop;
+        updateProcessDetailsReturnLatestControl(timeline);
     };
     timeline.addEventListener('wheel', onWheel, { passive: true });
     timeline.addEventListener('pointerdown', onPointerDown, { passive: true });
@@ -2102,7 +2279,9 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
         } else {
             scrollProcessDetailsToLatest(String(assistantMessageId || ''), false);
         }
+        state.hasPendingNewBelow = false;
         state.lastScrollTop = timeline.scrollTop;
+        updateProcessDetailsReturnLatestControl(timeline);
         // 内层迭代区与外层对话区分别粘底；用户上滑内层后，本状态会暂停两者的自动跟随。
         if (window.CyberStrikeChatScroll &&
             typeof window.CyberStrikeChatScroll.scrollIfPinned === 'function') {
@@ -2110,9 +2289,15 @@ function startProcessDetailsLatestFollow(assistantMessageId, options) {
         }
     };
     const scheduleFollowLatest = function () {
-        if (state.stopped || state.detached || state.rafId) return;
+        if (state.stopped || state.rafId) return;
+        if (state.detached) {
+            state.hasPendingNewBelow = true;
+            markProcessDetailsReturnLatestPending(timeline);
+            return;
+        }
         state.rafId = requestAnimationFrame(followLatest);
     };
+    state.scheduleFollowLatest = scheduleFollowLatest;
 
     state.observer = new MutationObserver(scheduleFollowLatest);
     state.observer.observe(timeline, { childList: true, subtree: true, characterData: true });
@@ -2415,6 +2600,9 @@ function toggleProcessDetails(progressId, assistantMessageId) {
         setExpanded(!timeline.classList.contains('expanded'));
     } else if (timeline) {
         setExpanded(!timeline.classList.contains('expanded'));
+    }
+    if (timeline && typeof updateProcessDetailsReturnLatestControl === 'function') {
+        updateProcessDetailsReturnLatestControl(timeline);
     }
     if (typeof window.syncAssistantTurnSummary === 'function') {
         window.syncAssistantTurnSummary(document.getElementById(assistantMessageId));
@@ -4096,7 +4284,9 @@ function describeHitlApprovalRequest(data) {
     if (isBrowser) {
         kind = 'browser';
         question = url
-            ? hitlApprovalTemplate('hitl.requestVisitUrl', '允许 CyberStrikeAI 访问 {{url}}？', { url: url })
+            ? (url.length > 160
+                ? hitlApprovalTranslate('hitl.requestVisitLongUrl', '允许 CyberStrikeAI 访问此地址？')
+                : hitlApprovalTemplate('hitl.requestVisitUrl', '允许 CyberStrikeAI 访问 {{url}}？', { url: url }))
             : hitlApprovalTranslate('hitl.requestBrowser', '允许 CyberStrikeAI 使用浏览器？');
         primary = url;
     } else if (isCommand) {
@@ -4106,7 +4296,9 @@ function describeHitlApprovalRequest(data) {
     } else if (isFile) {
         kind = 'file';
         question = path
-            ? hitlApprovalTemplate('hitl.requestFile', '允许 CyberStrikeAI 修改 {{path}}？', { path: path })
+            ? (path.length > 160
+                ? hitlApprovalTranslate('hitl.requestModifyLongPath', '允许 CyberStrikeAI 修改此文件？')
+                : hitlApprovalTemplate('hitl.requestFile', '允许 CyberStrikeAI 修改 {{path}}？', { path: path }))
             : hitlApprovalTranslate('hitl.requestFiles', '允许 CyberStrikeAI 修改文件？');
         primary = path;
     }
@@ -4649,6 +4841,20 @@ function clearChatHitlApprovalDock(interruptId) {
     if (container) container.classList.remove('has-hitl-approval');
 }
 
+function wrapChatHitlApprovalScrollRegion(dock) {
+    if (!dock) return;
+    const actions = Array.prototype.find.call(dock.children, function (child) {
+        return child.classList && child.classList.contains('hitl-inline-actions');
+    });
+    if (!actions) return;
+    const scrollRegion = document.createElement('div');
+    scrollRegion.className = 'chat-hitl-approval-scroll-region';
+    while (dock.firstChild && dock.firstChild !== actions) {
+        scrollRegion.appendChild(dock.firstChild);
+    }
+    dock.insertBefore(scrollRegion, actions);
+}
+
 function renderChatHitlApprovalDock(data) {
     const dock = document.getElementById('chat-hitl-approval-dock');
     if (!dock || !data || !data.interruptId) return false;
@@ -4669,6 +4875,7 @@ function renderChatHitlApprovalDock(data) {
         allowEdit: allowEdit,
         argsJSON: JSON.stringify(hitlApprovalArguments(data), null, 2)
     });
+    wrapChatHitlApprovalScrollRegion(dock);
     dock.hidden = false;
     const container = dock.closest('.chat-input-container');
     if (container) container.classList.add('has-hitl-approval');
@@ -5633,6 +5840,13 @@ function parseToolCallArgsFromData(data) {
     return args;
 }
 
+function toolCallArgsEmpty(args) {
+    if (args == null) return true;
+    if (typeof args !== 'object') return false;
+    if (Array.isArray(args)) return args.length === 0;
+    return Object.keys(args).length === 0;
+}
+
 function formatToolCallTimelineTitle(toolName, index, total) {
     const name = toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
     const idx = index || 0;
@@ -5924,6 +6138,10 @@ function mergeToolResultIntoCallItem(item, data, options) {
 
     if (item.classList.contains('tool-call-collapsible')) {
         const state = toolCallDetailStateByItemId.get(item.id) || {};
+        const resultArgs = parseToolCallArgsFromData(data);
+        if (toolCallArgsEmpty(state.args) && !toolCallArgsEmpty(resultArgs)) {
+            state.args = resultArgs;
+        }
         state.resultData = data;
         state.rawText = text;
         state.resultDetailId = data.processDetailId || state.resultDetailId || '';
@@ -6028,6 +6246,13 @@ function coalesceProcessDetailsToolPairs(details) {
     function absorbResult(targetDetail, resultDetail) {
         const rd = resultDetail.data || {};
         targetDetail.data = targetDetail.data || {};
+        if (toolCallArgsEmpty(parseToolCallArgsFromData(targetDetail.data))) {
+            const resultArgs = parseToolCallArgsFromData(rd);
+            if (!toolCallArgsEmpty(resultArgs)) {
+                targetDetail.data.argumentsObj = resultArgs;
+                targetDetail.data.arguments = JSON.stringify(resultArgs);
+            }
+        }
         targetDetail.data._mergedResult = Object.assign({}, rd);
         if (resultDetail.id) {
             targetDetail.data._mergedResultDetailId = resultDetail.id;
@@ -6051,20 +6276,43 @@ function coalesceProcessDetailsToolPairs(details) {
                 createdAt: detail.createdAt,
                 data: Object.assign({}, data)
             };
-            if (id) callsById.set(id, copy);
+            if (id) {
+                let list = callsById.get(id);
+                if (!list) {
+                    list = [];
+                    callsById.set(id, list);
+                }
+                list.push(copy);
+            }
             fifoCalls.push(copy);
             out.push(copy);
-        } else         if (et === 'tool_result') {
+        } else if (et === 'tool_result') {
             let target = null;
             if (id && callsById.has(id)) {
-                target = callsById.get(id);
-            } else {
+                const list = callsById.get(id);
+                while (list.length) {
+                    const candidate = list.shift();
+                    if (candidate && candidate.data && !candidate.data._mergedResult) {
+                        target = candidate;
+                        break;
+                    }
+                }
+            }
+            if (!target) {
+                const resultName = String(data.toolName || '').trim().toLowerCase();
+                let anyUnmatched = null;
                 for (let j = 0; j < fifoCalls.length; j++) {
                     const c = fifoCalls[j];
-                    if (c && c.data && !c.data._mergedResult) {
+                    if (!c || !c.data || c.data._mergedResult) continue;
+                    if (!anyUnmatched) anyUnmatched = c;
+                    const callName = String(c.data.toolName || '').trim().toLowerCase();
+                    if (!resultName || !callName || callName === resultName) {
                         target = c;
                         break;
                     }
+                }
+                if (!target && id) {
+                    target = anyUnmatched;
                 }
             }
             if (target) {
@@ -6612,6 +6860,17 @@ function syncVisibleConversationTaskReplay(tasks) {
     visibleConversationReplaySyncId = conversationId;
     visibleConversationReplaySyncPromise = Promise.resolve()
         .then(async function () {
+            // 用户可能在任务刷新排队后、此微任务执行前切换了会话。
+            // 不允许旧会话补流取消或覆盖用户刚发起的目标会话加载。
+            if (String(window.currentConversationId || '') !== conversationId) {
+                return false;
+            }
+            if (
+                typeof window.isChatConversationLoadPending === 'function' &&
+                window.isChatConversationLoadPending(conversationId)
+            ) {
+                return false;
+            }
             // 另一标签页已新增用户消息和运行中助手轮次；先重载轻量历史，避免把补流挂到旧助手消息上。
             if (typeof window.loadConversation === 'function') {
                 await window.loadConversation(conversationId);
@@ -6647,6 +6906,33 @@ function getActiveTaskDisplayName(task) {
     return message || unnamedTaskText;
 }
 
+function stableActiveTasksForDisplay(tasks) {
+    return (Array.isArray(tasks) ? tasks : []).slice().sort(function (a, b) {
+        const aStartedAt = Date.parse(a && a.startedAt ? a.startedAt : '');
+        const bStartedAt = Date.parse(b && b.startedAt ? b.startedAt : '');
+        const aTime = Number.isFinite(aStartedAt) ? aStartedAt : Number.MAX_SAFE_INTEGER;
+        const bTime = Number.isFinite(bStartedAt) ? bStartedAt : Number.MAX_SAFE_INTEGER;
+        if (aTime !== bTime) return aTime - bTime;
+        return String(a && a.conversationId || '').localeCompare(String(b && b.conversationId || ''));
+    });
+}
+
+function activeTasksRenderSignature(tasks) {
+    const language = typeof i18next !== 'undefined' && i18next.language ? i18next.language : getCurrentTimeLocale();
+    return JSON.stringify({
+        language: language,
+        tasks: (Array.isArray(tasks) ? tasks : []).map(function (task) {
+            return {
+                conversationId: task && task.conversationId || '',
+                title: task && task.title || '',
+                message: task && task.message || '',
+                startedAt: task && task.startedAt || '',
+                status: task && task.status || ''
+            };
+        })
+    });
+}
+
 function updateActiveTaskConversationTitle(conversationId, newTitle) {
     const bar = document.getElementById('active-tasks-bar');
     if (!bar || !conversationId) return;
@@ -6663,7 +6949,7 @@ function renderActiveTasks(tasks) {
     const bar = document.getElementById('active-tasks-bar');
     if (!bar) return;
 
-    const normalizedTasks = Array.isArray(tasks) ? tasks : [];
+    const normalizedTasks = stableActiveTasksForDisplay(tasks);
     conversationExecutionTracker.update(normalizedTasks);
     window.dispatchEvent(new CustomEvent('conversation-task-state-changed', {
         detail: { tasks: normalizedTasks }
@@ -6684,10 +6970,20 @@ function renderActiveTasks(tasks) {
     if (normalizedTasks.length === 0) {
         bar.style.display = 'none';
         bar.innerHTML = '';
+        activeTasksVisualSignature = '';
         return;
     }
 
     bar.style.display = 'flex';
+    const nextVisualSignature = activeTasksRenderSignature(normalizedTasks);
+    if (
+        nextVisualSignature === activeTasksVisualSignature &&
+        bar.querySelectorAll('.active-task-item').length === normalizedTasks.length
+    ) {
+        return;
+    }
+    const previousScrollLeft = bar.scrollLeft;
+    activeTasksVisualSignature = nextVisualSignature;
     bar.innerHTML = '';
 
     function openActiveTaskConversation(conversationId) {
@@ -6766,6 +7062,7 @@ function renderActiveTasks(tasks) {
 
         bar.appendChild(item);
     });
+    bar.scrollLeft = previousScrollLeft;
 }
 
 function reconcileHitlApprovalStateWithActiveTasks(tasks) {

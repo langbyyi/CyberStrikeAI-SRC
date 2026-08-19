@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	defaultQuakeBaseURL   = "https://quake.360.cn/api/v3/search/quake_service"
+	defaultQuakeBaseURL   = "https://quake.360.net/api/v3/search/quake_service"
 	defaultShodanBaseURL  = "https://api.shodan.io"
-	defaultZoomEyeBaseURL = "https://api.zoomeye.org/v2/search"
+	defaultZoomEyeBaseURL = "https://api.zoomeye.ai/v2/search"
 
 	quakeSuccessCode      = 0
 	zoomeyeSuccessCode    = 60000
@@ -26,6 +26,19 @@ const (
 	nativeRequestUA       = "CyberStrikeAI/1.7"
 	nativeProviderTimeout = 60 * time.Second
 )
+
+// canonicalizeLegacyProviderBaseURL 迁移引擎旧域名：ZoomEye api.zoomeye.org →
+// api.zoomeye.ai，Quake quake.360.cn → quake.360.net（官方 v1.7.15 域名切换，
+// 用户 config.yaml 里的旧地址自动改写，无需手工升级）。
+func canonicalizeLegacyProviderBaseURL(baseURL string) string {
+	v := strings.TrimSpace(baseURL)
+	if v == "" {
+		return v
+	}
+	v = strings.Replace(v, "://api.zoomeye.org", "://api.zoomeye.ai", 1)
+	v = strings.Replace(v, "://quake.360.cn", "://quake.360.net", 1)
+	return v
+}
 
 // SearchResponse 是所有空间测绘引擎的统一归一化结果。
 // Provider="fofa" 时 Results 为按 fields 投影后的键值映射；quake/shodan/zoomeye
@@ -150,6 +163,49 @@ func isQuakeSuccessCode(code interface{}) bool {
 	}
 }
 
+// isZoomEyeSuccessCode 判断 ZoomEye code 是否成功（60000）；官方 v1.7.16 起
+// code 兼容字符串形式，且 code 缺失/为 0 时按 message 判定（迁移自官方）。
+func isZoomEyeSuccessCode(code interface{}) bool {
+	switch v := code.(type) {
+	case int:
+		return v == zoomeyeSuccessCode
+	case int64:
+		return v == zoomeyeSuccessCode
+	case float64:
+		return v == zoomeyeSuccessCode
+	case string:
+		return strings.TrimSpace(v) == "60000"
+	default:
+		return false
+	}
+}
+
+func isZeroSpaceSearchCode(code interface{}) bool {
+	switch v := code.(type) {
+	case int:
+		return v == 0
+	case int64:
+		return v == 0
+	case float64:
+		return v == 0
+	case string:
+		return strings.TrimSpace(v) == "0"
+	default:
+		return false
+	}
+}
+
+func zoomEyeRequestFailed(code interface{}, message string) bool {
+	if isZoomEyeSuccessCode(code) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if code == nil || isZeroSpaceSearchCode(code) {
+		return msg != "" && msg != "success" && msg != "ok" && msg != "successful."
+	}
+	return true
+}
+
 // SearchQuakeNative 按 Quake 原生协议搜索：POST JSON，header X-QuakeToken，
 // body {query,size,start,latest,include}，解析 code/message/total_count/data。
 func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey string, request SearchRequest) (*SearchResponse, error) {
@@ -159,6 +215,7 @@ func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = defaultQuakeBaseURL
 	}
+	baseURL = canonicalizeLegacyProviderBaseURL(baseURL)
 	baseURL = ensureSearchPath(baseURL, "/api/v3/search/quake_service")
 	fields := splitAndCleanCSV(request.Fields)
 	body := map[string]interface{}{
@@ -312,6 +369,7 @@ func SearchZoomEyeNative(ctx context.Context, client *http.Client, baseURL, apiK
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = defaultZoomEyeBaseURL
 	}
+	baseURL = canonicalizeLegacyProviderBaseURL(baseURL)
 	baseURL = ensureSearchPath(baseURL, "/v2/search")
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -344,7 +402,7 @@ func SearchZoomEyeNative(ctx context.Context, client *http.Client, baseURL, apiK
 		return nil, err
 	}
 	var apiResp struct {
-		Code     int                      `json:"code"`
+		Code     interface{}              `json:"code"`
 		Message  string                   `json:"message"`
 		Query    string                   `json:"query"`
 		Total    int                      `json:"total"`
@@ -355,7 +413,7 @@ func SearchZoomEyeNative(ctx context.Context, client *http.Client, baseURL, apiK
 	if err := json.Unmarshal(data, &apiResp); err != nil {
 		return nil, errors.New("解析 ZoomEye 响应失败: " + err.Error())
 	}
-	if apiResp.Code != zoomeyeSuccessCode {
+	if zoomEyeRequestFailed(apiResp.Code, apiResp.Message) {
 		msg := strings.TrimSpace(apiResp.Message)
 		if msg == "" {
 			msg = "ZoomEye 返回错误"

@@ -65,7 +65,7 @@ ai:
 | `ai.default_channel` | 默认通道 ID。新对话、机器人、批量任务和未显式选择通道的请求使用它。 |
 | `ai.channels.<id>` | 通道配置。ID 会归一化为小写、数字和短横线，例如 `Qwen_Max` 会变成 `qwen-max`。 |
 | `name` | Web UI 展示名。留空时使用通道 ID。 |
-| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 会桥接到 Anthropic Messages API。 |
+| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 使用 Eino 原生 Anthropic Messages API。 |
 | `base_url/api_key/model` | 必填。Base URL 通常需要包含版本路径，如 OpenAI/兼容网关的 `/v1`。 |
 | `max_total_tokens` | 上下文压缩、攻击链构建、多代理摘要等共用的总预算。 |
 | `max_completion_tokens` | 单次模型输出上限；未填时使用默认值。 |
@@ -174,10 +174,10 @@ fofa:
   base_url: https://fofa.info/api/v1/search/all # 可选，留空用默认；无需带路径，后端按引擎自动补齐
   api_key: ""
 zoomeye:
-  base_url: https://api.zoomeye.org/v2/search # 可选
+  base_url: https://api.zoomeye.ai/v2/search # 可选
   api_key: ""
 quake:
-  base_url: https://quake.360.cn/api/v3/search/quake_service # 可选
+  base_url: https://quake.360.net/api/v3/search/quake_service # 可选
   api_key: ""
 shodan:
   base_url: https://api.shodan.io # 可选

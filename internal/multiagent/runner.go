@@ -52,6 +52,7 @@ type RunResult struct {
 type toolCallPendingInfo struct {
 	ToolCallID string
 	ToolName   string
+	Arguments  map[string]interface{}
 	EinoAgent  string
 	EinoRole   string
 }
@@ -154,8 +155,8 @@ func RunDeepAgent(
 	mainDefs := ag.ToolsForRole(roleTools)
 
 	baseHTTPClient := newEinoBaseHTTPClient()
-	modelFactory := newEinoOpenAIChatModelFactory(baseHTTPClient, reasoningClient, logger)
-	agenticModelFactory := newEinoOpenAIAgenticChatModelFactory(baseHTTPClient, reasoningClient, logger)
+	modelFactory := newEinoToolCallingChatModelFactory(baseHTTPClient, reasoningClient, logger)
+	agenticModelFactory := newEinoAgenticChatModelFactory(baseHTTPClient, reasoningClient, logger)
 	agenticModelRetryCfg := newEinoAgenticModelRetryConfig(&ma.EinoMiddleware, logger, "multiagent")
 	agenticModelFailoverCfg, err := newEinoAgenticModelFailoverConfig(ctx, appCfg, &ma.EinoMiddleware, einoModelModeNormal, agenticModelFactory, logger, "multiagent", progress, orchMode, conversationID)
 	if err != nil {
@@ -232,7 +233,7 @@ func RunDeepAgent(
 			}
 			if agenticSkillMW != nil {
 				if agenticFSTools && agenticLoc != nil {
-					subFs, fsErr := subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, id, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+					subFs, fsErr := subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, id, conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 					if fsErr != nil {
 						return nil, fmt.Errorf("子代理 %q filesystem 中间件: %w", id, fsErr)
 					}
@@ -492,7 +493,7 @@ func RunDeepAgent(
 		}
 		var peFsMw adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 		if agenticSkillMW != nil && agenticFSTools && agenticLoc != nil {
-			peFsMw, err = subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, "executor", einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+			peFsMw, err = subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, "executor", conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
 			if err != nil {
 				return nil, fmt.Errorf("plan_execute agentic filesystem 中间件: %w", err)
 			}
@@ -907,8 +908,35 @@ func tryEmitToolCallsOnce(
 	if _, ok := seen[sig]; ok {
 		return
 	}
+	if idSig := toolCallsStableIDSignature(msg); idSig != "" {
+		idKey := agentName + "\x1eids\x1e" + idSig
+		if _, ok := seen[idKey]; ok {
+			return
+		}
+		seen[idKey] = struct{}{}
+	}
 	seen[sig] = struct{}{}
 	emitToolCallsFromMessage(msg, agentName, orchestratorName, conversationID, orchMode, progress, subAgentToolStep, mainAgentToolStep, markPending)
+}
+
+func toolCallsStableIDSignature(msg *schema.Message) string {
+	if msg == nil || len(msg.ToolCalls) == 0 {
+		return ""
+	}
+	visible := filterVisibleToolCallsForProgress(msg.ToolCalls)
+	ids := make([]string, 0, len(visible))
+	for _, tc := range visible {
+		id := strings.TrimSpace(tc.ID)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ";")
 }
 
 func emitToolCallsFromMessage(
@@ -994,6 +1022,7 @@ func emitToolCallsFromMessage(
 			markPending(toolCallPendingInfo{
 				ToolCallID: toolCallID,
 				ToolName:   display,
+				Arguments:  argsObj,
 				EinoAgent:  agentName,
 				EinoRole:   role,
 			})
