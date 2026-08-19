@@ -245,10 +245,10 @@ func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey
 		return nil, err
 	}
 	var apiResp struct {
-		Code       interface{}              `json:"code"`
-		Message    string                   `json:"message"`
-		TotalCount int                      `json:"total_count"`
-		Data       []map[string]interface{} `json:"data"`
+		Code       interface{}     `json:"code"`
+		Message    string          `json:"message"`
+		TotalCount int             `json:"total_count"`
+		Data       json.RawMessage `json:"data"`
 		Meta       struct {
 			Pagination struct {
 				Total int `json:"total"`
@@ -259,14 +259,15 @@ func SearchQuakeNative(ctx context.Context, client *http.Client, baseURL, apiKey
 		return nil, errors.New("解析 Quake 响应失败: " + err.Error())
 	}
 	if !isQuakeSuccessCode(apiResp.Code) {
-		msg := strings.TrimSpace(apiResp.Message)
-		if msg == "" {
-			msg = "Quake 返回错误"
-		}
+		msg := firstNonEmpty(apiResp.Message, spaceSearchMessageFromRawObject(apiResp.Data), "Quake 返回错误")
 		return nil, errors.New(msg)
 	}
+	rows, err := decodeSpaceSearchRows(apiResp.Data)
+	if err != nil {
+		return nil, errors.New("解析 Quake 响应失败: " + err.Error())
+	}
 	total := firstPositive(apiResp.TotalCount, apiResp.Meta.Pagination.Total)
-	results := projectRows(apiResp.Data, fields)
+	results := projectRows(rows, fields)
 	return &SearchResponse{
 		Provider: "quake", Query: request.Query, Size: request.Size, Page: request.Page,
 		Total: total, Fields: fields, ResultsCount: len(results), Results: results,
@@ -402,25 +403,26 @@ func SearchZoomEyeNative(ctx context.Context, client *http.Client, baseURL, apiK
 		return nil, err
 	}
 	var apiResp struct {
-		Code     interface{}              `json:"code"`
-		Message  string                   `json:"message"`
-		Query    string                   `json:"query"`
-		Total    int                      `json:"total"`
-		Page     int                      `json:"page"`
-		PageSize int                      `json:"pagesize"`
-		Data     []map[string]interface{} `json:"data"`
+		Code     interface{}     `json:"code"`
+		Message  string          `json:"message"`
+		Query    string          `json:"query"`
+		Total    int             `json:"total"`
+		Page     int             `json:"page"`
+		PageSize int             `json:"pagesize"`
+		Data     json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(data, &apiResp); err != nil {
 		return nil, errors.New("解析 ZoomEye 响应失败: " + err.Error())
 	}
 	if zoomEyeRequestFailed(apiResp.Code, apiResp.Message) {
-		msg := strings.TrimSpace(apiResp.Message)
-		if msg == "" {
-			msg = "ZoomEye 返回错误"
-		}
+		msg := firstNonEmpty(apiResp.Message, spaceSearchMessageFromRawObject(apiResp.Data), "ZoomEye 返回错误")
 		return nil, errors.New(msg)
 	}
-	results := projectRows(apiResp.Data, fields)
+	rows, err := decodeSpaceSearchRows(apiResp.Data)
+	if err != nil {
+		return nil, errors.New("解析 ZoomEye 响应失败: " + err.Error())
+	}
+	results := projectRows(rows, fields)
 	return &SearchResponse{
 		Provider: "zoomeye",
 		Query:    firstNonEmpty(apiResp.Query, request.Query),
@@ -428,6 +430,75 @@ func SearchZoomEyeNative(ctx context.Context, client *http.Client, baseURL, apiK
 		Page:     firstPositive(apiResp.Page, request.Page),
 		Total:    apiResp.Total, Fields: fields, ResultsCount: len(results), Results: results,
 	}, nil
+}
+
+// decodeSpaceSearchRows 解析引擎返回的 data 字段（官方 v1.7.16 引入的多形态容错）：
+// 直接数组 [...]、嵌套对象 {data|items|matches|results|list|records: [...]} 均可，
+// 空值/null 返回空集。域名迁移伴随的 API 形态变化不再导致解析失败。
+func decodeSpaceSearchRows(raw json.RawMessage) ([]map[string]interface{}, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	switch raw[0] {
+	case '[':
+		var rows []map[string]interface{}
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return nil, err
+		}
+		if rows == nil {
+			return []map[string]interface{}{}, nil
+		}
+		return rows, nil
+	case '{':
+		var obj map[string]interface{}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return nil, err
+		}
+		for _, key := range []string{"data", "items", "matches", "results", "list", "records"} {
+			nested, ok := obj[key]
+			if !ok {
+				continue
+			}
+			if slice, ok := nested.([]interface{}); ok {
+				return interfaceSliceToRowMaps(slice), nil
+			}
+		}
+		return []map[string]interface{}{}, nil
+	default:
+		return nil, fmt.Errorf("unexpected JSON value")
+	}
+}
+
+func interfaceSliceToRowMaps(slice []interface{}) []map[string]interface{} {
+	rows := make([]map[string]interface{}, 0, len(slice))
+	for _, item := range slice {
+		if m, ok := item.(map[string]interface{}); ok {
+			rows = append(rows, m)
+		}
+	}
+	return rows
+}
+
+// spaceSearchMessageFromRawObject 从 data 字段为对象时提取错误信息（message/error/errmsg/msg），
+// 部分引擎失败时把错误详情放在 data 里而非顶层 message。
+func spaceSearchMessageFromRawObject(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '{' {
+		return ""
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "error", "errmsg", "msg"} {
+		if s, ok := obj[key].(string); ok {
+			if msg := strings.TrimSpace(s); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
 }
 
 // normalizeFOFAResponse 把 FOFA 协议返回的 [][]interface{} 结果按 fields 投影为

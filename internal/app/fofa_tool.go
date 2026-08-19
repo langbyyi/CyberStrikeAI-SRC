@@ -223,18 +223,35 @@ func fofaHasAnyCredential(cfg *config.Config) bool {
 	return false
 }
 
+// canonicalizeProviderBaseURL 迁移引擎旧域名（api.zoomeye.org → api.zoomeye.ai、
+// quake.360.cn → quake.360.net，官方 v1.7.15 域名切换），用户 config.yaml 里的
+// 旧地址自动改写，与 handler/fofa.go 的 canonicalizeSpaceSearchBaseURL 保持一致。
+func canonicalizeProviderBaseURL(provider, raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return v
+	}
+	switch provider {
+	case "zoomeye":
+		v = strings.Replace(v, "://api.zoomeye.org", "://api.zoomeye.ai", 1)
+	case "quake":
+		v = strings.Replace(v, "://quake.360.cn", "://quake.360.net", 1)
+	}
+	return v
+}
+
 func resolveProviderBaseURL(cfg *config.Config, provider string) string {
 	switch provider {
 	case "zoomeye":
 		if v := strings.TrimSpace(cfg.ZoomEye.BaseURL); v != "" {
-			return v
+			return canonicalizeProviderBaseURL(provider, v)
 		}
-		return "https://api.zoomeye.org/v2/search"
+		return "https://api.zoomeye.ai/v2/search"
 	case "quake":
 		if v := strings.TrimSpace(cfg.Quake.BaseURL); v != "" {
-			return v
+			return canonicalizeProviderBaseURL(provider, v)
 		}
-		return "https://quake.360.cn/api/v3/search/quake_service"
+		return "https://quake.360.net/api/v3/search/quake_service"
 	case "shodan":
 		if v := strings.TrimSpace(cfg.Shodan.BaseURL); v != "" {
 			return v
