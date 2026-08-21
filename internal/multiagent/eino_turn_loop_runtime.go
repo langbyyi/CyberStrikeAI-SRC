@@ -96,13 +96,25 @@ func (r *EinoTurnLoopRuntime) Run(ctx context.Context) {
 }
 
 func (r *EinoTurnLoopRuntime) PushInterruptContinue(note string) bool {
+	return r.PushInterruptContinueWithTrace(note, nil)
+}
+
+// PushInterruptContinueWithTrace 携带被中断轮的模型可见轨迹续跑。
+// ADK TurnLoop 抢占后不延续被中断 turn 的消息状态，续跑输入若只剩中断提示词，
+// 模型会丢失全部已完成步骤（官方 issue #121：中断后记忆丢失/重复执行）。
+// 把轨迹作为前置消息塞进 interrupt_continue item，续跑输入即恢复为
+// 「原有进度 + 用户备注」，与「中断并继续」的产品语义一致。
+// prefix 为空时退化为纯提示词续跑（首次模型调用前中断等场景）。
+func (r *EinoTurnLoopRuntime) PushInterruptContinueWithTrace(note string, prefix []*schema.Message) bool {
 	if r == nil || r.loop == nil {
 		return false
 	}
+	msgs := cloneSchemaMessages(prefix)
+	msgs = append(msgs, schema.UserMessage(formatInterruptContinuePrompt(note)))
 	item := EinoTurnLoopItem{
 		Kind:     "interrupt_continue",
 		Note:     strings.TrimSpace(note),
-		Messages: []*schema.Message{schema.UserMessage(formatInterruptContinuePrompt(note))},
+		Messages: msgs,
 	}
 	ok, ack := r.loop.Push(item, adk.WithPreemptTimeout[EinoTurnLoopItem, *schema.Message](adk.AnySafePoint, r.interruptTimeout))
 	if ack != nil {
@@ -140,13 +152,18 @@ func mergeEinoTurnLoopMessages(items []EinoTurnLoopItem) []*schema.Message {
 	return msgs
 }
 
+// interruptContinueRecoverHint 中断续跑的上下文找回引导。
+// ADK TurnLoop 抢占后续跑 turn 只收到本提示词，被中断轮的消息状态不会延续；
+// 引导模型先从项目黑板/漏洞库找回已完成步骤，避免"缺上下文"空转或中止。
+const interruptContinueRecoverHint = "若看不到此前已完成的步骤与工具结果，先用 list_project_facts / list_vulnerabilities 查看项目已沉淀的事实与漏洞，基于其继续推进；不要重复大规模侦察，也不要因缺上下文而中止。"
+
 func formatInterruptContinuePrompt(note string) string {
 	note = strings.TrimSpace(note)
 	if note == "" {
-		return "用户请求中断当前推理并继续。请基于已经完成的步骤继续，不要重复已完成工具调用。"
+		return "用户请求中断当前推理并继续。请基于已经完成的步骤继续，不要重复已完成工具调用。" + interruptContinueRecoverHint
 	}
 	return "用户请求中断当前推理并补充上下文后继续：\n" + note +
-		"\n\n请基于已经完成的步骤继续，不要重复已完成工具调用。"
+		"\n\n请基于已经完成的步骤继续，不要重复已完成工具调用。" + interruptContinueRecoverHint
 }
 
 func cloneSchemaMessages(in []*schema.Message) []*schema.Message {

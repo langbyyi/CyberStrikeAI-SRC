@@ -12,12 +12,13 @@ import (
 )
 
 type fakeTurnLoopRuntimeControl struct {
-	mu          sync.Mutex
-	runCalled   bool
-	stopIdle    bool
-	stopped     string
-	pushedNotes []string
-	pushOK      bool
+	mu           sync.Mutex
+	runCalled    bool
+	stopIdle     bool
+	stopped      string
+	pushedNotes  []string
+	pushedPrefix [][]*schema.Message
+	pushOK       bool
 }
 
 func (f *fakeTurnLoopRuntimeControl) Run(context.Context) {
@@ -27,9 +28,14 @@ func (f *fakeTurnLoopRuntimeControl) Run(context.Context) {
 }
 
 func (f *fakeTurnLoopRuntimeControl) PushInterruptContinue(note string) bool {
+	return f.PushInterruptContinueWithTrace(note, nil)
+}
+
+func (f *fakeTurnLoopRuntimeControl) PushInterruptContinueWithTrace(note string, prefix []*schema.Message) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pushedNotes = append(f.pushedNotes, note)
+	f.pushedPrefix = append(f.pushedPrefix, prefix)
 	return f.pushOK
 }
 
@@ -53,6 +59,88 @@ func (f *fakeTurnLoopRuntimeControl) snapshot() (runCalled bool, stopIdle bool, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.runCalled, f.stopIdle, f.stopped, append([]string(nil), f.pushedNotes...)
+}
+
+func (f *fakeTurnLoopRuntimeControl) pushedPrefixes() [][]*schema.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]*schema.Message(nil), f.pushedPrefix...)
+}
+
+// TestEinoTurnLoopStarterInterruptCarriesModelFacingTrace 验证「中断并继续」
+// 把被中断轮的模型可见轨迹作为前置消息推入续跑 item（官方 issue #121 修复：
+// 抢占后上下文只剩中断提示词会导致模型失忆）。未接线快照时退化为纯提示词。
+func TestEinoTurnLoopStarterInterruptCarriesModelFacingTrace(t *testing.T) {
+	fakeRuntime := &fakeTurnLoopRuntimeControl{pushOK: true}
+	var interruptPush func(string) bool
+	var unregisterTurn func()
+
+	newEinoTurnLoopIteratorStarter(einoTurnLoopIteratorStarterConfig{
+		Context:                     context.Background(),
+		ConversationID:              "conv",
+		OrchMode:                    "deep",
+		UnregisterTurnLoopInterrupt: &unregisterTurn,
+		TurnLoopInterruptRegistrar: func(push func(string) bool) func() {
+			interruptPush = push
+			return func() {}
+		},
+		SnapshotModelFacingTrace: func() []*schema.Message {
+			return []*schema.Message{
+				schema.UserMessage("原始任务"),
+				schema.AssistantMessage("已探测 a-03 完成侦察", nil),
+			}
+		},
+		RuntimeFactory: func(EinoTurnLoopRuntimeConfig) einoTurnLoopRuntimeControl {
+			return fakeRuntime
+		},
+	}).Start(nil)
+
+	if interruptPush == nil {
+		t.Fatal("turn loop interrupt registrar was not bound")
+	}
+	if !interruptPush("完成a-03") {
+		t.Fatal("interrupt push should succeed")
+	}
+	prefixes := fakeRuntime.pushedPrefixes()
+	if len(prefixes) != 1 {
+		t.Fatalf("pushed prefixes = %#v, want 1", prefixes)
+	}
+	prefix := prefixes[0]
+	if len(prefix) != 2 || prefix[0].Content != "原始任务" || prefix[1].Content != "已探测 a-03 完成侦察" {
+		t.Fatalf("interrupt item prefix = %#v, want model-facing trace snapshot", prefix)
+	}
+}
+
+func TestEinoTurnLoopStarterInterruptWithoutTraceDegrades(t *testing.T) {
+	fakeRuntime := &fakeTurnLoopRuntimeControl{pushOK: true}
+	var interruptPush func(string) bool
+	var unregisterTurn func()
+
+	newEinoTurnLoopIteratorStarter(einoTurnLoopIteratorStarterConfig{
+		Context:                     context.Background(),
+		ConversationID:              "conv",
+		OrchMode:                    "eino_single",
+		UnregisterTurnLoopInterrupt: &unregisterTurn,
+		TurnLoopInterruptRegistrar: func(push func(string) bool) func() {
+			interruptPush = push
+			return func() {}
+		},
+		// 未接线 SnapshotModelFacingTrace：续跑应退化为纯中断提示词，不 panic。
+		RuntimeFactory: func(EinoTurnLoopRuntimeConfig) einoTurnLoopRuntimeControl {
+			return fakeRuntime
+		},
+	}).Start(nil)
+
+	if interruptPush == nil {
+		t.Fatal("turn loop interrupt registrar was not bound")
+	}
+	if !interruptPush("继续") {
+		t.Fatal("interrupt push should succeed")
+	}
+	prefixes := fakeRuntime.pushedPrefixes()
+	if len(prefixes) != 1 || len(prefixes[0]) != 0 {
+		t.Fatalf("pushed prefixes = %#v, want single empty prefix", prefixes)
+	}
 }
 
 func TestEinoTurnLoopIteratorStarterBindsRegistrarsAndProgress(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
@@ -233,6 +234,12 @@ func (s *einoRunRuntimeSession) initIteratorRuntime() {
 		UnregisterTurnLoopInterrupt: &s.unregisterTurnLoopInterrupt,
 		RuntimeCancelRegistrar:      runtimeCancelRegistrar,
 		TurnLoopInterruptRegistrar:  turnLoopInterruptRegistrar,
+		SnapshotModelFacingTrace: func() []*schema.Message {
+			if s.args == nil || s.args.ModelFacingTrace == nil {
+				return nil
+			}
+			return s.args.ModelFacingTrace.Snapshot()
+		},
 	})
 	useTurnLoop := turnLoopInterruptRegistrar != nil
 	s.startFreshIter = runnerStarter.Start

@@ -15,6 +15,7 @@ import (
 type einoTurnLoopRuntimeControl interface {
 	Run(context.Context)
 	PushInterruptContinue(string) bool
+	PushInterruptContinueWithTrace(string, []*schema.Message) bool
 	StopImmediate(string)
 	StopWhenIdle()
 	Wait() *adk.TurnLoopExitState[EinoTurnLoopItem, *schema.Message]
@@ -38,6 +39,10 @@ type einoTurnLoopIteratorStarterConfig struct {
 	RuntimeCancelRegistrar      AgentRuntimeCancelRegistrar
 	TurnLoopInterruptRegistrar  AgentTurnLoopInterruptRegistrar
 	RuntimeFactory              einoTurnLoopRuntimeFactory
+	// SnapshotModelFacingTrace 可选：返回被中断轮最近一次送入模型的消息快照。
+	// 「中断并继续」时作为前置消息随中断提示词一起推入续跑 item，
+	// 使续跑输入为「原有进度 + 用户备注」而非仅剩备注。
+	SnapshotModelFacingTrace func() []*schema.Message
 }
 
 type einoTurnLoopIteratorStarter struct {
@@ -98,12 +103,21 @@ func (s *einoTurnLoopIteratorStarter) bindTurnLoopInterrupt(runtime einoTurnLoop
 		return
 	}
 	*s.cfg.UnregisterTurnLoopInterrupt = s.cfg.TurnLoopInterruptRegistrar(func(note string) bool {
-		ok := runtime.PushInterruptContinue(note)
+		ok := runtime.PushInterruptContinueWithTrace(note, s.snapshotModelFacingTrace())
 		if ok {
 			s.emitInterruptContinueProgress(note)
 		}
 		return ok
 	})
+}
+
+// snapshotModelFacingTrace 读取被中断轮的模型可见轨迹快照；未接线时返回 nil，
+// 续跑退化为纯中断提示词（与官方行为一致，无回归）。
+func (s *einoTurnLoopIteratorStarter) snapshotModelFacingTrace() []*schema.Message {
+	if s == nil || s.cfg.SnapshotModelFacingTrace == nil {
+		return nil
+	}
+	return s.cfg.SnapshotModelFacingTrace()
 }
 
 func (s *einoTurnLoopIteratorStarter) bindRuntimeCancel(runtime einoTurnLoopRuntimeControl) {
@@ -113,7 +127,7 @@ func (s *einoTurnLoopIteratorStarter) bindRuntimeCancel(runtime einoTurnLoopRunt
 	*s.cfg.UnregisterAgentCancel = s.cfg.RuntimeCancelRegistrar(func(cause error) bool {
 		s.storeNativeCancelCause(cause)
 		if errors.Is(cause, ErrInterruptContinue) {
-			return runtime.PushInterruptContinue("")
+			return runtime.PushInterruptContinueWithTrace("", s.snapshotModelFacingTrace())
 		}
 		runtime.StopImmediate("task_cancelled")
 		if s.cfg.Logger != nil {

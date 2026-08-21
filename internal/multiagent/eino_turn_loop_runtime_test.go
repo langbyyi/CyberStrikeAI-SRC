@@ -188,6 +188,67 @@ func TestEinoTurnLoopRuntimePushInterruptStartsNextTurn(t *testing.T) {
 	}
 }
 
+// TestEinoTurnLoopRuntimePushInterruptWithTrace 续跑输入须为「轨迹 + 中断提示词」：
+// 抢占后模型仍能看到原始任务与既有进度，不再只剩备注（官方 issue #121 场景）。
+func TestEinoTurnLoopRuntimePushInterruptWithTrace(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	mockModel := newTurnLoopBlockingModel()
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:  "turn-loop-agent",
+		Model: mockModel,
+	})
+	if err != nil {
+		t.Fatalf("NewChatModelAgent: %v", err)
+	}
+
+	runtime := NewEinoTurnLoopRuntime(EinoTurnLoopRuntimeConfig{
+		Agent:            agent,
+		InitialMessages:  []*schema.Message{schema.UserMessage("initial task")},
+		InterruptTimeout: 20 * time.Millisecond,
+	})
+	runtime.Run(ctx)
+
+	select {
+	case <-mockModel.started:
+	case <-ctx.Done():
+		t.Fatal("first model call did not start")
+	}
+	trace := []*schema.Message{
+		schema.UserMessage("initial task"),
+		schema.AssistantMessage("已完成 a-03 侦察：10.0.160.98 开放 80 端口", nil),
+	}
+	if !runtime.PushInterruptContinueWithTrace("完成a-03", trace) {
+		t.Fatal("interrupt continue push was rejected")
+	}
+	select {
+	case <-mockModel.started:
+	case <-ctx.Done():
+		t.Fatal("second model call did not start after interrupt push")
+	}
+
+	runtime.StopWhenIdle()
+	if state := runtime.Wait(); state == nil || state.ExitReason != nil {
+		t.Fatalf("exit state = %+v, reason = %v", state, state.ExitReason)
+	}
+
+	inputs := mockModel.snapshotInputs()
+	if len(inputs) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(inputs))
+	}
+	lastInput := inputs[len(inputs)-1]
+	if len(lastInput) != 3 {
+		t.Fatalf("resumed input len = %d, want 3 (trace×2 + interrupt)", len(lastInput))
+	}
+	if lastInput[0].Content != "initial task" || lastInput[1].Content != "已完成 a-03 侦察：10.0.160.98 开放 80 端口" {
+		t.Fatalf("resumed input prefix = %#v, want model-facing trace", lastInput[:2])
+	}
+	if !strings.Contains(lastInput[2].Content, "完成a-03") {
+		t.Fatalf("resumed input tail = %q, want interrupt note", lastInput[2].Content)
+	}
+}
+
 func TestMergeEinoTurnLoopMessagesClonesInput(t *testing.T) {
 	original := schema.UserMessage("hello")
 	msgs := mergeEinoTurnLoopMessages([]EinoTurnLoopItem{{Messages: []*schema.Message{original}}})
@@ -208,5 +269,11 @@ func TestFormatInterruptContinuePrompt(t *testing.T) {
 	empty := formatInterruptContinuePrompt(" ")
 	if !strings.Contains(empty, "不要重复") {
 		t.Fatalf("empty prompt = %q", empty)
+	}
+	// 续跑提示词须包含状态找回引导：抢占后上下文不延续，靠黑板/漏洞库兜底。
+	for _, p := range []string{got, empty} {
+		if !strings.Contains(p, "list_project_facts") || !strings.Contains(p, "list_vulnerabilities") {
+			t.Fatalf("prompt missing recover hint: %q", p)
+		}
 	}
 }
