@@ -1667,7 +1667,69 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 	}
 	summary.IterationCount = iterCount
 	summary.MaxIteration = maxIter
+	summary.mergeRunningExecutionStatus(db, messageID)
 	return summary, nil
+}
+
+// mergeRunningExecutionStatus 对「有 tool_call 但结果尚未落库」的摘要项，若该工具在
+// 本会话的 tool_executions 中仍有 running 的执行，则把状态从 result_missing 修正为 running。
+// 长耗时命令（nmap 全端口、feroxbuster 目录爆破）执行期间常处于该窗口——exec 还在跑、
+// tool_result 事件尚未写入；不修正会把「执行中」误显示为「结果记录缺失」，让用户误以为结果丢失。
+// 注意不依赖 process_detail 里的 executionId：真实数据绝大多数 tool_call 不带它，且
+// tool_executions 无 tool_call_id 列，无法精确关联；改为按 conversation + tool_name + running 判定。
+func (s *ProcessDetailsSummary) mergeRunningExecutionStatus(db *DB, messageID string) {
+	if db == nil || len(s.ToolExecutions) == 0 {
+		return
+	}
+	toolSet := make(map[string]bool)
+	for i := range s.ToolExecutions {
+		e := &s.ToolExecutions[i]
+		if e.Status == "result_missing" && e.ToolName != "" {
+			toolSet[e.ToolName] = true
+		}
+	}
+	if len(toolSet) == 0 {
+		return
+	}
+	var conversationID string
+	_ = db.QueryRow(
+		"SELECT conversation_id FROM process_details WHERE message_id = ? AND conversation_id <> '' LIMIT 1",
+		messageID,
+	).Scan(&conversationID)
+	if conversationID == "" {
+		return
+	}
+	args := make([]interface{}, 0, len(toolSet)+1)
+	args = append(args, conversationID)
+	placeholders := make([]string, 0, len(toolSet))
+	for name := range toolSet {
+		placeholders = append(placeholders, "?")
+		args = append(args, name)
+	}
+	rows, err := db.Query(
+		"SELECT DISTINCT tool_name FROM tool_executions WHERE conversation_id = ? AND status = 'running' AND tool_name IN ("+strings.Join(placeholders, ",")+")",
+		args...,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	runningTools := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			runningTools[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return
+	}
+	for i := range s.ToolExecutions {
+		e := &s.ToolExecutions[i]
+		if e.Status == "result_missing" && runningTools[e.ToolName] {
+			e.Status = "running"
+		}
+	}
 }
 
 func processDetailString(payload map[string]interface{}, key string) string {

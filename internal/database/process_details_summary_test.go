@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"cyberstrike-ai/internal/mcp"
+
 	"go.uber.org/zap"
 )
 
@@ -219,6 +221,67 @@ VALUES ('cancelled-detail', ?, ?, 'cancelled', 'interrupted', '{}', '2026-08-10T
 	}
 	if want := int64((2*time.Minute + 5*time.Second) / time.Millisecond); summary.DurationMs != want {
 		t.Fatalf("durationMs = %d, want %d", summary.DurationMs, want)
+	}
+}
+
+// TestProcessDetailsSummaryMarksRunningExecutionAsRunning 验证：execution 仍在
+// running 的长耗时工具调用（nmap/feroxbuster），摘要状态应显示「运行中」而非
+// 「结果记录缺失」。判定不依赖 process_detail 的 executionId（真实数据大多缺失），
+// 改为按 conversation + tool_name 查 tool_executions 是否有 running 执行。
+func TestProcessDetailsSummaryMarksRunningExecutionAsRunning(t *testing.T) {
+	db, conversationID, messageID := setupProcessDetailsSummaryTest(t)
+	// call-a：exec，本会话有 running 的 exec 执行 → 应标 running
+	if err := db.AddProcessDetail(messageID, conversationID, "tool_call", "call", map[string]interface{}{
+		"toolName": "exec", "toolCallId": "call-a",
+	}); err != nil {
+		t.Fatalf("AddProcessDetail(tool_call a): %v", err)
+	}
+	// call-b：http-framework-test，本会话无该工具 running → 保持 result_missing
+	if err := db.AddProcessDetail(messageID, conversationID, "tool_call", "call", map[string]interface{}{
+		"toolName": "http-framework-test", "toolCallId": "call-b",
+	}); err != nil {
+		t.Fatalf("AddProcessDetail(tool_call b): %v", err)
+	}
+	// call-c：exec，结果已落库且失败 → 不修正
+	if err := db.AddProcessDetail(messageID, conversationID, "tool_call", "call", map[string]interface{}{
+		"toolName": "exec", "toolCallId": "call-c",
+	}); err != nil {
+		t.Fatalf("AddProcessDetail(tool_call c): %v", err)
+	}
+	if _, err := db.AddProcessDetailWithID(messageID, conversationID, "tool_result", "result", map[string]interface{}{
+		"toolName": "exec", "toolCallId": "call-c", "success": false,
+	}); err != nil {
+		t.Fatalf("AddProcessDetail(tool_result c): %v", err)
+	}
+	now := time.Now()
+	for _, ex := range []*mcp.ToolExecution{
+		{ID: "exec-running", ToolName: "exec", Status: "running", StartTime: now, ConversationID: conversationID},
+		{ID: "http-done", ToolName: "http-framework-test", Status: "completed", StartTime: now, ConversationID: conversationID},
+	} {
+		if err := db.SaveToolExecution(ex); err != nil {
+			t.Fatalf("SaveToolExecution: %v", err)
+		}
+	}
+
+	summary, err := db.GetProcessDetailsSummary(messageID)
+	if err != nil {
+		t.Fatalf("GetProcessDetailsSummary: %v", err)
+	}
+	if len(summary.ToolExecutions) != 3 {
+		t.Fatalf("tool executions = %d, want 3", len(summary.ToolExecutions))
+	}
+	got := map[string]string{}
+	for _, e := range summary.ToolExecutions {
+		got[e.ToolCallID] = e.Status
+	}
+	if got["call-a"] != "running" {
+		t.Errorf("call-a status = %q, want running（exec 仍在跑）", got["call-a"])
+	}
+	if got["call-b"] != "result_missing" {
+		t.Errorf("call-b status = %q, want result_missing（http 工具无 running 执行）", got["call-b"])
+	}
+	if got["call-c"] != "failed" {
+		t.Errorf("call-c status = %q, want failed（结果已落库）", got["call-c"])
 	}
 }
 

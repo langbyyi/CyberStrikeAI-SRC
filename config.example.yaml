@@ -146,7 +146,7 @@ shodan:
 agent:
   max_iterations: 12000 # 全局最大迭代次数（单代理 / Deep / Supervisor / Plan-Execute 主执行器 / 子代理均沿用；agents/*.md 中 max_iterations>0 可单独覆盖）
   tool_timeout_minutes: 60 # 单次工具执行最大时长（分钟），超时自动终止；0 表示不限制（不推荐，易出现长时间挂起）
-  tool_wait_timeout_seconds: 300 # 工具本轮最多等待（秒）；到时返回 execution_id，worker 继续后台执行，可用 wait_tool_execution 继续等待；0=等到完成
+  tool_wait_timeout_seconds: 900 # 工具本轮最多等待（秒）；到时返回 execution_id，worker 继续后台执行，可用 wait_tool_execution 继续等待；0=等到完成。SRC 长扫描（nmap 全端口/目录爆破）建议 600-900，过短会频繁转后台导致结果未回显
   external_mcp_max_concurrent_per_server: 5 # 单个外部 MCP server 同时运行的工具数；0=默认2；负数=不限制
   external_mcp_max_concurrent_total: 16 # 所有外部 MCP 工具全局并发上限；0=默认16；负数=不限制
   external_mcp_circuit_failure_threshold: 15 # 单个外部 MCP server 连续失败多少次后熔断；0=默认3；负数=关闭熔断
