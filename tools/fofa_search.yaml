@@ -12,7 +12,7 @@ args:
     # ==================== FOFA配置 ====================
     # 请在此处配置您的 FOFA API Key
     # 您也可以在环境变量中设置：FOFA_API_KEY
-    # enable 默认为 false，需开启才能调用该MCP
+    # 工具默认已启用（enabled: true）；未配置 Key 时调用会返回配置引导提示
     FOFA_API_KEY = ""  # 请填写您的FOFA API密钥
     # ==================================================
 
@@ -192,7 +192,7 @@ args:
         }
         print(json.dumps(error_result, ensure_ascii=False, indent=2))
         sys.exit(1)
-enabled: false
+enabled: true
 short_description: "FOFA网络空间搜索引擎，支持灵活的查询参数配置"
 description: |
   FOFA是一个网络空间测绘搜索引擎，可以通过多种查询条件搜索互联网资产。
