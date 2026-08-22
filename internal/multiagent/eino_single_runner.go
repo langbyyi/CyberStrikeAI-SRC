@@ -157,7 +157,7 @@ func RunEinoSingleChatModelAgent(
 	}
 	ins := project.AppendSystemPromptBlock(ag.EinoSingleAgentSystemInstruction(), systemPromptExtra)
 	ins = project.AppendVisionImageAnalysisIfReady(ins, appCfg.Vision.Ready())
-	ins = injectToolNamesOnlyInstruction(ctx, ins, mainTools, singleToolSearchActive)
+	ins = injectToolNamesOnlyInstruction(ctx, ins, mainTools, mainToolsForCfg, singleToolSearchActive)
 	if logger != nil {
 		names := collectToolNames(ctx, mainTools)
 		mountedNames := collectToolNames(ctx, mainToolsForCfg)
