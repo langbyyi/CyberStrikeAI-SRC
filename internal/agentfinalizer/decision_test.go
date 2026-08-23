@@ -188,32 +188,51 @@ func TestFromRunResultFinalizesPlanExecuteFrameworkResponse(t *testing.T) {
 
 func TestFromRunResultExplicitCompletionDoesNotOverrideTerminalGuards(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     string
-		awaiting   bool
-		wantStatus string
+		name        string
+		inputStatus string
+		awaiting    bool
+		wantStatus  string
 	}{
-		{name: "in progress", status: StatusInProgress, wantStatus: StatusInProgress},
-		{name: "blocked", status: StatusBlocked, wantStatus: StatusBlocked},
-		{name: "failed", status: StatusFailed, wantStatus: StatusFailed},
-		{name: "cancelled", status: StatusCancelled, wantStatus: StatusCancelled},
-		{name: "awaiting hitl status", status: StatusAwaitingHITL, wantStatus: StatusAwaitingHITL},
+		{name: "in progress", inputStatus: StatusInProgress, wantStatus: StatusInProgress},
+		{name: "blocked", inputStatus: StatusBlocked, wantStatus: StatusBlocked},
+		{name: "failed", inputStatus: StatusFailed, wantStatus: StatusFailed},
+		{name: "cancelled", inputStatus: StatusCancelled, wantStatus: StatusCancelled},
+		{name: "awaiting hitl status", inputStatus: StatusAwaitingHITL, wantStatus: StatusAwaitingHITL},
 		{name: "awaiting hitl flag", awaiting: true, wantStatus: StatusAwaitingHITL},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &multiagent.RunResult{
 				Response:                   "过程输出",
-				Status:                     tt.status,
 				CompletionContractRequired: true,
 				CompletionState:            multiagent.CompletionSucceeded,
 				CompletionSignal:           "exit",
 				FinalResponse:              "完整最终答复",
 			}
-			d := FromRunResult(nil, result, Input{AwaitingHITL: tt.awaiting})
+			d := FromRunResult(nil, result, Input{Status: tt.inputStatus, AwaitingHITL: tt.awaiting})
 			if d.Finalized || d.Finalizable || d.Status != tt.wantStatus {
 				t.Fatalf("decision = %+v, want non-final status %q", d, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestFromRunResultDoesNotReusePreviousFinalizationStatusAsRunStatus(t *testing.T) {
+	db := newDecisionTestDB(t)
+	saveDecisionTestExecution(t, db, "run-slow", mcp.ToolExecutionStatusRunning)
+	result := &multiagent.RunResult{
+		Response:        "工具已触发，按用户要求直接总结。",
+		MCPExecutionIDs: []string{"run-slow"},
+	}
+
+	first := FromRunResult(db, result, Input{})
+	if first.Finalizable || first.CompletionReason != ReasonPendingTools || result.Status != StatusInProgress {
+		t.Fatalf("first decision should mark pending and write metadata: decision=%+v result=%+v", first, result)
+	}
+
+	saveDecisionTestExecution(t, db, "run-slow", mcp.ToolExecutionStatusCancelled)
+	second := FromRunResult(db, result, Input{})
+	if !second.Finalizable || !second.Finalized || second.Status != StatusCompleted {
+		t.Fatalf("second decision should ignore previous result status after pending cleanup: decision=%+v result=%+v", second, result)
 	}
 }

@@ -71,12 +71,6 @@ func FromRunResult(db *database.DB, result *multiagent.RunResult, in Input) Deci
 		if len(in.MCPExecutionIDs) == 0 {
 			in.MCPExecutionIDs = result.MCPExecutionIDs
 		}
-		if strings.TrimSpace(in.Status) == "" {
-			in.Status = result.Status
-		}
-		if strings.TrimSpace(in.CompletionReason) == "" {
-			in.CompletionReason = result.CompletionReason
-		}
 		in.CompletionContractRequired = result.CompletionContractRequired
 		in.CompletionState = result.CompletionState
 		in.CompletionSignal = result.CompletionSignal
