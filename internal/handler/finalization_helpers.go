@@ -163,7 +163,16 @@ func finalizationBlockedMessage(d agentfinalizer.Decision) string {
 }
 
 func finalizationResponsePayload(d agentfinalizer.Decision, extra map[string]interface{}) map[string]interface{} {
-	return agentfinalizer.ResponsePayload(d, extra)
+	payload := agentfinalizer.ResponsePayload(d, extra)
+	payload["phase"] = finalizationPhase(d)
+	return payload
+}
+
+func finalizationPhase(d agentfinalizer.Decision) string {
+	if d.Finalized {
+		return "final_answer"
+	}
+	return "commentary"
 }
 
 func requestRequiresExecutionEvidence(req *ChatRequest) bool {

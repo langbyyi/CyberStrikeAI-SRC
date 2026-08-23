@@ -16,6 +16,7 @@ type einoRunResultBuilderConfig struct {
 	EmptyHint        string
 	RunMessages      *einoRunMessageAccumulator
 	AssistantOutput  *einoAssistantOutputAccumulator
+	Completion       *einoCompletionTracker
 	SnapshotMCPIDs   func() []string
 	ModelFacingTrace func() []adk.Message
 }
@@ -61,7 +62,7 @@ func (b *einoRunResultBuilder) build(partial bool) *RunResult {
 	if b.cfg.SnapshotMCPIDs != nil {
 		ids = b.cfg.SnapshotMCPIDs()
 	}
-	return buildEinoRunResultFromAccumulated(
+	out := buildEinoRunResultFromAccumulated(
 		b.cfg.OrchMode,
 		runMsgs,
 		modelFacing,
@@ -71,6 +72,16 @@ func (b *einoRunResultBuilder) build(partial bool) *RunResult {
 		ids,
 		partial,
 	)
+	completion := b.cfg.Completion.Snapshot()
+	out.CompletionContractRequired = true
+	out.CompletionState = completion.State
+	out.CompletionSignal = completion.Signal
+	out.FinalResponse = strings.TrimSpace(completion.FinalResponse)
+	if out.FinalResponse != "" {
+		out.Response = out.FinalResponse
+		out.LastAgentTraceOutput = out.FinalResponse
+	}
+	return out
 }
 
 func einoPartialRunLastOutputHint() string {

@@ -7,6 +7,7 @@ import (
 
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/multiagent"
 
 	"go.uber.org/zap"
 )
@@ -128,5 +129,91 @@ func TestDecideAllowsInformationalAnswerWhenExecutionEvidenceIsNotRequired(t *te
 	d := Decide(nil, Input{Response: "这是一个概念解释，不需要执行工具。"})
 	if !d.Finalizable || !d.Finalized || d.Status != StatusCompleted {
 		t.Fatalf("informational response should finalize when execution evidence is not required: %+v", d)
+	}
+}
+
+func TestFromRunResultBlocksUnsignaledEinoText(t *testing.T) {
+	result := &multiagent.RunResult{
+		Response:                   "现在批量探测敏感端点。先重建浏览器端探测环境。",
+		CompletionContractRequired: true,
+		CompletionState:            multiagent.CompletionUnsignaled,
+	}
+
+	d := FromRunResult(nil, result, Input{AgentMode: "eino_single"})
+	if d.Finalizable || d.Finalized {
+		t.Fatalf("unsignaled Eino output finalized: %+v", d)
+	}
+	if d.Status != StatusInProgress || d.CompletionReason != ReasonMissingCompletionSignal {
+		t.Fatalf("status/reason = %s/%s", d.Status, d.CompletionReason)
+	}
+	if d.EvidenceVerified || len(d.MissingChecks) == 0 {
+		t.Fatalf("missing completion signal lacks diagnostics: %+v", d)
+	}
+}
+
+func TestFromRunResultFinalizesSignaledInformationalAnswerWithoutExecutionEvidence(t *testing.T) {
+	result := &multiagent.RunResult{
+		Response:                   "过程正文不应覆盖最终交付。",
+		CompletionContractRequired: true,
+		CompletionState:            multiagent.CompletionSucceeded,
+		CompletionSignal:           "exit",
+		FinalResponse:              "这是完整的概念解释。",
+	}
+
+	d := FromRunResult(nil, result, Input{AgentMode: "eino_single"})
+	if !d.Finalizable || !d.Finalized || d.Status != StatusCompleted {
+		t.Fatalf("signaled informational answer did not finalize: %+v", d)
+	}
+	if d.FinalText != "这是完整的概念解释。" {
+		t.Fatalf("final text = %q", d.FinalText)
+	}
+}
+
+func TestFromRunResultFinalizesPlanExecuteFrameworkResponse(t *testing.T) {
+	result := &multiagent.RunResult{
+		Response:                   "计划执行完成后的最终汇总。",
+		CompletionContractRequired: true,
+		CompletionState:            multiagent.CompletionSucceeded,
+		CompletionSignal:           "plan_completed",
+	}
+
+	d := FromRunResult(nil, result, Input{AgentMode: "eino_plan_execute"})
+	if !d.Finalized || d.Status != StatusCompleted || d.CompletionReason != ReasonVerified {
+		t.Fatalf("decision = %+v", d)
+	}
+	if d.FinalText != result.Response {
+		t.Fatalf("final text = %q, want framework response %q", d.FinalText, result.Response)
+	}
+}
+
+func TestFromRunResultExplicitCompletionDoesNotOverrideTerminalGuards(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		awaiting   bool
+		wantStatus string
+	}{
+		{name: "in progress", status: StatusInProgress, wantStatus: StatusInProgress},
+		{name: "blocked", status: StatusBlocked, wantStatus: StatusBlocked},
+		{name: "failed", status: StatusFailed, wantStatus: StatusFailed},
+		{name: "cancelled", status: StatusCancelled, wantStatus: StatusCancelled},
+		{name: "awaiting hitl status", status: StatusAwaitingHITL, wantStatus: StatusAwaitingHITL},
+		{name: "awaiting hitl flag", awaiting: true, wantStatus: StatusAwaitingHITL},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &multiagent.RunResult{
+				Response:                   "过程输出",
+				Status:                     tt.status,
+				CompletionContractRequired: true,
+				CompletionState:            multiagent.CompletionSucceeded,
+				CompletionSignal:           "exit",
+				FinalResponse:              "完整最终答复",
+			}
+			d := FromRunResult(nil, result, Input{AwaitingHITL: tt.awaiting})
+			if d.Finalized || d.Finalizable || d.Status != tt.wantStatus {
+				t.Fatalf("decision = %+v, want non-final status %q", d, tt.wantStatus)
+			}
+		})
 	}
 }

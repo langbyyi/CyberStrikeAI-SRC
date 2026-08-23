@@ -1682,7 +1682,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "发送消息并获取 AI 回复（Eino ADK 单代理，SSE）",
-					"description": "向 AI 发送消息并获取流式回复（SSE）。由 Eino **单代理** ADK 执行；事件类型与多代理流式一致（含 `tool_call` / `response_delta` / `thinking` 等）。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 无注入续跑。`data.finalized=false` 时 message 为未完成/阻断说明。**不依赖** `multi_agent.enabled`。",
+					"description": "向 AI 发送消息并获取流式回复（SSE）。由 Eino **单代理** ADK 执行；事件类型与多代理流式一致（含 `tool_call` / `response_delta` / `thinking` 等）。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺完成信号或 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 注入仅供 Runner 使用的内部收敛指令续跑（不写入用户消息表）。`data.finalized=false` 时 message 为未完成/阻断说明。**不依赖** `multi_agent.enabled`。",
 					"operationId": "sendMessageEinoSingleAgentStream",
 					"requestBody": map[string]interface{}{
 						"required": true,
@@ -1779,7 +1779,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"对话交互"},
 					"summary":     "发送消息并获取 AI 回复（Eino 多代理，SSE）",
-					"description": "与 `POST /api/eino-agent/stream` 类似；由 Eino 多代理执行。`orchestration` 指定 deep / plan_execute / supervisor，缺省 deep。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 无注入续跑。**前提**：`multi_agent.enabled: true`；未启用时 SSE 内首条为 `type: error` 后接 `done`。支持 `webshellConnectionId`。",
+					"description": "与 `POST /api/eino-agent/stream` 类似；由 Eino 多代理执行。`orchestration` 指定 deep / plan_execute / supervisor，缺省 deep。`response_start` / `response_delta` 仅为候选/过程输出；只有 `type: response` 且 `data.finalized=true` 才表示成功最终回复。缺完成信号或 completed 执行证据时可能先发送 `finalization_auto_continue`，表示服务端基于已有 trace 注入仅供 Runner 使用的内部收敛指令续跑（不写入用户消息表）。**前提**：`multi_agent.enabled: true`；未启用时 SSE 内首条为 `type: error` 后接 `done`。支持 `webshellConnectionId`。",
 					"operationId": "sendMessageMultiAgentStream",
 					"requestBody": map[string]interface{}{
 						"required": true,
@@ -5241,12 +5241,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 									"type":     "object",
 									"required": []string{"query"},
 									"properties": map[string]interface{}{
-										"query":  map[string]interface{}{"type": "string", "description": "FOFA查询语法", "example": "domain=\"example.com\""},
+										"query":    map[string]interface{}{"type": "string", "description": "FOFA查询语法", "example": "domain=\"example.com\""},
 										"provider": map[string]interface{}{"type": "string", "description": "空间测绘引擎：fofa（默认）/zoomeye/quake/shodan", "default": "fofa"},
-										"size":   map[string]interface{}{"type": "integer", "description": "返回数量（默认100，最大10000）", "default": 100},
-										"page":   map[string]interface{}{"type": "integer", "description": "页码（默认1）", "default": 1},
-										"fields": map[string]interface{}{"type": "string", "description": "返回字段，逗号分隔", "example": "host,ip,port,title"},
-										"full":   map[string]interface{}{"type": "boolean", "description": "是否查询全部数据", "default": false},
+										"size":     map[string]interface{}{"type": "integer", "description": "返回数量（默认100，最大10000）", "default": 100},
+										"page":     map[string]interface{}{"type": "integer", "description": "页码（默认1）", "default": 1},
+										"fields":   map[string]interface{}{"type": "string", "description": "返回字段，逗号分隔", "example": "host,ip,port,title"},
+										"full":     map[string]interface{}{"type": "boolean", "description": "是否查询全部数据", "default": false},
 									},
 								},
 							},
@@ -5291,7 +5291,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 									"type":     "object",
 									"required": []string{"text"},
 									"properties": map[string]interface{}{
-										"text": map[string]interface{}{"type": "string", "description": "自然语言描述", "example": "查找使用WordPress的网站"},
+										"text":     map[string]interface{}{"type": "string", "description": "自然语言描述", "example": "查找使用WordPress的网站"},
 										"provider": map[string]interface{}{"type": "string", "description": "空间测绘引擎：fofa（默认）/zoomeye/quake/shodan", "default": "fofa"},
 									},
 								},

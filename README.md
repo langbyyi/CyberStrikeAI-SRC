@@ -58,7 +58,10 @@ cp config.example.yaml config.yaml   # 编辑配置（模型/FOFA/API Key 等）
 ./run.sh
 ```
 
-`run.sh` 会自动校验环境、拉取依赖、编译并启动服务。默认 HTTP，访问 **http://127.0.0.1:8080/**；HTTPS 用 `./run.sh --https`。
+`run.sh` 会自动校验环境、拉取依赖、编译并启动服务。默认使用 HTTP：
+
+- 访问地址：<http://127.0.0.1:8080/>
+- HTTPS 启动：`./run.sh --https`
 
 ### 首次配置
 

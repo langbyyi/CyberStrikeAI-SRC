@@ -33,17 +33,21 @@ import (
 
 // RunResult 与单 Agent 循环结果字段对齐，便于复用存储与 SSE 收尾逻辑。
 type RunResult struct {
-	Response             string
-	MCPExecutionIDs      []string
-	LastAgentTraceInput  string // 已序列化的消息带（JSON）：原生循环或 Eino 均写入，供续跑/攻击链等恢复上下文
-	LastAgentTraceOutput string // 本轮助手侧对外展示文本（摘要或最终回复）
-	Finalized            bool
-	Status               string
-	CompletionReason     string
-	EvidenceVerified     bool
-	EvidenceRefs         []string
-	PendingExecutionIDs  []string
-	MissingChecks        []string
+	Response                   string
+	MCPExecutionIDs            []string
+	LastAgentTraceInput        string // 已序列化的消息带（JSON）：原生循环或 Eino 均写入，供续跑/攻击链等恢复上下文
+	LastAgentTraceOutput       string // 本轮助手侧对外展示文本（摘要或最终回复）
+	Finalized                  bool
+	Status                     string
+	CompletionReason           string
+	EvidenceVerified           bool
+	EvidenceRefs               []string
+	PendingExecutionIDs        []string
+	MissingChecks              []string
+	CompletionContractRequired bool
+	CompletionState            CompletionState
+	CompletionSignal           string
+	FinalResponse              string
 }
 
 // toolCallPendingInfo tracks a tool_call emitted to the UI so we can later
@@ -334,6 +338,7 @@ func RunDeepAgent(
 	}
 
 	orchInstruction = project.AppendSystemPromptBlock(orchInstruction, systemPromptExtra)
+	orchInstruction = project.AppendSystemPromptBlock(orchInstruction, einoExplicitCompletionInstruction(orchMode))
 	orchInstruction = project.AppendVisionImageAnalysisIfReady(orchInstruction, appCfg.Vision.Ready())
 	orchInstruction = injectToolNamesOnlyInstruction(ctx, orchInstruction, mainTools, mainToolsForCfg, mainToolSearchActive)
 	if logger != nil {
@@ -545,7 +550,7 @@ func RunDeepAgent(
 			ToolsConfig:         mainToolsCfg,
 			MaxIterations:       deepMaxIter,
 			Handlers:            supHandlers,
-			Exit:                &adk.ExitTool{},
+			Exit:                &einoAgenticExitTool{},
 			ModelRetryConfig:    agenticModelRetryCfg,
 			ModelFailoverConfig: agenticModelFailoverCfg,
 		}
@@ -577,7 +582,7 @@ func RunDeepAgent(
 			Backend:                deepBackend,
 			StreamingShell:         deepShell,
 			Handlers:               deepHandlers,
-			ToolsConfig:            mainToolsCfg,
+			ToolsConfig:            withEinoExitTool(mainToolsCfg),
 			ModelRetryConfig:       agenticModelRetryCfg,
 			ModelFailoverConfig:    agenticModelFailoverCfg,
 		}

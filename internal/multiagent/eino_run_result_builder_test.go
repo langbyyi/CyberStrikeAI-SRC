@@ -55,6 +55,28 @@ func TestEinoRunResultBuilderFinalUsesSnapshots(t *testing.T) {
 	}
 }
 
+func TestEinoRunResultBuilderCarriesExplicitCompletionSnapshot(t *testing.T) {
+	runMessages := newEinoRunMessageAccumulator(nil)
+	runMessages.Append(assistantExitMessage("verified answer"))
+	completion := newEinoCompletionTracker("deep", "orchestrator")
+	completion.Observe("orchestrator", assistantExitMessage("verified answer"))
+	completion.Observe("orchestrator", toolExitMsg("verified answer", "exit-call"))
+
+	got := newEinoRunResultBuilder(einoRunResultBuilderConfig{
+		OrchMode:    "deep",
+		EmptyHint:   "empty",
+		RunMessages: runMessages,
+		Completion:  completion,
+	}).BuildFinal()
+
+	if !got.CompletionContractRequired || got.CompletionState != CompletionSucceeded {
+		t.Fatalf("completion state = required:%v state:%q", got.CompletionContractRequired, got.CompletionState)
+	}
+	if got.CompletionSignal != "exit" || got.FinalResponse != "verified answer" || got.Response != "verified answer" {
+		t.Fatalf("completion payload = signal:%q final:%q response:%q", got.CompletionSignal, got.FinalResponse, got.Response)
+	}
+}
+
 func TestEinoRunResultBuilderPlanExecutePrefersExecutorOutput(t *testing.T) {
 	runMessages := newEinoRunMessageAccumulator(nil)
 	runMessages.Append(schema.AssistantMessage(`{"response":"planner text"}`, nil))

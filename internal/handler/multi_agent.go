@@ -472,6 +472,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 	var runErr error
 	var emptyResponseContinueAttempt int
 	var finalizationAutoContinueAttempt int
+	var cumulativeMCPExecutionIDs []string
 	effectiveOrch := config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration)
 	if o := strings.TrimSpace(req.Orchestration); o != "" {
 		effectiveOrch = config.NormalizeMultiAgentOrchestration(o)
@@ -497,6 +498,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 			chatReasoningToClientIntent(req.Reasoning),
 			h.agentSessionContextBlock(prep.ConversationID),
 		)
+		cumulativeMCPExecutionIDs = accumulateEinoRunMCPExecutionIDs(cumulativeMCPExecutionIDs, result)
 		if runErr != nil {
 			if shouldPersistEinoAgentTraceAfterRunError(baseCtx) {
 				h.persistEinoAgentTraceForResume(prep.ConversationID, result)
@@ -513,14 +515,14 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 		if h.tryContinueOnEinoEmptyResponse(taskCtx, mw, prep.ConversationID, result, &emptyResponseContinueAttempt, &curHist, &curMsg, progressCallback) {
 			continue
 		}
-		decision = h.decideAgentRunForDeliveryWithPolicy(prep.ConversationID, prep.AssistantMessageID, agentMode, result, result.MCPExecutionIDs, requestRequiresExecutionEvidence(&req))
+		decision = h.decideAgentRunForDeliveryWithPolicy(prep.ConversationID, prep.AssistantMessageID, agentMode, result, cumulativeMCPExecutionIDs, requestRequiresExecutionEvidence(&req))
 		if h.tryAutoContinueAfterFinalization(taskCtx, prep.ConversationID, result, decision, &finalizationAutoContinueAttempt, &curHist, &curMsg, progressCallback) {
 			continue
 		}
 		break
 	}
 
-	h.persistFinalizationDecision(prep.ConversationID, prep.AssistantMessageID, agentMode, result.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput), decision)
+	h.persistFinalizationDecision(prep.ConversationID, prep.AssistantMessageID, agentMode, cumulativeMCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput), decision)
 
 	if result.LastAgentTraceInput != "" || result.LastAgentTraceOutput != "" {
 		if err := h.db.SaveAgentTrace(prep.ConversationID, result.LastAgentTraceInput, result.LastAgentTraceOutput); err != nil {
@@ -534,7 +536,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, ChatResponse{
 		Response:            responseText,
-		MCPExecutionIDs:     result.MCPExecutionIDs,
+		MCPExecutionIDs:     cumulativeMCPExecutionIDs,
 		ConversationID:      prep.ConversationID,
 		Time:                time.Now(),
 		Finalizable:         decision.Finalizable,
@@ -545,6 +547,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 		EvidenceRefs:        decision.EvidenceRefs,
 		PendingExecutionIDs: decision.PendingExecutionIDs,
 		MissingChecks:       decision.MissingChecks,
+		Phase:               finalizationPhase(decision),
 	})
 }
 

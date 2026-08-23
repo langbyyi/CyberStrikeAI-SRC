@@ -156,6 +156,7 @@ func RunEinoSingleChatModelAgent(
 		EmitInternalEvents: true,
 	}
 	ins := project.AppendSystemPromptBlock(ag.EinoSingleAgentSystemInstruction(), systemPromptExtra)
+	ins = project.AppendSystemPromptBlock(ins, einoExplicitCompletionInstruction("eino_single"))
 	ins = project.AppendVisionImageAnalysisIfReady(ins, appCfg.Vision.Ready())
 	ins = injectToolNamesOnlyInstruction(ctx, ins, mainTools, mainToolsForCfg, singleToolSearchActive)
 	if logger != nil {
@@ -178,6 +179,7 @@ func RunEinoSingleChatModelAgent(
 		ToolsConfig:         mainToolsCfg,
 		MaxIterations:       maxIter,
 		Handlers:            handlers,
+		Exit:                &einoAgenticExitTool{},
 		ModelRetryConfig:    modelRetryCfg,
 		ModelFailoverConfig: modelFailoverCfg,
 	}

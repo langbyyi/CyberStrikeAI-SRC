@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,9 @@ func TestIsEinoTransientRunError(t *testing.T) {
 		{"409", errors.New("HTTP 409 Conflict"), true},
 		{"rate limit", errors.New(`{"error":"rate limit exceeded"}`), true},
 		{"connection reset", errors.New("read tcp: connection reset by peer"), true},
+		{"closed network text", errors.New("use of closed network connection"), true},
+		{"typed net closed", fmt.Errorf("stream recv: %w", net.ErrClosed), true},
+		{"typed unexpected eof", fmt.Errorf("stream recv: %w", io.ErrUnexpectedEOF), true},
 		{"http2 goaway", errors.New("failed to receive stream chunk: error, http2: server sent GOAWAY and closed the connection; LastStreamID=791, ErrCode=NO_ERROR"), true},
 		{"unexpected internal stream chunk", errors.New("failed to receive stream chunk: error, The service encountered an unexpected internal error. Request id: 0217851391106464f01ec66621d0980a42fd45436ed75957a6a0a"), true},
 		{"unexpected eof", errors.New("unexpected EOF"), true},
@@ -74,6 +78,7 @@ func TestEinoTransientRunErrorUserDetail(t *testing.T) {
 		{"rate limit", errors.New("HTTP 429 Too Many Requests"), "rate_limit"},
 		{"upstream", errors.New("upstream returned 503"), "upstream_server"},
 		{"network", errors.New("read tcp: connection reset by peer"), "network"},
+		{"closed network", errors.New("use of closed network connection"), "network"},
 		{"stream", errors.New("unexpected end of JSON"), "stream"},
 		{"stream chunk", errors.New("failed to receive stream chunk: error, The service encountered an unexpected internal error. Request id: abc"), "upstream_busy"},
 	}
@@ -122,6 +127,35 @@ func TestEinoMessagesForRunRestart(t *testing.T) {
 	got2, src2 := einoMessagesForRunRestart(&einoADKRunLoopArgs{ModelFacingTrace: holder}, base, acc, len(base))
 	if src2 != einoRestartContextModelTrace || len(got2) != 2 {
 		t.Fatalf("model trace: src=%s len=%d", src2, len(got2))
+	}
+}
+
+func TestEinoMessagesForRunRestartPreservesCompletedToolResult(t *testing.T) {
+	toolCall := schema.ToolCall{
+		ID: "call-completed",
+		Function: schema.FunctionCall{
+			Name:      "scan",
+			Arguments: `{"target":"example.test"}`,
+		},
+	}
+	holder := newModelFacingTraceHolder()
+	holder.storeFromState(&adk.ChatModelAgentState{Messages: []adk.Message{
+		schema.UserMessage("scan target"),
+		schema.AssistantMessage("", []schema.ToolCall{toolCall}),
+		schema.ToolMessage("scan completed", toolCall.ID, schema.WithToolName("scan")),
+	}})
+
+	got, source := einoMessagesForRunRestart(
+		&einoADKRunLoopArgs{ModelFacingTrace: holder},
+		[]adk.Message{schema.UserMessage("scan target")},
+		nil,
+		1,
+	)
+	if source != einoRestartContextModelTrace || len(got) != 3 {
+		t.Fatalf("restart source=%q messages=%#v", source, got)
+	}
+	if got[2].Role != schema.Tool || got[2].ToolCallID != toolCall.ID || got[2].Content != "scan completed" {
+		t.Fatalf("completed tool result was not preserved: %#v", got[2])
 	}
 }
 

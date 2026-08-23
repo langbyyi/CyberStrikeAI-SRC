@@ -52,6 +52,12 @@ func TestEinoMainResponseStreamEmitterEmitsStartOnceAndTail(t *testing.T) {
 	if got := events[0].data["iteration"]; got != 3 {
 		t.Fatalf("iteration = %#v", got)
 	}
+	if got := events[0].data["phase"]; got != "commentary" {
+		t.Fatalf("start phase = %#v, want commentary", got)
+	}
+	if got := events[1].data["phase"]; got != "commentary" {
+		t.Fatalf("delta phase = %#v, want commentary", got)
+	}
 }
 
 func TestEinoMainResponseStreamEmitterNoProgress(t *testing.T) {

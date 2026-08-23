@@ -27,6 +27,7 @@ config.yaml.backup
 skills/.eino/
 
 # Build outputs
+.worktrees/
 cyberstrike-ai
 cyberstrike-ai.exe
 *.test
@@ -38,6 +39,9 @@ target/
 .gradle/
 coverage.out
 coverage.html
+
+# Local agent planning artifacts
+docs/superpowers/
 
 # Logs and temporary files
 *.log

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,6 +46,9 @@ func isEinoTransientRunError(err error) bool {
 		return false
 	}
 	err = unwrapEinoRetryExhausted(err)
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
 	var apiErr *einoopenai.APIError
 	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode > 0 {
 		return isRetryableHTTPStatus(apiErr.HTTPStatusCode)
@@ -71,6 +76,7 @@ func isEinoTransientRunError(err error) bool {
 		"connection reset",
 		"connection refused",
 		"connection closed",
+		"use of closed network connection",
 		"i/o timeout",
 		"no such host",
 		"network is unreachable",
@@ -151,6 +157,7 @@ func einoTransientRunErrorUserDetail(err error) (kind, summary string) {
 		case strings.Contains(lower, "connection reset") ||
 			strings.Contains(lower, "connection refused") ||
 			strings.Contains(lower, "connection closed") ||
+			strings.Contains(lower, "use of closed network connection") ||
 			strings.Contains(lower, "i/o timeout") ||
 			strings.Contains(lower, "no such host") ||
 			strings.Contains(lower, "network is unreachable") ||

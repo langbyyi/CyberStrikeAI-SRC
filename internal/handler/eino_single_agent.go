@@ -463,6 +463,7 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 	var runErr error
 	var emptyResponseContinueAttempt int
 	var finalizationAutoContinueAttempt int
+	var cumulativeMCPExecutionIDs []string
 	var decision agentfinalizer.Decision
 	for {
 		result, runErr = multiagent.RunEinoSingleChatModelAgent(
@@ -481,6 +482,7 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 			chatReasoningToClientIntent(req.Reasoning),
 			h.agentSessionContextBlock(prep.ConversationID),
 		)
+		cumulativeMCPExecutionIDs = accumulateEinoRunMCPExecutionIDs(cumulativeMCPExecutionIDs, result)
 		if runErr != nil {
 			if shouldPersistEinoAgentTraceAfterRunError(baseCtx) {
 				h.persistEinoAgentTraceForResume(prep.ConversationID, result)
@@ -492,14 +494,14 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 		if h.tryContinueOnEinoEmptyResponse(taskCtx, mw, prep.ConversationID, result, &emptyResponseContinueAttempt, &curHist, &curMsg, progressCallback) {
 			continue
 		}
-		decision = h.decideAgentRunForDeliveryWithPolicy(prep.ConversationID, prep.AssistantMessageID, "eino_single", result, result.MCPExecutionIDs, requestRequiresExecutionEvidence(&req))
+		decision = h.decideAgentRunForDeliveryWithPolicy(prep.ConversationID, prep.AssistantMessageID, "eino_single", result, cumulativeMCPExecutionIDs, requestRequiresExecutionEvidence(&req))
 		if h.tryAutoContinueAfterFinalization(taskCtx, prep.ConversationID, result, decision, &finalizationAutoContinueAttempt, &curHist, &curMsg, progressCallback) {
 			continue
 		}
 		break
 	}
 
-	h.persistFinalizationDecision(prep.ConversationID, prep.AssistantMessageID, "eino_single", result.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput), decision)
+	h.persistFinalizationDecision(prep.ConversationID, prep.AssistantMessageID, "eino_single", cumulativeMCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(result.LastAgentTraceInput), decision)
 	if result.LastAgentTraceInput != "" || result.LastAgentTraceOutput != "" {
 		_ = h.db.SaveAgentTrace(prep.ConversationID, result.LastAgentTraceInput, result.LastAgentTraceOutput)
 	}
@@ -511,7 +513,7 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"response":            responseText,
 		"conversationId":      prep.ConversationID,
-		"mcpExecutionIds":     result.MCPExecutionIDs,
+		"mcpExecutionIds":     cumulativeMCPExecutionIDs,
 		"assistantMessageId":  prep.AssistantMessageID,
 		"agentMode":           "eino_single",
 		"finalized":           decision.Finalized,
@@ -522,5 +524,6 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 		"evidenceRefs":        decision.EvidenceRefs,
 		"pendingExecutionIds": decision.PendingExecutionIDs,
 		"missingChecks":       decision.MissingChecks,
+		"phase":               finalizationPhase(decision),
 	})
 }

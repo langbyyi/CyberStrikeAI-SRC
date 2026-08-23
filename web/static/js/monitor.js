@@ -233,6 +233,7 @@ function finalizationReasonLabel(reason, status) {
     const labels = {
         pending_tool_executions: '等待工具执行完成',
         missing_execution_evidence: '缺少完成态证据',
+        missing_completion_signal: '任务尚未发出完成信号',
         awaiting_hitl: '等待人工确认',
         empty_response: '未捕获到有效回复',
         missing_finalization_contract: '缺少最终化证明',
@@ -250,6 +251,7 @@ function finalizationMissingCheckLabel(check) {
     if (!s) return '';
     if (s.indexOf('tool execution still queued or running') !== -1) return '仍有工具执行未结束';
     if (s.indexOf('execution evidence is required but no completed tool execution was recorded') !== -1) return '本轮要求执行证据，但没有 completed 工具记录';
+    if (s.indexOf('agent did not emit an explicit completion signal') !== -1) return '根 Agent 尚未发出明确的完成信号';
     if (s.indexOf('workflow is awaiting HITL approval') !== -1) return '工作流正在等待人工确认';
     if (s.indexOf('assistant final text is empty') !== -1) return '未捕获到有效最终文本';
     if (s.indexOf('agent run status is ') === 0) return '任务状态仍为 ' + s.replace('agent run status is ', '');

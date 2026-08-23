@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -152,6 +153,68 @@ func TestNewEinoAgenticChatModelAgentAdapterPreservesTypedToolCallsForToolLayerR
 	args := msg.ToolCalls[0].Function.Arguments
 	if !strings.Contains(args, strings.Repeat("x", 32)) || strings.Contains(args, modelOutputRecoveryKey) {
 		t.Fatalf("agentic tool args were unexpectedly rewritten: %q", args)
+	}
+}
+
+func TestNewEinoAgenticChatModelAgentAdapterExecutesAgenticExitTool(t *testing.T) {
+	t.Parallel()
+	tests := map[string]func(*einoAgenticChatModelAgentConfig){
+		"single and supervisor exit field": func(cfg *einoAgenticChatModelAgentConfig) {
+			cfg.Exit = &einoAgenticExitTool{}
+		},
+		"deep tools config": func(cfg *einoAgenticChatModelAgentConfig) {
+			cfg.ToolsConfig = withEinoExitTool(cfg.ToolsConfig)
+		},
+	}
+	for name, configure := range tests {
+		name, configure := name, configure
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			fakeModel := &capturingAgenticChatModel{
+				output: &schema.AgenticMessage{
+					Role: schema.AgenticRoleTypeAssistant,
+					ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.FunctionToolCall{
+						CallID:    "exit-call",
+						Name:      "exit",
+						Arguments: `{"final_result":"complete answer"}`,
+					})},
+				},
+			}
+			cfg := einoAgenticChatModelAgentConfig{
+				Name:        "root",
+				Description: "exit integration test",
+				Model:       fakeModel,
+				ToolsConfig: adk.ToolsConfig{
+					ToolsNodeConfig: compose.ToolsNodeConfig{
+						ToolCallMiddlewares: []compose.ToolMiddleware{
+							modelOutputExecutionGuardMiddleware(),
+							localToolRBACMiddleware(),
+							hitlToolCallMiddleware(),
+							softRecoveryToolMiddleware(),
+						},
+					},
+				},
+			}
+			configure(&cfg)
+			agent, err := newEinoAgenticChatModelAgentAdapter(ctx, cfg)
+			if err != nil {
+				t.Fatalf("newEinoAgenticChatModelAgentAdapter: %v", err)
+			}
+
+			result, err := runEinoADKAgentLoop(ctx, &einoADKRunLoopArgs{
+				OrchMode:         "eino_single",
+				OrchestratorName: "root",
+				ConversationID:   "exit-integration",
+				DA:               agent,
+			}, []*schema.Message{schema.UserMessage("answer")})
+			if err != nil {
+				t.Fatalf("runEinoADKAgentLoop: %v", err)
+			}
+			if result.CompletionState != CompletionSucceeded || result.CompletionSignal != "exit" || result.FinalResponse != "complete answer" {
+				t.Fatalf("completion result = %+v", result)
+			}
+		})
 	}
 }
 

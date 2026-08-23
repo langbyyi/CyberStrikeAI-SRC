@@ -41,6 +41,7 @@ type einoRunEventDrain struct {
 	stdoutSuppressor  *einoExecuteStdoutSuppressor
 	toolResultEmitter *einoToolResultProgressEmitter
 	usage             *einoRunUsageAccumulator
+	completion        *einoCompletionTracker
 
 	reasoningStreamSeq    int64
 	subReplyStreamSeq     int64
@@ -85,6 +86,7 @@ func newEinoRunEventDrain(cfg einoRunEventDrainConfig) *einoRunEventDrain {
 	pendingToolCalls := newEinoPendingToolCalls(cfg.ConversationID, cfg.Progress)
 	stdoutSuppressor := newEinoExecuteStdoutSuppressor()
 	usage := newEinoRunUsageAccumulator()
+	completion := newEinoCompletionTracker(cfg.OrchMode, cfg.OrchestratorName)
 	toolResultEmitter := newEinoToolResultProgressEmitter(einoToolResultProgressEmitterConfig{
 		ConversationID:          cfg.ConversationID,
 		OrchestratorName:        cfg.OrchestratorName,
@@ -107,6 +109,7 @@ func newEinoRunEventDrain(cfg einoRunEventDrainConfig) *einoRunEventDrain {
 		stdoutSuppressor:  stdoutSuppressor,
 		toolResultEmitter: toolResultEmitter,
 		usage:             usage,
+		completion:        completion,
 	}
 }
 
@@ -143,6 +146,7 @@ func (d *einoRunEventDrain) BindHandlers(confirmRecovery func()) {
 		AssistantOutput:           d.assistantOutput,
 		RunMessages:               d.runMessages,
 		Usage:                     d.usage,
+		Completion:                d.completion,
 		ToolCallCompletion:        streamToolCallCompletion,
 		NextMainStreamID:          d.nextMainStreamID,
 		NextReasoningStreamID:     d.nextReasoningStreamID,
@@ -194,6 +198,13 @@ func (d *einoRunEventDrain) Usage() *einoRunUsageAccumulator {
 	return d.usage
 }
 
+func (d *einoRunEventDrain) Completion() *einoCompletionTracker {
+	if d == nil {
+		return nil
+	}
+	return d.completion
+}
+
 func (d *einoRunEventDrain) ObserveAgent(agentName string) {
 	if d == nil || d.runProgress == nil {
 		return
@@ -213,7 +224,13 @@ func (d *einoRunEventDrain) HandleAssistantStream(mv *adk.MessageVariant, agentN
 }
 
 func (d *einoRunEventDrain) HandleMaterialized(mv *adk.MessageVariant, msg adk.Message, agentName string) bool {
-	return d != nil && d.materializedMessageHandler != nil && d.materializedMessageHandler.Handle(mv, msg, agentName)
+	if d == nil || d.materializedMessageHandler == nil {
+		return false
+	}
+	if d.completion != nil {
+		d.completion.Observe(agentName, msg)
+	}
+	return d.materializedMessageHandler.Handle(mv, msg, agentName)
 }
 
 func (d *einoRunEventDrain) markPendingWithMonitor(tc toolCallPendingInfo) {

@@ -110,6 +110,90 @@ func TestEinoRunRuntimeSessionCompletionFlushesPending(t *testing.T) {
 	}
 }
 
+func TestEinoRunRuntimeSessionMarksCleanFrameworkCompletionForEveryMode(t *testing.T) {
+	tests := []struct {
+		orchMode string
+		state    CompletionState
+		signal   string
+	}{
+		{orchMode: "plan_execute", state: CompletionSucceeded, signal: "plan_completed"},
+		{orchMode: "deep", state: CompletionSucceeded, signal: "framework_completed"},
+		{orchMode: "supervisor", state: CompletionSucceeded, signal: "framework_completed"},
+		{orchMode: "eino_single", state: CompletionSucceeded, signal: "framework_completed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.orchMode, func(t *testing.T) {
+			agent := &fakeRuntimeSessionAgent{}
+			drain := newEinoRunEventDrain(einoRunEventDrainConfig{
+				ConversationID:   "conv-completion",
+				OrchMode:         tt.orchMode,
+				OrchestratorName: "lead",
+				BaseMessages:     []adk.Message{schema.UserMessage("base")},
+			})
+			session := newEinoRunRuntimeSession(einoRunRuntimeSessionConfig{
+				Context: context.Background(),
+				Args: &einoADKRunLoopArgs{
+					ConversationID:   "conv-completion",
+					OrchMode:         tt.orchMode,
+					OrchestratorName: "lead",
+					DA:               agent,
+				},
+				Drain:        drain,
+				BaseMessages: []adk.Message{schema.UserMessage("base")},
+				EmptyHint:    "empty",
+			})
+			defer session.Close()
+
+			completed, result, err := session.HandleIteratorEnd()
+			if !completed || result != nil || err != nil {
+				t.Fatalf("completed=%v result=%#v err=%v", completed, result, err)
+			}
+			got := drain.Completion().Snapshot()
+			if got.State != tt.state || got.Signal != tt.signal {
+				t.Fatalf("completion = %+v, want state=%q signal=%q", got, tt.state, tt.signal)
+			}
+		})
+	}
+}
+
+func TestEinoRunRuntimeSessionDoesNotMarkPlanExecuteCompletedWithOrphanedTool(t *testing.T) {
+	agent := &fakeRuntimeSessionAgent{}
+	drain := newEinoRunEventDrain(einoRunEventDrainConfig{
+		ConversationID:   "conv-orphan",
+		OrchMode:         "plan_execute",
+		OrchestratorName: "planner",
+		BaseMessages:     []adk.Message{schema.UserMessage("base")},
+	})
+	session := newEinoRunRuntimeSession(einoRunRuntimeSessionConfig{
+		Context: context.Background(),
+		Args: &einoADKRunLoopArgs{
+			ConversationID:   "conv-orphan",
+			OrchMode:         "plan_execute",
+			OrchestratorName: "planner",
+			DA:               agent,
+		},
+		Drain:        drain,
+		BaseMessages: []adk.Message{schema.UserMessage("base")},
+		EmptyHint:    "empty",
+	})
+	defer session.Close()
+
+	drain.PendingToolCalls().Mark(toolCallPendingInfo{
+		ToolCallID: "orphan-call",
+		ToolName:   "execute",
+		EinoAgent:  "executor",
+		EinoRole:   "orchestrator",
+	})
+	completed, result, err := session.HandleIteratorEnd()
+	if !completed || result != nil || err != nil {
+		t.Fatalf("completed=%v result=%#v err=%v", completed, result, err)
+	}
+	got := drain.Completion().Snapshot()
+	if got.State != CompletionUnsignaled || got.Signal != "" {
+		t.Fatalf("orphaned tool must prevent plan completion, got %+v", got)
+	}
+}
+
 func TestEinoRunRuntimeSessionCancellationReturnsPartialError(t *testing.T) {
 	agent := &fakeRuntimeSessionAgent{}
 	var events []string

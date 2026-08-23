@@ -117,8 +117,13 @@ func (s *einoRunRuntimeSession) HandleIteratorEnd() (completed bool, result *Run
 		result, err = s.HandleIteratorContextError(ctxErr)
 		return false, result, err
 	}
+	pending := s.pending()
+	hadPendingToolCalls := pending != nil && pending.Count() > 0
 	if s.completionHandler != nil {
 		s.completionHandler.Complete()
+	}
+	if !hadPendingToolCalls && s.drain != nil && s.drain.Completion() != nil {
+		s.drain.Completion().MarkFrameworkCompleted()
 	}
 	return true, nil, nil
 }
@@ -335,14 +340,17 @@ func (s *einoRunRuntimeSession) initResultRuntime(emptyHint string, snapshotMCPI
 		return
 	}
 	var assistantOutput *einoAssistantOutputAccumulator
+	var completion *einoCompletionTracker
 	if s.drain != nil {
 		assistantOutput = s.drain.AssistantOutput()
+		completion = s.drain.Completion()
 	}
 	s.resultBuilder = newEinoRunResultBuilder(einoRunResultBuilderConfig{
 		OrchMode:         s.orchMode,
 		EmptyHint:        emptyHint,
 		RunMessages:      s.runMessages,
 		AssistantOutput:  assistantOutput,
+		Completion:       completion,
 		SnapshotMCPIDs:   snapshotMCPIDs,
 		ModelFacingTrace: func() []adk.Message { return modelFacingTraceSnapshot(s.args) },
 	})

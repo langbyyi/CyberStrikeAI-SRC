@@ -184,6 +184,20 @@ func TestSoftRecoveryToolCallMiddleware_PropagatesNonRecoverable(t *testing.T) {
 	}
 }
 
+func TestSoftRecoveryToolCallMiddleware_ConvertsClosedNetworkErrorToToolResult(t *testing.T) {
+	mw := softRecoveryToolCallMiddleware()
+	next := func(context.Context, *compose.ToolInput) (*compose.ToolOutput, error) {
+		return nil, errors.New("use of closed network connection")
+	}
+	out, err := mw(next)(context.Background(), &compose.ToolInput{Name: "remote_tool", Arguments: `{}`})
+	if err != nil {
+		t.Fatalf("closed network tool error escaped the tool layer: %v", err)
+	}
+	if out == nil || !strings.Contains(out.Result, "use of closed network connection") {
+		t.Fatalf("soft recovery output = %#v", out)
+	}
+}
+
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if !contains(s, sub) {

@@ -22,6 +22,7 @@ type einoAssistantStreamEventHandlerConfig struct {
 	AssistantOutput           *einoAssistantOutputAccumulator
 	RunMessages               *einoRunMessageAccumulator
 	Usage                     *einoRunUsageAccumulator
+	Completion                *einoCompletionTracker
 	ToolCallCompletion        *einoStreamToolCallCompletionHandler
 	NextMainStreamID          func() string
 	NextReasoningStreamID     func() string
@@ -42,6 +43,7 @@ type einoAssistantStreamEventHandler struct {
 	assistantOutput           *einoAssistantOutputAccumulator
 	runMessages               *einoRunMessageAccumulator
 	usage                     *einoRunUsageAccumulator
+	completion                *einoCompletionTracker
 	toolCallCompletion        *einoStreamToolCallCompletionHandler
 	nextMainStreamID          func() string
 	nextReasoningStreamID     func() string
@@ -84,6 +86,7 @@ func newEinoAssistantStreamEventHandler(cfg einoAssistantStreamEventHandlerConfi
 		assistantOutput:           cfg.AssistantOutput,
 		runMessages:               cfg.RunMessages,
 		usage:                     cfg.Usage,
+		completion:                cfg.Completion,
 		toolCallCompletion:        cfg.ToolCallCompletion,
 		nextMainStreamID:          cfg.NextMainStreamID,
 		nextReasoningStreamID:     cfg.NextReasoningStreamID,
@@ -94,6 +97,9 @@ func newEinoAssistantStreamEventHandler(cfg einoAssistantStreamEventHandlerConfi
 func (h *einoAssistantStreamEventHandler) Handle(mv *adk.MessageVariant, agentName string) (handled bool, recvErr error) {
 	if h == nil || mv == nil || !mv.IsStreaming || mv.MessageStream == nil || mv.Role == schema.Tool {
 		return false, nil
+	}
+	if h.streamsMainAssistant(agentName) && h.assistantOutput != nil {
+		h.assistantOutput.BeginMainAssistantTurn(agentName)
 	}
 	mainStreamID := h.nextMainStreamID()
 	mainEmitter := newEinoMainResponseStreamEmitter(
@@ -150,7 +156,10 @@ func (h *einoAssistantStreamEventHandler) Handle(mv *adk.MessageVariant, agentNa
 	}
 	subReplyEmitter.Finish()
 	if h.toolCallCompletion != nil {
-		h.toolCallCompletion.Complete(toolStreamFragments, agentName)
+		toolCallMessage := h.toolCallCompletion.Complete(toolStreamFragments, agentName)
+		if recvErr == nil && h.completion != nil {
+			h.completion.Observe(agentName, toolCallMessage)
+		}
 	}
 	if h.usage != nil {
 		h.usage.AddUsage(streamUsage)

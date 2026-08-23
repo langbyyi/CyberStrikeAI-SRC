@@ -52,6 +52,40 @@ func TestEinoAssistantStreamEventHandlerHandlesMainAssistantStream(t *testing.T)
 	}
 }
 
+func TestEinoAssistantStreamEventHandlerClearsStaleOutputForReasoningOnlyTurn(t *testing.T) {
+	assistantOutput := newEinoAssistantOutputAccumulator("eino_single")
+	assistantOutput.RecordMainAssistant("lead", "stale progress")
+	handler := newEinoAssistantStreamEventHandler(einoAssistantStreamEventHandlerConfig{
+		AssistantOutput:      assistantOutput,
+		StreamsMainAssistant: func(agent string) bool { return agent == "lead" },
+	})
+	mv := &adk.MessageVariant{
+		IsStreaming: true,
+		Role:        schema.Assistant,
+		MessageStream: schema.StreamReaderFromArray([]*schema.Message{{
+			Role:             schema.Assistant,
+			ReasoningContent: "next I will inspect",
+		}}),
+	}
+
+	handled, err := handler.Handle(mv, "lead")
+	if !handled || err != nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if got := assistantOutput.LastAssistant(); got != "" {
+		t.Fatalf("reasoning-only terminal turn reused stale assistant output %q", got)
+	}
+	const emptyHint = "Eino session completed but no assistant text was captured."
+	result := newEinoRunResultBuilder(einoRunResultBuilderConfig{
+		OrchMode:        "eino_single",
+		EmptyHint:       emptyHint,
+		AssistantOutput: assistantOutput,
+	}).BuildFinal()
+	if result.Response != emptyHint || !IsEinoEmptyResponseResult(result) {
+		t.Fatalf("result = %#v, want empty-response continuation marker", result)
+	}
+}
+
 func TestEinoAssistantStreamEventHandlerHandlesSubAgentStream(t *testing.T) {
 	var events []string
 	runMessages := newEinoRunMessageAccumulator(nil)
@@ -136,6 +170,40 @@ func TestEinoAssistantStreamEventHandlerCompletesToolFragments(t *testing.T) {
 	}
 	if !containsString(events, "tool_call") {
 		t.Fatalf("events = %#v, want tool_call", events)
+	}
+}
+
+func TestEinoAssistantStreamEventHandlerTracksRootExit(t *testing.T) {
+	idx := 0
+	completion := newEinoCompletionTracker("eino_single", "lead")
+	toolCalls := newEinoStreamToolCallCompletionHandler(einoStreamToolCallCompletionHandlerConfig{})
+	handler := newEinoAssistantStreamEventHandler(einoAssistantStreamEventHandlerConfig{
+		Completion:           completion,
+		StreamsMainAssistant: func(agent string) bool { return agent == "lead" },
+		ToolCallCompletion:   toolCalls,
+	})
+	mv := &adk.MessageVariant{
+		IsStreaming: true,
+		Role:        schema.Assistant,
+		MessageStream: schema.StreamReaderFromArray([]*schema.Message{{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{{
+				ID: "exit-call", Index: &idx, Type: "function",
+				Function: schema.FunctionCall{Name: "exit", Arguments: `{"final_result":"done"}`},
+			}},
+		}}),
+	}
+
+	handled, err := handler.Handle(mv, "lead")
+	if !handled || err != nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if got := completion.Snapshot(); got.State != CompletionUnsignaled {
+		t.Fatalf("unexecuted streamed exit completed task: %+v", got)
+	}
+	completion.Observe("lead", toolExitMsg("done", "exit-call"))
+	if got := completion.Snapshot(); got.State != CompletionSucceeded || got.FinalResponse != "done" {
+		t.Fatalf("executed completion snapshot = %+v", got)
 	}
 }
 

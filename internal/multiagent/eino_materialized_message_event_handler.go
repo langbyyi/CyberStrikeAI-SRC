@@ -86,6 +86,9 @@ func (h *einoMaterializedMessageEventHandler) Handle(mv *adk.MessageVariant, msg
 		h.runProgress.EmitToolCalls(mergeMessageToolCalls(msg), agentName, h.markPending)
 	}
 	if mv.Role == schema.Assistant {
+		if h.streamsMainAssistant(agentName) && h.assistantOutput != nil {
+			h.assistantOutput.BeginMainAssistantTurn(agentName)
+		}
 		newEinoReasoningStreamEmitter(h.conversationID, h.orchMode, agentName, h.einoRoleTag(agentName), h.progress, nil).EmitComplete(msg.ReasoningContent)
 		body := strings.TrimSpace(msg.Content)
 		if body != "" {

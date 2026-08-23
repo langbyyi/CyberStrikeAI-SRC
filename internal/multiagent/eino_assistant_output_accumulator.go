@@ -12,6 +12,16 @@ func newEinoAssistantOutputAccumulator(orchMode string) *einoAssistantOutputAccu
 	return &einoAssistantOutputAccumulator{orchMode: orchMode}
 }
 
+func (a *einoAssistantOutputAccumulator) BeginMainAssistantTurn(agentName string) {
+	if a == nil {
+		return
+	}
+	a.lastAssistant = ""
+	if a.orchMode == "plan_execute" && strings.EqualFold(strings.TrimSpace(agentName), "executor") {
+		a.lastPlanExecuteExecutor = ""
+	}
+}
+
 func (a *einoAssistantOutputAccumulator) RecordMainAssistant(agentName, content string) bool {
 	if a == nil {
 		return false

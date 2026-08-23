@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/agent"
+	"cyberstrike-ai/internal/agentfinalizer"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
@@ -244,44 +245,55 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 		_ = h.db.SetConversationAgentMode(conversationID, "eino_single")
 	}
 
-	var resultMA *multiagent.RunResult
-	var runErr error
-	switch {
-	case useBatchMulti:
-		resultMA, runErr = multiagent.RunDeepAgent(taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger, conversationID, h.conversationProjectID(conversationID), finalMessage, []agent.ChatMessage{}, roleTools, progressCallback, h.agentsMarkdownDir, batchOrch, nil, h.agentSessionContextBlock(conversationID))
-	default:
-		if h.config == nil {
-			runErr = fmt.Errorf("服务器配置未加载")
-		} else {
-			resultMA, runErr = multiagent.RunEinoSingleChatModelAgent(taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger, conversationID, h.conversationProjectID(conversationID), finalMessage, []agent.ChatMessage{}, roleTools, progressCallback, nil, h.agentSessionContextBlock(conversationID))
-		}
-	}
-
-	if runErr != nil {
-		h.handleBatchSubTaskRunError(queueID, task, conversationID, assistantMessageID, baseCtx, taskCtx, resultMA, runErr, &finishStatus)
-		return
-	}
-
-	if resultMA == nil {
-		h.logger.Error("批量任务执行成功但无结果对象",
-			zap.String("queueId", queueID),
-			zap.String("taskId", task.ID),
-			zap.String("conversationId", conversationID))
-		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "内部错误：无执行结果")
-		return
-	}
-
-	h.logger.Info("批量任务执行成功", zap.String("queueId", queueID), zap.String("taskId", task.ID), zap.String("conversationId", conversationID))
-
-	mcpIDs := resultMA.MCPExecutionIDs
-	lastIn := resultMA.LastAgentTraceInput
-	lastOut := resultMA.LastAgentTraceOutput
-	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(lastIn)
 	agentMode := "batch_eino_single"
 	if useBatchMulti {
 		agentMode = "batch_eino_" + batchOrch
 	}
-	decision := h.finalizeAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, reasoningContent, true)
+	curHistory := []agent.ChatMessage{}
+	curFinalMessage := finalMessage
+	var resultMA *multiagent.RunResult
+	var cumulativeMCPExecutionIDs []string
+	var finalizationAutoContinueAttempt int
+	var decision agentfinalizer.Decision
+	for {
+		var runErr error
+		switch {
+		case useBatchMulti:
+			resultMA, runErr = multiagent.RunDeepAgent(taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger, conversationID, h.conversationProjectID(conversationID), curFinalMessage, curHistory, roleTools, progressCallback, h.agentsMarkdownDir, batchOrch, nil, h.agentSessionContextBlock(conversationID))
+		default:
+			if h.config == nil {
+				runErr = fmt.Errorf("服务器配置未加载")
+			} else {
+				resultMA, runErr = multiagent.RunEinoSingleChatModelAgent(taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger, conversationID, h.conversationProjectID(conversationID), curFinalMessage, curHistory, roleTools, progressCallback, nil, h.agentSessionContextBlock(conversationID))
+			}
+		}
+		cumulativeMCPExecutionIDs = accumulateEinoRunMCPExecutionIDs(cumulativeMCPExecutionIDs, resultMA)
+		if runErr != nil {
+			h.handleBatchSubTaskRunError(queueID, task, conversationID, assistantMessageID, baseCtx, taskCtx, resultMA, runErr, &finishStatus)
+			return
+		}
+		if resultMA == nil {
+			h.logger.Error("批量任务执行成功但无结果对象",
+				zap.String("queueId", queueID),
+				zap.String("taskId", task.ID),
+				zap.String("conversationId", conversationID))
+			h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "内部错误：无执行结果")
+			return
+		}
+		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, cumulativeMCPExecutionIDs, true)
+		if h.tryAutoContinueAfterFinalization(taskCtx, conversationID, resultMA, decision, &finalizationAutoContinueAttempt, &curHistory, &curFinalMessage, progressCallback) {
+			continue
+		}
+		break
+	}
+
+	h.logger.Info("批量任务执行成功", zap.String("queueId", queueID), zap.String("taskId", task.ID), zap.String("conversationId", conversationID))
+
+	mcpIDs := cumulativeMCPExecutionIDs
+	lastIn := resultMA.LastAgentTraceInput
+	lastOut := resultMA.LastAgentTraceOutput
+	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(lastIn)
+	decision = h.finalizeAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, reasoningContent, true)
 	resText := decision.FinalText
 	if !decision.Finalizable {
 		resText = finalizationBlockedMessage(decision)

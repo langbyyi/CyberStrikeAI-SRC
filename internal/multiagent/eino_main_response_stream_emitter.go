@@ -68,6 +68,7 @@ func (e *einoMainResponseStreamEmitter) emitStart() {
 		"orchestration":      e.orchMode,
 		"iteration":          e.iteration,
 		"streamId":           e.streamID,
+		"phase":              "commentary",
 	})
 	e.headerSent = true
 }
@@ -81,5 +82,6 @@ func (e *einoMainResponseStreamEmitter) responseData() map[string]interface{} {
 		"orchestration":   e.orchMode,
 		"iteration":       e.iteration,
 		"streamId":        e.streamID,
+		"phase":           "commentary",
 	}
 }

@@ -6596,6 +6596,43 @@ async function deleteConversationTurnFromUI(anchorBackendMessageId) {
     }
 }
 
+function resetDeletedCurrentConversation(conversationId) {
+    const deletedId = String(conversationId || '').trim();
+    const visibleId = String(currentConversationId || window.currentConversationId || '').trim();
+    if (!deletedId || deletedId !== visibleId) return false;
+
+    // 删除成功后必须让所有仍持有旧会话 ID 的异步发送、hash 恢复和流式订阅立即失效。
+    markChatConversationNavigation('', true);
+    if (typeof window.cancelScheduledChatConversationFromHash === 'function') {
+        window.cancelScheduledChatConversationFromHash();
+    }
+    clearChatConversationHash();
+    cancelPendingConversationLoad();
+    detachLiveChatStreamForNavigation('', true);
+    if (typeof window.cancelRunningTaskEventStream === 'function') {
+        window.cancelRunningTaskEventStream('');
+    }
+    if (typeof window.clearChatHitlApprovalDock === 'function') {
+        window.clearChatHitlApprovalDock();
+    }
+
+    currentConversationId = null;
+    currentConversationGroupId = null;
+    window._loadedConversationProjectId = '';
+    try {
+        window.currentConversationId = '';
+    } catch (e) { /* ignore */ }
+    window.dispatchEvent(new CustomEvent('conversation-changed', { detail: { conversationId: '' } }));
+
+    const messagesDiv = document.getElementById('chat-messages');
+    if (messagesDiv) messagesDiv.innerHTML = '';
+    renderChatWelcomeEmptyState();
+    addAttackChainButton(null);
+    updateChatPrimaryActionState();
+    updateActiveConversation();
+    return true;
+}
+
 // 删除对话
 async function deleteConversation(conversationId, skipConfirm = false) {
     // 确认删除（如果调用者没有跳过确认）
@@ -6615,16 +6652,7 @@ async function deleteConversation(conversationId, skipConfirm = false) {
             throw new Error(error.error || '删除失败');
         }
         
-        // 如果删除的是当前对话，清空对话界面
-        if (conversationId === currentConversationId) {
-            currentConversationId = null;
-            try {
-                window.currentConversationId = '';
-            } catch (e) { /* ignore */ }
-            document.getElementById('chat-messages').innerHTML = '';
-            renderChatWelcomeEmptyState();
-            addAttackChainButton(null);
-        }
+        resetDeletedCurrentConversation(conversationId);
         
         // 更新缓存 - 立即删除，确保后续加载时能正确识别
         delete conversationGroupMappingCache[conversationId];
@@ -12978,16 +13006,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             .forEach((item) => {
                 if (item.dataset.conversationId === id) item.remove();
             });
-        if (id === currentConversationId) {
-            currentConversationId = null;
-            try {
-                window.currentConversationId = '';
-            } catch (e) { /* ignore */ }
-            const messagesDiv = document.getElementById('chat-messages');
-            if (messagesDiv) messagesDiv.innerHTML = '';
-            renderChatWelcomeEmptyState();
-            addAttackChainButton(null);
-        }
+        resetDeletedCurrentConversation(id);
         if (typeof loadConversationsWithGroups === 'function') {
             loadConversationsWithGroups();
         } else if (typeof loadConversations === 'function') {

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"cyberstrike-ai/internal/agent"
+	"cyberstrike-ai/internal/agentfinalizer"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
@@ -710,6 +711,7 @@ type ChatResponse struct {
 	EvidenceRefs        []string  `json:"evidenceRefs,omitempty"`
 	PendingExecutionIDs []string  `json:"pendingExecutionIds,omitempty"`
 	MissingChecks       []string  `json:"missingChecks,omitempty"`
+	Phase               string    `json:"phase,omitempty"`
 }
 
 func (h *AgentHandler) finalizeRobotAgentError(ctx context.Context, assistantMessageID, conversationID string, resultMA *multiagent.RunResult, errMA error) (string, string, error) {
@@ -724,14 +726,24 @@ func (h *AgentHandler) finalizeRobotAgentError(ctx context.Context, assistantMes
 	return "", conversationID, errMA
 }
 
-func (h *AgentHandler) finalizeRobotAgentSuccess(assistantMessageID, conversationID string, resultMA *multiagent.RunResult) (string, string, error) {
-	decision := h.finalizeAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput), true)
+func robotTaskStatusAfterFinalization(current string, decision agentfinalizer.Decision) string {
+	if decision.Finalizable || strings.TrimSpace(decision.Status) == "" {
+		return current
+	}
+	return decision.Status
+}
+
+func (h *AgentHandler) finalizeRobotAgentSuccess(assistantMessageID, conversationID string, resultMA *multiagent.RunResult, mcpExecutionIDs []string, taskStatus *string) (string, string, error) {
+	decision := h.finalizeAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, mcpExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput), true)
+	if taskStatus != nil {
+		*taskStatus = robotTaskStatusAfterFinalization(*taskStatus, decision)
+	}
 	responseText := decision.FinalText
 	if !decision.Finalizable {
 		responseText = finalizationBlockedMessage(decision)
 	}
 	if assistantMessageID == "" {
-		if _, err := h.db.AddMessage(conversationID, "assistant", responseText, resultMA.MCPExecutionIDs); err != nil {
+		if _, err := h.db.AddMessage(conversationID, "assistant", responseText, mcpExecutionIDs); err != nil {
 			h.logger.Warn("机器人：保存助手消息失败", zap.Error(err))
 		}
 	}
@@ -750,15 +762,26 @@ func (h *AgentHandler) runRobotEinoSingleWithRetry(
 	assistantMessageID string,
 	taskStatus *string,
 ) (string, string, error) {
-	resultMA, errMA := multiagent.RunEinoSingleChatModelAgent(
-		taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger,
-		conversationID, h.conversationProjectID(conversationID), finalMessage, history, roleTools, progressCallback, nil, h.agentSessionContextBlock(conversationID),
-	)
-	if errMA != nil {
-		*taskStatus = "failed"
-		return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
+	curHistory := history
+	curFinalMessage := finalMessage
+	var cumulativeMCPExecutionIDs []string
+	var finalizationAutoContinueAttempt int
+	for {
+		resultMA, errMA := multiagent.RunEinoSingleChatModelAgent(
+			taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger,
+			conversationID, h.conversationProjectID(conversationID), curFinalMessage, curHistory, roleTools, progressCallback, nil, h.agentSessionContextBlock(conversationID),
+		)
+		cumulativeMCPExecutionIDs = accumulateEinoRunMCPExecutionIDs(cumulativeMCPExecutionIDs, resultMA)
+		if errMA != nil {
+			*taskStatus = "failed"
+			return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
+		}
+		decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, cumulativeMCPExecutionIDs, true)
+		if h.tryAutoContinueAfterFinalization(taskCtx, conversationID, resultMA, decision, &finalizationAutoContinueAttempt, &curHistory, &curFinalMessage, progressCallback) {
+			continue
+		}
+		return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA, cumulativeMCPExecutionIDs, taskStatus)
 	}
-	return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA)
 }
 
 func (h *AgentHandler) runRobotMultiAgentWithRetry(
@@ -770,16 +793,27 @@ func (h *AgentHandler) runRobotMultiAgentWithRetry(
 	assistantMessageID string,
 	taskStatus *string,
 ) (string, string, error) {
-	resultMA, errMA := multiagent.RunDeepAgent(
-		taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger,
-		conversationID, h.conversationProjectID(conversationID), finalMessage, history, roleTools, progressCallback,
-		h.agentsMarkdownDir, orchestration, nil, h.agentSessionContextBlock(conversationID),
-	)
-	if errMA != nil {
-		*taskStatus = "failed"
-		return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
+	curHistory := history
+	curFinalMessage := finalMessage
+	var cumulativeMCPExecutionIDs []string
+	var finalizationAutoContinueAttempt int
+	for {
+		resultMA, errMA := multiagent.RunDeepAgent(
+			taskCtx, h.config, &h.config.MultiAgent, h.agent, h.db, h.logger,
+			conversationID, h.conversationProjectID(conversationID), curFinalMessage, curHistory, roleTools, progressCallback,
+			h.agentsMarkdownDir, orchestration, nil, h.agentSessionContextBlock(conversationID),
+		)
+		cumulativeMCPExecutionIDs = accumulateEinoRunMCPExecutionIDs(cumulativeMCPExecutionIDs, resultMA)
+		if errMA != nil {
+			*taskStatus = "failed"
+			return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
+		}
+		decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, cumulativeMCPExecutionIDs, true)
+		if h.tryAutoContinueAfterFinalization(taskCtx, conversationID, resultMA, decision, &finalizationAutoContinueAttempt, &curHistory, &curFinalMessage, progressCallback) {
+			continue
+		}
+		return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA, cumulativeMCPExecutionIDs, taskStatus)
 	}
-	return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA)
 }
 
 // ProcessMessageForRobot 供机器人（企业微信/钉钉/飞书）调用：Eino 单/多代理执行路径（含 progressCallback、过程详情），仅不发送 SSE，最后返回完整回复

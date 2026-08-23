@@ -16,13 +16,14 @@ const (
 	StatusCancelled    = "cancelled"
 	StatusAwaitingHITL = "awaiting_hitl"
 
-	ReasonVerified        = "verified"
-	ReasonPendingTools    = "pending_tool_executions"
-	ReasonEmptyResponse   = "empty_response"
-	ReasonAwaitingHITL    = "awaiting_hitl"
-	ReasonFailed          = "failed"
-	ReasonCancelled       = "cancelled"
-	ReasonMissingEvidence = "missing_execution_evidence"
+	ReasonVerified                = "verified"
+	ReasonPendingTools            = "pending_tool_executions"
+	ReasonEmptyResponse           = "empty_response"
+	ReasonAwaitingHITL            = "awaiting_hitl"
+	ReasonFailed                  = "failed"
+	ReasonCancelled               = "cancelled"
+	ReasonMissingEvidence         = "missing_execution_evidence"
+	ReasonMissingCompletionSignal = "missing_completion_signal"
 )
 
 // Decision is the single contract that may promote an agent run to a final
@@ -46,20 +47,25 @@ type Decision struct {
 }
 
 type Input struct {
-	Response                 string
-	MCPExecutionIDs          []string
-	ConversationID           string
-	AssistantMessageID       string
-	AgentMode                string
-	Status                   string
-	CompletionReason         string
-	AwaitingHITL             bool
-	RequireExecutionEvidence bool
+	Response                   string
+	MCPExecutionIDs            []string
+	ConversationID             string
+	AssistantMessageID         string
+	AgentMode                  string
+	Status                     string
+	CompletionReason           string
+	AwaitingHITL               bool
+	RequireExecutionEvidence   bool
+	CompletionContractRequired bool
+	CompletionState            multiagent.CompletionState
+	CompletionSignal           string
 }
 
 func FromRunResult(db *database.DB, result *multiagent.RunResult, in Input) Decision {
 	if result != nil {
-		if strings.TrimSpace(in.Response) == "" {
+		if result.CompletionContractRequired && result.CompletionState == multiagent.CompletionSucceeded && strings.TrimSpace(result.FinalResponse) != "" {
+			in.Response = result.FinalResponse
+		} else if strings.TrimSpace(in.Response) == "" {
 			in.Response = result.Response
 		}
 		if len(in.MCPExecutionIDs) == 0 {
@@ -71,6 +77,9 @@ func FromRunResult(db *database.DB, result *multiagent.RunResult, in Input) Deci
 		if strings.TrimSpace(in.CompletionReason) == "" {
 			in.CompletionReason = result.CompletionReason
 		}
+		in.CompletionContractRequired = result.CompletionContractRequired
+		in.CompletionState = result.CompletionState
+		in.CompletionSignal = result.CompletionSignal
 	}
 	d := Decide(db, in)
 	if result != nil {
@@ -140,6 +149,14 @@ func Decide(db *database.DB, in Input) Decision {
 		d.PendingExecutionIDs = pending
 		d.PendingToolRuns = append([]string(nil), pending...)
 		d.MissingChecks = append(d.MissingChecks, "tool execution still queued or running")
+		return d
+	}
+
+	if in.CompletionContractRequired && in.CompletionState != multiagent.CompletionSucceeded {
+		d.Status = StatusInProgress
+		d.CompletionReason = ReasonMissingCompletionSignal
+		d.EvidenceVerified = false
+		d.MissingChecks = append(d.MissingChecks, "agent did not emit an explicit completion signal")
 		return d
 	}
 

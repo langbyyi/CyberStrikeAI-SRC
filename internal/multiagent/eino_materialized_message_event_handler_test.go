@@ -58,6 +58,24 @@ func TestEinoMaterializedMessageEventHandlerHandlesMainAssistant(t *testing.T) {
 	}
 }
 
+func TestEinoMaterializedMessageEventHandlerClearsStaleOutputForReasoningOnlyTurn(t *testing.T) {
+	assistantOutput := newEinoAssistantOutputAccumulator("eino_single")
+	assistantOutput.RecordMainAssistant("lead", "stale progress")
+	handler := newEinoMaterializedMessageEventHandler(einoMaterializedMessageEventHandlerConfig{
+		AssistantOutput:      assistantOutput,
+		StreamsMainAssistant: func(agent string) bool { return agent == "lead" },
+	})
+	msg := schema.AssistantMessage("", nil)
+	msg.ReasoningContent = "next I will inspect"
+
+	if !handler.Handle(&adk.MessageVariant{Role: schema.Assistant}, msg, "lead") {
+		t.Fatal("reasoning-only assistant message was not handled")
+	}
+	if got := assistantOutput.LastAssistant(); got != "" {
+		t.Fatalf("reasoning-only terminal turn reused stale assistant output %q", got)
+	}
+}
+
 func TestEinoMaterializedMessageEventHandlerHandlesSubAssistant(t *testing.T) {
 	var events []string
 	runMessages := newEinoRunMessageAccumulator(nil)
