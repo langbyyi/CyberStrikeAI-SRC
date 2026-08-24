@@ -300,6 +300,11 @@ func TestExtractInfoCollectJSONObject(t *testing.T) {
 			in:   "结果：{\"query\":\"title:\\\"{admin}\\\"\",\"warnings\":[\"check\"]}",
 			want: `{"query":"title:\"{admin}\"","warnings":["check"]}`,
 		},
+		{
+			name: "valid json with trailing text",
+			in:   "{\"query\":\"ok\",\"explanation\":\"keep\",\"warnings\":[\"w\"]}\nextra",
+			want: `{"query":"ok","explanation":"keep","warnings":["w"]}`,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -311,6 +316,72 @@ func TestExtractInfoCollectJSONObject(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("extractInfoCollectJSONObject() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractInfoCollectJSONObjectDoesNotMaskMalformedOptionalFields(t *testing.T) {
+	t.Parallel()
+	for _, content := range []string{
+		`{"query":"ok","warnings":oops}`,
+		`{"query":"title="E3全渠道中台"","warnings":oops}`,
+		`prefix "query":"title="x"","warnings":[] suffix`,
+		`{"query":"title="x"","foo":"bar"}`,
+		`{"query":"body="foo","warnings":[],"explanation":"keep"}`,
+	} {
+		content := content
+		t.Run(content, func(t *testing.T) {
+			t.Parallel()
+			if _, err := extractInfoCollectJSONObject(content); err == nil {
+				t.Fatal("extractInfoCollectJSONObject() unexpectedly accepted malformed warnings")
+			}
+		})
+	}
+}
+
+func TestExtractInfoCollectJSONObjectRecoversUnescapedQuotesInQuery(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		in        string
+		wantQuery string
+	}{
+		{
+			name:      "production fofa response",
+			in:        `{"query":"title="E3全渠道中台"","explanation":"用户输入已是合法的 FOFA 查询语法。","warnings":[]}`,
+			wantQuery: `title="E3全渠道中台"`,
+		},
+		{
+			name:      "natural language response",
+			in:        `{"query": "title="E3全渠道中台"", "explanation": "映射为 FOFA 的 title 字段。", "warnings": []}`,
+			wantQuery: `title="E3全渠道中台"`,
+		},
+		{
+			name:      "commas and multiple quoted values",
+			in:        `{"query":"title="E3", country="CN" && port="443"","explanation":"组合查询"}`,
+			wantQuery: `title="E3", country="CN" && port="443"`,
+		},
+		{
+			name:      "query only with closing brace in value",
+			in:        `{"query":"body="}""}`,
+			wantQuery: `body="}"`,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := extractInfoCollectJSONObject(tc.in)
+			if err != nil {
+				t.Fatalf("extractInfoCollectJSONObject() error = %v", err)
+			}
+			var parsed fofaParseResponse
+			if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+				t.Fatalf("decode recovered response: %v", err)
+			}
+			if parsed.Query != tc.wantQuery {
+				t.Fatalf("recovered query = %q, want %q", parsed.Query, tc.wantQuery)
 			}
 		})
 	}

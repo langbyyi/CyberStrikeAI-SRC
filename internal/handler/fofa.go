@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -350,6 +351,8 @@ Shodan 官方查询语法参考：
   "explanation": "string，可选，解释你如何映射字段/逻辑",
   "warnings": ["string"...] 可选，列出歧义/风险/需要人工确认的点
 }
+   JSON 字符串内部的英文双引号必须转义。例如 query 值 title="后台" 必须写成：
+   {"query":"title=\"后台\"","explanation":"","warnings":[]}
 3) 如果用户输入本身已经是 %s 查询语法（或非常接近该语法的表达式），应当“原样返回”为 query：
    - 不要擅自改写字段名、操作符、括号结构
    - 不要改写任何字符串值（尤其是地理位置类值），不要做缩写/同义词替换/翻译/音译
@@ -456,11 +459,108 @@ func extractInfoCollectJSONObject(content string) (string, error) {
 		if json.Valid([]byte(candidate)) {
 			return candidate, nil
 		}
+		if obj := recoverInfoCollectQueryJSONObject(candidate); obj != "" {
+			return obj, nil
+		}
 		if obj := scanBalancedJSONObject(candidate); obj != "" && json.Valid([]byte(obj)) {
 			return obj, nil
 		}
 	}
 	return "", errors.New("json object not found")
+}
+
+// recoverInfoCollectQueryJSONObject escapes bare quotes only inside the query
+// field, then accepts the result only when the complete JSON object is valid.
+func recoverInfoCollectQueryJSONObject(content string) string {
+	start := infoCollectQueryStartPattern.FindStringIndex(content)
+	if start == nil {
+		return ""
+	}
+	tail := content[start[1]:]
+	end := infoCollectQueryEndPattern.FindStringIndex(tail)
+	if end == nil {
+		matches := infoCollectQueryLastEndPattern.FindAllStringIndex(tail, -1)
+		if len(matches) > 0 {
+			end = matches[len(matches)-1]
+		}
+	}
+	if end == nil {
+		return ""
+	}
+
+	raw := tail[:end[0]]
+	escaped, changed := escapeBareJSONQuotes(raw)
+	if !changed {
+		return ""
+	}
+	if infoCollectEmbeddedFieldPattern.MatchString(raw) {
+		return ""
+	}
+	repaired := content[:start[1]] + escaped + tail[end[0]:]
+	repaired = strings.TrimSpace(repaired)
+	if validRecoveredInfoCollectJSONObject(repaired) {
+		return repaired
+	}
+	return ""
+}
+
+var (
+	infoCollectQueryStartPattern    = regexp.MustCompile(`^\s*\{\s*"query"\s*:\s*"`)
+	infoCollectQueryEndPattern      = regexp.MustCompile(`"\s*,\s*"(?:explanation|warnings)"\s*:`)
+	infoCollectQueryLastEndPattern  = regexp.MustCompile(`"\s*}`)
+	infoCollectEmbeddedFieldPattern = regexp.MustCompile(`"\s*,\s*"[^"]+"\s*:`)
+)
+
+func validRecoveredInfoCollectJSONObject(content string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &fields); err != nil {
+		return false
+	}
+	for field := range fields {
+		switch field {
+		case "query", "explanation", "warnings":
+		default:
+			return false
+		}
+	}
+
+	var parsed fofaParseResponse
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return false
+	}
+	return balancedInfoCollectQueryQuotes(parsed.Query)
+}
+
+func balancedInfoCollectQueryQuotes(query string) bool {
+	quotes := 0
+	for i := 0; i < len(query); i++ {
+		if query[i] == '"' && !jsonByteEscaped(query, i) {
+			quotes++
+		}
+	}
+	return quotes%2 == 0
+}
+
+func escapeBareJSONQuotes(s string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' && !jsonByteEscaped(s, i) {
+			b.WriteByte('\\')
+			changed = true
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String(), changed
+}
+
+func jsonByteEscaped(s string, pos int) bool {
+	backslashes := 0
+	for i := pos - 1; i >= 0 && s[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func extractFencedJSON(content string) string {
@@ -669,4 +769,3 @@ func (h *FofaHandler) searchShodan(c *gin.Context, req fofaSearchRequest, apiKey
 	}
 	c.JSON(http.StatusOK, resp)
 }
-
