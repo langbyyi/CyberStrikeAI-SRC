@@ -131,6 +131,7 @@ func TestEinoAssistantStreamEventHandlerCompletesToolFragments(t *testing.T) {
 	idx := 0
 	var events []string
 	runMessages := newEinoRunMessageAccumulator(nil)
+	pending := newEinoPendingToolCalls("conv-1", nil)
 	runProgress := newEinoRunProgressTracker(
 		"deep", "lead", "conv-1",
 		func(eventType, _ string, _ interface{}) { events = append(events, eventType) },
@@ -143,6 +144,7 @@ func TestEinoAssistantStreamEventHandlerCompletesToolFragments(t *testing.T) {
 		Progress:       func(eventType, _ string, _ interface{}) { events = append(events, eventType) },
 		RunProgress:    runProgress,
 		RunMessages:    runMessages,
+		MarkPending:    pending.Mark,
 	})
 	handler := newEinoAssistantStreamEventHandler(einoAssistantStreamEventHandlerConfig{
 		ConversationID:       "conv-1",
@@ -170,6 +172,77 @@ func TestEinoAssistantStreamEventHandlerCompletesToolFragments(t *testing.T) {
 	}
 	if !containsString(events, "tool_call") {
 		t.Fatalf("events = %#v, want tool_call", events)
+	}
+	if pending.Count() != 1 {
+		t.Fatalf("pending count = %d, want 1 for completed tool stream", pending.Count())
+	}
+}
+
+func TestEinoAssistantStreamEventHandlerDropsToolFragmentsFromInterruptedStream(t *testing.T) {
+	tests := []struct {
+		name      string
+		arguments string
+	}{
+		{name: "partial arguments", arguments: `{"command":`},
+		{name: "complete arguments", arguments: `{"command":"pwd"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx := 0
+			var events []string
+			runMessages := newEinoRunMessageAccumulator(nil)
+			pending := newEinoPendingToolCalls("conv-1", nil)
+			runProgress := newEinoRunProgressTracker(
+				"eino_single", "lead", "conv-1",
+				func(eventType, _ string, _ interface{}) { events = append(events, eventType) },
+				func(agent string) bool { return agent == "lead" },
+				nil,
+			)
+			completion := newEinoStreamToolCallCompletionHandler(einoStreamToolCallCompletionHandlerConfig{
+				ConversationID: "conv-1",
+				OrchMode:       "eino_single",
+				Progress:       func(eventType, _ string, _ interface{}) { events = append(events, eventType) },
+				RunProgress:    runProgress,
+				RunMessages:    runMessages,
+				MarkPending:    pending.Mark,
+			})
+			handler := newEinoAssistantStreamEventHandler(einoAssistantStreamEventHandlerConfig{
+				ConversationID:       "conv-1",
+				OrchMode:             "eino_single",
+				RunMessages:          runMessages,
+				StreamsMainAssistant: func(string) bool { return true },
+				ToolCallCompletion:   completion,
+			})
+			reader, writer := schema.Pipe[*schema.Message](2)
+			writer.Send(&schema.Message{
+				Role: schema.Assistant,
+				ToolCalls: []schema.ToolCall{{
+					ID: "call-interrupted", Index: &idx, Type: "function",
+					Function: schema.FunctionCall{Name: "execute", Arguments: tt.arguments},
+				}},
+			}, nil)
+			writer.Send(nil, adk.ErrStreamCanceled)
+			writer.Close()
+			mv := &adk.MessageVariant{
+				IsStreaming:   true,
+				Role:          schema.Assistant,
+				MessageStream: reader,
+			}
+
+			handled, err := handler.Handle(mv, "lead")
+			if !handled || !isEinoStreamCanceled(err) {
+				t.Fatalf("handled=%v err=%v, want interrupted stream", handled, err)
+			}
+			if pending.Count() != 0 {
+				t.Fatalf("pending count = %d, want 0", pending.Count())
+			}
+			if msgs := runMessages.Messages(); len(msgs) != 0 {
+				t.Fatalf("run messages = %#v, want no interrupted tool call", msgs)
+			}
+			if containsString(events, "tool_calls_detected") || containsString(events, "tool_call") {
+				t.Fatalf("events = %#v, want no interrupted tool call events", events)
+			}
+		})
 	}
 }
 

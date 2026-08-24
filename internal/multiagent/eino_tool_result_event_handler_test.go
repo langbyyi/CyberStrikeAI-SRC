@@ -144,8 +144,15 @@ func TestEinoToolResultEventHandlerIgnoresNonToolOutput(t *testing.T) {
 
 func TestEinoToolResultEventHandlerMarksCanceledStreamAsInterrupted(t *testing.T) {
 	var event map[string]interface{}
+	pending := newEinoPendingToolCalls("conv-1", nil)
+	pending.Mark(toolCallPendingInfo{
+		ToolCallID: "call-1",
+		ToolName:   "http-framework-test",
+		EinoAgent:  "penetration",
+	})
 	emitter := newEinoToolResultProgressEmitter(einoToolResultProgressEmitterConfig{
 		ConversationID: "conv-1",
+		Pending:        pending,
 		Progress: func(eventType, _ string, data interface{}) {
 			if eventType == "tool_result" {
 				event, _ = data.(map[string]interface{})
@@ -168,6 +175,9 @@ func TestEinoToolResultEventHandlerMarksCanceledStreamAsInterrupted(t *testing.T
 	}
 	if event["toolName"] != "http-framework-test" {
 		t.Fatalf("event = %#v", event)
+	}
+	if event["toolCallId"] != "call-1" || pending.Count() != 0 {
+		t.Fatalf("event = %#v pending=%d, want interrupted tool call cleared", event, pending.Count())
 	}
 	if event["isError"] != true || event["success"] != false {
 		t.Fatalf("event flags = %#v, want interrupted tool result", event)

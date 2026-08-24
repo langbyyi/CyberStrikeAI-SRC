@@ -155,9 +155,9 @@ func (h *einoAssistantStreamEventHandler) Handle(mv *adk.MessageVariant, agentNa
 		mainAssistantStream.Finish()
 	}
 	subReplyEmitter.Finish()
-	if h.toolCallCompletion != nil {
+	if recvErr == nil && h.toolCallCompletion != nil {
 		toolCallMessage := h.toolCallCompletion.Complete(toolStreamFragments, agentName)
-		if recvErr == nil && h.completion != nil {
+		if h.completion != nil {
 			h.completion.Observe(agentName, toolCallMessage)
 		}
 	}
