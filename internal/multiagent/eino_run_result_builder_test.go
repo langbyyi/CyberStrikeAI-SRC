@@ -77,6 +77,24 @@ func TestEinoRunResultBuilderCarriesExplicitCompletionSnapshot(t *testing.T) {
 	}
 }
 
+func TestEinoRunResultBuilderFallbackIgnoresBaseHistory(t *testing.T) {
+	runMessages := newEinoRunMessageAccumulator([]adk.Message{
+		schema.UserMessage("previous request"),
+		schema.AssistantMessage("previous answer", nil),
+		schema.UserMessage("new request"),
+	})
+
+	got := newEinoRunResultBuilder(einoRunResultBuilderConfig{
+		OrchMode:    "deep",
+		EmptyHint:   "empty",
+		RunMessages: runMessages,
+	}).BuildFinal()
+
+	if got.Response != "empty" {
+		t.Fatalf("response = %q, want empty hint", got.Response)
+	}
+}
+
 func TestEinoRunResultBuilderPlanExecutePrefersExecutorOutput(t *testing.T) {
 	runMessages := newEinoRunMessageAccumulator(nil)
 	runMessages.Append(schema.AssistantMessage(`{"response":"planner text"}`, nil))
@@ -93,5 +111,20 @@ func TestEinoRunResultBuilderPlanExecutePrefersExecutorOutput(t *testing.T) {
 
 	if got.Response != "executor text" {
 		t.Fatalf("response = %q, want executor text", got.Response)
+	}
+}
+
+func TestEinoRunResultBuilderPlanExecuteUnwrapsFallbackAssistant(t *testing.T) {
+	runMessages := newEinoRunMessageAccumulator(nil)
+	runMessages.Append(schema.AssistantMessage(`{"response":"fallback executor text"}`, nil))
+
+	got := newEinoRunResultBuilder(einoRunResultBuilderConfig{
+		OrchMode:    "plan_execute",
+		EmptyHint:   "empty",
+		RunMessages: runMessages,
+	}).BuildFinal()
+
+	if got.Response != "fallback executor text" {
+		t.Fatalf("response = %q, want fallback executor text", got.Response)
 	}
 }
