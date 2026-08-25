@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.16-src**
+> 当前分支：**v1.7.17-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -47,7 +47,7 @@
 - 测试：`TestVulnerabilityLifecycle`（record 成功 / 无证据拒 / 缺必填拒 / update / delete）
 
 ### 5. Skills / Roles
-- **64 个 Skill**（官方 v1.7.16 为 24 个）：新增 45 个 SRC 细分漏洞方法 playbook 包（sqli / xss / ssrf / idor / jwt / 命令注入 / 越权 / 业务逻辑 / OAuth 等 OWASP 全类型，部分含 SCENARIOS.md 与 references/），`unlimited-attack-scope` 改写为 `authorized-attack-scope`，移除官方 demo 包
+- **64 个 Skill**（官方 v1.7.17 为 23 个）：新增 SRC 细分漏洞方法 playbook 包（sqli / xss / ssrf / idor / jwt / 命令注入 / 越权 / 业务逻辑 / OAuth 等 OWASP 全类型，部分含 SCENARIOS.md 与 references/），`unlimited-attack-scope` 改写为 `authorized-attack-scope`，移除官方 demo 包
 - **15 个角色**：渗透 / CTF / API / Web 应用扫描 / 信息收集 / 后渗透 / EDUSRC / 企业 SRC 等，含完整 `user_prompt` + 工具白名单（已清死工具引用、补齐 web_search）
 
 ### 6. ddddocr 验证码识别
@@ -65,13 +65,13 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 
 ## 与官方版本及本仓库历史的关系（对照核实）
 
-**对比基准与结论均经代码检索核实**（2026-08-22，`git diff v1.7.16 HEAD`）：
+**对比基准与结论均经代码检索核实**（2026-08-25，`git diff v1.7.17 HEAD`）：
 
-1. **官方 v1.7.16**（Ed1s0nZ/CyberStrikeAI，tag `v1.7.16` = upstream/main）：官方不含本分支的二开层组件（`internal/fofaruntime/`、`web_search_tool.go`、`vulnerability_report.go`、`sensitive_http_gate.go` 等对官方代码 0 命中）。本分支以官方为基座叠加二开增强。
+1. **官方 v1.7.17**（Ed1s0nZ/CyberStrikeAI，tag `v1.7.17`）：官方不含本分支的二开层组件（`internal/fofaruntime/`、`web_search_tool.go`、`vulnerability_report.go`、`sensitive_http_gate.go` 等对官方代码 0 命中）。本分支以官方为基座叠加二开增强。
 
 2. **本仓库 v1.6.48-51-src 历史**：曾引入治理层 `execution_controller` / `skill_router` / `session_intent` / `depth_force` / `evidence_policy` / `semantic_outcome` / `tool_exec_governor` 等。**v1.7.11-src 将其全部移除**，回归官方精简形态；后续 `fofa.icu` 硬编码代理、启动注入 FOFA 环境变量、batch-delete 路由补注册、漏洞表缺失列补全等历史修复，也已被官方 v1.7.13~v1.7.16 同步吸收或由更通用的实现取代（多端点 `FofaConfig.Endpoints[]`、运行时直读 `FOFA_API_KEY` 等），不再构成现存差异。
 
-**与官方 v1.7.16 的全量差异**（实测）：279 个文件变更——新增 118、修改 129、删除 31、重命名 1（+33194/-3698 行）。要点：
+**与官方 v1.7.17 的全量差异**（实测）：314 个文件变更——新增 122、修改 159、删除 32、重命名 1（+34605/-3832 行）。要点：
 - 新增 `internal/fofaruntime/` 四引擎 Go 原生运行时（fofa/quake/shodan/zoomeye，1616 行含测试）与旧域名自动迁移容错
 - 新增 `web_search_tool.go`（Tavily）、`vulnerability_report.go`（SRC 报告导出 +3 测试）、`sensitive_http_gate.go`（硬闸）
 - 漏洞链路强化：三要素/PoC prompt 重写、可复现门禁 host 边界匹配、转义归一化判定开关、SRC 扩展 DB 列
@@ -94,7 +94,7 @@ cp config.example.yaml config.yaml          # 填入模型/API 配置后运行
 
 ## 与官方合并
 
-本分支以官方 main 为基座，二开均为叠加层（漏洞/报告/FOFA/技能/Tavily）+ 治理层剔除。官方后续升级可直接合并执行核心，二开层独立维护。
+本分支以官方发布标签为基座，二开均为叠加层（漏洞/报告/FOFA/技能/Tavily）+ 治理层剔除。官方后续升级按提交语义合并执行核心，二开层独立维护。
 
 - 仓库：`https://github.com/langbyyi/CyberStrikeAI-SRC`
 - 升级：`./upgrade.sh`（默认拉取本仓库最新 release，保留 `config.yaml` / `data/` / `venv/` / `tools/` / `roles/` / `skills/`）

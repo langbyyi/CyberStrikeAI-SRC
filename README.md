@@ -16,9 +16,9 @@
 
 - **AI 决策引擎**：兼容 OpenAI 协议（GPT / Claude / DeepSeek / GLM 等）
 - **90+ 内置工具**：覆盖完整 kill chain（nmap、masscan、sqlmap、nuclei、subfinder、fofa_search 等）
-- **智能编排（CloudWeGo Eino ADK）**：单代理模式，支持上下文摘要、检查点续跑、瞬态重试
+- **智能编排（CloudWeGo Eino ADK）**：单代理模式，支持上下文摘要、跨轮轨迹软续跑、瞬态重试
 - **角色化测试**：渗透 / CTF / EDUSRC / 企业 SRC 等 15 个预设角色，按场景定制提示与工具集
-- **Skills 技能库**：47 个漏洞方法 Skill，覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型
+- **Skills 技能库**：64 个漏洞方法 Skill，覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型
 - **漏洞全生命周期**：record / list / get / update / delete，5 工具齐全
 - **知识库（RAG）**：向量检索 + 自动索引
 - **Web UI、审计日志、SQLite 持久化**；批量任务、会话分组、人机协同（HITL）
@@ -39,7 +39,7 @@
 
 ## 版本同步
 
-当前基线 **v1.7.16-src**（已含官方 v1.7.16 及此前全部更新；SRC 方向增强完整保留）。
+当前基线 **v1.7.17-src**（已含官方 v1.7.17 及此前全部更新；SRC 方向增强完整保留）。
 
 每次跟进官方版本一个 `vX.Y.Z-src` 提交 + 标签，完整变更清单见 `git log --oneline`；官方各版本说明见[官方 Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases)。个别官方默认值会按 SRC 场景调整（如 HITL 白名单未纳入红队向的 `c2_event` / `c2_file` / `manage_webshell_list`），差异均在同步提交的 commit message 中注明。
 
