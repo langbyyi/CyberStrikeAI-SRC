@@ -65,11 +65,19 @@ func TestShouldAutoContinueAfterFinalization(t *testing.T) {
 	}
 
 	missingSignal := agentfinalizer.Decision{
-		Status:           agentfinalizer.StatusInProgress,
-		CompletionReason: agentfinalizer.ReasonMissingCompletionSignal,
+		Status:               agentfinalizer.StatusBlocked,
+		CompletionReason:     agentfinalizer.ReasonMissingCompletionSignal,
+		CandidateResponseLen: len([]rune("已有可交付的候选答复")),
 	}
+	if !shouldAutoContinueAfterFinalization(missingSignal, 0) {
+		t.Fatal("missing completion signal with a candidate should trigger one bounded finalization retry")
+	}
+	if shouldAutoContinueAfterFinalization(missingSignal, 1) {
+		t.Fatal("missing completion signal should stop after its bounded retry")
+	}
+	missingSignal.CandidateResponseLen = 0
 	if shouldAutoContinueAfterFinalization(missingSignal, 0) {
-		t.Fatal("missing completion signal must not repeat the entire runner")
+		t.Fatal("missing completion signal without a candidate must not retry")
 	}
 
 	finalized := agentfinalizer.Decision{
@@ -95,11 +103,27 @@ func TestFinalizationAutoContinuePromptRequestsContinuationAndExplicitFinish(t *
 	got := finalizationAutoContinuePrompt(agentfinalizer.Decision{
 		CompletionReason: agentfinalizer.ReasonMissingCompletionSignal,
 	})
-	if !strings.Contains(got, "继续执行未完成步骤") || !strings.Contains(got, "exit") {
-		t.Fatalf("prompt does not request bounded continuation: %q", got)
+	if !strings.Contains(got, "不得调用除 exit 外的任何工具") || !strings.Contains(got, "直接调用 exit") || !strings.Contains(got, "final_result") {
+		t.Fatalf("prompt does not request a completion-only retry: %q", got)
 	}
-	if strings.Contains(got, "重新开始") || strings.Contains(got, "最终回复检查通过") {
-		t.Fatalf("prompt requests restart or claims success: %q", got)
+	if strings.Contains(got, "继续执行未完成步骤") || strings.Contains(got, "重新开始") {
+		t.Fatalf("prompt may repeat completed work: %q", got)
+	}
+}
+
+func TestFinalizationBlockedMessagePreservesCandidateWhenCompletionSignalStillMissing(t *testing.T) {
+	got := finalizationBlockedMessage(agentfinalizer.Decision{
+		Status:           agentfinalizer.StatusBlocked,
+		CompletionReason: agentfinalizer.ReasonMissingCompletionSignal,
+		FinalText:        "这是模型已经整理好的候选最终答复。",
+		MissingChecks:    []string{"agent did not emit an explicit completion signal"},
+	})
+
+	if !strings.HasPrefix(got, "这是模型已经整理好的候选最终答复。") {
+		t.Fatalf("blocked response discarded the candidate: %q", got)
+	}
+	if !strings.Contains(got, "未收到显式完成信号") || !strings.Contains(got, "结果可能不完整") {
+		t.Fatalf("blocked response lacks a clear non-success notice: %q", got)
 	}
 }
 

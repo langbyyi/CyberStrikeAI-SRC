@@ -149,6 +149,10 @@ func finalizationCheckMessage(d agentfinalizer.Decision) string {
 }
 
 func finalizationBlockedMessage(d agentfinalizer.Decision) string {
+	if d.CompletionReason == agentfinalizer.ReasonMissingCompletionSignal && strings.TrimSpace(d.FinalText) != "" {
+		return strings.TrimSpace(d.FinalText) +
+			"\n\n---\n⚠️ 系统未收到显式完成信号，本回复未通过最终完成确认，结果可能不完整。"
+	}
 	parts := []string{"任务尚未达到最终回复条件，暂不生成成功结论。"}
 	if d.CompletionReason != "" {
 		parts = append(parts, "原因: "+d.CompletionReason)

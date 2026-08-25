@@ -147,7 +147,7 @@ func Decide(db *database.DB, in Input) Decision {
 	}
 
 	if in.CompletionContractRequired && in.CompletionState != multiagent.CompletionSucceeded {
-		d.Status = StatusInProgress
+		d.Status = StatusBlocked
 		d.CompletionReason = ReasonMissingCompletionSignal
 		d.EvidenceVerified = false
 		d.MissingChecks = append(d.MissingChecks, "agent did not emit an explicit completion signal")

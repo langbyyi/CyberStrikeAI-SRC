@@ -117,12 +117,14 @@ func (s *einoRunRuntimeSession) HandleIteratorEnd() (completed bool, result *Run
 		result, err = s.HandleIteratorContextError(ctxErr)
 		return false, result, err
 	}
-	pending := s.pending()
-	hadPendingToolCalls := pending != nil && pending.Count() > 0
 	if s.completionHandler != nil {
 		s.completionHandler.Complete()
 	}
-	if !hadPendingToolCalls && s.drain != nil && s.drain.Completion() != nil {
+	// 迭代器干净结束即框架完成（与官方 ReAct 语义一致：模型停止发起工具调用即终态）。
+	// 已执行的 exit 显式信号在 MarkFrameworkCompleted 内部优先，不会被覆盖；
+	// 真正仍在运行的后台 MCP 执行由 agentfinalizer 基于 DB 状态单独拦截。
+	// 残留 pending 只可能是事件观测缺口（如未知工具路径），不能据此压制完成信号。
+	if s.drain != nil && s.drain.Completion() != nil {
 		s.drain.Completion().MarkFrameworkCompleted()
 	}
 	return true, nil, nil
@@ -281,14 +283,25 @@ func (s *einoRunRuntimeSession) initIteratorRuntime() {
 		Pending:        pending,
 		Checkpoint:     cpStore,
 		CheckpointID:   checkPointID,
+		DeliveredToolResults: func() map[string]string {
+			return deliveredToolResultsFromMessages(modelFacingTraceSnapshot(s.args))
+		},
 	})
 	s.cancellationHandler = newEinoRunCancellationHandler(einoRunCancellationHandlerConfig{
-		Context:        s.ctx,
-		ConversationID: s.conversationID,
-		Progress:       s.progress,
-		Pending:        pending,
-		TakePartial:    s.takePartial,
+		Context:          s.ctx,
+		ConversationID:   s.conversationID,
+		Progress:         s.progress,
+		Pending:          pending,
+		TakePartial:      s.takePartial,
+		ReconcilePending: s.reconcilePending,
 	})
+}
+
+// reconcilePending 供错误/取消/正常结束路径统一对账幽灵 pending。
+func (s *einoRunRuntimeSession) reconcilePending() {
+	if s != nil && s.completionHandler != nil {
+		s.completionHandler.ReconcileDeliveredPending()
+	}
 }
 
 func (s *einoRunRuntimeSession) initRecoveryRuntime() {
@@ -321,6 +334,7 @@ func (s *einoRunRuntimeSession) initRecoveryRuntime() {
 		Progress:             s.progress,
 		Pending:              pending,
 		NativeCancelFallback: s.nativeCancelCauseOrCanceled,
+		ReconcilePending:     s.reconcilePending,
 	})
 	s.runRecoveryHandler = newEinoRunRecoveryHandler(einoRunRecoveryHandlerConfig{
 		ConversationID:  s.conversationID,

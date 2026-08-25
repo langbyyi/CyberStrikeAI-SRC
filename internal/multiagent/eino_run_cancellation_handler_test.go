@@ -56,6 +56,70 @@ func TestEinoRunCancellationHandlerFlushesPendingAndEmitsError(t *testing.T) {
 	}
 }
 
+// TestEinoRunCancellationHandlerReconcilesDeliveredBeforeFlush 取消路径回归：
+// 结果已送达模型的幽灵 pending（未知工具路径）应先对账补发真实结果，
+// 只有真孤儿才被 FlushAsFailed 误报为失败。
+func TestEinoRunCancellationHandlerReconcilesDeliveredBeforeFlush(t *testing.T) {
+	runErr := errors.New("context canceled")
+	var events []struct {
+		eventType string
+		data      map[string]interface{}
+	}
+	progress := func(eventType, _ string, data interface{}) {
+		m, _ := data.(map[string]interface{})
+		events = append(events, struct {
+			eventType string
+			data      map[string]interface{}
+		}{eventType: eventType, data: m})
+	}
+	pending := newEinoPendingToolCalls("conv-1", progress)
+	pending.Mark(toolCallPendingInfo{ToolCallID: "call-typo", ToolName: "execute-python-cript", EinoAgent: "lead", EinoRole: "orchestrator"})
+	pending.Mark(toolCallPendingInfo{ToolCallID: "call-lost", ToolName: "execute", EinoAgent: "lead", EinoRole: "orchestrator"})
+	reconciled := false
+
+	_, _ = newEinoRunCancellationHandler(einoRunCancellationHandlerConfig{
+		Context:        context.Background(),
+		ConversationID: "conv-1",
+		Progress:       progress,
+		Pending:        pending,
+		TakePartial: func(got error) (*RunResult, error) {
+			return nil, got
+		},
+		ReconcilePending: func() {
+			reconciled = true
+			delivered := map[string]string{"call-typo": "tool-error: unknown tool reminder"}
+			for _, tc := range pending.ExtractDelivered(delivered) {
+				_ = tc
+			}
+		},
+	}).Handle(runErr)
+
+	if !reconciled {
+		t.Fatal("reconcile hook must run before flush")
+	}
+	if pending.Count() != 0 {
+		t.Fatalf("pending count = %d, want 0", pending.Count())
+	}
+	var typoResult, lostResult map[string]interface{}
+	for _, ev := range events {
+		if ev.eventType != "tool_result" {
+			continue
+		}
+		if ev.data["toolCallId"] == "call-typo" {
+			typoResult = ev.data
+		}
+		if ev.data["toolCallId"] == "call-lost" {
+			lostResult = ev.data
+		}
+	}
+	if typoResult != nil {
+		t.Fatalf("delivered pending should be reconciled silently here, got %#v", typoResult)
+	}
+	if lostResult == nil || lostResult["isError"] != true {
+		t.Fatalf("undelivered pending should flush as failed, got %#v", lostResult)
+	}
+}
+
 func TestEinoRunCancellationHandlerInterruptContinueProgress(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(ErrInterruptContinue)

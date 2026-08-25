@@ -3,11 +3,12 @@ package multiagent
 import "context"
 
 type einoRunCancellationHandler struct {
-	ctx            context.Context
-	conversationID string
-	progress       func(eventType, message string, data interface{})
-	pending        *einoPendingToolCalls
-	takePartial    einoPartialResultFunc
+	ctx              context.Context
+	conversationID   string
+	progress         func(eventType, message string, data interface{})
+	pending          *einoPendingToolCalls
+	takePartial      einoPartialResultFunc
+	reconcilePending func()
 }
 
 type einoRunCancellationHandlerConfig struct {
@@ -16,15 +17,19 @@ type einoRunCancellationHandlerConfig struct {
 	Progress       func(eventType, message string, data interface{})
 	Pending        *einoPendingToolCalls
 	TakePartial    einoPartialResultFunc
+	// ReconcilePending 在 FlushAsFailed 前对账「结果已送达模型」的 pending（如未知工具路径），
+	// 避免把事件观测缺口误报为工具失败。
+	ReconcilePending func()
 }
 
 func newEinoRunCancellationHandler(cfg einoRunCancellationHandlerConfig) *einoRunCancellationHandler {
 	return &einoRunCancellationHandler{
-		ctx:            cfg.Context,
-		conversationID: cfg.ConversationID,
-		progress:       cfg.Progress,
-		pending:        cfg.Pending,
-		takePartial:    cfg.TakePartial,
+		ctx:              cfg.Context,
+		conversationID:   cfg.ConversationID,
+		progress:         cfg.Progress,
+		pending:          cfg.Pending,
+		takePartial:      cfg.TakePartial,
+		reconcilePending: cfg.ReconcilePending,
 	}
 }
 
@@ -33,6 +38,9 @@ func (h *einoRunCancellationHandler) Handle(runErr error) (*RunResult, error) {
 		return nil, runErr
 	}
 	if h.pending != nil {
+		if h.reconcilePending != nil {
+			h.reconcilePending()
+		}
 		h.pending.FlushAsFailed(runErr)
 	}
 	if h.progress != nil {

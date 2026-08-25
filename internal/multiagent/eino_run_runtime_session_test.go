@@ -108,6 +108,83 @@ func TestEinoRunRuntimeSessionCompletionFlushesPending(t *testing.T) {
 	if !containsString(events, "tool_result") || !containsString(events, "eino_pending_orphaned") {
 		t.Fatalf("events = %#v, want orphan pending flush", events)
 	}
+	// 孤儿 pending 是事件观测缺口，不应压制框架完成信号（官方 ReAct 语义：干净结束即完成）。
+	if snap := drain.Completion().Snapshot(); snap.State != CompletionSucceeded || snap.Signal != "framework_completed" {
+		t.Fatalf("completion snapshot = %#v, want framework_completed", snap)
+	}
+}
+
+func TestEinoRunRuntimeSessionReconcilesDeliveredPendingFromModelTrace(t *testing.T) {
+	agent := &fakeRuntimeSessionAgent{}
+	var events []struct {
+		eventType string
+		data      map[string]interface{}
+	}
+	progress := func(eventType, _ string, data interface{}) {
+		m, _ := data.(map[string]interface{})
+		events = append(events, struct {
+			eventType string
+			data      map[string]interface{}
+		}{eventType: eventType, data: m})
+	}
+	drain := newEinoRunEventDrain(einoRunEventDrainConfig{
+		ConversationID:   "conv-1",
+		OrchMode:         "eino_single",
+		OrchestratorName: "lead",
+		Progress:         progress,
+		BaseMessages:     []adk.Message{schema.UserMessage("base")},
+	})
+	trace := newModelFacingTraceHolder()
+	trace.storeFromState(&adk.ChatModelAgentState{Messages: []adk.Message{
+		schema.UserMessage("base"),
+		{Role: schema.Tool, ToolCallID: "call-typo", ToolName: "execute-python-cript", Content: "tool-error: unknown tool reminder"},
+	}})
+	session := newEinoRunRuntimeSession(einoRunRuntimeSessionConfig{
+		Context: context.Background(),
+		Args: &einoADKRunLoopArgs{
+			ConversationID:   "conv-1",
+			OrchMode:         "eino_single",
+			OrchestratorName: "lead",
+			Progress:         progress,
+			DA:               agent,
+			ModelFacingTrace: trace,
+		},
+		Drain:        drain,
+		BaseMessages: []adk.Message{schema.UserMessage("base")},
+		EmptyHint:    "empty",
+	})
+	defer session.Close()
+
+	drain.PendingToolCalls().Mark(toolCallPendingInfo{
+		ToolCallID: "call-typo",
+		ToolName:   "execute-python-cript",
+		EinoAgent:  "lead",
+		EinoRole:   "orchestrator",
+	})
+	completed, _, _ := session.HandleIteratorEnd()
+	if !completed {
+		t.Fatal("iterator end should complete the run")
+	}
+	if drain.PendingToolCalls().Count() != 0 {
+		t.Fatalf("pending count = %d, want 0", drain.PendingToolCalls().Count())
+	}
+	var reconciled map[string]interface{}
+	for _, ev := range events {
+		if ev.eventType == "tool_result" {
+			reconciled = ev.data
+		}
+	}
+	if reconciled == nil || reconciled["toolCallId"] != "call-typo" || reconciled["reconciledFromModelTrace"] != true {
+		t.Fatalf("reconciled tool_result = %#v", reconciled)
+	}
+	for _, ev := range events {
+		if ev.eventType == "eino_pending_orphaned" {
+			t.Fatal("delivered pending must not be force-closed")
+		}
+	}
+	if snap := drain.Completion().Snapshot(); snap.State != CompletionSucceeded {
+		t.Fatalf("completion snapshot = %#v, want succeeded", snap)
+	}
 }
 
 func TestEinoRunRuntimeSessionMarksCleanFrameworkCompletionForEveryMode(t *testing.T) {
@@ -156,7 +233,12 @@ func TestEinoRunRuntimeSessionMarksCleanFrameworkCompletionForEveryMode(t *testi
 	}
 }
 
-func TestEinoRunRuntimeSessionDoesNotMarkPlanExecuteCompletedWithOrphanedTool(t *testing.T) {
+// TestEinoRunRuntimeSessionMarksCompletionDespiteOrphanedTool 行为回归（2026-08 生产事故）：
+// 未知工具（UnknownToolsHandler）路径不产生 ADK 工具事件，其 pending 只能靠模型侧轨迹对账，
+// 对账后仍残留的 pending 属事件观测缺口而非真实在途执行。干净结束的迭代器必须标记完成，
+// 否则 missing_completion_signal 会丢弃模型的最终答复。真实运行中的后台 MCP 执行由
+// agentfinalizer 基于 DB 状态（ReasonPendingTools）单独拦截。
+func TestEinoRunRuntimeSessionMarksCompletionDespiteOrphanedTool(t *testing.T) {
 	agent := &fakeRuntimeSessionAgent{}
 	drain := newEinoRunEventDrain(einoRunEventDrainConfig{
 		ConversationID:   "conv-orphan",
@@ -189,8 +271,8 @@ func TestEinoRunRuntimeSessionDoesNotMarkPlanExecuteCompletedWithOrphanedTool(t 
 		t.Fatalf("completed=%v result=%#v err=%v", completed, result, err)
 	}
 	got := drain.Completion().Snapshot()
-	if got.State != CompletionUnsignaled || got.Signal != "" {
-		t.Fatalf("orphaned tool must prevent plan completion, got %+v", got)
+	if got.State != CompletionSucceeded || got.Signal != "plan_completed" {
+		t.Fatalf("orphaned pending must not suppress plan completion, got %+v", got)
 	}
 }
 

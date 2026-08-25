@@ -14,6 +14,7 @@ import (
 )
 
 const finalizationAutoContinueMaxAttempts = 2
+const finalizationMissingSignalAutoContinueMaxAttempts = 1
 const finalizationPendingToolCancelWait = 2 * time.Second
 const finalizationPendingToolCancelPoll = 50 * time.Millisecond
 const finalizationPendingToolCancelNote = "Agent 迭代已结束，最终回复前自动终止未完成的工具执行"
@@ -29,10 +30,14 @@ func shouldAutoContinueAfterFinalization(d agentfinalizer.Decision, attempt int)
 	if d.Finalizable || d.Finalized {
 		return false
 	}
-	if attempt >= finalizationAutoContinueMaxAttempts {
+	switch d.CompletionReason {
+	case agentfinalizer.ReasonMissingEvidence:
+		return attempt < finalizationAutoContinueMaxAttempts
+	case agentfinalizer.ReasonMissingCompletionSignal:
+		return d.CandidateResponseLen > 0 && attempt < finalizationMissingSignalAutoContinueMaxAttempts
+	default:
 		return false
 	}
-	return d.CompletionReason == agentfinalizer.ReasonMissingEvidence
 }
 
 func (h *AgentHandler) tryAutoContinueAfterFinalization(
@@ -61,11 +66,15 @@ func (h *AgentHandler) tryAutoContinueAfterFinalization(
 	// 仅注入当前 Runner，不写入用户消息表；明确反馈缺失的结束条件，避免模型再次停在计划正文。
 	*curFinalMessage = finalizationAutoContinuePrompt(decision)
 	if progressCallback != nil {
+		maxAttempts := finalizationAutoContinueMaxAttempts
+		if decision.CompletionReason == agentfinalizer.ReasonMissingCompletionSignal {
+			maxAttempts = finalizationMissingSignalAutoContinueMaxAttempts
+		}
 		progressCallback("finalization_auto_continue", "最终回复检查尚未收敛，正在基于已有轨迹继续执行…", map[string]interface{}{
 			"conversationId":       conversationID,
 			"source":               "finalizer",
 			"attempt":              *attempt,
-			"maxAttempts":          finalizationAutoContinueMaxAttempts,
+			"maxAttempts":          maxAttempts,
 			"status":               decision.Status,
 			"completionReason":     decision.CompletionReason,
 			"missingChecks":        decision.MissingChecks,
@@ -83,6 +92,11 @@ func (h *AgentHandler) tryAutoContinueAfterFinalization(
 }
 
 func finalizationAutoContinuePrompt(d agentfinalizer.Decision) string {
+	if d.CompletionReason == agentfinalizer.ReasonMissingCompletionSignal {
+		return "[内部终态修复指令] 上一段已形成候选最终答复，但未提交显式完成信号。" +
+			"请基于已有轨迹复核并整理候选答复，不得调用除 exit 外的任何工具；" +
+			"直接调用 exit，并在 final_result 中提交完整最终答复。"
+	}
 	return "[内部续跑指令] 当前任务尚未满足最终交付条件（" + d.CompletionReason + "）。" +
 		"请基于已有轨迹继续执行未完成步骤，不得重做已完成的工具调用；" +
 		"只有用户目标真正完成时才调用 exit，并在 final_result 中给出完整最终答复。"

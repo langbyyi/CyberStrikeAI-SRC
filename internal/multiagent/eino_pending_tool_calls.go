@@ -75,6 +75,26 @@ func (p *einoPendingToolCalls) PopAny() (toolCallPendingInfo, bool) {
 	return toolCallPendingInfo{}, false
 }
 
+// ExtractDelivered 移除并返回「结果已实际送达模型」的 pending 项。
+// 未知工具（compose UnknownToolsHandler）等路径的结果不产生 ADK 工具事件，
+// 只出现在模型侧轨迹里；这些项不应被误判为孤儿并强制关闭。
+func (p *einoPendingToolCalls) ExtractDelivered(delivered map[string]string) []toolCallPendingInfo {
+	if p == nil || len(delivered) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []toolCallPendingInfo
+	for id, tc := range p.byID {
+		if _, ok := delivered[id]; !ok {
+			continue
+		}
+		delete(p.byID, id)
+		out = append(out, tc)
+	}
+	return out
+}
+
 func (p *einoPendingToolCalls) Count() int {
 	if p == nil {
 		return 0

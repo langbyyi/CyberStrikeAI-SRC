@@ -15,6 +15,7 @@ type einoRunErrorHandler struct {
 	progress             func(eventType, message string, data interface{})
 	pending              *einoPendingToolCalls
 	nativeCancelFallback func() error
+	reconcilePending     func()
 }
 
 type einoRunErrorHandlerConfig struct {
@@ -23,6 +24,9 @@ type einoRunErrorHandlerConfig struct {
 	Progress             func(eventType, message string, data interface{})
 	Pending              *einoPendingToolCalls
 	NativeCancelFallback func() error
+	// ReconcilePending 在 FlushAsFailed 前对账「结果已送达模型」的 pending（如未知工具路径），
+	// 避免把事件观测缺口误报为工具失败。
+	ReconcilePending func()
 }
 
 func newEinoRunErrorHandler(cfg einoRunErrorHandlerConfig) *einoRunErrorHandler {
@@ -32,6 +36,7 @@ func newEinoRunErrorHandler(cfg einoRunErrorHandlerConfig) *einoRunErrorHandler 
 		progress:             cfg.Progress,
 		pending:              cfg.Pending,
 		nativeCancelFallback: cfg.NativeCancelFallback,
+		reconcilePending:     cfg.ReconcilePending,
 	}
 }
 
@@ -75,9 +80,13 @@ func (h *einoRunErrorHandler) Handle(runErr error) error {
 }
 
 func (h *einoRunErrorHandler) flushPending(err error) {
-	if h != nil && h.pending != nil {
-		h.pending.FlushAsFailed(err)
+	if h == nil || h.pending == nil {
+		return
 	}
+	if h.reconcilePending != nil {
+		h.reconcilePending()
+	}
+	h.pending.FlushAsFailed(err)
 }
 
 func (h *einoRunErrorHandler) emitError(err error, kind string) {

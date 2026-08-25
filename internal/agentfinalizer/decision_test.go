@@ -143,7 +143,7 @@ func TestFromRunResultBlocksUnsignaledEinoText(t *testing.T) {
 	if d.Finalizable || d.Finalized {
 		t.Fatalf("unsignaled Eino output finalized: %+v", d)
 	}
-	if d.Status != StatusInProgress || d.CompletionReason != ReasonMissingCompletionSignal {
+	if d.Status != StatusBlocked || d.CompletionReason != ReasonMissingCompletionSignal {
 		t.Fatalf("status/reason = %s/%s", d.Status, d.CompletionReason)
 	}
 	if d.EvidenceVerified || len(d.MissingChecks) == 0 {
@@ -183,6 +183,27 @@ func TestFromRunResultFinalizesPlanExecuteFrameworkResponse(t *testing.T) {
 	}
 	if d.FinalText != result.Response {
 		t.Fatalf("final text = %q, want framework response %q", d.FinalText, result.Response)
+	}
+}
+
+// TestFromRunResultFinalizesCleanReActEndWithoutExit 回归（2026-08 生产事故）：
+// eino_single 干净 ReAct 结束（模型输出最终文本、未调 exit）→ framework_completed。
+// 此时 FinalResponse 为空，候选文本来自 Response，必须正常交付而非 missing_completion_signal。
+func TestFromRunResultFinalizesCleanReActEndWithoutExit(t *testing.T) {
+	result := &multiagent.RunResult{
+		Response:                   "## 渗透测试报告\n（完整最终答复正文）",
+		CompletionContractRequired: true,
+		CompletionState:            multiagent.CompletionSucceeded,
+		CompletionSignal:           "framework_completed",
+		FinalResponse:              "",
+	}
+
+	d := FromRunResult(nil, result, Input{AgentMode: "eino_single"})
+	if !d.Finalizable || !d.Finalized || d.Status != StatusCompleted {
+		t.Fatalf("clean ReAct end without exit did not finalize: %+v", d)
+	}
+	if d.FinalText != result.Response {
+		t.Fatalf("final text = %q, want candidate response", d.FinalText)
 	}
 }
 
