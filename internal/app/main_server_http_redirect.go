@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"golang.org/x/net/http2"
 )
 
 // peekedConn 在已预读首字节后仍将连接交给 net/http 或 crypto/tls。
@@ -118,14 +119,16 @@ func ensureMainTLSConfigCerts(mode mainTLSMode, tlsConf *tls.Config, certFile, k
 type mainServerMux struct {
 	ln          net.Listener
 	httpsSrv    *http.Server
+	h2Srv       *http2.Server
 	redirectSrv *http.Server
 	logger      *zap.Logger
 }
 
-func newMainServerMux(ln net.Listener, httpsSrv *http.Server, httpsPort int, logger *zap.Logger) *mainServerMux {
+func newMainServerMux(ln net.Listener, httpsSrv *http.Server, h2Srv *http2.Server, httpsPort int, logger *zap.Logger) *mainServerMux {
 	return &mainServerMux{
 		ln:          ln,
 		httpsSrv:    httpsSrv,
+		h2Srv:       h2Srv,
 		redirectSrv: &http.Server{Handler: newHTTPToHTTPSRedirectHandler(httpsPort), ReadHeaderTimeout: 10 * time.Second},
 		logger:      logger,
 	}
@@ -171,6 +174,10 @@ func (m *mainServerMux) handleConn(raw net.Conn) {
 
 // serveHTTPS 在已嗅探为 TLS 的连接上完成握手，再按 ALPN 走 HTTP/2 或 HTTP/1.1。
 // 不能对同一 http.Server 并发调用 Serve(TLSConfig!=nil)，否则握手/ALPN 会异常（浏览器 ERR_SSL_PROTOCOL_ERROR）。
+// HTTP/2 必须经 http2.Server.ServeConn 显式分发，不能手动调用 srv.TLSNextProto["h2"]：
+// Go 1.27 起 x/net/http2 的 ConfigureServer（server_wrap.go）不再注册可直接调用的闭包，
+// 该 map 中的处理器改由 net/http 按自身契约调用，手动传入裸 handler 会导致连接被静默关闭
+// （见 golang/go#80482）；显式 ServeConn 在新旧两套实现下行为一致。
 func (m *mainServerMux) serveHTTPS(pc *peekedConn, localAddr net.Addr) {
 	tlsConn := tls.Server(pc, m.httpsSrv.TLSConfig)
 	handCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -182,12 +189,9 @@ func (m *mainServerMux) serveHTTPS(pc *peekedConn, localAddr net.Addr) {
 	}
 
 	srv := m.httpsSrv
-	if srv.TLSNextProto != nil {
-		proto := tlsConn.ConnectionState().NegotiatedProtocol
-		if fn := srv.TLSNextProto[proto]; fn != nil {
-			fn(srv, tlsConn, srv.Handler)
-			return
-		}
+	if m.h2Srv != nil && tlsConn.ConnectionState().NegotiatedProtocol == http2.NextProtoTLS {
+		m.h2Srv.ServeConn(tlsConn, &http2.ServeConnOpts{BaseConfig: srv, Handler: srv.Handler})
+		return
 	}
 
 	plain := httpServerForTLSConn(srv)

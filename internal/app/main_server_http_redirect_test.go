@@ -100,7 +100,8 @@ func TestMainServerMuxHTTPRedirectAndHTTPS(t *testing.T) {
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{cert},
 	}}
-	if err := http2.ConfigureServer(srv, &http2.Server{}); err != nil {
+	h2srv := &http2.Server{}
+	if err := http2.ConfigureServer(srv, h2srv); err != nil {
 		t.Fatalf("configure http2: %v", err)
 	}
 
@@ -110,7 +111,7 @@ func TestMainServerMuxHTTPRedirectAndHTTPS(t *testing.T) {
 	}
 	defer ln.Close()
 
-	mux := newMainServerMux(ln, srv, portFromListenAddr(ln.Addr().String()), nil)
+	mux := newMainServerMux(ln, srv, h2srv, portFromListenAddr(ln.Addr().String()), nil)
 	go func() { _ = mux.Serve() }()
 
 	client := &http.Client{
@@ -146,5 +147,30 @@ func TestMainServerMuxHTTPRedirectAndHTTPS(t *testing.T) {
 	body, _ := io.ReadAll(httpsResp.Body)
 	if string(body) != "ok" {
 		t.Fatalf("body = %q, want ok", body)
+	}
+
+	// HTTP/2 over TLS。Go 1.27 起 x/net/http2 不再注册可直调的 TLSNextProto["h2"]
+	// 闭包，经该 map 手动分发会导致连接被静默重置（golang/go#80482），故必须显式
+	// 断言协商出了 HTTP/2，防止实现回退或静默降级到 HTTP/1.1 后测试仍然通过。
+	h2Client := &http.Client{
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
+		},
+	}
+	h2Resp, err := h2Client.Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatalf("https http2 get: %v", err)
+	}
+	defer h2Resp.Body.Close()
+	if h2Resp.ProtoMajor != 2 {
+		t.Fatalf("http2 proto major = %d, want 2", h2Resp.ProtoMajor)
+	}
+	if h2Resp.StatusCode != http.StatusOK {
+		t.Fatalf("http2 status = %d, want %d", h2Resp.StatusCode, http.StatusOK)
+	}
+	h2Body, _ := io.ReadAll(h2Resp.Body)
+	if string(h2Body) != "ok" {
+		t.Fatalf("http2 body = %q, want ok", h2Body)
 	}
 }

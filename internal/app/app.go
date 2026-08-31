@@ -675,10 +675,12 @@ func (a *App) RunWithContext(ctx context.Context) error {
 
 	srv := &http.Server{Addr: addr, Handler: a.router}
 	var mainMux *mainServerMux
+	var h2Srv *http2.Server
 	httpRedirect := config.ServerHTTPRedirectEnabled(&a.config.Server)
 	if tlsMode != mainTLSOff {
 		srv.TLSConfig = tlsConf
-		if err := http2.ConfigureServer(srv, &http2.Server{}); err != nil {
+		h2Srv = &http2.Server{}
+		if err := http2.ConfigureServer(srv, h2Srv); err != nil {
 			return fmt.Errorf("主服务 HTTP/2 配置失败: %w", err)
 		}
 		switch tlsMode {
@@ -732,7 +734,7 @@ func (a *App) RunWithContext(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		mainMux = newMainServerMux(ln, srv, portFromListenAddr(addr), a.logger.Logger)
+		mainMux = newMainServerMux(ln, srv, h2Srv, portFromListenAddr(addr), a.logger.Logger)
 		err = mainMux.Serve()
 	case tlsMode == mainTLSOff:
 		err = srv.ListenAndServe()
