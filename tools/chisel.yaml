@@ -18,9 +18,23 @@ parameters:
       - client
       - server
     description: client(客户端)/server(服务端)
-  - name: arguments
+  - name: server
     type: string
-    required: true
+    required: false
     position: 1
     format: positional
-    description: 模式参数，如 `client 1.2.3.4:8080 R:8000:10.0.0.1:80` 或 `server -p 8080`
+    description: 'client 模式：chisel 服务端地址（单段，如 `1.2.3.4:8080`）。
+
+      server 模式：省略。'
+  - name: additional_args
+    type: string
+    required: false
+    format: positional
+    description: '空格分隔的附加参数。
+
+      client 模式：隧道映射（位于 server 地址之后），如 `R:8000:10.0.0.1:80` `8001:10.0.0.2:80`。
+
+      server 模式：启动选项，如 `-p 8080 --reverse`。
+
+      注意 client 的连接选项（--port 等）必须置于 server 地址之前，本参数在命令末尾，
+      此类复杂场景建议改用 exec 直接拼命令。'

@@ -1,7 +1,5 @@
 # 配置画像
 
-[English](../en-US/configuration-profiles.md)
-
 本文给出几套常用配置画像。它们不是完整 `config.yaml`，而是部署时最容易影响安全和可用性的关键段落。
 
 ## 本地开发画像
@@ -64,9 +62,13 @@ c2:
   enabled: false
 mcp:
   enabled: false
-hitl:
-  default_reviewer: human
-  tool_whitelist: [read_file, glob, grep, tool_search]
+approval:
+  reviewer: human
+  tool_approval:
+    enabled: true
+    tool_whitelist: [read_file, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
 ```
 
 配合：
@@ -115,9 +117,14 @@ audit:
 monitor:
   retention_days: 180
 hitl:
-  default_reviewer: human
   retention_days: 180
-  tool_whitelist: [read_file, glob, grep, tool_search]
+approval:
+  reviewer: human
+  tool_approval:
+    enabled: true
+    tool_whitelist: [read_file, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
 c2:
   enabled: false
 multi_agent:
@@ -142,9 +149,13 @@ multi_agent:
 ```yaml
 c2:
   enabled: true
-hitl:
-  default_reviewer: human
-  tool_whitelist: [read_file, glob, grep, tool_search]
+approval:
+  reviewer: human
+  tool_approval:
+    enabled: true
+    tool_whitelist: [read_file, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
 audit:
   enabled: true
 monitor:
@@ -169,9 +180,13 @@ multi_agent:
   eino_middleware:
     tool_search_enable: true
     tool_search_min_tools: 20
-hitl:
-  default_reviewer: audit_agent
-  tool_whitelist: [read_file, glob, grep, tool_search]
+approval:
+  reviewer: agent
+  tool_approval:
+    enabled: true
+    tool_whitelist: [read_file, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
 ```
 
 建议：

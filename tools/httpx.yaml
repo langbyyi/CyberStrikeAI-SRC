@@ -13,21 +13,23 @@ parameters:
     type: string
     required: true
     format: flag
-    description: 目标 URL/域名（可多个空格分隔），传给 -u。示例：`-u https://example.com http://1.2.3.4`
+    description: '目标 URL/域名，传给 -u（-u 接受单个目标）。多目标：用 additional_args 追加更多 `-u <url>`，
+      或 `-l <urls.txt>` 从文件读，或用 exec `cat urls.txt | httpx ...` 从 stdin 喂。'
     flag: -u
   - name: threads
     type: int
     required: false
-    flag: -t
+    flag: -c
     format: flag
     default: 50
-    description: 线程数
+    description: 并发线程数（-c/--threads）
   - name: status_codes
-    type: string
+    type: bool
     required: false
     flag: -sc
     format: flag
-    description: 显示状态码，如 `200,301,302,401,403`
+    default: false
+    description: 显示响应状态码（-sc/--status-code，无值开关）
   - name: title
     type: bool
     required: false

@@ -27,8 +27,8 @@ parameters:
     required: false
     flag: -m
     format: flag
-    default: 8
-    description: 最小单词长度
+    default: 3
+    description: 最小单词长度（-m，工具默认 3）
   - name: output
     type: string
     required: false

@@ -1,7 +1,5 @@
 # 贡献规范
 
-[English](../en-US/contributing-guide.md)
-
 本文定义向 CyberStrikeAI 增加功能、接口、工具、前端页面或文档时的基本要求。
 
 ## 总原则
@@ -90,28 +88,16 @@
 - 排错。
 - 源码锚点。
 
-中英文文档要保持文件名一致，分别放在：
-
-```text
-docs/zh-CN/
-docs/en-US/
-```
-
-更新导航：
+文档统一使用中文，放在 `docs/zh-CN/`，同步更新导航：
 
 - `docs/README.md`
 - `docs/zh-CN/README.md`
-- `docs/en-US/README.md`
 
-提交文档变更前运行：
+提交文档变更前检查：
 
-```bash
-python3 scripts/check-docs.py
-```
-
-该检查会验证本地链接、代码块闭合、中英文文件名对齐、语言导航覆盖率，以及根 README 中的 Go 版本是否与 `go.mod` 一致。版本化示例应尽量从 `go.mod`、`config.example.yaml` 等权威文件派生，避免手工同步。
-
-当文档、`go.mod` 或检查脚本变更时，GitHub Actions 中的 `Documentation` 工作流会自动运行同一条命令。
+- 本地链接有效、代码块闭合。
+- 示例中的版本号、默认值从 `go.mod`、`config.example.yaml` 等权威文件派生，避免手工漂移。
+- 与代码行为一致，发现文档漂移及时修正。
 
 ## Review 关注点
 

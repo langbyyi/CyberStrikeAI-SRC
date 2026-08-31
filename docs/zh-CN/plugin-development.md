@@ -11,19 +11,22 @@ plugins/
     cyberstrikeai-burp-extension/
       src/main/java/burp/
       README.md
-      README.zh-CN.md
       build.gradle
+      settings.gradle
       pom.xml
+      build.sh
+      build-mvn.sh
   browser-extension/
     cyberstrikeai-browser-extension/
       manifest.json
+      devtools.html
       devtools.js
       background/service-worker.js
       panel/
       popup/
       lib/
+      icons/
       README.md
-      README.zh-CN.md
       package.sh
 ```
 
@@ -53,7 +56,7 @@ Burp 插件目录包含 Java 源码和构建脚本。典型能力：
 
 ## 浏览器扩展（Chromium DevTools）
 
-浏览器扩展目录为 MV3 DevTools 扩展，与 Burp 插件能力对齐：捕获 HTTP 流量 → 格式化 Prompt → SSE 流式输出 AI 结果。完整安装与 UI 说明见 `plugins/browser-extension/cyberstrikeai-browser-extension/README.zh-CN.md`。
+浏览器扩展目录为 MV3 DevTools 扩展，与 Burp 插件能力对齐：捕获 HTTP 流量 → 格式化 Prompt → SSE 流式输出 AI 结果。完整安装与 UI 说明见 `plugins/browser-extension/cyberstrikeai-browser-extension/README.md`。
 
 典型能力：
 

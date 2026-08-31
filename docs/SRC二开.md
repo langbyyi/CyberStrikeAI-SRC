@@ -11,11 +11,12 @@
 | 2 | SRC 漏洞报告 | 9 个 SRC 字段 + 3 套导出模板 | `internal/handler/vulnerability_report.go` |
 | 3 | FOFA 多引擎 | fofa/quake/shodan/zoomeye 原生协议 + 双通道 | `internal/fofaruntime/` |
 | 4 | 漏洞全生命周期 | record/list/get/update/delete 五工具 | `internal/app/vulnerability_tools.go` |
-| 5 | Skills / Roles | 64 Skill + 15 角色 | `skills/` `roles/` |
+| 5 | Skills / Roles | 64 Skill + 18 角色 | `skills/` `roles/` |
 | 6 | ddddocr | 验证码/滑块 OCR | `tools/ddddocr.yaml` |
 | 7 | issue#2 修复 | 孤儿 tool 消息规范化防网关 400 | `internal/multiagent/orphan_tool_pruner_middleware.go` |
 | 8 | Tavily 联网搜索 | Agent 可用的 web_search 工具 | `internal/app/web_search_tool.go` |
 | 9 | Eino 显式完成协议 | 过程说明不再被误判为最终回复 | `internal/multiagent/eino_completion_contract.go` |
+| 10 | 红队工具箱 | msfconsole / frida / evil-winrm / aircrack-ng 等工具 YAML | `tools/*.yaml` |
 
 ## 核心二开（相对官方）
 
@@ -48,10 +49,10 @@
 
 ### 5. Skills / Roles
 - **64 个 Skill**（官方 v1.7.17 为 23 个）：新增 SRC 细分漏洞方法 playbook 包（sqli / xss / ssrf / idor / jwt / 命令注入 / 越权 / 业务逻辑 / OAuth 等 OWASP 全类型，部分含 SCENARIOS.md 与 references/），`unlimited-attack-scope` 改写为 `authorized-attack-scope`，移除官方 demo 包
-- **15 个角色**：渗透 / CTF / API / Web 应用扫描 / 信息收集 / 后渗透 / EDUSRC / 企业 SRC 等，含完整 `user_prompt` + 工具白名单（已清死工具引用、补齐 web_search）
+- **18 个角色**（官方 v1.7.17 为 13 个）：渗透 / CTF / API / Web 应用扫描 / 信息收集 / 后渗透 / EDUSRC / 企业 SRC 等，含完整 `user_prompt` + 工具白名单（已清死工具引用、补齐 web_search）
 
 ### 6. ddddocr 验证码识别
-`tools/ddddocr.yaml`（自动发现）：OCR 文字验证码 / 点选检测 / 滑块缺口定位，用于登录爆破、密码重置、注册绕过等场景。
+`tools/ddddocr.yaml`（自动发现）：OCR 文字验证码 / 点选检测 / 滑块缺口定位，用于登录爆破、密码重置、注册绕过等场景。内联 Python 实现，运行时依赖 venv 中安装 `ddddocr`。
 
 ### 7. issue#2 修复（orphan tool 消息规范化）
 移植自 v1.6.52-src commit 7251738：`orphan_tool_pruner_middleware` 规范化 assistant(tool_calls)/tool 消息回合——删孤儿/失序/重复 tool 消息 + **对缺失 result 补取消占位**，消除火山方舟 Coding Plan 等网关在"工具返回 → 下一次模型调用"节点的偶发 400。挂载于 `eino_chat_model_tail_middleware.go`，位于 summarization/reduction/tool_search 之后、ChatModel 调用之前。
@@ -61,23 +62,23 @@
 
 ### 9. Eino 显式完成协议
 
-Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=...)` 工具真实执行并返回后才允许最终化；计划和进度正文继续实时显示，但保持 `commentary`，不会触发“最终回复检查通过”。Plan-Execute 使用框架的确定性完成事件。缺少完成信号时从已有模型轨迹最多续跑两次，不重放已完成的工具调用；`use of closed network connection`、`net.ErrClosed` 和 `io.ErrUnexpectedEOF` 纳入当前模型调用的瞬时网络重试。该协议不修改 MCP 工具、RBAC、HITL、Tool Search、迭代预算或执行证据策略，漏洞挖掘与子 Agent 执行能力保持原路径。
+Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=...)` 工具真实执行并返回后才允许最终化；计划和进度正文继续实时显示，但保持 `commentary`，不会触发“最终回复检查通过”。Plan-Execute 使用框架的确定性完成事件。缺少完成信号时从已有模型轨迹最多自动续跑一次（其余 finalization 阻塞原因最多两次，见 `internal/handler/finalization_auto_continue.go` 的 `finalizationMissingSignalAutoContinueMaxAttempts` / `finalizationAutoContinueMaxAttempts`），不重放已完成的工具调用；`use of closed network connection`、`net.ErrClosed` 和 `io.ErrUnexpectedEOF` 纳入当前模型调用的瞬时网络重试。该协议不修改 MCP 工具、RBAC、HITL、Tool Search、迭代预算或执行证据策略，漏洞挖掘与子 Agent 执行能力保持原路径。
 
 ## 与官方版本及本仓库历史的关系（对照核实）
 
-**对比基准与结论均经代码检索核实**（2026-08-25，`git diff v1.7.17 HEAD`）：
+**对比基准与结论均经代码检索核实**（2026-08-30 复核，`git diff v1.7.17` 工作区全量对比）：
 
 1. **官方 v1.7.17**（Ed1s0nZ/CyberStrikeAI，tag `v1.7.17`）：官方不含本分支的二开层组件（`internal/fofaruntime/`、`web_search_tool.go`、`vulnerability_report.go`、`sensitive_http_gate.go` 等对官方代码 0 命中）。本分支以官方为基座叠加二开增强。
 
 2. **本仓库 v1.6.48-51-src 历史**：曾引入治理层 `execution_controller` / `skill_router` / `session_intent` / `depth_force` / `evidence_policy` / `semantic_outcome` / `tool_exec_governor` 等。**v1.7.11-src 将其全部移除**，回归官方精简形态；后续 `fofa.icu` 硬编码代理、启动注入 FOFA 环境变量、batch-delete 路由补注册、漏洞表缺失列补全等历史修复，也已被官方 v1.7.13~v1.7.16 同步吸收或由更通用的实现取代（多端点 `FofaConfig.Endpoints[]`、运行时直读 `FOFA_API_KEY` 等），不再构成现存差异。
 
-**与官方 v1.7.17 的全量差异**（实测）：314 个文件变更——新增 122、修改 159、删除 32、重命名 1（+34605/-3832 行）。要点：
-- 新增 `internal/fofaruntime/` 四引擎 Go 原生运行时（fofa/quake/shodan/zoomeye，1616 行含测试）与旧域名自动迁移容错
+**与官方 v1.7.17 的全量差异**（实测）：468 个文件变更——新增 154、修改 221、删除 77、重命名 16（+45,115/-16,362 行；工作区口径，数字随未提交改动微幅漂移）。要点：
+- 新增 `internal/fofaruntime/` 四引擎 Go 原生运行时（fofa/quake/shodan/zoomeye，1315 行含测试）与旧域名自动迁移容错
 - 新增 `web_search_tool.go`（Tavily）、`vulnerability_report.go`（SRC 报告导出 +3 测试）、`sensitive_http_gate.go`（硬闸）
 - 漏洞链路强化：三要素/PoC prompt 重写、可复现门禁 host 边界匹配、转义归一化判定开关、SRC 扩展 DB 列
 - multiagent：中断续跑携带模型可见轨迹、tool_search 常驻/非常驻分组注入、运行中摘要修正
-- skills 净增 45 包（62 文件）、33 个新工具 yaml、5 个新角色（roles 补 web_search 17 处）
-- 删除：官方宣传图、README_CN.md、SECURITY.md、插件 dist 二进制、demo/unlimited-attack-scope 技能包
+- skills 新增 43 包（新增 62 个文件）、移除 demo / unlimited-attack-scope 2 包，现共 64 个；工具 YAML 官方 90 个 → 现 116 个（累计新增 33 个红队/信息收集向，其中 mimikatz / apktool / ettercap / medusa / proxychains / recon-ng / strace 7 个已移除）、5 个新角色（roles 补 web_search 17 处）
+- 删除：官方宣传图、README_CN.md、SECURITY.md、英文文档目录 `docs/en-US/`（zh-CN 全量保留）、插件 dist 二进制、demo/unlimited-attack-scope 技能包、mcp-servers 与插件的冗余中英文 README
 
 **本分支的硬门**：可复现强制（#1）+ 敏感接口硬闸（`sensitive_http_gate`，防不可逆写操作）。
 

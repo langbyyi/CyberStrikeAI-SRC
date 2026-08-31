@@ -33,9 +33,11 @@ go run ./cmd/server --config config.yaml
 
 前端是静态页面，模板在 `web/templates/`，JS/CSS 在 `web/static/`。修改后刷新浏览器即可验证，多数场景不需要单独前端构建。
 
+仓库根目录还提供 `run.sh` 一键部署脚本（构建二进制并启动服务），适合快速拉起完整环境。
+
 ## 路由
 
-路由集中在 `internal/app/app.go` 的 `registerRoutes` 中。新增业务接口通常需要：
+路由集中在 `internal/app/app.go` 的 `setupRoutes` 中。新增业务接口通常需要：
 
 1. 在 `internal/handler/` 增加 Handler。
 2. 在 `internal/database/` 增加必要的数据访问。

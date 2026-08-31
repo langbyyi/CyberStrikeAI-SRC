@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/tooloutput"
@@ -128,7 +129,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	)
 
 	// 敏感 HTTP 写操作硬闸：在真实发请求/执行命令前拦截（非 HITL、非纯提示词）。
-	if blocked, msg := CheckSensitiveHTTPGate(toolName, args); blocked {
+	if blocked, msg := CheckSensitiveHTTPGate(toolName, args); blocked && !DangerousInvocationGranted(ctx, toolName, args) {
 		e.logger.Warn("敏感接口硬拦截",
 			zap.String("toolName", toolName),
 		)
@@ -291,6 +292,16 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		},
 		IsError: false,
 	}, nil
+}
+
+// DangerousInvocationGranted is the Executor's last line of defense. It only
+// trusts server-created Context state and compares the exact frozen tool args.
+func DangerousInvocationGranted(ctx context.Context, toolName string, args map[string]interface{}) bool {
+	grant, ok := approval.GrantFromContext(ctx)
+	if !ok {
+		return false
+	}
+	return grant.AuthorizesToolCall(toolName, args, time.Now().UTC())
 }
 
 // RegisterTools 注册工具到MCP服务器

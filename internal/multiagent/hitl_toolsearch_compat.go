@@ -66,11 +66,17 @@ type toolSearchHitlRejectPayload struct {
 // tool_search must stay JSON-shaped so toolsearch.extractSelectedTools does not terminate the graph.
 func HitlRejectToolResult(toolName, reason string) string {
 	reason = strings.TrimSpace(reason)
+	reason = strings.TrimPrefix(reason, "rejected by user: ")
+	reason = strings.TrimPrefix(reason, "rejected by user")
 	if !IsToolSearchTool(toolName) {
 		if reason == "" {
-			reason = "rejected by reviewer"
+			reason = "审批人未给出具体理由"
 		}
-		return fmt.Sprintf("[HITL Reject] Tool '%s' was rejected by reviewer. Reason: %s\nPlease adjust parameters/plan and continue without this call.",
+		// 措辞必须明确"仅否决本次调用、工具未被禁用"：
+		// 若只写 "Tool was rejected"，模型会把单次拒绝泛化成工具不可用，
+		// 后续整个任务都不再尝试该工具。
+		// 询问用户是可选项：是否转达授权问题、绕开重试还是跳过，由主 Agent 按任务目标自行判断。
+		return fmt.Sprintf("[HITL Reject] 工具 '%s' 的本次调用未通过审批（审批人否决的只是这一次调用，工具本身未被禁用）。审批意见：%s\n请根据审批意见处理：若审批意见表明需要用户授权，可停止该类操作并向用户说明、询问是否授权，获得同意后重新发起调用即可通过；若该操作对任务目标非必需，也可调整参数或方式绕开，或直接跳过该操作并在结论中说明。不要因为这一次未通过就放弃使用该工具。",
 			strings.TrimSpace(toolName), reason)
 	}
 	payload := toolSearchHitlRejectPayload{

@@ -1,0 +1,250 @@
+[
+  {
+    "id": "danger.http.delete-method",
+    "enabled": true,
+    "priority": 800,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "http-framework-test"
+      ],
+      "httpMethods": [
+        "DELETE"
+      ]
+    }
+  },
+  {
+    "id": "danger.http.destructive-path",
+    "enabled": true,
+    "priority": 850,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "http-framework-test"
+      ],
+      "pathPatterns": [
+        "(?i)(^|/)(delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|delones?|del[_-]?batch|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*)(?:[/?#._-]|$)"
+      ]
+    }
+  },
+  {
+    "id": "danger.http.critical-identity-mutation",
+    "enabled": true,
+    "priority": 975,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "http-framework-test"
+      ],
+      "pathPatterns": [
+        "(?i)(^|/)(delete[_-]?admin[_-]?user|deleteuser|disableuser|lockuser|deluser|removeuser|resetpassword|resetpwd|changepassword|changepwd|forcedownline|kickout)(?:[/?#._-]|$)"
+      ]
+    }
+  },
+  {
+    "id": "danger.http.critical-control-path",
+    "enabled": true,
+    "priority": 1000,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "http-framework-test"
+      ],
+      "pathPatterns": [
+        "(?i)(^|/)(shutdown|reboot|poweroff|halt|execpower[a-z0-9_]*|restart(?:server|host|system|service|os)[a-z0-9_]*|factory[_-]?reset)(?:[/?#._-]|$)"
+      ]
+    }
+  },
+  {
+    "id": "danger.script.database-destruction",
+    "enabled": true,
+    "priority": 1000,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "exec",
+        "execute-python-script",
+        "execute_python_script"
+      ],
+      "textPatterns": [
+        "(?i)\\bdrop\\s+(database|schema|table)\\b",
+        "\\bdrop(?:_?table|_?database|_?db)\\b",
+        "(?i)\\btruncate\\s+table\\b"
+      ]
+    }
+  },
+  {
+    "id": "danger.script.service-disruption",
+    "enabled": true,
+    "priority": 1000,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "exec",
+        "execute-python-script",
+        "execute_python_script"
+      ],
+      "textPatterns": [
+        "(?i)\\b(shutdown|reboot|poweroff|halt)\\b",
+        "(?i)\\binit\\s+[06]\\b",
+        "(?i)\\bsystemctl\\s+(stop|disable|restart|mask|kill)\\b",
+        "(?i)\\bservice\\s+\\S+\\s+(stop|restart)\\b",
+        "(?i)\\bshutdown\\s+/[rt]\\b"
+      ]
+    }
+  },
+  {
+    "id": "danger.script.filesystem-wipe",
+    "enabled": true,
+    "priority": 995,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "exec",
+        "execute-python-script",
+        "execute_python_script"
+      ],
+      "textPatterns": [
+        "(?i)\\brm\\s+[^;|&]{0,60}--no-preserve-root",
+        "(?i)\\brm\\s+(-[a-zA-Z]+\\s+){0,4}/(\\*|\\s|$)",
+        "(?i)\\brm\\s+(-[a-zA-Z]+\\s+){0,4}/(etc|var|usr|boot|opt|sbin|bin|lib|root|home|windows|system32)\\b",
+        "(?i)\\bdd\\s+[^;|&]{0,200}of=/dev/(sd|hd|nvme|vd|xvd)",
+        "(?i)\\bmkfs(\\.[a-z0-9]+)?\\s",
+        "(?i)\\b(rd|rmdir)\\s+/s\\b",
+        "(?i)\\bformat\\s+[c-z]:",
+        "(?i)\\bvssadmin\\s+delete\\s+shadows\\b",
+        "(?i)\\bchmod\\s+(-R\\s+)?777\\s+/(etc|usr|lib|bin|sbin|boot|var)(\\s|$)",
+        ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:;"
+      ]
+    }
+  },
+  {
+    "id": "danger.script.destructive-http-operation",
+    "enabled": true,
+    "priority": 850,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "exec",
+        "execute-python-script",
+        "execute_python_script"
+      ],
+      "requireHttpTransport": true,
+      "textPatterns": [
+        "(?i)(-X\\s*DELETE|--request\\s*DELETE|requests\\.delete\\s*\\(|httpx\\.delete\\s*\\(|/(?:delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|del[_-]?batch[a-z0-9_]*|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|resetpassword|changepassword|resetpwd|changepwd|deleteuser|disableuser|lockuser|restart(?:server|host|system|service|os)[a-z0-9_]*)(?:[/?#._-]|['\\\"]|$))"
+      ]
+    }
+  },
+  {
+    "id": "class.c2.exec",
+    "enabled": true,
+    "priority": 940,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(exec|shell)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.tunnel",
+    "enabled": true,
+    "priority": 950,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(port_fwd|socks_start)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.upload",
+    "enabled": true,
+    "priority": 960,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(upload)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.kill-proc",
+    "enabled": true,
+    "priority": 970,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(kill_proc)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.load-assembly",
+    "enabled": true,
+    "priority": 980,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(load_assembly)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.self-delete",
+    "enabled": true,
+    "priority": 990,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(self_delete)$"
+        ]
+      }
+    }
+  },
+  {
+    "id": "class.c2.persist",
+    "enabled": true,
+    "priority": 1000,
+    "riskLevel": "critical",
+    "matcher": {
+      "tools": [
+        "c2_task"
+      ],
+      "argumentPatterns": {
+        "task_type": [
+          "(?i)^(persist)$"
+        ]
+      }
+    }
+  }
+]

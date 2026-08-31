@@ -14,6 +14,8 @@ GET /api/openapi/spec
 
 `/api/openapi/spec` 需要登录认证，避免未授权用户直接枚举接口结构。
 
+> 说明：本文收录常用与集成关键的接口，**并非完整清单**。全部路由以 `internal/app/app.go` 的注册为准；本文未展开的端点在文末[其他端点](#其他端点)按组归纳。
+
 ## 认证
 
 登录：
@@ -62,7 +64,6 @@ Content-Type: application/json
 | `role` | 使用指定角色。 |
 | `aiChannelId` | 选择 `ai.channels` 中的通道 ID；为空时使用 `ai.default_channel`。 |
 | `reasoning` | 会话级推理覆盖，受通道 `reasoning.allow_client_reasoning` 控制。 |
-| `hitl` | 会话级人机协同配置。 |
 
 对话管理：
 
@@ -73,6 +74,34 @@ Content-Type: application/json
 - `DELETE /api/conversations/:id`
 - `POST /api/conversations/:id/delete-turn`
 - `GET /api/messages/:id/process-details`
+
+## 统一审批（HITL）
+
+HITL 审批统一由以下接口提供：
+
+- `GET /api/approvals`：分页查询审批单，支持 `conversationId`、`projectId`、`requesterUserId`、`status`、`q`、`decision`、`actorType`、`terminal`、`limit`（1-200，默认 50）、`offset` 筛选。
+- `GET /api/approvals/ledger`：审批台账，支持 `invocationId`、`from`、`to` 和 `limit`；时间接受 RFC3339 或 Unix 秒。
+- `GET /api/approvals/:id`：审批单详情（含决策记录）。
+- `POST /api/approvals/:id/decision`：人工决策，请求体 `{"decision":"approve|reject","comment":"可选备注"}`，仅 `pending_human` 状态可决策（否则 409）。
+
+读取接口需要 `approval:read`，决策接口需要 `approval:decide`。旧 `hitl:*` 权限不兼容统一审批接口。
+
+危险操作规则与全局配置：
+
+- `GET /api/approval-rules`：列出危险操作规则，需 `approval:read`。
+- `POST /api/approval-rules`：发布规则，需 `approval:policy:write`。请求体字段为 `id`、`enabled`、`priority`、`riskLevel` 和 `matcher`。
+- `DELETE /api/approval-rules`：删除危险操作规则，需 `approval:policy:write`，请求体为 `{"id":"规则 ID"}`。
+- `GET /api/approval-config` / `PUT /api/approval-config`：读取或更新全局审批配置，分别需要 `approval:read` 和 `approval:policy:write`。
+
+规则 `matcher` 支持：
+
+- `tools`：工具名称列表。
+- `httpMethods`：HTTP 方法列表。
+- `pathPatterns`、`textPatterns`：RE2 正则列表。
+- `argumentPatterns`：参数名到 RE2 正则列表的映射。
+- `requireHttpTransport`：是否只匹配 HTTP 传输调用。
+
+统一审批接口及上述请求/响应模型也已纳入服务端 `/openapi.json`。手写文档解释运行语义，OpenAPI 作为机器可读契约。
 
 ## 文件管理来源
 
@@ -361,6 +390,139 @@ C2：
 
 这些接口应只开放给可信管理员，并配合 HTTPS、强密码、网络隔离和审计。
 
+## 其他端点
+
+以下端点已在 `internal/app/app.go` 注册但未在前文展开。除标注"公开"的机器人回调（无需登录，受每 IP 每分钟 60 次速率限制）外，均需登录；权限依据 `internal/security/rbac_middleware.go`，"兼容"表示该路由接受多个等价权限。
+
+注意：`assigned`/`own` 作用域的会话不能调用进程级全局变更接口（角色、Skills、外部 MCP、机器人、工作流定义与工作流包、知识库管理等），也不能访问 `/api/monitor/stats`、`/api/monitor/calls-timeline` 和 C2 Profile 的写操作。
+
+### 机器人
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET/POST | `/api/robot/wecom` | 企业微信回调（GET 用于服务器验证） | 公开 |
+| POST | `/api/robot/dingtalk` | 钉钉消息回调 | 公开 |
+| POST | `/api/robot/lark` | 飞书消息回调 | 公开 |
+| POST | `/api/robot/test` | 模拟机器人消息测试 | `robot:write` |
+| POST | `/api/robot/wechat/qrcode` | 发起微信 iLink 扫码绑定 | `robot:write` |
+| GET | `/api/robot/wechat/qrcode/status` | 查询扫码状态 | `robot:write` |
+| POST | `/api/robot/wechat/qrcode/verify` | 校验扫码结果 | `robot:write` |
+| GET | `/api/robot/wechat/status` | 查询微信绑定状态 | `robot:read` |
+| POST | `/api/auth/robot-binding-code` | 创建机器人绑定码 | `auth:self` |
+| GET | `/api/auth/robot-bindings` | 查看我的机器人绑定 | `auth:self` |
+| DELETE | `/api/auth/robot-bindings/:id` | 删除我的机器人绑定 | `auth:self` |
+
+### Agent Loop 与批量任务
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| POST | `/api/agent-loop/cancel` | 取消运行中的 Agent Loop | `tasks:write` |
+| GET | `/api/agent-loop/tasks` | 运行中任务列表 | `tasks:read` |
+| GET | `/api/agent-loop/tasks/completed` | 已完成任务列表 | `tasks:read` |
+| GET | `/api/agent-loop/task-events` | 任务事件 SSE 流 | `tasks:read` |
+| POST | `/api/batch-tasks` | 创建批量任务队列 | `tasks:write` |
+| GET | `/api/batch-tasks`、`/api/batch-tasks/:queueId` | 查询队列列表/详情 | `tasks:read` |
+| POST | `/api/batch-tasks/:queueId/start`、`.../rerun`、`.../pause` | 启动/重跑/暂停队列 | `tasks:write` |
+| PUT | `/api/batch-tasks/:queueId/metadata`、`.../schedule`、`.../schedule-enabled` | 更新队列元数据/调度 | `tasks:write` |
+| DELETE | `/api/batch-tasks/:queueId` | 删除队列 | `tasks:delete` |
+| POST | `/api/batch-tasks/:queueId/tasks` | 追加子任务 | `tasks:write` |
+| PUT | `/api/batch-tasks/:queueId/tasks/:taskId` | 更新子任务 | `tasks:write` |
+| POST | `/api/batch-tasks/:queueId/tasks/:taskId/run` | 运行单个子任务 | `tasks:write` |
+| DELETE | `/api/batch-tasks/:queueId/tasks/:taskId` | 删除子任务 | `tasks:delete` |
+
+### 对话扩展与分组
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET | `/api/usage/tokens` | Token 用量统计 | `dashboard:read` |
+| GET | `/api/conversations/:id/token-usage` | 会话 Token 用量 | `chat:read` |
+| GET | `/api/conversations/:id/plan-tasks` | 会话计划任务 | `chat:read` |
+| GET | `/api/conversations/:id/results` | 会话完整结果聚合 | `chat:read` |
+| PUT | `/api/conversations/:id/project` | 会话绑定/解绑项目 | `chat:write` |
+| PUT | `/api/conversations/:id/pinned` | 置顶/取消置顶会话 | `chat:write` |
+| GET | `/api/process-details/:id` | 单条执行过程详情 | `chat:read` |
+| POST/GET | `/api/groups` | 创建/查询对话分组 | `group:write` / `group:read` |
+| GET | `/api/groups/mappings` | 全部分组映射 | `group:read` |
+| POST | `/api/groups/conversations` | 会话加入分组 | `group:write` |
+| GET/PUT/DELETE | `/api/groups/:id` | 分组详情/更新/删除 | `group:read` / `group:write` / `group:delete` |
+| PUT | `/api/groups/:id/pinned` | 置顶/取消置顶分组 | `group:write` |
+| GET | `/api/groups/:id/conversations` | 分组内会话 | `group:read` |
+| DELETE | `/api/groups/:id/conversations/:conversationId` | 会话移出分组 | `group:delete` |
+| PUT | `/api/groups/:id/conversations/:conversationId/pinned` | 组内会话置顶 | `group:write` |
+
+### 监控与通知
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET | `/api/monitor` | 工具执行记录列表 | `monitor:read` |
+| GET | `/api/monitor/execution/:id` | 执行详情 | `monitor:read` |
+| GET | `/api/monitor/stats`、`/api/monitor/calls-timeline` | 进程级统计 | `monitor:read`（需 all 作用域） |
+| POST | `/api/monitor/execution/:id/cancel` | 取消执行 | `monitor:write` |
+| POST | `/api/monitor/executions/names` | 批量获取工具名 | `monitor:write` |
+| DELETE | `/api/monitor/execution/:id` | 删除单条记录 | `monitor:delete` |
+| DELETE | `/api/monitor/executions` | 批量删除记录 | `monitor:delete` |
+| GET | `/api/notifications/summary` | 通知摘要 | `notification:read` |
+| POST | `/api/notifications/read` | 标记通知已读 | `notification:write` |
+
+### 审计日志
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET | `/api/audit/meta`、`/api/audit/summary` | 审计元数据/摘要 | `audit:read` |
+| GET | `/api/audit/logs`、`/api/audit/logs/export`、`/api/audit/logs/:id` | 查询/导出/详情 | `audit:read` |
+
+### RBAC 管理
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET | `/api/rbac/me` | 当前用户权限与作用域 | `auth:self` |
+| GET | `/api/rbac/metadata`、`/api/rbac/users`、`/api/rbac/roles`、`/api/rbac/resource-assignments` | 查询 | `rbac:read` |
+| POST/PUT/DELETE | `/api/rbac/users*`、`/api/rbac/roles*`、`/api/rbac/resource-assignments*` | 维护（无独立 delete 权限） | `rbac:write` |
+| GET | `/api/rbac/resources` | 可分配资源枚举 | `rbac:write` |
+
+### 工作流
+
+| 方法 | 路径 | 说明 | 权限 |
+| --- | --- | --- | --- |
+| GET | `/api/workflows`、`/api/workflows/:id` | 工作流列表/详情 | `workflow:read` |
+| POST | `/api/workflows` | 创建工作流 | `workflow:write` |
+| PUT | `/api/workflows/:id` | 更新工作流 | `workflow:write` |
+| DELETE | `/api/workflows/:id` | 删除工作流 | `workflow:delete` |
+| POST | `/api/workflows/validate`、`/api/workflows/dry-run` | 校验/试运行 | `workflow:execute` |
+| POST | `/api/workflows/generate-draft` | 生成工作流草稿 | `workflow:write` |
+| GET | `/api/workflows/runs/pending`、`/api/workflows/runs/:runId`、`/api/workflows/runs/:runId/replay` | 运行查询/重放 | `workflow:read` |
+| POST | `/api/workflows/runs/:runId/resume` | 恢复运行 | `workflow:execute` |
+| GET | `/api/workflows/:id/package` | 导出工作流包 | `workflow:read` |
+| POST/GET | `/api/workflow-package-inspections`、`/api/workflow-package-imports`（含 `/:id`） | 包检查/导入（读写均为写权限） | `workflow:write` |
+
+### 前文分组的剩余端点
+
+| 方法 | 路径 | 权限 |
+| --- | --- | --- |
+| GET | `/api/external-mcp/stats`、`/api/external-mcp/:name` | `mcp:read` |
+| GET | `/api/knowledge/items/:id`、`/api/knowledge/index-status`、`/api/knowledge/retrieval-logs`、`/api/knowledge/stats` | `knowledge:read` |
+| POST/PUT | `/api/knowledge/items`、`/api/knowledge/items/:id` | `knowledge:write` |
+| DELETE | `/api/knowledge/items/:id`、`/api/knowledge/retrieval-logs/:id` | `knowledge:delete` |
+| DELETE | `/api/vulnerabilities/batch` | `vulnerability:delete` |
+| GET | `/api/vulnerabilities/filter-options`、`/api/vulnerabilities/stats` | `vulnerability:read` |
+| GET/PUT | `/api/vulnerability-alerts/subscription` | `vulnerability:read`（仅修改本人订阅） |
+| GET | `/api/projects/dashboard-summary`、`/api/projects/:id/stats`、`/api/projects/:id/conversations`、`/api/projects/:id/fact-edges` | `project:read` |
+| POST | `/api/projects/:id/fact-edges`、`/api/projects/:id/promote-attack-chain/:conversationId`、`/api/projects/:id/facts/deprecate`、`/api/projects/:id/facts/restore` | `project:write` |
+| PUT | `/api/projects/:id/facts/:factId` | `project:write` |
+| DELETE | `/api/projects/:id/fact-edges/:edgeId`、`/api/projects/:id/facts/:factId` | `project:delete` |
+| GET | `/api/webshell/connections/:id/ai-history`、`.../ai-conversations`、`.../state` | `webshell:read` |
+| PUT | `/api/webshell/connections/:id`、`.../state` | `webshell:write` |
+| DELETE | `/api/webshell/connections/:id` | `webshell:delete` |
+| GET | `/api/chat-uploads/content` | `files:read` |
+| POST | `/api/chat-uploads/mkdir` | `files:write` |
+| PUT | `/api/chat-uploads/rename`、`/api/chat-uploads/content` | `files:write` |
+| DELETE | `/api/chat-uploads` | `files:delete` |
+| GET | `/api/skills/stats`、`/api/skills/:name/bound-roles` | `skills:read` |
+| DELETE | `/api/skills/stats`、`/api/skills/:name/stats` | `skills:delete` |
+| GET | `/api/c2/listeners/:id`、`/api/c2/sessions/:id`、`/api/c2/tasks`、`/api/c2/tasks/:id`、`/api/c2/tasks/:id/wait`、`/api/c2/tasks/:id/result-file`、`/api/c2/payloads/:id/download`、`/api/c2/events`、`/api/c2/events/stream`（SSE）、`/api/c2/files`、`/api/c2/profiles`、`/api/c2/profiles/:id` | `c2:read` |
+| POST/PUT | `/api/c2/listeners/:id/start`、`.../stop`、`/api/c2/sessions/:id/sleep`、`.../note`、`/api/c2/sessions/:id/tasks`、`/api/c2/tasks/:id/cancel`、`/api/c2/payloads/oneliner`、`/api/c2/files/upload`、`/api/c2/profiles`、`/api/c2/profiles/:id` | `c2:write`（Profile 写操作需 all 作用域） |
+| DELETE | `/api/c2/listeners/:id`、`/api/c2/sessions`、`/api/c2/sessions/:id`、`/api/c2/tasks`、`/api/c2/events`、`/api/c2/profiles/:id` | `c2:delete`（Profile 删除需 all 作用域） |
+
 ## 调用建议
 
 - 优先使用 `/api-docs` 查看完整参数和响应结构。
@@ -374,10 +536,10 @@ C2：
 
 1. `Authorization: Bearer <token>`
 2. `Authorization: <token>`
-3. 查询参数 `?token=<token>`
+3. 查询参数 `?token=<token>`（仅限 GET 请求，且仅用于 SSE 流或 WebSocket 升级连接）
 4. Cookie `auth_token`
 
-这意味着外部脚本最稳妥的方式是使用 `Authorization: Bearer`。查询参数虽然支持，但容易进入代理日志，不建议生产使用。
+这意味着外部脚本最稳妥的方式是使用 `Authorization: Bearer`。查询参数只在 SSE/WebSocket 场景生效，且容易进入代理日志，不建议生产使用。
 
 ## SSE 客户端注意事项
 
@@ -426,5 +588,6 @@ curl -k https://127.0.0.1:8080/api/eino-agent \
 - OpenAPI：`internal/handler/openapi.go`
 - 单代理：`internal/handler/eino_single_agent.go`
 - 多代理：`internal/handler/multi_agent.go`
+- 统一审批：`internal/handler/approval.go`
 - 资产接口：`internal/handler/asset.go`
 - 资产存储与去重：`internal/database/asset.go`

@@ -11,24 +11,26 @@ description: '动态插桩框架，Hook Android/iOS/桌面应用函数。
 parameters:
   - name: target
     type: string
-    required: true
+    required: false
     position: 0
     format: positional
-    description: 目标进程/设备，如 `-f com.app`(spawn) 或 `com.app`(attach)
+    description: 'attach 目标（裸进程名或 PID，如 `com.example.app` 或 `1234`）。
+
+      spawn 启动用 additional_args 传 `-f <package>`，此时本参数省略。'
   - name: script
     type: string
     required: false
     flag: -l
     format: flag
-    description: 加载 JS 脚本文件
+    description: 加载 JS 脚本文件（-l/--load）
   - name: device
     type: string
     required: false
     flag: -D
     format: flag
-    description: 指定设备（`-D usb` 或 `-D <id>`）
+    description: 指定设备 id（-D <id>）；USB 设备用 additional_args 传 `-U`
   - name: additional_args
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `-U`(USB设备) `-n`(按名称) `--no-pause`
+    description: 额外参数，如 `-U`(USB 设备) `-f <package>`(spawn 启动) `--runtime=v8`

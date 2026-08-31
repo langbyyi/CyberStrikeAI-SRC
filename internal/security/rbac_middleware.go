@@ -76,9 +76,6 @@ func sessionHasRoutePermission(c *gin.Context, method, fullPath string) (string,
 }
 
 func permissionAlternativesForRequest(method, path string) []string {
-	if method != http.MethodGet && method != http.MethodHead {
-		return nil
-	}
 	switch {
 	case strings.HasPrefix(path, "/config/tools"):
 		// MCP 管理页只需 mcp:read；系统设置页仍可用 config:read 访问同一接口。
@@ -111,11 +108,16 @@ func permissionForRequest(method, fullPath string) string {
 			return crudPermission(method, "agents")
 		}
 		return "agent:execute"
-	case strings.HasPrefix(path, "/hitl"):
+	case strings.HasPrefix(path, "/approvals"):
 		if method == http.MethodGet || method == http.MethodHead {
-			return "hitl:read"
+			return "approval:read"
 		}
-		return "hitl:write"
+		return "approval:decide"
+	case strings.HasPrefix(path, "/approval-config"), strings.HasPrefix(path, "/approval-rules"):
+		if method == http.MethodGet || method == http.MethodHead {
+			return "approval:read"
+		}
+		return "approval:policy:write"
 	case strings.HasPrefix(path, "/agent-loop"), strings.HasPrefix(path, "/batch-tasks"):
 		return crudPermission(method, "tasks")
 	case path == "/usage/tokens":
@@ -216,8 +218,6 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 		// allowing an assigned/own-scoped session would be a cross-user bypass.
 		return session.Scope == database.RBACScopeAll
 	case strings.HasPrefix(path, "/c2/profiles") && c.Request.Method != http.MethodGet:
-		return session.Scope == database.RBACScopeAll
-	case (strings.HasPrefix(path, "/hitl/tool-whitelist") || strings.HasPrefix(path, "/hitl/default-reviewer") || strings.HasPrefix(path, "/hitl/audit-strategy")) && c.Request.Method != http.MethodGet:
 		return session.Scope == database.RBACScopeAll
 	case isMutationMethod(c.Request.Method) && isProcessGlobalMutationPath(path):
 		// These definitions/configurations are shared by every user and do not

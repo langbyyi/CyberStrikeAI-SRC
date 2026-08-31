@@ -22,9 +22,9 @@ parameters:
   - name: server
     type: string
     required: false
-    flag: '@'
-    format: flag
-    description: 指定 DNS 服务器，如 `8.8.8.8`（生成 `@8.8.8.8`）
+    format: template
+    template: '@{value}'
+    description: 指定 DNS 服务器，如 `8.8.8.8`（生成 `@8.8.8.8`，置于查询名之前）
   - name: additional_args
     type: string
     required: false

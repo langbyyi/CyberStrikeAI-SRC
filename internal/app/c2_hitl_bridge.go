@@ -2,36 +2,77 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"cyberstrike-ai/internal/approval"
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/c2"
 	"cyberstrike-ai/internal/database"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
-// C2HITLBridge 实现 C2 Manager 的 HITLBridge 接口，将危险任务桥接到现有 HITL 审批流。
-// 审批记录写入 hitl_interrupts 表，与现有 HITL 系统共享前端审批 UI。
-type C2HITLBridge struct {
-	db        *database.DB
-	logger    *zap.Logger
-	timeout   time.Duration
-	getConvID func() string
+type c2ApprovalCoordinator interface {
+	Authorize(context.Context, approval.Invocation) (approval.Grant, error)
+	Claim(context.Context, approval.Grant, string) error
+	Complete(context.Context, approval.Grant, approval.ExecutionResult) error
 }
 
-// NewC2HITLBridge 创建 C2 HITL 桥
-func NewC2HITLBridge(db *database.DB, logger *zap.Logger) *C2HITLBridge {
-	return &C2HITLBridge{
-		db:        db,
-		logger:    logger,
-		timeout:   5 * time.Minute,
-		getConvID: func() string { return "" },
+// C2HITLBridge adapts C2 tasks to the unified approval coordinator.
+type C2HITLBridge struct {
+	coordinator c2ApprovalCoordinator
+	logger      *zap.Logger
+	getConvID   func() string
+	// grants 保存"已审批通过、待执行"的凭证：任务到达终态时由 CompleteTask
+	// 回写真实执行结果，取代旧的"审批通过即 Complete"失真语义。
+	grants sync.Map // taskID -> approval.Grant
+}
+
+func NewC2ApprovalBridge(coordinator c2ApprovalCoordinator, logger *zap.Logger) *C2HITLBridge {
+	if logger == nil {
+		logger = zap.NewNop()
 	}
+	return &C2HITLBridge{
+		coordinator: coordinator, logger: logger, getConvID: func() string { return "" },
+	}
+}
+
+// c2GrantMatchesRequest 校验 MCP 层授予的 grant 确实对应本任务：
+// 工具名、过期时间，以及 grant 参数中携带的 session_id / task_type 与当前
+// 请求一致。关键字段缺失或不同一律视为不匹配（fail-closed）——无法证明
+// 凭证对应该任务时不得复用，防止同 ctx 内其他 C2 任务免费搭车。
+func c2GrantMatchesRequest(grant approval.Grant, req c2.HITLApprovalRequest) bool {
+	if grant.IsEmpty() || grant.ToolName() != c2.MCPToolC2Task || grant.Expired(time.Now().UTC()) {
+		return false
+	}
+	grantSession := stringArg(grant.Arguments(), "session_id")
+	if grantSession == "" || grantSession != strings.TrimSpace(req.SessionID) {
+		return false
+	}
+	grantTaskType := stringArg(grant.Arguments(), "task_type")
+	if grantTaskType == "" || grantTaskType != strings.TrimSpace(req.TaskType) {
+		return false
+	}
+	return true
+}
+
+func stringArg(arguments map[string]any, key string) string {
+	if arguments == nil {
+		return ""
+	}
+	value, ok := arguments[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // SetConversationIDGetter 设置获取当前对话 ID 的函数
@@ -39,102 +80,74 @@ func (b *C2HITLBridge) SetConversationIDGetter(fn func() string) {
 	b.getConvID = fn
 }
 
-// SetTimeout 设置审批超时（0 表示不超时）
-func (b *C2HITLBridge) SetTimeout(d time.Duration) {
-	b.timeout = d
-}
-
-// RequestApproval 实现 HITLBridge 接口：写入 hitl_interrupts 表并轮询等待审批结果
+// RequestApproval delegates policy evaluation and review to the same
+// coordinator used by MCP and agent tools. A grant already attached by the MCP
+// guard is reused, preventing a second prompt for the same tool invocation.
 func (b *C2HITLBridge) RequestApproval(ctx context.Context, req c2.HITLApprovalRequest) error {
-	interruptID := "hitl_c2_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:14]
-	now := time.Now()
-
+	if grant, ok := approval.GrantFromContext(ctx); ok && c2GrantMatchesRequest(grant, req) {
+		if !approval.TransferExecutionOwnership(ctx) {
+			return errors.New("C2 approval execution ownership is unavailable")
+		}
+		b.grants.Store(req.TaskID, grant)
+		return nil
+	}
+	if b == nil || b.coordinator == nil {
+		return fmt.Errorf("C2 approval coordinator is unavailable")
+	}
 	convID := req.ConversationID
 	if convID == "" {
 		convID = b.getConvID()
 	}
-	if convID == "" {
-		convID = "c2_system"
+	requesterID := "system:c2"
+	if principal, ok := authctx.PrincipalFromContext(ctx); ok {
+		requesterID = principal.UserID
 	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"task_id":      req.TaskID,
-		"session_id":   req.SessionID,
-		"task_type":    req.TaskType,
-		"payload":      req.PayloadJSON,
-		"source":       req.Source,
-		"reason":       req.Reason,
-		"c2_operation": true,
-	})
-
-	_, err := b.db.Exec(`INSERT INTO hitl_interrupts
-		(id, conversation_id, message_id, mode, tool_name, tool_call_id, payload, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-		interruptID, convID, "", "approval",
-		c2.MCPToolC2Task, req.TaskID,
-		string(payload), now,
-	)
-	if err != nil {
-		b.logger.Error("C2 HITL: 创建审批记录失败，拒绝执行", zap.Error(err))
-		return fmt.Errorf("C2 HITL 审批记录创建失败，安全起见拒绝执行: %w", err)
-	}
-
-	b.logger.Info("C2 HITL: 等待人工审批",
-		zap.String("interrupt_id", interruptID),
-		zap.String("task_id", req.TaskID),
-		zap.String("task_type", req.TaskType),
-	)
-
-	// Poll DB waiting for decision
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	var deadline <-chan time.Time
-	if b.timeout > 0 {
-		timer := time.NewTimer(b.timeout)
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			_, _ = b.db.Exec(`UPDATE hitl_interrupts SET status='cancelled', decision='reject',
-				decision_comment='context cancelled', decided_at=? WHERE id=? AND status='pending'`,
-				time.Now(), interruptID)
-			return ctx.Err()
-
-		case <-deadline:
-			_, _ = b.db.Exec(`UPDATE hitl_interrupts SET status='timeout', decision='reject',
-				decision_comment='C2 HITL timeout auto-reject for safety', decided_at=? WHERE id=? AND status='pending'`,
-				time.Now(), interruptID)
-			b.logger.Warn("C2 HITL: 审批超时，安全起见拒绝执行", zap.String("interrupt_id", interruptID))
-			return fmt.Errorf("C2 HITL 审批超时，危险任务已被自动拒绝")
-
-		case <-ticker.C:
-			var status, decision string
-			err := b.db.QueryRow(`SELECT status, COALESCE(decision, '') FROM hitl_interrupts WHERE id = ?`,
-				interruptID).Scan(&status, &decision)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return nil
-				}
-				continue
-			}
-			switch status {
-			case "decided", "timeout":
-				if decision == "reject" {
-					return fmt.Errorf("C2 危险任务被人工拒绝")
-				}
-				return nil
-			case "cancelled":
-				return fmt.Errorf("C2 审批已取消")
-			case "pending":
-				continue
-			default:
-				continue
-			}
+	var payload any
+	if strings.TrimSpace(req.PayloadJSON) != "" {
+		if err := json.Unmarshal([]byte(req.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("decode C2 approval payload: %w", err)
 		}
+	}
+	arguments := map[string]any{
+		"task_id": req.TaskID, "session_id": req.SessionID, "task_type": req.TaskType,
+		"payload": payload, "source": req.Source, "reason": req.Reason,
+	}
+	grant, err := b.coordinator.Authorize(ctx, approval.Invocation{
+		ID: req.TaskID, Source: "c2_task", ConversationID: strings.TrimSpace(convID),
+		RequesterUserID: requesterID, ToolName: c2.MCPToolC2Task, ToolCallID: req.TaskID,
+		Arguments: arguments,
+	})
+	if err != nil {
+		return err
+	}
+	if grant.IsEmpty() {
+		return nil
+	}
+	if err := b.coordinator.Claim(ctx, grant, req.TaskID); err != nil {
+		return err
+	}
+	// 审批通过≠执行完成：保留凭证，任务终态时由 CompleteTask 回写真实结果。
+	b.grants.Store(req.TaskID, grant)
+	return nil
+}
+
+// CompleteTask 在 C2 任务到达终态时回写真实执行结果到审批单与台账。
+// 无审批记录的任务（allow 直通）没有凭证，无需回写；进程重启后遗留的
+// 凭证由审批单的 CancelUnrecoverable 统一清理。
+func (b *C2HITLBridge) CompleteTask(taskID string, success bool, summary string) {
+	if b == nil {
+		return
+	}
+	value, ok := b.grants.LoadAndDelete(taskID)
+	if !ok {
+		return
+	}
+	grant := value.(approval.Grant)
+	if err := b.coordinator.Complete(context.Background(), grant, approval.ExecutionResult{
+		ExecutionID: taskID, Success: success, Summary: summary, CompletedAt: time.Now().UTC(),
+	}); err != nil {
+		b.logger.Warn("C2 任务执行结果回写审批单失败",
+			zap.String("task_id", taskID), zap.Error(err))
 	}
 }
 
@@ -144,6 +157,14 @@ type C2HooksConfig struct {
 	Logger            *zap.Logger
 	AttackChainRecord func(session *database.C2Session, phase string, description string)
 	VulnRecord        func(session *database.C2Session, title string, severity string)
+	// OnTaskFinal 在任务到达终态（success/failed/cancelled）时回调，
+	// 用于审批单执行结果回写。
+	OnTaskFinal func(task *database.C2Task, sessionID string)
+}
+
+// taskStatusSummary 生成台账/审批单用的执行结果摘要。
+func taskStatusSummary(task *database.C2Task) string {
+	return fmt.Sprintf("C2 task %s (%s) finished with status %s", task.ID, task.TaskType, task.Status)
 }
 
 // SetupC2Hooks 设置 C2 Manager 的业务钩子
@@ -175,6 +196,11 @@ func SetupC2Hooks(cfg *C2HooksConfig) c2.Hooks {
 				zap.String("task_type", task.TaskType),
 				zap.String("status", task.Status),
 			)
+
+			// 终态回调：审批单/台账回写真实执行结果。
+			if cfg.OnTaskFinal != nil {
+				cfg.OnTaskFinal(task, sessionID)
+			}
 
 			// 根据任务类型记录攻击链
 			if cfg.AttackChainRecord != nil {
@@ -218,11 +244,6 @@ func taskToAttackPhase(taskType string) string {
 
 // SetupC2HITLBridgeWithAgent 设置 HITL 桥接器
 // 这个函数将由 App 调用，注入必要的依赖
-func SetupC2HITLBridgeWithAgent(db *database.DB, logger *zap.Logger) c2.HITLBridge {
-	return &C2HITLBridge{
-		db:        db,
-		logger:    logger,
-		timeout:   5 * time.Minute,
-		getConvID: func() string { return "" },
-	}
+func SetupC2HITLBridgeWithAgent(coordinator *approval.Coordinator, logger *zap.Logger) c2.HITLBridge {
+	return NewC2ApprovalBridge(coordinator, logger)
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/agents"
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
@@ -272,6 +273,7 @@ type GetConfigResponse struct {
 	Tools      []ToolConfigInfo         `json:"tools"`
 	Agent      config.AgentConfig       `json:"agent"`
 	Hitl       config.HitlConfig        `json:"hitl,omitempty"`
+	Approval   config.ApprovalConfig    `json:"approval,omitempty"`
 	Knowledge  config.KnowledgeConfig   `json:"knowledge"`
 	Robots     config.RobotsConfig      `json:"robots,omitempty"`
 	MultiAgent config.MultiAgentPublic  `json:"multi_agent,omitempty"`
@@ -383,6 +385,7 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		Tools:      tools,
 		Agent:      h.config.Agent,
 		Hitl:       h.config.Hitl,
+		Approval:   h.config.Approval,
 		Knowledge:  h.config.Knowledge,
 		C2:         h.config.C2.Public(),
 		Robots:     h.config.Robots,
@@ -728,6 +731,7 @@ type UpdateConfigRequest struct {
 	Tools      []ToolEnableStatus          `json:"tools,omitempty"`
 	Agent      *AgentConfigUpdate          `json:"agent,omitempty"`
 	Hitl       *config.HitlConfig          `json:"hitl,omitempty"`
+	Approval   *config.ApprovalConfig      `json:"approval,omitempty"`
 	Knowledge  *config.KnowledgeConfig     `json:"knowledge,omitempty"`
 	Robots     *config.RobotsConfig        `json:"robots,omitempty"`
 	MultiAgent *config.MultiAgentAPIUpdate `json:"multi_agent,omitempty"`
@@ -751,14 +755,14 @@ type AgentConfigUpdate struct {
 // 避免 Web 界面仅提交 api_key/base_url 时整包替换 *config.FofaConfig，把 config.yaml 中配置的
 // endpoints/bearer_token/verify_ssl 等高级字段静默清空。
 type FofaConfigUpdate struct {
-	APIKey           *string                    `json:"api_key,omitempty"`
-	BaseURL          *string                    `json:"base_url,omitempty"`
-	Email            *string                    `json:"email,omitempty"`
-	AuthMode         *string                    `json:"auth_mode,omitempty"`
-	BearerToken      *string                    `json:"bearer_token,omitempty"`
-	VerifySSL        *bool                      `json:"verify_ssl,omitempty"`
-	TimeoutSeconds   *int                       `json:"timeout_seconds,omitempty"`
-	FallbackBaseURLs *[]string                  `json:"fallback_base_urls,omitempty"`
+	APIKey           *string                      `json:"api_key,omitempty"`
+	BaseURL          *string                      `json:"base_url,omitempty"`
+	Email            *string                      `json:"email,omitempty"`
+	AuthMode         *string                      `json:"auth_mode,omitempty"`
+	BearerToken      *string                      `json:"bearer_token,omitempty"`
+	VerifySSL        *bool                        `json:"verify_ssl,omitempty"`
+	TimeoutSeconds   *int                         `json:"timeout_seconds,omitempty"`
+	FallbackBaseURLs *[]string                    `json:"fallback_base_urls,omitempty"`
 	Endpoints        *[]config.FofaEndpointConfig `json:"endpoints,omitempty"`
 }
 
@@ -945,10 +949,7 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 	if req.Hitl != nil {
 		h.config.Hitl.AuditModel = req.Hitl.AuditModel
-		h.config.Hitl.ToolWhitelist = mergeHitlToolWhitelistSlice(nil, req.Hitl.ToolWhitelist)
-		h.config.Hitl.DefaultReviewer = req.Hitl.EffectiveDefaultReviewer()
 		h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(req.Hitl.AuditAgentPrompt)
-		h.config.Hitl.AuditAgentPromptReviewEdit = strings.TrimSpace(req.Hitl.AuditAgentPromptReviewEdit)
 		if req.Hitl.RetentionDays != nil {
 			v := *req.Hitl.RetentionDays
 			if v < 0 {
@@ -956,10 +957,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			}
 			h.config.Hitl.RetentionDays = &v
 		}
-		h.logger.Info("更新HITL配置",
-			zap.String("default_reviewer", h.config.Hitl.DefaultReviewer),
-			zap.Int("tool_whitelist", len(h.config.Hitl.ToolWhitelist)),
-		)
+		h.logger.Info("更新HITL辅助配置")
+	}
+	if req.Approval != nil {
+		h.config.Approval = *req.Approval
 	}
 
 	// 更新Knowledge配置
@@ -1821,6 +1822,7 @@ func (h *ConfigHandler) saveConfig() error {
 	updateC2Config(root, h.config.C2)
 	updateRobotsConfig(root, h.config.Robots)
 	updateHitlConfig(root, h.config.Hitl)
+	updateApprovalConfig(root, h.config.Approval)
 	updateMultiAgentConfig(root, h.config.MultiAgent)
 	// 更新外部MCP配置（使用external_mcp.go中的函数，同一包中可直接调用）
 	updateExternalMCPConfig(root, h.config.ExternalMCP)
@@ -2153,54 +2155,6 @@ func updateC2Config(doc *yaml.Node, cfg config.C2Config) {
 	setBoolInMap(c2Node, "enabled", cfg.EnabledEffective())
 }
 
-func mergeHitlToolWhitelistSlice(existing, add []string) []string {
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(existing)+len(add))
-	for _, list := range [][]string{existing, add} {
-		for _, t := range list {
-			n := strings.ToLower(strings.TrimSpace(t))
-			if n == "" {
-				continue
-			}
-			if _, ok := seen[n]; ok {
-				continue
-			}
-			seen[n] = struct{}{}
-			out = append(out, strings.TrimSpace(t))
-		}
-	}
-	return out
-}
-
-// SetHitlToolWhitelist 将全局免审批工具白名单整表写入 config.yaml（替换，非合并）。
-func (h *ConfigHandler) SetHitlToolWhitelist(tools []string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.config.Hitl.ToolWhitelist = mergeHitlToolWhitelistSlice(nil, tools)
-	if err := h.saveConfig(); err != nil {
-		return err
-	}
-	h.logger.Info("HITL 全局工具白名单已写入配置文件",
-		zap.Int("count", len(h.config.Hitl.ToolWhitelist)),
-	)
-	return nil
-}
-
-// MergeHitlToolWhitelistIntoConfig 将会话侧栏提交的免审批工具名合并进内存配置并写入 config.yaml（与全局白名单去重规则一致：小写键、保留首次出现的原始大小写）。
-func (h *ConfigHandler) MergeHitlToolWhitelistIntoConfig(add []string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	merged := mergeHitlToolWhitelistSlice(h.config.Hitl.ToolWhitelist, add)
-	h.config.Hitl.ToolWhitelist = merged
-	if err := h.saveConfig(); err != nil {
-		return err
-	}
-	h.logger.Info("HITL 全局工具白名单已合并写入配置文件",
-		zap.Int("count", len(merged)),
-	)
-	return nil
-}
-
 func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	root := doc.Content[0]
 	hitlNode := ensureMap(root, "hitl")
@@ -2209,36 +2163,52 @@ func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	setStringInMap(auditModelNode, "base_url", cfg.AuditModel.BaseURL)
 	setStringInMap(auditModelNode, "api_key", cfg.AuditModel.APIKey)
 	setStringInMap(auditModelNode, "model", cfg.AuditModel.Model)
-	// flow 样式 [a, b, c] 单行展示，工具多时比块序列省行数
-	setFlowStringSliceInMap(hitlNode, "tool_whitelist", cfg.ToolWhitelist)
-	setStringInMap(hitlNode, "default_reviewer", cfg.EffectiveDefaultReviewer())
+	removeKeyFromMap(hitlNode, "tool_whitelist")
+	removeKeyFromMap(hitlNode, "default_reviewer")
 	setIntInMap(hitlNode, "retention_days", cfg.RetentionDaysEffective())
 	setStringInMap(hitlNode, "audit_agent_prompt", cfg.AuditAgentPrompt)
-	setStringInMap(hitlNode, "audit_agent_prompt_review_edit", cfg.AuditAgentPromptReviewEdit)
+	removeKeyFromMap(hitlNode, "audit_agent_prompt_review_edit")
 }
 
-// UpdateHitlDefaultReviewer 更新全局默认审批方并写入 config.yaml。
-func (h *ConfigHandler) UpdateHitlDefaultReviewer(reviewer string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.config.Hitl.DefaultReviewer = config.HitlConfig{DefaultReviewer: reviewer}.EffectiveDefaultReviewer()
-	if err := h.saveConfig(); err != nil {
-		return err
-	}
-	h.logger.Info("HITL 全局默认审批方已写入配置文件", zap.String("default_reviewer", h.config.Hitl.DefaultReviewer))
-	return nil
+func updateApprovalConfig(doc *yaml.Node, approvalConfig config.ApprovalConfig) {
+	root := doc.Content[0]
+	removeKeyFromMap(root, "policies")
+	approvalNode := ensureMap(root, "approval")
+	removeKeyFromMap(approvalNode, "coordinator_enabled")
+	removeKeyFromMap(approvalNode, "envelopes")
+	setStringInMap(approvalNode, "reviewer", approvalConfig.EffectiveReviewer())
+	setIntInMap(approvalNode, "timeout_seconds", approvalConfig.TimeoutSecondsEffective())
+	toolNode := ensureMap(approvalNode, "tool_approval")
+	setBoolInMap(toolNode, "enabled", approvalConfig.ToolApproval.EnabledEffective(false))
+	setFlowStringSliceInMap(toolNode, "tool_whitelist", approvalConfig.ToolApproval.ToolWhitelist)
+	dangerNode := ensureMap(approvalNode, "dangerous_action")
+	setBoolInMap(dangerNode, "enabled", approvalConfig.DangerousAction.EnabledEffective(true))
 }
 
-// UpdateHitlAuditAgentStrategy 更新审批/审查编辑两套审计 Agent 提示词并写入 config.yaml。
-func (h *ConfigHandler) UpdateHitlAuditAgentStrategy(approvalPrompt, reviewEditPrompt string) error {
+// SaveGlobalApprovalConfig persists the single deployment-wide approval
+// policy. Project and conversation metadata never enter this configuration.
+func (h *ConfigHandler) SaveGlobalApprovalConfig(input approval.Config) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(approvalPrompt)
-	h.config.Hitl.AuditAgentPromptReviewEdit = strings.TrimSpace(reviewEditPrompt)
+	return h.saveGlobalApprovalConfigLocked(input)
+}
+
+func (h *ConfigHandler) saveGlobalApprovalConfigLocked(input approval.Config) error {
+	input = approval.NormalizeConfig(input)
+	previous := h.config.Approval
+	previous.ToolApproval.ToolWhitelist = append([]string(nil), previous.ToolApproval.ToolWhitelist...)
+	toolEnabled := input.ToolApproval.Enabled
+	dangerEnabled := input.DangerousAction.Enabled
+	h.config.Approval.Reviewer = input.Reviewer
+	h.config.Approval.TimeoutSeconds = input.TimeoutSeconds
+	h.config.Approval.ToolApproval = config.ApprovalTriggerConfig{
+		Enabled: &toolEnabled, ToolWhitelist: append([]string(nil), input.ToolApproval.ToolWhitelist...),
+	}
+	h.config.Approval.DangerousAction = config.ApprovalTriggerConfig{Enabled: &dangerEnabled}
 	if err := h.saveConfig(); err != nil {
+		h.config.Approval = previous
 		return err
 	}
-	h.logger.Info("HITL 审计 Agent 提示词已写入配置文件")
 	return nil
 }
 

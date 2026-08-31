@@ -53,6 +53,7 @@ type Server struct {
 	httpToolTimeoutMinutes *int
 	httpToolTimeoutMu      sync.RWMutex
 	toolAuthorizer         func(context.Context, string, map[string]interface{}) error
+	invocationGuard        InvocationGuard
 	executionService       *ExecutionService
 	toolWaitTimeout        time.Duration
 	toolResultMaxBytes     int
@@ -69,6 +70,20 @@ func (s *Server) SetToolAuthorizer(authorizer func(context.Context, string, map[
 	}
 	s.mu.Lock()
 	s.toolAuthorizer = authorizer
+	s.mu.Unlock()
+}
+
+// InvocationGuard runs after authorization and before the real tool handler.
+// It may attach a server-only grant to Context and returns the frozen arguments
+// that must be executed.
+type InvocationGuard func(context.Context, string, map[string]interface{}) (context.Context, map[string]interface{}, error)
+
+func (s *Server) SetInvocationGuard(guard InvocationGuard) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.invocationGuard = guard
 	s.mu.Unlock()
 }
 
@@ -522,6 +537,20 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 	}
 
 	executionID := uuid.New().String()
+	guardedCtx := WithMCPExecutionID(requestCtx, executionID)
+	s.mu.RLock()
+	guard := s.invocationGuard
+	s.mu.RUnlock()
+	if guard != nil {
+		var guardErr error
+		guardedCtx, req.Arguments, guardErr = guard(guardedCtx, req.Name, req.Arguments)
+		if guardErr != nil {
+			return &Message{ID: msg.ID, Type: MessageTypeError, Version: "2.0", Error: &Error{Code: -32004, Message: "Approval required", Data: guardErr.Error()}}
+		}
+		if guardedCtx == nil {
+			guardedCtx = WithMCPExecutionID(requestCtx, executionID)
+		}
+	}
 	execution := &ToolExecution{
 		ID:        executionID,
 		ToolName:  req.Name,
@@ -576,7 +605,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		}
 	}
 
-	baseCtx, timeoutCancel := s.effectiveHTTPToolCallDeadline(requestCtx)
+	baseCtx, timeoutCancel := s.effectiveHTTPToolCallDeadline(guardedCtx)
 	defer timeoutCancel()
 	execCtx, runCancel := context.WithCancel(baseCtx)
 	s.registerRunningCancel(executionID, runCancel)
@@ -591,6 +620,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 	)
 
 	result, err := handler(execCtx, req.Arguments)
+	completeInvocation(execCtx, req.Name, req.Arguments, result, err)
 	cancelledWithUserNote := s.applyAbortUserNoteToCancelledToolResult(executionID, &result, &err)
 	now := time.Now()
 	var failed bool
@@ -913,6 +943,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			_, authenticated := authctx.PrincipalFromContext(runCtx)
 			s.mu.RLock()
 			authorizer := s.toolAuthorizer
+			guard := s.invocationGuard
 			handler, exists := s.tools[toolName]
 			s.mu.RUnlock()
 			if authorizer != nil {
@@ -925,7 +956,20 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			if !exists {
 				return nil, fmt.Errorf("工具 %s 未找到", toolName)
 			}
-			return handler(runCtx, args)
+			guardedCtx, frozenArgs := runCtx, args
+			if guard != nil {
+				var guardErr error
+				guardedCtx, frozenArgs, guardErr = guard(runCtx, toolName, args)
+				if guardErr != nil {
+					return nil, fmt.Errorf("tool approval denied: %w", guardErr)
+				}
+				if guardedCtx == nil {
+					guardedCtx = runCtx
+				}
+			}
+			result, runErr := handler(guardedCtx, frozenArgs)
+			completeInvocation(guardedCtx, toolName, frozenArgs, result, runErr)
+			return result, runErr
 		},
 		OnDone: func(exec *ToolExecution) {
 			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled

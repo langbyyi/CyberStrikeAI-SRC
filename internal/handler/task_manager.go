@@ -44,7 +44,7 @@ type AgentTask struct {
 	// activeEinoExecuteAbortNote AbortActiveEinoExecute 写入的用户说明，由 execute 收尾时合并进工具结果
 	activeEinoExecuteAbortNote string
 
-	// hitlCognition 本轮运行中供 HITL/审计 Agent 读取的上下文（用户原话 + 思考，不含会话历史）
+	// hitlCognition 仅保留用户声明和中断后继续说明，供审批 Agent 判断授权范围。
 	hitlCognition *hitlCognitionState
 
 	// agentRuntimeCancel 当前 Eino ADK 原生 AgentCancelFunc 包装；取消任务时先触发它，再走 context 兜底。
@@ -163,6 +163,10 @@ func (m *AgentTaskManager) AbortActiveEinoExecute(conversationID, note string) b
 		return false
 	}
 	t.activeEinoExecuteAbortNote = strings.TrimSpace(note)
+	if t.hitlCognition == nil {
+		t.hitlCognition = &hitlCognitionState{}
+	}
+	appendHitlUserMessage(t.hitlCognition, note)
 	cancel := t.activeEinoExecuteCancel
 	m.mu.Unlock()
 	cancel()
@@ -195,6 +199,10 @@ func (m *AgentTaskManager) SetInterruptContinueNote(conversationID, note string)
 	defer m.mu.Unlock()
 	if t, ok := m.tasks[conversationID]; ok && t != nil {
 		t.InterruptContinueNote = note
+		if t.hitlCognition == nil {
+			t.hitlCognition = &hitlCognitionState{}
+		}
+		appendHitlUserMessage(t.hitlCognition, note)
 	}
 }
 
@@ -430,7 +438,8 @@ func (m *AgentTaskManager) StartTask(conversationID, message string, cancel cont
 	}
 
 	m.tasks[conversationID] = task
-	task.hitlCognition = &hitlCognitionState{UserMessage: strings.TrimSpace(message)}
+	task.hitlCognition = &hitlCognitionState{}
+	appendHitlUserMessage(task.hitlCognition, message)
 	return task, nil
 }
 

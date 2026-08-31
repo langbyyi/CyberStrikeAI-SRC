@@ -21,14 +21,12 @@ parameters:
     flag: -r
     format: flag
     description: 读取 pcap 文件
-  - name: fields
-    type: string
-    required: false
-    flag: -T
-    format: flag
-    description: 输出字段，如 `-T fields -e ip.src -e http.host`
   - name: additional_args
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `-Y 'http.request'`(显示过滤) `-c 100`
+    description: '额外参数（空格分隔，引号内保持整段）。
+
+      字段提取：`-T fields -e ip.src -e http.host`（多个 -e 逐一列出）；
+
+      显示过滤：`-Y ''http.request''`；抓包数量 `-c 100`；协议解码 `-V`'

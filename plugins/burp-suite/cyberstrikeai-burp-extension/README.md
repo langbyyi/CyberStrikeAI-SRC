@@ -1,69 +1,112 @@
-## CyberStrikeAI Burp Suite Extension
+## CyberStrikeAI Burp Suite 插件（中文说明）
 
-中文说明见：`README.zh-CN.md`
+### 功能概述
 
-### What it does
+- 在 Burp 的 `CyberStrikeAI` 标签页中配置 **Host、端口、密码**
+- 点击 **Validate（验证）**：
+  - 调用 `POST /api/auth/login` 用密码换取 Token
+  - 调用 `GET /api/auth/validate` 校验 Token
+  - 验证通过后 Token 会保存在插件内存中（本次 Burp 会话有效）
+- 右键任意 HTTP 请求包 → **Send to CyberStrikeAI (stream test)**：
+  - 弹出发送对话框，可针对**当前流量**选择：
+    - **项目**（`GET /api/projects`，新建对话时绑定 `projectId`）
+    - **角色**（`GET /api/roles`）
+    - **对话模式**（Eino 单代理 / Deep / Plan-Execute / Supervisor，按次选择并记住上次取值）
+    - **测试指令**（可编辑 prompt 前缀）
+  - 选择会记住上次取值，便于连续测同类流量
+- **测试历史侧边栏（可搜索）**：每次发送都会新增一条记录，方便回看与对比
+- **Output 分区**：`Progress`（可折叠）+ `Final Response`（主区域）
+- **Markdown 渲染**：最终输出可在 Output 主区域渲染为富文本（可开关）
+- **Request / Response 回看**：右侧 Tab 可直接查看该次捕获到的原始请求/响应
+- **Stop 取消**：任务创建会话后可调用 `/api/agent-loop/cancel` 停止当前会话任务
 
-- Configure **Host / Port / HTTPS / Password** and choose an agent mode
-- Click **Validate** to login (`POST /api/auth/login`) and verify token (`GET /api/auth/validate`)
-- Right-click any HTTP message in Burp and send it to CyberStrikeAI for **streaming web pentest** (agent modes: **Eino Single**, Deep, Plan-Execute, Supervisor — maps to `/api/eino-agent/stream` or `/api/multi-agent/stream`)
-- Keep a **test history sidebar** (searchable) so you can revisit previous runs
-- Output is split into **collapsible Progress** + **Final Response** (Markdown rendering supported)
-- View captured **Request / Response** for each run
-- **Stop** a running task (calls `/api/agent-loop/cancel` once `conversationId` is available)
+### 编译（不依赖 Gradle/Maven，推荐）
 
-### Build
+> 给普通用户：你们应当直接发 **编译好的 jar**，用户在 Burp 里加载即可，**不需要编译**。
 
-Requirements:
+#### 方式 A（推荐，通用）：用 Maven 编译（不需要知道 Burp 在哪）
+
+适合：开发者/CI 打包一次，发布给所有用户使用。
+
+环境要求：
 
 - JDK 11+
-- Maven (recommended) OR Burp Extender API jar (offline mode)
+- Maven（会从 Maven Central 下载 `burp-extender-api` 依赖）
 
-#### Option A (recommended): Maven build (no need to locate Burp)
+编译打包：
 
 ```bash
 cd plugins/burp-suite/cyberstrikeai-burp-extension
 ./build-mvn.sh
 ```
 
-Output:
+产物：
 
 - `dist/cyberstrikeai-burp-extension.jar`
 
-#### Option B: Offline build with `build.sh` (needs Burp API jar)
+#### 方式 B（离线）：纯 JDK 编译（需要 Burp 的 API jar）
 
-1) Create `lib/` and copy Burp's API jar into it:
+- JDK 11+
+- Burp Extender API 的 jar（来自你的 Burp 安装目录）
+
+#### 步骤
+
+1) 在插件目录创建 `lib/`，并把 `burp-extender-api.jar` 复制进去：
 
 ```bash
+cd plugins/burp-suite/cyberstrikeai-burp-extension
 mkdir -p lib
-# copy from your Burp installation, for example:
+# 复制 Burp 自带的 API jar 到这里，例如：
 # cp "/path/to/burp-extender-api.jar" lib/
 ```
 
-2) Build:
+2) 一键编译打包：
 
 ```bash
 cd plugins/burp-suite/cyberstrikeai-burp-extension
 ./build.sh
 ```
 
-Output:
+产物：
 
 - `dist/cyberstrikeai-burp-extension.jar`
 
-#### Option C: Gradle (optional)
-
-If you already have Gradle available, you can still use `build.gradle` to build.
-
-### Load in Burp Suite
+### 在 Burp Suite 中加载
 
 - Burp Suite → **Extensions** → **Installed** → **Add**
-- Extension type: **Java**
-- Select the jar above
+- Extension type：**Java**
+- 选择 `dist/cyberstrikeai-burp-extension.jar`
 
-### Notes
+### 使用方法
 
-- Default connection is `https://127.0.0.1:8080` (**HTTPS** checked). Self-signed / local certs are trusted automatically (no import).
-- Uncheck **HTTPS** only if your server runs plain HTTP.
-- It uses **Bearer Token** authentication obtained from the configured password.
+1) 打开 Burp 顶部标签页 `CyberStrikeAI`
+2) 填写：
+   - **Host**：例如 `127.0.0.1`
+   - **Port**：例如 `8080`
+   - **HTTPS**：默认勾选（对接 `config.yaml` 中 `tls_enabled` / 自签证书）；插件会自动信任本地自签证书，无需导入
+   - **Password**：你的 CyberStrikeAI 登录密码（对应服务端 `auth.password`）
+3) 点击 **Validate**
+   - 成功：状态显示 `OK (token saved)`
+   - 失败：状态会显示错误原因（例如密码错误、服务不可达、401/403 等）
+4) 在 Burp 的 Proxy/HTTP history/Repeater 等列表中选中一条 HTTP 包
+5) 右键 → **Send to CyberStrikeAI (stream test)**
+6) 在弹出框中按需选择**项目、角色、对话模式**，并编辑测试指令后点确定
+7) 每次发送后会在 `CyberStrikeAI` 标签页左侧显示一个“测试记录”（请求标题 + 模式/角色 + 状态）；点击对应记录即可在右侧查看该次的流式输出结果
+
+### 常见问题（排错）
+
+- **Validate 失败 / 401**
+  - 确认密码是否正确（服务端 `auth.password`）
+  - 确认 IP/端口是否能访问（例如浏览器能打开 `https://IP:PORT/`）
+  - 服务端启用 TLS 时勾选 **HTTPS**（默认已勾选）；自签证书无需手动导入
+  - 若仍为纯 HTTP 部署，取消勾选 **HTTPS**
+
+- **选择 Multi Agent 后提示“多代理未启用”**
+  - 服务端需要开启：`config.yaml` 中 `multi_agent.enabled: true`
+  - 并重启服务（或按你们项目的动态 apply 配置流程启用）
+
+- **右键发送后无流式输出**
+  - 先确认已 Validate（拿到 Token）
+  - 确认 Burp 能访问到 CyberStrikeAI（网络/代理/防火墙）
+  - 服务端的流式端点为 SSE，插件会解析 `data: {json}` 行；如果中间件缓冲可能影响实时性
 

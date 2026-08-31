@@ -41,14 +41,14 @@ func invokeEinoGraph(ctx context.Context, args RunArgs, runID string, workflowID
 		if err == nil {
 			return false, nil
 		}
-		if hitlErr := extractAwaitingHITL(err, art, runID, args, state); hitlErr != nil {
+		if hitlErr := extractAwaitingHITL(runCtx, err, art, runID, args, state); hitlErr != nil {
 			return true, hitlErr
 		}
 		return false, err
 	}
 }
 
-func extractAwaitingHITL(err error, art *compiledArtifact, runID string, args RunArgs, state *WorkflowLocalState) error {
+func extractAwaitingHITL(ctx context.Context, err error, art *compiledArtifact, runID string, args RunArgs, state *WorkflowLocalState) error {
 	info, ok := compose.ExtractInterruptInfo(err)
 	if !ok || len(art.hitlIDs) == 0 {
 		return nil
@@ -71,7 +71,9 @@ func extractAwaitingHITL(err error, art *compiledArtifact, runID string, args Ru
 			"resumePayload": map[string]any{"approved": "bool", "comment": "string"},
 		}
 		pendingJSON, _ := json.Marshal(pending)
-		_ = args.DB.SetWorkflowRunAwaitingHITL(runID, nodeID, string(pendingJSON))
+		if err := args.DB.SetWorkflowRunAwaitingHITL(runID, nodeID, string(pendingJSON)); err != nil {
+			return fmt.Errorf("persist workflow approval checkpoint: %w", err)
+		}
 	}
 	if args.Progress != nil {
 		args.Progress("workflow_hitl_waiting", fmt.Sprintf("等待人工确认：%s", label), map[string]any{

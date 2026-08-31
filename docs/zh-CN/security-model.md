@@ -46,11 +46,14 @@ Web 登录凭据由 RBAC 用户管理（默认内置 `admin` 账号）。建议�
 
 ## HITL
 
-HITL 是工具调用前的审批层。常见模式：
+HITL 是工具调用前的审批层。审批方二选一：
 
 - `human`：人工审批。
-- `audit_agent`：审计 Agent 自动审批。
-- `review_edit`：审计 Agent 可改参后放行。
+- `agent`：审计 Agent 自动审批。
+
+审批裁决只返回通过或拒绝，不支持改参后放行。
+
+通过后的执行凭证严格绑定工具名称和审批时展示的完整参数。时间戳、nonce 等动态参数不会被特殊忽略；审批后参数变化会拒绝执行。人工审批必须由在线等待任务接收，进程重启后的历史待审批记录不能补批准恢复执行。
 
 建议策略：
 
@@ -131,7 +134,7 @@ WebShell 管理允许对已登记连接执行命令和文件操作。建议：
 | Prompt Injection | 目标页面或文档诱导 Agent 调高权限工具 | 越权执行工具或泄露数据 | 角色边界、HITL、工具最小化、知识库来源标注 |
 | 外部 MCP 恶意 | MCP 服务返回误导描述或执行副作用 | 本机或目标系统受影响 | 只接入可信 MCP、独立运行用户、网络隔离 |
 | 工具 YAML 被篡改 | 改写命令模板或参数 | Agent 调用时执行恶意命令 | 文件权限、代码审查、工具白名单 |
-| C2 滥用 | 生成 payload 或下发任务到非授权目标 | 法律和业务风险 | 默认关闭、审批、事件保留、网络隔离 |
+| C2 滥用 | 生成 payload 或下发任务到非授权目标 | 法律和业务风险 | 未显式配置时默认启用，需在 `c2.enabled: false` 显式关闭，配合审批、事件保留、网络隔离 |
 | WebShell 误操作 | AI 或用户在生产目标执行破坏命令 | 业务中断或数据损坏 | 连接命名、人工确认、只读优先、删除过期连接 |
 | 数据库泄露 | 复制 `data/*.db` 或上传目录 | 对话、目标、漏洞、连接信息泄露 | 文件权限、加密备份、最小保留 |
 
@@ -176,5 +179,5 @@ HITL 的风险在于审批者看到的是“工具名 + 参数 + 上下文摘要
 - 认证中间件：`internal/security/auth_middleware.go`
 - 限流：`internal/security/ratelimit.go`
 - Shell 执行：`internal/security/executor.go`
-- HITL 执行：`internal/handler/hitl_execution.go`
+- HITL 审批执行：`internal/handler/hitl_audit_agent.go`（审批流定义在 `internal/approval/`）
 - 审计服务：`internal/audit/service.go`

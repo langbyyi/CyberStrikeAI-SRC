@@ -795,11 +795,6 @@ async function loadConfig(loadTools = true, options = {}) {
 
         // 填充人机协同配置
         const hitl = currentConfig.hitl || {};
-        const hitlReviewerEl = document.getElementById('hitl-default-reviewer');
-        if (hitlReviewerEl) {
-            const reviewer = String(hitl.default_reviewer || 'human').trim().toLowerCase();
-            hitlReviewerEl.value = reviewer === 'audit_agent' ? 'audit_agent' : 'human';
-        }
         const hitlAuditModel = hitl.audit_model || {};
         const hitlAuditProviderEl = document.getElementById('hitl-audit-model-provider');
         if (hitlAuditProviderEl) {
@@ -816,17 +811,9 @@ async function loadConfig(loadTools = true, options = {}) {
         if (hitlRetentionEl) {
             hitlRetentionEl.value = (hitl.retention_days === undefined || hitl.retention_days === null) ? '90' : String(hitl.retention_days);
         }
-        const hitlWhitelistEl = document.getElementById('hitl-tool-whitelist');
-        if (hitlWhitelistEl) {
-            hitlWhitelistEl.value = Array.isArray(hitl.tool_whitelist) ? hitl.tool_whitelist.join('\n') : '';
-        }
         const hitlApprovalPromptEl = document.getElementById('hitl-audit-agent-prompt-settings');
         if (hitlApprovalPromptEl) {
             hitlApprovalPromptEl.value = hitl.audit_agent_prompt || '';
-        }
-        const hitlReviewEditPromptEl = document.getElementById('hitl-audit-agent-prompt-review-edit-settings');
-        if (hitlReviewEditPromptEl) {
-            hitlReviewEditPromptEl.value = hitl.audit_agent_prompt_review_edit || '';
         }
         
         // 填充Agent配置
@@ -2003,12 +1990,6 @@ async function applySettings() {
         const prevHitl = (currentConfig && currentConfig.hitl) ? currentConfig.hitl : {};
         const hitlRetentionRaw = document.getElementById('hitl-retention-days')?.value;
         const hitlRetention = parseInt(hitlRetentionRaw, 10);
-        const hitlWhitelistRaw = document.getElementById('hitl-tool-whitelist')?.value || '';
-        const hitlToolsSplit = (typeof window.hitlToolsSplitToArray === 'function')
-            ? window.hitlToolsSplitToArray
-            : function (s) {
-                return String(s || '').split(/[\n,，]/).map(v => v.trim()).filter(Boolean);
-            };
         const config = {
             ai: currentConfig.ai,
             vision: visionPayload,
@@ -2043,11 +2024,8 @@ async function applySettings() {
                     api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || '',
                     model: document.getElementById('hitl-audit-model-name')?.value.trim() || ''
                 },
-                default_reviewer: document.getElementById('hitl-default-reviewer')?.value === 'audit_agent' ? 'audit_agent' : 'human',
                 retention_days: Number.isNaN(hitlRetention) ? 90 : Math.max(0, hitlRetention),
-                tool_whitelist: hitlToolsSplit(hitlWhitelistRaw),
-                audit_agent_prompt: document.getElementById('hitl-audit-agent-prompt-settings')?.value.trim() || '',
-                audit_agent_prompt_review_edit: document.getElementById('hitl-audit-agent-prompt-review-edit-settings')?.value.trim() || ''
+                audit_agent_prompt: document.getElementById('hitl-audit-agent-prompt-settings')?.value.trim() || ''
             },
             agent: {
                 max_iterations: parseInt(document.getElementById('agent-max-iterations').value) || 30,

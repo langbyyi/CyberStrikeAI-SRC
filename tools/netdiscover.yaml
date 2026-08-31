@@ -14,7 +14,7 @@ parameters:
     required: false
     flag: -r
     format: flag
-    description: 扫描网段，如 `192.168.1.0/24`
+    description: 扫描网段（-r），如 `192.168.1.0/24`
   - name: interface
     type: string
     required: false
@@ -32,4 +32,4 @@ parameters:
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `-t`(超时) `-l`(忽略范围) `-F`(自定义频率)
+    description: 额外参数（见 netdiscover -h），如 `-l <file>`(从文件读目标列表) `-f`(快速模式) `-S`(每包间长休眠)

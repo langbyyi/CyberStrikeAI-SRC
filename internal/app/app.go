@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/agent"
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/c2"
@@ -42,36 +43,38 @@ import (
 
 // App 应用
 type App struct {
-	config             *config.Config
-	logger             *logger.Logger
-	router             *gin.Engine
-	mcpServer          *mcp.Server
-	externalMCPMgr     *mcp.ExternalMCPManager
-	agent              *agent.Agent
-	executor           *security.Executor
-	db                 *database.DB
-	knowledgeDB        *database.DB // 知识库数据库连接（如果使用独立数据库）
-	auth               *security.AuthManager
-	knowledgeManager   *knowledge.Manager        // 知识库管理器（用于动态初始化）
-	knowledgeRetriever *knowledge.Retriever      // 知识库检索器（用于动态初始化）
-	knowledgeIndexer   *knowledge.Indexer        // 知识库索引器（用于动态初始化）
-	knowledgeHandler   *handler.KnowledgeHandler // 知识库处理器（用于动态初始化）
-	agentHandler       *handler.AgentHandler     // Agent处理器（用于更新知识库管理器）
-	robotHandler       *handler.RobotHandler     // 机器人处理器（钉钉/飞书/企业微信等）
-	robotMu            sync.Mutex                // 保护机器人长连接的 cancel
-	dingCancel         context.CancelFunc        // 钉钉 Stream 取消函数，用于配置变更时重启
-	larkCancel         context.CancelFunc        // 飞书长连接取消函数，用于配置变更时重启
-	wechatCancel       context.CancelFunc        // 微信 iLink 长轮询取消函数
-	telegramCancel     context.CancelFunc        // Telegram 长轮询取消函数
-	slackCancel        context.CancelFunc        // Slack Socket Mode 取消函数
-	discordCancel      context.CancelFunc        // Discord Gateway 取消函数
-	qqCancel           context.CancelFunc        // QQ WebSocket 取消函数
-	alertCancel        context.CancelFunc        // 漏洞提醒持久化投递 worker
-	c2Manager          *c2.Manager               // C2 管理器（未启用 C2 时为 nil）
-	c2Watchdog         *c2.SessionWatchdog       // C2 会话看门狗
-	c2WatchdogCancel   context.CancelFunc        // 看门狗取消函数
-	c2Handler          *handler.C2Handler        // C2 REST（与 Manager 生命周期同步）
-	auditSvc           *audit.Service
+	config                *config.Config
+	logger                *logger.Logger
+	router                *gin.Engine
+	mcpServer             *mcp.Server
+	externalMCPMgr        *mcp.ExternalMCPManager
+	agent                 *agent.Agent
+	executor              *security.Executor
+	db                    *database.DB
+	knowledgeDB           *database.DB // 知识库数据库连接（如果使用独立数据库）
+	auth                  *security.AuthManager
+	knowledgeManager      *knowledge.Manager        // 知识库管理器（用于动态初始化）
+	knowledgeRetriever    *knowledge.Retriever      // 知识库检索器（用于动态初始化）
+	knowledgeIndexer      *knowledge.Indexer        // 知识库索引器（用于动态初始化）
+	knowledgeHandler      *handler.KnowledgeHandler // 知识库处理器（用于动态初始化）
+	agentHandler          *handler.AgentHandler     // Agent处理器（用于更新知识库管理器）
+	robotHandler          *handler.RobotHandler     // 机器人处理器（钉钉/飞书/企业微信等）
+	robotMu               sync.Mutex                // 保护机器人长连接的 cancel
+	dingCancel            context.CancelFunc        // 钉钉 Stream 取消函数，用于配置变更时重启
+	larkCancel            context.CancelFunc        // 飞书长连接取消函数，用于配置变更时重启
+	wechatCancel          context.CancelFunc        // 微信 iLink 长轮询取消函数
+	telegramCancel        context.CancelFunc        // Telegram 长轮询取消函数
+	slackCancel           context.CancelFunc        // Slack Socket Mode 取消函数
+	discordCancel         context.CancelFunc        // Discord Gateway 取消函数
+	qqCancel              context.CancelFunc        // QQ WebSocket 取消函数
+	alertCancel           context.CancelFunc        // 漏洞提醒持久化投递 worker
+	c2Manager             *c2.Manager               // C2 管理器（未启用 C2 时为 nil）
+	c2Watchdog            *c2.SessionWatchdog       // C2 会话看门狗
+	c2WatchdogCancel      context.CancelFunc        // 看门狗取消函数
+	c2Handler             *handler.C2Handler        // C2 REST（与 Manager 生命周期同步）
+	auditSvc              *audit.Service
+	approvalCoordinator   *approval.Coordinator
+	approvalHumanReviewer *approval.HumanReviewBroker
 }
 
 // New 创建新应用
@@ -137,9 +140,6 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	monitorRetention.PurgeExpired()
 	monitor.StartRetentionLoop(monitorRetention, log.Logger)
 
-	if err := handler.NewHITLManager(db, log.Logger).EnsureSchema(); err != nil {
-		log.Logger.Warn("初始化 HITL 表失败", zap.Error(err))
-	}
 	hitlRetention := hitl.NewService(db, cfg, log.Logger)
 	hitlRetention.PurgeExpired()
 	hitl.StartRetentionLoop(hitlRetention, log.Logger)
@@ -382,6 +382,17 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	agentHandler := handler.NewAgentHandler(agent, db, cfg, log.Logger)
 	agentHandler.SetAudit(auditSvc)
 	agentHandler.SetAgentsMarkdownDir(agentsDir)
+	approvalHumanReviewer := approval.NewHumanReviewBroker()
+	approvalCoordinator, approvalGlobalRuntime, err := buildApprovalCoordinator(cfg, db, agentHandler, approvalHumanReviewer, log.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("初始化统一审批协调器: %w", err)
+	}
+	agentHandler.SetApprovalCoordinator(approvalCoordinator)
+	mcpServer.SetInvocationGuard(approvalInvocationGuard(approvalCoordinator, "mcp_internal"))
+	externalMCPMgr.SetInvocationGuard(approvalInvocationGuard(approvalCoordinator, "mcp_external"))
+	approvalHandler := handler.NewApprovalHandler(approval.NewSQLiteStore(db), approvalHumanReviewer, log.Logger)
+	approvalHandler.SetResourceAccessChecker(db.UserCanAccessResource)
+	approvalHandler.SetAudit(auditSvc)
 	// 如果知识库已启用，设置知识库管理器到AgentHandler以便记录检索日志
 	if knowledgeManager != nil {
 		agentHandler.SetKnowledgeManager(knowledgeManager)
@@ -416,9 +427,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	configHandler := handler.NewConfigHandler(configPath, cfg, mcpServer, executor, agent, attackChainHandler, externalMCPMgr, log.Logger)
 	configHandler.SetDB(db)
 	configHandler.SetAudit(auditSvc)
-	agentHandler.SetHitlToolWhitelistSaver(configHandler)
-	agentHandler.SetHitlAuditStrategySaver(configHandler)
-	agentHandler.SetHitlDefaultReviewerSaver(configHandler)
+	approvalHandler.SetGlobalRuntime(approvalGlobalRuntime, configHandler)
 	externalMCPHandler := handler.NewExternalMCPHandler(externalMCPMgr, cfg, configPath, log.Logger)
 	externalMCPHandler.SetAudit(auditSvc)
 	roleHandler := handler.NewRoleHandler(cfg, configPath, log.Logger)
@@ -434,7 +443,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// ============================================================================
 	// 初始化 C2 模块（可按配置关闭，节省本机部署资源）
 	// ============================================================================
-	c2Manager, c2Watchdog, watchdogCancel := setupC2Runtime(cfg, db, agentHandler, log.Logger)
+	c2Manager, c2Watchdog, watchdogCancel := setupC2Runtime(cfg, db, approvalCoordinator, log.Logger)
 	if c2Manager != nil {
 		registerC2Tools(mcpServer, c2Manager, log.Logger, cfg.Server.Port)
 	}
@@ -454,27 +463,29 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// 创建 App 实例（部分字段稍后填充）
 	app := &App{
-		config:             cfg,
-		logger:             log,
-		router:             router,
-		mcpServer:          mcpServer,
-		externalMCPMgr:     externalMCPMgr,
-		agent:              agent,
-		executor:           executor,
-		db:                 db,
-		knowledgeDB:        knowledgeDBConn,
-		auth:               authManager,
-		knowledgeManager:   knowledgeManager,
-		knowledgeRetriever: knowledgeRetriever,
-		knowledgeIndexer:   knowledgeIndexer,
-		knowledgeHandler:   knowledgeHandler,
-		agentHandler:       agentHandler,
-		robotHandler:       robotHandler,
-		c2Manager:          c2Manager,
-		c2Watchdog:         c2Watchdog,
-		c2WatchdogCancel:   watchdogCancel,
-		c2Handler:          c2Handler,
-		auditSvc:           auditSvc,
+		config:                cfg,
+		logger:                log,
+		router:                router,
+		mcpServer:             mcpServer,
+		externalMCPMgr:        externalMCPMgr,
+		agent:                 agent,
+		executor:              executor,
+		db:                    db,
+		knowledgeDB:           knowledgeDBConn,
+		auth:                  authManager,
+		knowledgeManager:      knowledgeManager,
+		knowledgeRetriever:    knowledgeRetriever,
+		knowledgeIndexer:      knowledgeIndexer,
+		knowledgeHandler:      knowledgeHandler,
+		agentHandler:          agentHandler,
+		robotHandler:          robotHandler,
+		c2Manager:             c2Manager,
+		c2Watchdog:            c2Watchdog,
+		c2WatchdogCancel:      watchdogCancel,
+		c2Handler:             c2Handler,
+		auditSvc:              auditSvc,
+		approvalCoordinator:   approvalCoordinator,
+		approvalHumanReviewer: approvalHumanReviewer,
 	}
 	// 飞书/钉钉长连接（无需公网），启用时在后台启动；后续前端应用配置时会通过 RestartRobotConnections 重启
 	app.startRobotConnections()
@@ -488,8 +499,8 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		registerAssetTools(mcpServer, db, log.Logger)
 		registerProjectFactTools(mcpServer, db, cfg, log.Logger)
 		registerVisionTools(mcpServer, cfg, log.Logger)
-	registerFOFASearchTool(mcpServer, cfg, log.Logger)
-	registerWebSearchTools(mcpServer, cfg, log.Logger)
+		registerFOFASearchTool(mcpServer, cfg, log.Logger)
+		registerWebSearchTools(mcpServer, cfg, log.Logger)
 		return nil
 	}
 	configHandler.SetVulnerabilityToolRegistrar(vulnerabilityRegistrar)
@@ -566,6 +577,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		router,
 		authHandler,
 		agentHandler,
+		approvalHandler,
 		monitorHandler,
 		notificationHandler,
 		conversationHandler,
@@ -869,6 +881,7 @@ func setupRoutes(
 	router *gin.Engine,
 	authHandler *handler.AuthHandler,
 	agentHandler *handler.AgentHandler,
+	approvalHandler *handler.ApprovalHandler,
 	monitorHandler *handler.MonitorHandler,
 	notificationHandler *handler.NotificationHandler,
 	conversationHandler *handler.ConversationHandler,
@@ -938,6 +951,8 @@ func setupRoutes(
 		}
 	}))
 	{
+		handler.RegisterApprovalRoutes(protected, approvalHandler)
+
 		protected.GET("/rbac/me", rbacHandler.Me)
 		protected.GET("/rbac/metadata", rbacHandler.Metadata)
 		protected.GET("/rbac/users", rbacHandler.ListUsers)
@@ -965,21 +980,6 @@ func setupRoutes(
 		// Eino ADK 单代理（ChatModelAgent + Runner；不依赖 multi_agent.enabled）
 		protected.POST("/eino-agent", agentHandler.EinoSingleAgentLoop)
 		protected.POST("/eino-agent/stream", agentHandler.EinoSingleAgentLoopStream)
-		protected.GET("/hitl/pending", agentHandler.ListHITLPending)
-		protected.GET("/hitl/logs", agentHandler.ListHITLLogs)
-		protected.DELETE("/hitl/logs", agentHandler.DeleteHITLLogs)
-		protected.GET("/hitl/logs/:id", agentHandler.GetHITLLog)
-		protected.POST("/hitl/decision", agentHandler.DecideHITLInterrupt)
-		protected.POST("/hitl/dismiss", agentHandler.DismissHITLInterrupt)
-		protected.GET("/hitl/config/:conversationId", agentHandler.GetHITLConversationConfig)
-		protected.PUT("/hitl/config", agentHandler.UpsertHITLConversationConfig)
-		protected.GET("/hitl/tool-whitelist", agentHandler.GetHITLGlobalToolWhitelist)
-		protected.PUT("/hitl/tool-whitelist", agentHandler.SetHITLGlobalToolWhitelist)
-		protected.POST("/hitl/tool-whitelist", agentHandler.MergeHITLGlobalToolWhitelist)
-		protected.GET("/hitl/default-reviewer", agentHandler.GetHITLDefaultReviewer)
-		protected.PUT("/hitl/default-reviewer", agentHandler.UpdateHITLDefaultReviewer)
-		protected.GET("/hitl/audit-strategy", agentHandler.GetHITLAuditStrategy)
-		protected.PUT("/hitl/audit-strategy", agentHandler.UpdateHITLAuditStrategy)
 		// Agent Loop 取消与任务列表
 		protected.POST("/agent-loop/cancel", agentHandler.CancelAgentLoop)
 		protected.GET("/agent-loop/tasks", agentHandler.ListAgentTasks)
@@ -1423,6 +1423,9 @@ func setupRoutes(
 		if version == "" {
 			version = "v1.0.0"
 		}
+		// HTML 壳要求每次向服务器验证：静态资源的缓存由其 ?v= 版本号管理，
+		// 若 HTML 本身被缓存，会继续引用旧版本号的脚本导致更新不生效。
+		c.Header("Cache-Control", "no-cache")
 		c.HTML(http.StatusOK, "index.html", gin.H{"Version": version})
 	})
 }

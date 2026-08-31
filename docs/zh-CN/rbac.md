@@ -1,7 +1,5 @@
 # CyberStrikeAI RBAC 使用与管理指南
 
-[English](../en-US/rbac.md)
-
 CyberStrikeAI 是可执行 Agent、MCP、WebShell、C2 和批量任务的安全自动化平台。RBAC 不仅控制页面是否可见，还会贯穿 HTTP API、资源查询、Agent 上下文、内置/外部 MCP 工具、后台任务和机器人执行链路。
 
 ---
@@ -74,10 +72,12 @@ AI 测试角色不是安全授权边界。即使选择了“渗透测试”角�
 | 仪表盘 | `dashboard:read` |
 | 对话 | `chat:read`、`chat:write`、`chat:delete` |
 | Agent | `agent:execute`、`agent:local-execute` |
-| HITL | `hitl:read`、`hitl:write` |
+| 人机协同审批 | `approval:read`、`approval:decide`、`approval:policy:write` |
+| 审批 | `approval:read`、`approval:decide`、`approval:policy:write` |
 | 任务 | `tasks:read`、`tasks:write`、`tasks:delete` |
 | 项目 | `project:read`、`project:write`、`project:delete` |
 | 漏洞 | `vulnerability:read`、`vulnerability:write`、`vulnerability:delete` |
+| 资产 | `asset:read`、`asset:write`、`asset:delete` |
 | WebShell | `webshell:read`、`webshell:write`、`webshell:delete` |
 | C2 | `c2:read`、`c2:write`、`c2:delete` |
 | MCP | `mcp:read`、`mcp:execute`、`mcp:write`、`mcp:external:execute` |
@@ -151,7 +151,7 @@ project:write → own
 - 机器人配置。
 - 工作流定义。
 - 知识库写操作（搜索除外）。
-- HITL 全局白名单、默认审核方和审计策略。
+- 统一审批全局配置与审批规则。
 - C2 Profile 写操作。
 - 部分全局监控统计。
 
@@ -164,6 +164,7 @@ project:write → own
 - 项目 `project`
 - 对话 `conversation`
 - 漏洞 `vulnerability`
+- 资产 `asset`
 - WebShell `webshell`
 - 批量任务队列 `batch_task`
 - C2 Listener `c2_listener`
@@ -176,6 +177,7 @@ project:write → own
 |--------|----------------|
 | 对话 | 所属项目 |
 | 漏洞 | 所属项目或关联对话 |
+| 资产 | 所属项目 |
 | 消息、过程详情、攻击链 | 所属对话 |
 | C2 Session | Listener |
 | C2 Task / 文件 /事件 | Session、Task 或 Listener 链路 |
@@ -239,7 +241,7 @@ project:read / project:write
 vulnerability:read / vulnerability:write
 tasks:read / tasks:write
 files:read / files:write
-hitl:read / hitl:write
+approval:read / approval:decide / approval:policy:write
 ```
 
 只有确实需要本机命令时才增加 `agent:local-execute` 或 `terminal:execute`；需要删除时再增加对应 `:delete`。

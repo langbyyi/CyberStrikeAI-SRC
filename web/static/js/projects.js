@@ -3424,17 +3424,19 @@ window.selectChatProjectConversationItem = selectChatProjectConversationItem;
 async function loadChatProjectFolderContext() {
     const loadSeq = ++chatProjectFolderContextLoadSeq;
     const conversationsParams = new URLSearchParams({ limit: '1000', offset: '0', sort_by: 'updated_at' });
-    const [conversationResponse, activeResponse, completedResponse, pendingResponse] = await Promise.all([
+    const pendingApprovals = Promise.resolve().then(function () {
+        return window.fetchAllPendingApprovals(apiFetch);
+    }).catch(function () { return []; });
+    const [conversationResponse, activeResponse, completedResponse, pendingItems] = await Promise.all([
         apiFetch(`/api/conversations?${conversationsParams}`),
         apiFetch('/api/agent-loop/tasks'),
         apiFetch('/api/agent-loop/tasks/completed'),
-        apiFetch('/api/hitl/pending?page=1&pageSize=200'),
+        pendingApprovals,
     ]);
     if (!conversationResponse.ok) throw new Error(tp('projects.loadProjectsFailed'));
     const conversationData = await conversationResponse.json();
     const activeData = activeResponse.ok ? await activeResponse.json() : { tasks: [] };
     const completedData = completedResponse.ok ? await completedResponse.json() : { tasks: [] };
-    const pendingData = pendingResponse.ok ? await pendingResponse.json() : { items: [] };
     if (loadSeq !== chatProjectFolderContextLoadSeq) return false;
     const conversations = Array.isArray(conversationData)
         ? conversationData
@@ -3453,7 +3455,7 @@ async function loadChatProjectFolderContext() {
         }
     });
     chatProjectFolderContext.pendingApprovalByConversation = new Map();
-    (pendingData.items || []).filter(isHumanProjectPendingApproval).forEach((item) => {
+    pendingItems.filter(isHumanProjectPendingApproval).forEach((item) => {
         const conversationId = String(item?.conversationId || '').trim();
         // pending 审批必须属于当前进程仍在运行的任务；服务重启/取消后的旧记录
         // 即使在并发窗口内被读到，也不能重新显示倒计时徽标。
@@ -3468,6 +3470,7 @@ async function loadChatProjectFolderContext() {
 
 function isHumanProjectPendingApproval(item) {
     if (!item) return false;
+    if (String(item.status || '').trim().toLowerCase() === 'pending_human') return true;
     const reviewer = String(item.reviewer || item.decidedBy || item.decided_by || '').trim().toLowerCase();
     const status = String(item.status || '').trim().toLowerCase();
     return reviewer !== 'audit_agent' && reviewer !== 'agent' && reviewer !== 'ai' && status !== 'audit_running';

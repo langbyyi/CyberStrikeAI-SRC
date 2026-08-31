@@ -63,18 +63,20 @@ monitor:
 
 通知用于提示待处理事项、未读状态或运行中任务概况。具体展示取决于前端页面。
 
-## HITL 日志
+## HITL 日志与统一审批
 
-HITL 决策日志独立管理：
+待审批队列、决策链和执行结果由统一审批（Unified Approval）管理：
 
-- `GET /api/hitl/pending`
-- `GET /api/hitl/logs`
-- `GET /api/hitl/logs/:id`
-- `DELETE /api/hitl/logs`
-- `POST /api/hitl/decision`
-- `POST /api/hitl/dismiss`
+- `GET /api/approvals`
+- `GET /api/approvals/ledger`
+- `GET /api/approvals/:id`
+- `POST /api/approvals/:id/decision`
+- `GET/PUT /api/approval-config`
+- `GET/POST/DELETE /api/approval-rules`
 
 建议将 HITL 日志与平台审计结合，用于复盘 Agent 为什么执行或没有执行某个工具。
+
+人机协同页面的待审批、规则、配置和审计列表均使用统一审批接口，并要求 `approval:read`。旧 HITL 数据仅在启动迁移阶段导入统一审批表，不再暴露运行时接口。
 
 ## 保留策略
 
@@ -108,7 +110,7 @@ HITL 决策日志独立管理：
 
 - 审计回答“谁在平台上做了什么管理动作”。
 - 监控回答“工具调用运行得怎么样”。
-- HITL 日志回答“某个工具调用为什么被放行、修改或拒绝”。
+- 统一审批台账回答“某个工具调用为何被放行或拒绝，以及实际执行结果”。
 - 对话过程详情回答“Agent 当时如何推理和串联步骤”。
 
 一次安全复盘通常要把四类信息合在一起看。只看审计，会漏掉具体工具输出；只看监控，会漏掉谁修改了配置。
@@ -145,4 +147,5 @@ HITL 决策日志独立管理：
 - 审计接口：`internal/handler/audit.go`
 - 监控 reconcile：`internal/monitor/reconcile.go`
 - 监控接口：`internal/handler/monitor.go`
-- HITL 日志：`internal/handler/hitl_logs.go`
+- 统一审批存储：`internal/approval/sqlite_store.go`
+- 统一审批接口：`internal/handler/approval.go`

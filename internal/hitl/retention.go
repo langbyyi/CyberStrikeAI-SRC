@@ -1,8 +1,10 @@
 package hitl
 
 import (
+	"context"
 	"time"
 
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 
@@ -11,7 +13,7 @@ import (
 
 const retentionPurgeInterval = time.Hour
 
-// Service manages HITL audit log retention (decided hitl_interrupts rows).
+// Service manages terminal unified approval retention.
 type Service struct {
 	db     *database.DB
 	cfg    *config.Config
@@ -31,7 +33,7 @@ func (s *Service) RetentionDays() int {
 	return s.cfg.Hitl.RetentionDaysEffective()
 }
 
-// PurgeExpired deletes decided HITL log rows older than retention_days when configured.
+// PurgeExpired deletes terminal unified approvals older than retention_days when configured.
 func (s *Service) PurgeExpired() {
 	if s == nil || s.db == nil || s.cfg == nil {
 		return
@@ -41,19 +43,26 @@ func (s *Service) PurgeExpired() {
 		return
 	}
 	cutoff := time.Now().AddDate(0, 0, -days)
-	n, err := s.db.PurgeHitlInterruptLogsBefore(cutoff)
-	if err != nil {
+	approvalStore := approval.NewSQLiteStore(s.db)
+	if err := approvalStore.EnsureSchema(context.Background()); err != nil {
 		if s.logger != nil {
-			s.logger.Warn("清理过期人机协同审计日志失败", zap.Error(err))
+			s.logger.Warn("initialize approval retention schema", zap.Error(err))
 		}
 		return
 	}
-	if n > 0 && s.logger != nil {
-		s.logger.Info("已清理过期人机协同审计日志", zap.Int64("deleted", n), zap.Int("retention_days", days))
+	approvalCount, err := approvalStore.PurgeTerminalBefore(context.Background(), cutoff)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("purge expired unified approvals", zap.Error(err))
+		}
+		return
+	}
+	if approvalCount > 0 && s.logger != nil {
+		s.logger.Info("purged expired unified approvals", zap.Int64("deleted", approvalCount), zap.Int("retention_days", days))
 	}
 }
 
-// StartRetentionLoop periodically purges expired HITL audit log rows.
+// StartRetentionLoop periodically purges expired unified approval rows.
 func StartRetentionLoop(s *Service, logger *zap.Logger) {
 	if s == nil {
 		return

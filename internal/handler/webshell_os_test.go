@@ -68,11 +68,11 @@ func TestResolveWebshellOS(t *testing.T) {
 
 func TestQuoteCmdPath(t *testing.T) {
 	cases := map[string]string{
-		"":                     `"."`,
-		`C:\Windows\Temp`:      `"C:\Windows\Temp"`,
-		`C:\Program Files\a`:   `"C:\Program Files\a"`,
-		`C:\weird"name\f.txt`:  `"C:\weird""name\f.txt"`,
-		`.`:                    `"."`,
+		"":                    `"."`,
+		`C:\Windows\Temp`:     `"C:\Windows\Temp"`,
+		`C:\Program Files\a`:  `"C:\Program Files\a"`,
+		`C:\weird"name\f.txt`: `"C:\weird""name\f.txt"`,
+		`.`:                   `"."`,
 	}
 	for in, want := range cases {
 		if got := quoteCmdPath(in); got != want {
@@ -83,8 +83,8 @@ func TestQuoteCmdPath(t *testing.T) {
 
 func TestQuoteShellSinglePosix(t *testing.T) {
 	cases := map[string]string{
-		"":             ".",
-		"/tmp/a b":     "'/tmp/a b'",
+		"":              ".",
+		"/tmp/a b":      "'/tmp/a b'",
 		"/tmp/it's.txt": `'/tmp/it'\''s.txt'`,
 	}
 	for in, want := range cases {

@@ -367,7 +367,7 @@ async function bootstrapApp() {
 const PAGE_PERMISSION_MAP = {
     dashboard: 'dashboard:read',
     chat: 'chat:read',
-    hitl: 'hitl:read',
+    hitl: 'approval:read',
     'info-collect': 'fofa:execute',
     assets: 'asset:read',
     'asset-overview': 'asset:read',
@@ -507,7 +507,7 @@ function applyRBACToUI(root) {
         const page = el.getAttribute('data-page');
         const permission = PAGE_PERMISSION_MAP[page];
         if (!permission) return;
-        const allowed = hasPermission(permission);
+        const allowed = Array.isArray(permission) ? hasAnyPermission(permission) : hasPermission(permission);
         el.hidden = !allowed;
         el.setAttribute('aria-hidden', allowed ? 'false' : 'true');
     });

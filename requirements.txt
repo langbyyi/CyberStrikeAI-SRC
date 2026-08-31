@@ -10,6 +10,9 @@ chardet>=5.2.0,<6
 arjun>=2.2.0
 uro>=1.0.2
 
+# Captcha OCR used by tools/ddddocr.yaml
+ddddocr>=1.5.6
+
 bloodhound>=1.6.1
 impacket>=0.11.0
 

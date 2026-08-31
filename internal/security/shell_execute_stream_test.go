@@ -1,9 +1,12 @@
+//go:build !windows
+
 package security
 
 import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +46,10 @@ func TestEinoStreamingShell_StreamsStderrBeforeStdoutEOF(t *testing.T) {
 }
 
 func TestEinoStreamingShell_SudoFailsFast(t *testing.T) {
+	// 前提是 sudo 在无终端时失败；验收机若配置了 NOPASSWD sudo，该路径不可测。
+	if err := exec.Command("sudo", "-n", "true").Run(); err == nil {
+		t.Skip("passwordless sudo is available; sudo failure path is not testable here")
+	}
 	shell := NewEinoStreamingShell()
 	cmd := PrepareNonInteractiveShellCommand("sudo whoami && sudo cat /etc/os-release")
 	sr, err := shell.ExecuteStreaming(context.Background(), &filesystem.ExecuteRequest{Command: cmd})

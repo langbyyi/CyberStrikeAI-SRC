@@ -19,9 +19,8 @@ parameters:
   - name: filter
     type: string
     required: false
-    flag: -c
-    format: combined
-    description: BPF 过滤器（与 -c 组合传入过滤器表达式），如 `port 80` `host 1.2.3.4`
+    format: positional
+    description: BPF 过滤器表达式（渲染于所有选项之后），如 `port 80` `host 1.2.3.4`；可含空格，整体作为表达式传给 tcpdump
   - name: count
     type: int
     required: false

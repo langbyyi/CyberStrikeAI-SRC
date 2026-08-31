@@ -12,9 +12,9 @@ parameters:
   - name: url
     type: string
     required: true
-    position: 0
-    format: positional
-    description: 目标 URL
+    flag: -u
+    format: flag
+    description: 目标 URL（-u/--url）
   - name: module
     type: string
     required: false
@@ -25,4 +25,4 @@ parameters:
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `--batch`(无交互) `-f html -o report`(输出)
+    description: 额外参数，如 `--level 2` `--flush-session` `-f html -o /tmp/report`(输出)

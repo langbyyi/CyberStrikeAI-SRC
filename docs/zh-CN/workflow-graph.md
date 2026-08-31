@@ -1,7 +1,5 @@
 # CyberStrikeAI 工作流使用说明
 
-[English](../en-US/workflow-graph.md)
-
 本文档说明 **工作流（Workflow）** 的完整使用方式：如何在画布上搭建流程、配置各类型节点、在节点之间传递数据，以及如何将流程绑定到角色并自动运行。
 
 ---
@@ -80,7 +78,7 @@ Content-Type: application/json
 | `nodeOutputs` | `{{节点ID.xxx}}` | 指定节点 ID 的完整输出对象 |
 | `metrics` | 运行详情中查看 | 节点耗时、工具调用数、可收集到的 token / cost 等指标 |
 
-### 3.1 `previous` 是什么？
+### 4.1 `previous` 是什么？
 
 `{{previous.output}}` 表示 **紧邻的上一个执行节点** 的 `output` 字段。
 
@@ -112,7 +110,7 @@ Agent B 的 `{{previous.output}}` = **条件节点** 的输出（`true` / `false
 | `first_non_empty` | 取第一个非空输出 | 多路兜底 |
 | `fail_fast` | 任一上游失败则中止当前节点 | 关键链路、审批前置、安全检查 |
 
-### 3.2 `outputs` 是什么？
+### 4.2 `outputs` 是什么？
 
 `outputs` 是引擎在运行过程中维护的 **命名变量注册表**。
 
@@ -131,7 +129,7 @@ outputs["你填的变量名"] = 节点输出内容
 
 即使 A 和 B 之间隔着条件节点，B 仍能拿到 A 的输出。
 
-### 3.3 什么时候用 `previous`，什么时候用 `outputs`？
+### 4.3 什么时候用 `previous`，什么时候用 `outputs`？
 
 | 场景 | 推荐写法 |
 |------|----------|
@@ -150,7 +148,7 @@ outputs["你填的变量名"] = 节点输出内容
 
 ## 五、模板语法
 
-### 4.1 基本格式
+### 5.1 基本格式
 
 ```text
 {{变量路径}}
@@ -167,7 +165,7 @@ outputs["你填的变量名"] = 节点输出内容
 {{node-abc123.output}}
 ```
 
-### 4.2 可用路径一览
+### 5.2 可用路径一览
 
 | 路径 | 说明 |
 |------|------|
@@ -193,7 +191,7 @@ outputs["你填的变量名"] = 节点输出内容
 }
 ```
 
-### 4.3 条件表达式
+### 5.3 条件表达式
 
 条件节点和连线条件支持比较、文本匹配、正则、逻辑组合与安全 JSONPath/JQ 路径读取：
 
@@ -218,7 +216,7 @@ jq({{outputs.scan}}, ".severity") == "high"
 - 无比较符时，非空且不为 `false` / `0` / `null` 视为真
 - 保存时会静态校验表达式格式、JSONPath/JQ 路径和正则语法
 
-### 4.4 嵌套字段绑定
+### 5.4 嵌套字段绑定
 
 节点的字段绑定除 `output`、`message` 等普通字段外，也支持 JSONPath/JQ 风格路径：
 
@@ -232,7 +230,7 @@ jq({{outputs.scan}}, ".severity") == "high"
 
 ## 六、节点类型与配置
 
-### 5.1 开始（start）
+### 6.1 开始（start）
 
 流程入口，将用户输入注入 `inputs`。
 
@@ -242,7 +240,7 @@ jq({{outputs.scan}}, ".severity") == "high"
 
 开始节点输出包含：`output`、`message`、`conversationId`、`projectId`。
 
-### 5.2 Agent（agent）
+### 6.2 Agent（agent）
 
 调用大模型 Agent 处理任务，支持多种运行模式。
 
@@ -266,7 +264,7 @@ Agent 节点执行后：
 - 若配置了 **输出变量名**，同时写入 `outputs[输出变量名]`
 - Agent 子图在 Eino 中拆为 `prepare → execute → finalize`，便于 trace 与后续局部 checkpoint
 
-### 5.3 工具（tool）
+### 6.3 工具（tool）
 
 调用已启用的 MCP 工具。
 
@@ -285,7 +283,7 @@ Agent 节点执行后：
 
 若配置了 **输出变量名**，工具返回结果会写入 `outputs`。
 
-### 5.4 条件（condition）
+### 6.4 条件（condition）
 
 根据表达式计算分支，输出 `matched`（`true` / `false`）。
 
@@ -308,7 +306,7 @@ Agent 节点执行后：
 {{previous.matched}} == "false"
 ```
 
-### 5.5 审批（hitl）
+### 6.5 审批（hitl）
 
 人工确认检查点。流程运行到该节点前会通过 Eino interrupt/checkpoint 暂停，等待 API 或监控面板审批后恢复。
 
@@ -326,7 +324,7 @@ HITL 等待信息会记录：
 - resume target / address / path
 - resume payload schema（`approved`、`comment`）
 
-### 5.6 输出（output）
+### 6.6 输出（output）
 
 将流程最终结果写入 `outputs`，供结束摘要和对话展示使用。
 
@@ -339,7 +337,7 @@ HITL 等待信息会记录：
 
 **注意：** 输出节点是流程的「出口」，不应再有出边。
 
-### 5.7 结束（end）
+### 6.7 结束（end）
 
 可选节点，用于生成结束摘要模板（角色绑定流程中较少单独使用）。
 
@@ -369,14 +367,14 @@ HITL 等待信息会记录：
 
 ## 八、完整示例：跨条件节点传递 Agent 输出
 
-### 7.1 流程结构
+### 8.1 流程结构
 
 ```text
 开始 → Agent（生成初始值）→ 条件 → Agent（加工）→ 输出
                               ↘ 否 → 输出
 ```
 
-### 7.2 节点配置
+### 8.2 节点配置
 
 **Agent 1（第一个 Agent）**
 
@@ -406,7 +404,7 @@ HITL 等待信息会记录：
 | 输出变量名 | `result` |
 | 变量来源 | `{{outputs.agent_result}}` |
 
-### 7.3 常见错误
+### 8.3 常见错误
 
 | 错误配置 | 原因 |
 |----------|------|
@@ -418,7 +416,7 @@ HITL 等待信息会记录：
 
 ## 九、绑定角色并运行
 
-### 8.1 在角色管理中绑定
+### 9.1 在角色管理中绑定
 
 1. 进入 **角色管理**，编辑或新建角色  
 2. 选择绑定的 **工作流** ID  
@@ -434,7 +432,7 @@ workflow_version: latest
 workflow_policy: auto
 ```
 
-### 8.2 运行效果
+### 9.2 运行效果
 
 用户选择该角色并发送消息后：
 
@@ -448,7 +446,7 @@ workflow_policy: auto
 
 ## 十、调试、试运行与复盘
 
-### 9.1 安全试运行（dry-run）
+### 10.1 安全试运行（dry-run）
 
 画布工具栏点击 **试运行**，输入一条测试消息即可模拟执行流程。
 
@@ -482,7 +480,7 @@ POST /api/workflows/dry-run
 - `metrics`
 - `replayScript`
 
-### 9.2 运行详情与 replay
+### 10.2 运行详情与 replay
 
 运行后可查询完整节点执行轨迹：
 
@@ -506,7 +504,7 @@ GET /api/workflows/runs/{runId}/replay
 
 该接口只根据已保存的 `nodeRuns` 生成步骤，不会重新执行工具或 Agent。
 
-### 9.3 指标（metrics）
+### 10.3 指标（metrics）
 
 工作流会尽量累计：
 

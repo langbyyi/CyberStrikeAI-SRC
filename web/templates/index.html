@@ -31,7 +31,7 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260819-4">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260831-3">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
     <link rel="stylesheet" href="/static/vendor/xterm.css">
@@ -1014,74 +1014,6 @@
                                 </div>
                             </div>
                             <div id="conversations-pagination" class="sidebar-list-pagination conversation-sidebar-pagination"></div>
-                            <div id="chat-reasoning-wrapper" class="chat-reasoning-wrapper conversation-reasoning-card conversation-reasoning-collapsed" style="display: none;">
-                                <button type="button" id="conversation-reasoning-toggle" class="conversation-reasoning-card-header" onclick="toggleConversationReasoningCard()" aria-expanded="false" aria-controls="conversation-reasoning-body" data-i18n="chat.sessionSettingsAria" data-i18n-attr="aria-label,title" data-i18n-skip-text="true" aria-label="会话设置" title="会话设置">
-                                    <div class="conversation-reasoning-heading">
-                                        <span class="conversation-reasoning-icon" aria-hidden="true">
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.75"/>
-                                                <path d="M16 16l5 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
-                                            </svg>
-                                        </span>
-                                        <div class="conversation-reasoning-heading-text">
-                                            <span class="conversation-reasoning-title" data-i18n="chat.sessionSettingsTitle">会话设置</span>
-                                            <span id="chat-reasoning-summary" class="conversation-reasoning-summary"></span>
-                                        </div>
-                                    </div>
-                                    <span class="sidebar-card-chevron conversation-reasoning-chevron" aria-hidden="true">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </span>
-                                </button>
-                                <div id="conversation-reasoning-body" class="conversation-reasoning-body" role="region">
-                                    <p class="chat-reasoning-panel-hint" data-i18n="chat.sessionSettingsHint">人机协同设置只影响后续消息。</p>
-                                    <div class="chat-reasoning-fields">
-	                                        <div class="chat-reasoning-field session-hitl-field session-settings-group">
-	                                            <div class="session-settings-group-title" data-i18n="chat.hitlTitle">人机协同</div>
-	                                            <div id="hitl-apply-feedback" class="hitl-apply-feedback" role="status" aria-live="polite"></div>
-	                                            <div class="hitl-sidebar-config session-hitl-config">
-	                                                <div class="hitl-config-field">
-	                                                    <label class="hitl-config-label" for="hitl-mode-select" data-i18n="chat.reasoningModeLabel">模式</label>
-	                                                    <select id="hitl-mode-select" class="hitl-config-select">
-	                                                        <option value="off" data-i18n="chat.hitlModeOff">关闭</option>
-	                                                        <option value="approval" data-i18n="chat.hitlModeApproval">审批模式</option>
-	                                                        <option value="review_edit" data-i18n="chat.hitlModeReviewEdit">审查编辑</option>
-	                                                    </select>
-	                                                </div>
-	                                                <div class="hitl-config-field" id="hitl-reviewer-field">
-	                                                    <label class="hitl-config-label" data-i18n="chat.hitlReviewerLabel">审批方</label>
-	                                                    <div class="hitl-reviewer-toggle" role="group" aria-label="Reviewer">
-	                                                        <button type="button" class="hitl-reviewer-toggle-btn is-active" data-reviewer="human" aria-pressed="true">
-	                                                            <span data-i18n="chat.hitlReviewerHuman">人工审批</span>
-	                                                        </button>
-	                                                        <button type="button" class="hitl-reviewer-toggle-btn" data-reviewer="audit_agent" aria-pressed="false">
-	                                                            <span data-i18n="chat.hitlReviewerAgent">审计 Agent</span>
-	                                                        </button>
-	                                                    </div>
-	                                                    <input type="hidden" id="hitl-reviewer-select" value="human" />
-	                                                    <p class="hitl-config-hint" data-i18n="chat.hitlReviewerHint">可在人工与审计 Agent 之间随时切换；规则与白名单不变。人机协同为「关闭」时也可预先选择。</p>
-	                                                </div>
-	                                                <div class="hitl-config-field" id="hitl-timeout-field">
-	                                                    <label class="hitl-config-label" for="hitl-timeout-select" data-i18n="chat.hitlTimeoutLabel">审批等待时限</label>
-	                                                    <select id="hitl-timeout-select" class="hitl-config-select">
-	                                                        <option value="60" data-i18n="chat.hitlTimeoutOneMinute">1 分钟</option>
-	                                                        <option value="300" selected data-i18n="chat.hitlTimeoutFiveMinutes">5 分钟</option>
-	                                                        <option value="600" data-i18n="chat.hitlTimeoutTenMinutes">10 分钟</option>
-	                                                        <option value="0" data-i18n="chat.hitlTimeoutUnlimited">不限制</option>
-	                                                    </select>
-	                                                    <p class="hitl-config-hint" data-i18n="chat.hitlTimeoutHint">到期未处理将自动拒绝；审批卡片会显示倒计时。</p>
-	                                                </div>
-	                                                <div class="hitl-config-field hitl-config-field--tools">
-	                                                    <label class="hitl-config-label" for="hitl-sensitive-tools" data-i18n="chat.hitlWhitelistTools">白名单工具（免审批，逗号分隔）</label>
-	                                                    <textarea id="hitl-sensitive-tools" class="hitl-config-textarea" rows="6" spellcheck="false" autocomplete="off" data-i18n="chat.hitlWhitelistPlaceholder" data-i18n-attr="placeholder" placeholder=""></textarea>
-	                                                    <p class="hitl-config-hint" data-i18n="chat.hitlWhitelistHint">每行一个或逗号分隔；与 config 中全局白名单合并生效。</p>
-	                                                </div>
-	                                            </div>
-	                                        </div>
-	                                    </div>
-	                                </div>
-	                            </div>
 	                        </aside>
                         
                         <!-- 分组详情页面 -->
@@ -1299,16 +1231,6 @@
                                                 <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                                             </svg>
                                         </button>
-                                        <button type="button" id="chat-hitl-shortcut" class="chat-session-shortcut chat-hitl-shortcut" onclick="openChatSessionSettings('hitl', event)" data-i18n="chat.sessionSettingsAria" data-i18n-attr="aria-label,title" data-i18n-skip-text="true" aria-label="打开会话设置" title="打开会话设置">
-                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                                <path d="M12 3l7 3v5c0 4.6-2.8 8.2-7 10-4.2-1.8-7-5.4-7-10V6l7-3z" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round"/>
-                                                <path d="M9.5 12l1.7 1.7 3.5-3.7" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                            <span id="chat-hitl-shortcut-text">Agent 审查：关闭</span>
-                                            <svg class="chat-session-shortcut-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                        </button>
                                     </div>
                                     <div class="chat-composer-footer-trailing">
                                         <div class="chat-ai-session-state" hidden>
@@ -1405,31 +1327,13 @@
                         </div>
                     </div>
                     <div class="page-content">
-                        <div class="hitl-page-reviewer-bar" id="hitl-page-reviewer-bar">
-                            <div class="hitl-page-reviewer-main">
-                                <span class="hitl-page-reviewer-label" data-i18n="hitl.pageReviewerLabel">当前审批方</span>
-                                <div class="hitl-reviewer-toggle hitl-reviewer-toggle--page" role="group" aria-label="Reviewer">
-                                    <button type="button" class="hitl-reviewer-toggle-btn is-active" data-reviewer="human" aria-pressed="true">
-                                        <span data-i18n="chat.hitlReviewerHuman">人工审批</span>
-                                    </button>
-                                    <button type="button" class="hitl-reviewer-toggle-btn" data-reviewer="audit_agent" aria-pressed="false">
-                                        <span data-i18n="chat.hitlReviewerAgent">审计 Agent</span>
-                                    </button>
-                                </div>
-                            </div>
-                            <p class="hitl-page-reviewer-hint" data-i18n="hitl.pageReviewerHint">作用于当前选中会话；未选会话时保存到本机，新建会话时沿用。切换后立即生效。</p>
-                        </div>
                         <div class="hitl-page-tabs" role="tablist">
                             <button type="button" class="hitl-page-tab hitl-page-tab--active" id="hitl-tab-pending" role="tab" aria-selected="true" onclick="switchHitlPageTab('pending')">
                                 <span data-i18n="hitl.tabPending">待审计</span>
                                 <span class="hitl-tab-badge" id="hitl-pending-count" hidden>0</span>
                             </button>
-                            <button type="button" class="hitl-page-tab" id="hitl-tab-strategy" role="tab" aria-selected="false" onclick="switchHitlPageTab('strategy')">
-                                <span data-i18n="hitl.tabStrategy">审计策略</span>
-                            </button>
-                            <button type="button" class="hitl-page-tab" id="hitl-tab-whitelist" role="tab" aria-selected="false" onclick="switchHitlPageTab('whitelist')">
-                                <span data-i18n="hitl.tabWhitelist">工具白名单</span>
-                            </button>
+                            <button type="button" class="hitl-page-tab" id="hitl-tab-policy" role="tab" aria-selected="false" onclick="switchHitlPageTab('policy')" data-i18n="hitl.tabPolicy">审批策略</button>
+                            <button type="button" class="hitl-page-tab" id="hitl-tab-rules" role="tab" aria-selected="false" onclick="switchHitlPageTab('rules')" data-i18n="hitl.tabRules">危险规则</button>
                             <button type="button" class="hitl-page-tab" id="hitl-tab-logs" role="tab" aria-selected="false" onclick="switchHitlPageTab('logs')">
                                 <span data-i18n="hitl.tabLogs">审计日志</span>
                             </button>
@@ -1445,6 +1349,83 @@
                             </div>
                             <div id="hitl-pending-list" class="hitl-pending-list"></div>
                             <div id="hitl-pending-pagination" class="hitl-pending-pagination"></div>
+                        </div>
+
+                        <div id="hitl-panel-policy" class="hitl-page-panel" hidden>
+                            <section class="approval-policy-console" aria-labelledby="approval-policy-title">
+                                <div class="approval-console-header">
+                                    <div>
+                                        <h3 id="approval-policy-title" data-i18n="hitl.policyTitle">统一审批策略</h3>
+                                        <p data-i18n="hitl.policyIntro">普通工具审批与危险操作审批相互独立；关闭普通工具审批不会关闭危险操作审批。</p>
+                                    </div>
+                                    <button type="button" class="btn-primary" id="approval-policy-save" data-require-permission="approval:policy:write" onclick="saveApprovalPolicies()" data-i18n="hitl.policySave" disabled>保存策略</button>
+                                </div>
+                                <div class="approval-scope-row">
+                                    <label><span data-i18n="hitl.policyReviewerLabel">统一审计方式</span>
+                                        <select id="approval-reviewer" class="hitl-filter-select" onchange="updateReviewerHint(this.value)">
+                                            <option value="human" data-i18n="hitl.reviewerHuman">人工审批</option>
+                                            <option value="agent" data-i18n="hitl.reviewerAgent">Agent 审批</option>
+                                        </select>
+                                    </label>
+                                    <label><span data-i18n="hitl.policyTimeoutLabel">审批超时（秒）</span>
+                                        <input id="approval-timeout-seconds" class="hitl-config-input" type="number" min="1" value="300" />
+                                    </label>
+                                </div>
+                                <p id="approval-reviewer-hint-human" class="approval-scope-hint" data-i18n="hitl.reviewerHintHuman" hidden>待审批将进入「待审计」列表由人工决策；超过超时时间未决策将自动作废。</p>
+                                <p id="approval-reviewer-hint-agent" class="approval-scope-hint" data-i18n="hitl.reviewerHintAgent" hidden>由审计 Agent 自动裁决；审计模型与提示词在「系统设置 → 审计 Agent 策略」中配置。</p>
+                                <div class="approval-policy-grid">
+                                    <article class="approval-policy-card">
+                                        <div class="approval-policy-card__heading">
+                                            <div><span class="approval-policy-kicker">HITL</span><h4 data-i18n="hitl.toolApprovalTitle">工具审批</h4></div>
+                                            <label class="approval-switch"><input id="approval-tool-enabled" type="checkbox" aria-label="工具审批开关" data-i18n="hitl.toolApprovalToggle" data-i18n-attr="aria-label" data-i18n-skip-text="true"><span></span></label>
+                                        </div>
+                                        <p data-i18n="hitl.toolApprovalDescription">对所有未列入白名单的工具调用发起审批。可以关闭，不影响危险操作硬闸。</p>
+                                        <label><span data-i18n="hitl.toolWhitelistLabel">工具白名单（每行一个）</span>
+                                            <textarea id="approval-tool-whitelist" class="hitl-page-whitelist-textarea" rows="6" spellcheck="false"></textarea>
+                                        </label>
+                                    </article>
+                                    <article class="approval-policy-card approval-policy-card--danger">
+                                        <div class="approval-policy-card__heading">
+                                            <div><span class="approval-policy-kicker">HARD GATE</span><h4 data-i18n="hitl.dangerGateTitle">危险操作硬闸</h4></div>
+                                            <label class="approval-switch approval-switch--danger"><input id="approval-danger-enabled" type="checkbox" aria-label="危险操作硬闸开关" data-i18n="hitl.dangerGateToggle" data-i18n-attr="aria-label" data-i18n-skip-text="true"><span></span></label>
+                                        </div>
+                                        <p data-i18n="hitl.dangerGateDescription">根据危险规则拦截命令、文件、HTTP、C2 和工作流操作；默认独立开启。</p>
+                                        <p data-i18n="hitl.dangerSharedReviewerNotice">命中危险规则后进入同一审批队列，并使用上方统一审计方式。</p>
+                                        <p class="approval-rule-count-line"><span id="approval-danger-rule-count">—</span>
+                                            <button type="button" class="btn-link" onclick="switchHitlPageTab('rules')" data-i18n="hitl.gotoRulesTab">前往危险规则页签管理</button></p>
+                                    </article>
+                                </div>
+                                <div id="approval-policy-feedback" class="hitl-apply-feedback" role="status" aria-live="polite" hidden></div>
+                            </section>
+                        </div>
+
+                        <div id="hitl-panel-rules" class="hitl-page-panel" hidden>
+                            <section class="approval-rules-console" aria-labelledby="approval-rules-title">
+                                <div class="approval-console-header">
+                                    <div><h3 id="approval-rules-title" data-i18n="hitl.rulesTitle">危险操作规则</h3><p data-i18n="hitl.rulesIntro">规则按优先级匹配；所有规则均可编辑、停用或删除。</p></div>
+                                    <button type="button" class="btn-secondary" onclick="resetApprovalRuleEditor()" data-i18n="hitl.newRule">新建规则</button>
+                                </div>
+                                <div class="approval-rules-layout">
+                                    <div id="approval-rules-list" class="approval-rules-list"></div>
+                                    <form id="approval-rule-editor" class="approval-rule-editor" onsubmit="publishApprovalRule(event)">
+                                        <p class="hitl-page-whitelist-hint" data-i18n="hitl.ruleGlobalNotice">规则在全局范围生效。</p>
+                                        <h4 data-i18n="hitl.ruleDraft">规则草案</h4>
+                                        <div class="approval-rule-fields">
+                                            <label><span data-i18n="hitl.ruleId">规则 ID</span><input id="approval-rule-id" class="hitl-config-input" required pattern="[A-Za-z0-9_.:\-]+" placeholder="custom.delete-production" /></label>
+                                            <label><span data-i18n="hitl.rulePriority">优先级</span><input id="approval-rule-priority" class="hitl-config-input" type="number" value="100" /></label>
+                                            <label><span data-i18n="hitl.riskLevel">风险等级</span><select id="approval-rule-risk" class="hitl-filter-select"><option value="low" data-i18n="hitl.riskLow">低</option><option value="medium" data-i18n="hitl.riskMedium">中</option><option value="high" selected data-i18n="hitl.riskHigh">高</option><option value="critical" data-i18n="hitl.riskCritical">严重</option><option value="prohibited" data-i18n="hitl.riskProhibited">禁止</option></select></label>
+                                        </div>
+                                        <label class="approval-rule-enabled"><input id="approval-rule-enabled" type="checkbox" checked> <span data-i18n="hitl.ruleEnableVersion">启用此版本</span></label>
+                                        <label><span data-i18n="hitl.ruleMatcherJson">匹配器 JSON</span><textarea id="approval-rule-matcher" class="hitl-page-whitelist-textarea" rows="10" spellcheck="false" required>{
+  "tools": ["exec"],
+  "textPatterns": ["(?i)rm\\s+-rf"]
+}</textarea></label>
+                                        <p class="hitl-page-whitelist-hint" data-i18n="hitl.ruleMatcherHint">支持 tools、httpMethods、pathPatterns、argumentPatterns、textPatterns、requireHttpTransport。</p>
+                                        <button type="submit" class="btn-primary" id="approval-rule-publish" data-require-permission="approval:policy:write" data-i18n="hitl.rulePublish">校验并发布</button>
+                                        <div id="approval-rule-feedback" class="hitl-apply-feedback" role="status" aria-live="polite" hidden></div>
+                                    </form>
+                                </div>
+                            </section>
                         </div>
 
                         <div id="hitl-panel-logs" class="hitl-page-panel" hidden>
@@ -1466,24 +1447,11 @@
                                     <select id="hitl-logs-decidedby-filter" class="hitl-filter-select">
                                         <option value="all" data-i18n="hitl.filterAll">全部</option>
                                         <option value="human" data-i18n="hitl.reviewerHuman">人工</option>
-                                        <option value="audit_agent" data-i18n="hitl.reviewerAgent">审计 Agent</option>
+                                        <option value="agent" data-i18n="hitl.reviewerAgent">审计 Agent</option>
                                         <option value="system" data-i18n="hitl.reviewerSystem">系统</option>
-                                        <option value="manual" data-i18n="hitl.reviewerManual">手动录入</option>
                                     </select>
                                 </label>
                                 <button type="button" class="btn-secondary" onclick="filterHitlLogs()" data-i18n="hitl.searchApply">搜索</button>
-                                <button type="button" class="btn-secondary btn-delete" data-require-permission="hitl:write" onclick="clearHitlLogs()" data-i18n="hitl.clearAll">清空</button>
-                            </div>
-                            <p id="hitl-logs-retention-hint" class="hitl-logs-retention-hint" hidden></p>
-                            <div id="hitl-logs-batch-actions" class="monitor-batch-actions" style="display: none;">
-                                <div class="batch-actions-info">
-                                    <span id="hitl-logs-selected-count" data-i18n="hitl.selectedCount" data-i18n-params='{"count":0}'>已选择 0 项</span>
-                                </div>
-                                <div class="batch-actions-buttons">
-                                    <button type="button" class="btn-secondary" onclick="selectAllHitlLogs()" data-i18n="hitl.selectAll">全选</button>
-                                    <button type="button" class="btn-secondary" onclick="deselectAllHitlLogs()" data-i18n="hitl.deselectAll">取消全选</button>
-                                    <button type="button" class="btn-secondary btn-delete" data-require-permission="hitl:write" onclick="batchDeleteHitlLogs()" data-i18n="hitl.batchDelete">批量删除</button>
-                                </div>
                             </div>
                             <div id="hitl-logs-table-wrap" class="hitl-logs-table-wrap">
                                 <div class="loading-spinner" data-i18n="hitl.loading">加载中...</div>
@@ -1491,38 +1459,6 @@
                             <div id="hitl-logs-pagination" class="hitl-logs-pagination"></div>
                         </div>
 
-                        <div id="hitl-panel-strategy" class="hitl-page-panel" hidden>
-                            <div class="hitl-page-strategy-bar" id="hitl-page-strategy-bar">
-                                <div class="hitl-page-strategy-header">
-                                    <span class="hitl-page-strategy-label" data-i18n="hitl.strategyLabel">审计策略</span>
-                                    <div class="hitl-page-strategy-actions">
-                                        <button type="button" class="btn-link" id="hitl-strategy-reset-btn" onclick="resetHitlAuditStrategy()" data-i18n="hitl.strategyReset">恢复默认</button>
-                                        <button type="button" class="btn-secondary" data-require-permission="hitl:write" id="hitl-strategy-save-btn" onclick="saveHitlAuditStrategy()" data-i18n="common.save">保存</button>
-                                    </div>
-                                </div>
-                                <div class="hitl-strategy-subtabs" role="tablist" aria-label="Audit strategy mode">
-                                    <button type="button" class="hitl-strategy-subtab hitl-strategy-subtab--active" id="hitl-strategy-tab-approval" role="tab" aria-selected="true" data-strategy-mode="approval" onclick="switchHitlStrategyMode('approval')" data-i18n="hitl.strategyTabApproval">审批模式</button>
-                                    <button type="button" class="hitl-strategy-subtab" id="hitl-strategy-tab-review-edit" role="tab" aria-selected="false" data-strategy-mode="review_edit" onclick="switchHitlStrategyMode('review_edit')" data-i18n="hitl.strategyTabReviewEdit">审查编辑模式</button>
-                                </div>
-                                <p class="hitl-page-strategy-hint" id="hitl-strategy-hint-approval" data-i18n="hitl.strategyHintApproval">白名单内工具免审批；审批模式下审计 Agent 仅裁决通过/拒绝。</p>
-                                <p class="hitl-page-strategy-hint" id="hitl-strategy-hint-review-edit" hidden data-i18n="hitl.strategyHintReviewEdit">审查编辑模式下审计 Agent 可通过 editedArguments 收窄参数后放行；无法安全改参时应拒绝。</p>
-                                <textarea id="hitl-audit-agent-prompt" class="hitl-strategy-textarea" rows="14" spellcheck="false" autocomplete="off"></textarea>
-                                <textarea id="hitl-audit-agent-prompt-review-edit" class="hitl-strategy-textarea" rows="14" spellcheck="false" autocomplete="off" hidden></textarea>
-                                <div id="hitl-strategy-feedback" class="hitl-apply-feedback" role="status" aria-live="polite" hidden></div>
-                            </div>
-                        </div>
-
-                        <div id="hitl-panel-whitelist" class="hitl-page-panel" hidden>
-                            <div class="hitl-page-whitelist-bar" id="hitl-page-whitelist-bar">
-                                <div class="hitl-page-whitelist-header">
-                                    <span class="hitl-page-whitelist-label" data-i18n="hitl.whitelistLabel">免审批工具白名单</span>
-                                    <button type="button" class="btn-secondary" data-require-permission="hitl:write" id="hitl-page-whitelist-save-btn" onclick="saveHitlPageWhitelist()" data-i18n="common.save">保存</button>
-                                </div>
-                                <p class="hitl-page-whitelist-hint" data-i18n="hitl.whitelistHint">每行一个或逗号分隔；保存后写入 config.yaml 全局白名单并立即生效（与聊天侧栏同步展示）。</p>
-                                <textarea id="hitl-page-sensitive-tools" class="hitl-page-whitelist-textarea" rows="6" spellcheck="false" autocomplete="off" data-i18n="chat.hitlWhitelistPlaceholder" data-i18n-attr="placeholder" placeholder=""></textarea>
-                                <div id="hitl-page-whitelist-feedback" class="hitl-apply-feedback" role="status" aria-live="polite" hidden></div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -1530,7 +1466,7 @@
                     <div class="modal-content hitl-log-modal-content">
                         <div class="modal-header">
                             <h3 id="hitl-log-modal-title" data-i18n="hitl.logModalView">审计日志详情</h3>
-                            <button type="button" class="modal-close" onclick="closeHitlLogModal()" aria-label="Close">&times;</button>
+                            <button type="button" class="modal-close" onclick="closeHitlLogModal()" aria-label="关闭" data-i18n="common.close" data-i18n-attr="aria-label" data-i18n-skip-text="true">&times;</button>
                         </div>
                         <div class="modal-body">
                             <div id="hitl-log-context-readonly" class="hitl-log-readonly-section" hidden></div>
@@ -1549,7 +1485,7 @@
                                     <dd id="hitl-log-detail-conversation" class="hitl-log-detail-mono">—</dd>
                                 </div>
                                 <div class="hitl-log-detail-row">
-                                    <dt data-i18n="hitl.colDecision">决策</dt>
+                                    <dt data-i18n="hitl.colReviewDecision">评审决定</dt>
                                     <dd id="hitl-log-detail-decision">—</dd>
                                 </div>
                                 <div class="hitl-log-detail-row">
@@ -1560,11 +1496,35 @@
                                     <dt data-i18n="hitl.colTime">时间</dt>
                                     <dd id="hitl-log-detail-time">—</dd>
                                 </div>
+                                <div class="hitl-log-detail-row">
+                                    <dt data-i18n="hitl.riskLevel">风险等级</dt>
+                                    <dd id="hitl-log-detail-risk">—</dd>
+                                </div>
+                                <div class="hitl-log-detail-row">
+                                    <dt data-i18n="hitl.triggerSources">触发源</dt>
+                                    <dd id="hitl-log-detail-triggers">—</dd>
+                                </div>
+                                <div class="hitl-log-detail-row hitl-log-detail-row--full">
+                                    <dt data-i18n="hitl.matchedRules">命中规则修订</dt>
+                                    <dd id="hitl-log-detail-rules">—</dd>
+                                </div>
+                                <div class="hitl-log-detail-row">
+                                    <dt data-i18n="hitl.colExecutionStatus">执行状态</dt>
+                                    <dd id="hitl-log-detail-execution-status">—</dd>
+                                </div>
+                                <div class="hitl-log-detail-row hitl-log-detail-row--full">
+                                    <dt data-i18n="hitl.executionSummary">执行摘要</dt>
+                                    <dd id="hitl-log-detail-execution-summary">—</dd>
+                                </div>
                                 <div class="hitl-log-detail-row hitl-log-detail-row--full" id="hitl-log-detail-comment-row" hidden>
                                     <dt data-i18n="hitl.fieldComment">备注</dt>
                                     <dd id="hitl-log-detail-comment">—</dd>
                                 </div>
                             </dl>
+                            <section class="approval-decision-chain" aria-labelledby="hitl-log-decision-chain-title">
+                                <div id="hitl-log-decision-chain-title" class="hitl-context-label" data-i18n="hitl.decisionChain">决定链</div>
+                                <div id="hitl-log-decision-chain" class="approval-decision-chain__list"></div>
+                            </section>
                             <div class="hitl-log-detail-payload" id="hitl-log-detail-payload-wrap" hidden>
                                 <div class="hitl-context-label" data-i18n="hitl.fieldPayload">载荷</div>
                                 <pre id="hitl-log-detail-payload" class="hitl-context-text"></pre>
@@ -1572,6 +1532,30 @@
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn-secondary" onclick="closeHitlLogModal()" data-i18n="common.close">关闭</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="approval-rule-view-modal" class="modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="approval-rule-view-modal-title">
+                    <div class="modal-content hitl-log-modal-content">
+                        <div class="modal-header">
+                            <h3 id="approval-rule-view-modal-title" data-i18n="hitl.ruleViewTitle">规则详情</h3>
+                            <button type="button" class="modal-close" onclick="closeApprovalRuleViewModal()" aria-label="关闭" data-i18n="common.close" data-i18n-attr="aria-label" data-i18n-skip-text="true">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <dl class="hitl-log-detail-meta">
+                                <div class="hitl-log-detail-row"><dt data-i18n="hitl.ruleId">规则 ID</dt><dd id="approval-rule-view-id">—</dd></div>
+                                <div class="hitl-log-detail-row"><dt data-i18n="hitl.rulePriority">优先级</dt><dd id="approval-rule-view-priority">—</dd></div>
+                                <div class="hitl-log-detail-row"><dt data-i18n="hitl.riskLevel">风险等级</dt><dd id="approval-rule-view-risk">—</dd></div>
+                                <div class="hitl-log-detail-row"><dt data-i18n="hitl.ruleViewStatus">状态</dt><dd id="approval-rule-view-status">—</dd></div>
+                            </dl>
+                            <div class="hitl-log-detail-payload" id="approval-rule-view-matcher-wrap">
+                                <div class="hitl-context-label" data-i18n="hitl.ruleMatcherJson">匹配器 JSON</div>
+                                <pre id="approval-rule-view-matcher" class="hitl-context-text"></pre>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn-secondary" onclick="closeApprovalRuleViewModal()" data-i18n="common.close">关闭</button>
                         </div>
                     </div>
                 </div>
@@ -3928,14 +3912,6 @@
                                 <div class="settings-subsection">
                                     <h4 data-i18n="settings.hitl.approvalTitle">审批配置</h4>
                                     <div class="settings-form">
-                                        <div class="form-group">
-                                            <label for="hitl-default-reviewer" data-i18n="settings.hitl.defaultReviewer">全局默认审批方</label>
-                                            <select id="hitl-default-reviewer" class="form-select">
-                                                <option value="human" data-i18n="chat.hitlReviewerHuman">人工审批</option>
-                                                <option value="audit_agent" data-i18n="chat.hitlReviewerAgent">审计 Agent</option>
-                                            </select>
-                                            <small class="form-hint" data-i18n="settings.hitl.defaultReviewerHint">未选会话和新建会话默认使用该审批方；会话侧栏仍可临时覆盖。</small>
-                                        </div>
                                         <div class="settings-subsection-header">
                                             <h5 data-i18n="settings.hitl.auditModelTitle">审计 Agent 模型</h5>
                                         </div>
@@ -3977,11 +3953,6 @@
                                             <input type="number" id="hitl-retention-days" min="0" step="1" placeholder="90" />
                                             <small class="form-hint" data-i18n="settings.hitl.retentionDaysHint">0 表示不自动清理；留空使用默认 90 天。</small>
                                         </div>
-                                        <div class="form-group">
-                                            <label for="hitl-tool-whitelist" data-i18n="settings.hitl.toolWhitelist">免审批工具白名单</label>
-                                            <textarea id="hitl-tool-whitelist" rows="4" spellcheck="false" autocomplete="off" data-i18n="settings.hitl.toolWhitelistPlaceholder" data-i18n-attr="placeholder" placeholder="read_file, list_dir, glob"></textarea>
-                                            <small class="form-hint" data-i18n="settings.hitl.toolWhitelistHint">每行一个或逗号分隔；白名单工具不会触发人机协同审批。</small>
-                                        </div>
                                     </div>
                                 </div>
 
@@ -3992,11 +3963,6 @@
                                             <label for="hitl-audit-agent-prompt-settings" data-i18n="settings.hitl.auditPromptApproval">审批模式提示词</label>
                                             <textarea id="hitl-audit-agent-prompt-settings" rows="10" spellcheck="false" autocomplete="off"></textarea>
                                             <small class="form-hint" data-i18n="settings.hitl.auditPromptHint">留空时使用后端内置默认策略。</small>
-                                        </div>
-                                        <div class="form-group">
-                                            <label for="hitl-audit-agent-prompt-review-edit-settings" data-i18n="settings.hitl.auditPromptReviewEdit">审查编辑模式提示词</label>
-                                            <textarea id="hitl-audit-agent-prompt-review-edit-settings" rows="10" spellcheck="false" autocomplete="off"></textarea>
-                                            <small class="form-hint" data-i18n="settings.hitl.auditPromptReviewEditHint">审查编辑模式可通过 editedArguments 收窄参数后放行。</small>
                                         </div>
                                     </div>
                                 </div>
@@ -6890,7 +6856,9 @@
     <script src="/static/js/monitor.js?v=20260819-3"></script>
     <script src="/static/js/chat.js?v=20260819-5"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
-    <script src="/static/js/hitl.js?v=20260819-1"></script>
+    <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
+    <script src="/static/js/approval-ui.js?v=20260831-6"></script>
+    <script src="/static/js/hitl.js?v=20260828-1"></script>
     <script src="/static/js/settings.js?v=20260717-1"></script>
     <script src="/static/js/audit-datetime-picker.js"></script>
     <script src="/static/js/audit.js"></script>

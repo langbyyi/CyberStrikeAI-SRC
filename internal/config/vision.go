@@ -4,18 +4,18 @@ import "strings"
 
 // VisionConfig 独立视觉模型与 analyze_image 工具参数；enabled 时注册 MCP 工具 analyze_image。
 type VisionConfig struct {
-	Enabled         bool     `yaml:"enabled" json:"enabled"`
-	APIKey          string   `yaml:"api_key,omitempty" json:"api_key,omitempty"`
-	BaseURL         string   `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Model           string   `yaml:"model,omitempty" json:"model,omitempty"`
-	Provider        string   `yaml:"provider,omitempty" json:"provider,omitempty"`
-	TimeoutSeconds  int      `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
-	MaxImageBytes   int64    `yaml:"max_image_bytes,omitempty" json:"max_image_bytes,omitempty"`
-	MaxDimension    int      `yaml:"max_dimension,omitempty" json:"max_dimension,omitempty"`
-	JPEGQuality     int      `yaml:"jpeg_quality,omitempty" json:"jpeg_quality,omitempty"`
-	MaxPayloadBytes          int64 `yaml:"max_payload_bytes,omitempty" json:"max_payload_bytes,omitempty"`
-	SkipPreprocessBelowBytes int64 `yaml:"skip_preprocess_below_bytes,omitempty" json:"skip_preprocess_below_bytes,omitempty"` // 0=始终压缩；默认 2MB 且长边已<=max_dimension 时原图直传
-	Detail string `yaml:"detail,omitempty" json:"detail,omitempty"` // low | high | auto
+	Enabled                  bool   `yaml:"enabled" json:"enabled"`
+	APIKey                   string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
+	BaseURL                  string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Model                    string `yaml:"model,omitempty" json:"model,omitempty"`
+	Provider                 string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	TimeoutSeconds           int    `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
+	MaxImageBytes            int64  `yaml:"max_image_bytes,omitempty" json:"max_image_bytes,omitempty"`
+	MaxDimension             int    `yaml:"max_dimension,omitempty" json:"max_dimension,omitempty"`
+	JPEGQuality              int    `yaml:"jpeg_quality,omitempty" json:"jpeg_quality,omitempty"`
+	MaxPayloadBytes          int64  `yaml:"max_payload_bytes,omitempty" json:"max_payload_bytes,omitempty"`
+	SkipPreprocessBelowBytes int64  `yaml:"skip_preprocess_below_bytes,omitempty" json:"skip_preprocess_below_bytes,omitempty"` // 0=始终压缩；默认 2MB 且长边已<=max_dimension 时原图直传
+	Detail                   string `yaml:"detail,omitempty" json:"detail,omitempty"`                                           // low | high | auto
 }
 
 func (v VisionConfig) TimeoutSecondsEffective() int {

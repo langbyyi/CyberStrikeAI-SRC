@@ -149,7 +149,7 @@ async function refreshDashboard() {
             // 仅取 total 字段，page_size=1 减少传输；total 已涵盖内部 + 外部 MCP + 直接注册的工具。
             fetchJson('/api/config/tools?page=1&page_size=1&include_external=false'),
             // HITL 待审批：用于「需要立即处理」告警条 + 推荐操作
-            fetchJson('/api/hitl/pending'),
+            fetchJson('/api/approvals?status=pending_human&limit=200'),
             // 通知摘要：since=0 拿最新一批，limit 控制大小；用于「最近事件」内联展示
             fetchJson('/api/notifications/summary?since=0&limit=20&lang=' + encodeURIComponent((window.__locale || 'zh-CN'))),
             // External MCP 健康度
@@ -937,8 +937,11 @@ function renderExternalMcpHealth(stats) {
 // HITL 待审批数量：返回 pending 项数；同时可在能力总览或 KPI 副标里使用
 function getHitlPendingCount(res) {
     if (!res) return 0;
-    if (Array.isArray(res.items)) return res.items.length;
+    if (window.ApprovalUIModel && typeof window.ApprovalUIModel.pendingCount === 'function') {
+        return window.ApprovalUIModel.pendingCount(res);
+    }
     if (typeof res.total === 'number') return res.total;
+    if (Array.isArray(res.items)) return res.items.length;
     if (Array.isArray(res)) return res.length;
     return 0;
 }

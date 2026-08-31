@@ -15,10 +15,10 @@
 ### 核心能力
 
 - **AI 决策引擎**：兼容 OpenAI 协议（GPT / Claude / DeepSeek / GLM 等）
-- **90+ 内置工具**：覆盖完整 kill chain（nmap、masscan、sqlmap、nuclei、subfinder、fofa_search 等）
+- **170+ 可用工具**（116 个 YAML 声明工具 + 55 个内置 MCP 工具）：覆盖完整 kill chain（nmap、masscan、sqlmap、nuclei、subfinder、fofa_search 等）
 - **智能编排（CloudWeGo Eino ADK）**：单代理模式，支持上下文摘要、跨轮轨迹软续跑、瞬态重试
-- **角色化测试**：渗透 / CTF / EDUSRC / 企业 SRC 等 15 个预设角色，按场景定制提示与工具集
-- **Skills 技能库**：64 个漏洞方法 Skill，覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型
+- **角色化测试**：18 个预设角色（官方 13 个 + 本分支新增 EDUSRC / 企业 SRC / 小程序 / 移动 / IoT 五个场景角色），按场景定制提示与工具集
+- **Skills 技能库**：64 个技能包（官方 23 个），覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型与侦察方法论
 - **漏洞全生命周期**：record / list / get / update / delete，5 工具齐全
 - **知识库（RAG）**：向量检索 + 自动索引
 - **Web UI、审计日志、SQLite 持久化**；批量任务、会话分组、人机协同（HITL）
@@ -29,13 +29,16 @@
 
 - **可复现强制**：`record_vulnerability` 落库前校验本会话对该目标的真实完成工具探测证据，杜绝编造/不可复现漏洞入库。
 - **SRC 漏洞报告**：补 9 个 SRC 提交必备字段（category / auth_required / test_account / test_password / vuln_urls / network_segment / developer / poc_script / tool_call_id），支持 `enterprise_src` / `edusrc` / `generic` 三套模板，**导出时选模板**。
-- **FOFA 多引擎 agent 工具**：`fofa_search` MCP 工具原生支持 fofa / quake / shodan / zoomeye 四引擎协议 + 自然语言转查询语法（官方仅有 HTTP handler，agent 无法调）。
+- **FOFA 多引擎 agent 工具**：`fofa_search` MCP 工具原生支持 fofa / quake / shodan / zoomeye 四引擎协议 + 自然语言转查询语法（官方仅有 HTTP handler，agent 无法调）；含多端点 fallback、size/total 语义归一化（中转站/官方 API 兼容）与路径自动补齐。
 - **ddddocr 验证码识别**：OCR 文字验证码 / 点选定位 / 滑块缺口，配合登录爆破等场景。
 - **提示词 SRC 化**：四条铁律 + 分级记录 + 攻击面优先级 + 利用链 + 赏金心态，针对授权 SRC 场景优化。
 - **orphan tool 消息规范化**：修复工具返回后偶发网关 400（移植自 v1.6.52-src）。
 - **剔除治理层**：移除 execution_controller / skill_router / session_intent / coverage / finalization / depth_force / evidence_policy 等 ~20 个控制层，释放 agent 链式挖掘自主性。保留可复现 + 敏感接口两道硬门。
 - **浏览器交互式挖洞**：`browser-assisted-hunting` skill 提供双账号越权对比 / DOM XSS 渲染取证 / 验证码登录 / 前端隐藏功能绕过打法，`external_mcp` 一段配置接入 Playwright 官方 MCP（示例见 config.example.yaml），浏览器工具调用同样计入可复现证据链。
 - **弱模型报告净化**：双重转义的字面换行写库前统一还原（已含真实换行的字段跳过、Windows 路径与凭据字段保护），导出文件名分类前缀去重，复现步骤强制 Step 1 起步。
+- **通用联网搜索**：`web_search` MCP 工具（Tavily 驱动），Agent 可检索实时资讯、历史 CVE 与漏洞情报；`websearch` 配置段或 `TAVILY_API_KEY` 环境变量接入。
+- **Eino 显式完成协议**：仅当根 Agent 的 `exit(final_result=...)` 真实执行后才允许最终化，过程说明不再被误判为最终回复；缺失完成信号时自动续跑兜底。
+- **红队工具箱扩展**：新增 msfconsole / frida / evil-winrm / aircrack-ng / wfuzz / searchsploit / theHarvester 等一批红队与信息收集向工具 YAML，覆盖内网 / 无线 / 移动 / OSINT 场景。
 
 ## 版本同步
 
@@ -54,14 +57,15 @@
 
 ```bash
 git clone https://github.com/langbyyi/CyberStrikeAI-SRC && cd CyberStrikeAI-SRC
-cp config.example.yaml config.yaml   # 编辑配置（模型/FOFA/API Key 等）
 ./run.sh
 ```
 
-`run.sh` 会自动校验环境、拉取依赖、编译并启动服务。默认使用 HTTP：
+首次启动会自动从 `config.example.yaml` 生成 `config.yaml`；服务启动后再按需填写模型、FOFA 和其他 API Key。
 
-- 访问地址：<http://127.0.0.1:8080/>
-- HTTPS 启动：`./run.sh --https`
+`run.sh` 会自动校验环境、拉取依赖、编译并启动服务。默认使用 HTTPS（自签证书 + HTTP/2）：
+
+- 访问地址：<https://127.0.0.1:8080/>（自签证书，浏览器会提示不受信任）
+- 明文 HTTP 启动：`./run.sh --http`
 
 ### 首次配置
 

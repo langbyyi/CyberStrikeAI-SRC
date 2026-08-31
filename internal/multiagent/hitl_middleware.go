@@ -5,15 +5,17 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
+
+	"cyberstrike-ai/internal/approval"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
-type hitlInterceptorKey struct{}
-
-type HITLToolInterceptor func(ctx context.Context, toolName, arguments string) (string, error)
+type approvalInterceptorKey struct{}
+type ApprovalToolInterceptor func(ctx context.Context, toolName, arguments string) (context.Context, string, error)
 
 type humanRejectError struct {
 	reason string
@@ -35,19 +37,119 @@ func IsHumanRejectError(err error) bool {
 	return errors.As(err, &target)
 }
 
-func WithHITLToolInterceptor(ctx context.Context, fn HITLToolInterceptor) context.Context {
+func WithApprovalToolInterceptor(ctx context.Context, fn ApprovalToolInterceptor) context.Context {
 	if fn == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, hitlInterceptorKey{}, fn)
+	return context.WithValue(ctx, approvalInterceptorKey{}, fn)
 }
 
 // hitlToolCallMiddleware 同时注册 Invokable 与 Streamable。
 // Eino filesystem 的 execute 为流式工具（StreamableTool），仅挂 Invokable 时人机协同不会拦截，会直接执行。
+// hitlToolCallMiddleware 是统一的工具拦截链（Phase 2b 退役后单链化）：
+// 仅保留统一审批管线层。旧 HITL 运行时路径已退役，
+// 不再参与裁决；人拒的软结果与 returnDirectly 清理由本层承接（三坑修复保留）。
 func hitlToolCallMiddleware() compose.ToolMiddleware {
 	return compose.ToolMiddleware{
-		Invokable:  hitlInvokableToolCallMiddleware(),
-		Streamable: hitlStreamableToolCallMiddleware(),
+		Invokable:  approvalInvokableToolCallMiddleware(),
+		Streamable: approvalStreamableToolCallMiddleware(),
+	}
+}
+
+func approvalInvokableToolCallMiddleware() compose.InvokableToolMiddleware {
+	return func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
+		return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+			if input != nil {
+				if fn, ok := ctx.Value(approvalInterceptorKey{}).(ApprovalToolInterceptor); ok && fn != nil {
+					approvedCtx, frozenArgs, err := fn(ctx, input.Name, input.Arguments)
+					if err != nil {
+						if IsHumanRejectError(err) {
+							// 人拒必须是软工具结果（模型可继续迭代）：
+							// - tool_search 拒绝结果须保持 JSON 形状，否则 Eino toolsearch
+							//   中间件解析历史时会硬崩 ChatModel；
+							// - transfer_to_agent 在 Eino 中 returnDirectly：拒绝时未执行
+							//   真实工具，必须清掉该标记，否则监督者直接 END 不再迭代。
+							hitlClearReturnDirectlyIfTransfer(ctx, input.Name)
+							return &compose.ToolOutput{Result: HitlRejectToolResult(input.Name, err.Error())}, nil
+						}
+						return nil, err
+					}
+					if approvedCtx != nil {
+						// Grant ctx + ExecutionFinalizer 透传给下游执行。
+						ctx = approvedCtx
+					}
+					if frozenArgs != "" {
+						input.Arguments = frozenArgs
+					}
+				}
+			}
+			out, err := next(ctx, input)
+			if finalizer, ok := approval.ExecutionFinalizerFromContext(ctx); ok {
+				result := approval.ExecutionResult{Success: err == nil, CompletedAt: time.Now().UTC()}
+				if out != nil {
+					result.Summary = out.Result
+				}
+				if err != nil {
+					result.Summary = err.Error()
+				}
+				if finalizeErr := finalizer(ctx, result); finalizeErr != nil && err == nil {
+					return nil, finalizeErr
+				}
+			}
+			return out, err
+		}
+	}
+}
+
+func approvalStreamableToolCallMiddleware() compose.StreamableToolMiddleware {
+	return func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
+		return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
+			if input != nil {
+				if fn, ok := ctx.Value(approvalInterceptorKey{}).(ApprovalToolInterceptor); ok && fn != nil {
+					approvedCtx, frozenArgs, err := fn(ctx, input.Name, input.Arguments)
+					if err != nil {
+						if IsHumanRejectError(err) {
+							// 与 Invokable 路径相同的三坑处理（见上）。
+							hitlClearReturnDirectlyIfTransfer(ctx, input.Name)
+							return &compose.StreamToolOutput{
+								Result: schema.StreamReaderFromArray([]string{HitlRejectToolResult(input.Name, err.Error())}),
+							}, nil
+						}
+						return nil, err
+					}
+					if approvedCtx != nil {
+						// Grant ctx + ExecutionFinalizer 透传给下游执行。
+						ctx = approvedCtx
+					}
+					if frozenArgs != "" {
+						input.Arguments = frozenArgs
+					}
+				}
+			}
+			out, err := next(ctx, input)
+			finalizer, finalize := approval.ExecutionFinalizerFromContext(ctx)
+			if !finalize {
+				return out, err
+			}
+			result := approval.ExecutionResult{Success: err == nil, CompletedAt: time.Now().UTC()}
+			if err == nil && out != nil {
+				var collectErr error
+				result.Summary, collectErr = hitlCollectStringStream(out.Result)
+				if collectErr != nil {
+					err = collectErr
+					result.Success = false
+					result.Summary = collectErr.Error()
+				} else {
+					out.Result = schema.StreamReaderFromArray([]string{result.Summary})
+				}
+			} else if err != nil {
+				result.Summary = err.Error()
+			}
+			if finalizeErr := finalizer(ctx, result); finalizeErr != nil && err == nil {
+				return nil, finalizeErr
+			}
+			return out, err
+		}
 	}
 }
 
@@ -66,25 +168,6 @@ func hitlClearReturnDirectlyIfTransfer(ctx context.Context, toolName string) {
 	})
 }
 
-func hitlEditedArgumentsNotice(original, edited string) string {
-	original = strings.TrimSpace(original)
-	edited = strings.TrimSpace(edited)
-	if edited == "" || edited == original {
-		return ""
-	}
-	return "[HITL] Human reviewer approved this tool call with edited arguments.\n" +
-		"Original arguments: " + original + "\n" +
-		"Executed arguments: " + edited + "\n\n"
-}
-
-func hitlPrependEditedArgumentsNotice(result, original, edited string) string {
-	notice := hitlEditedArgumentsNotice(original, edited)
-	if notice == "" {
-		return result
-	}
-	return notice + result
-}
-
 func hitlCollectStringStream(sr *schema.StreamReader[string]) (string, error) {
 	if sr == nil {
 		return "", nil
@@ -100,87 +183,5 @@ func hitlCollectStringStream(sr *schema.StreamReader[string]) (string, error) {
 			return b.String(), err
 		}
 		b.WriteString(chunk)
-	}
-}
-
-func hitlInvokableToolCallMiddleware() compose.InvokableToolMiddleware {
-	return func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
-		return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
-			originalArgs := ""
-			editedArgs := ""
-			if input != nil {
-				if fn, ok := ctx.Value(hitlInterceptorKey{}).(HITLToolInterceptor); ok && fn != nil {
-					originalArgs = input.Arguments
-					edited, err := fn(ctx, input.Name, input.Arguments)
-					if err != nil {
-						if IsHumanRejectError(err) {
-							// Human rejection should be a soft tool result so the model can continue iterating.
-							// tool_search 须保持 JSON，否则 Eino toolsearch 中间件解析历史时会硬崩 ChatModel。
-							msg := HitlRejectToolResult(input.Name, err.Error())
-							// transfer_to_agent 在 Eino 中标记为 returnDirectly：工具成功后 ReAct 子图会直接 END，
-							// 并依赖真实工具内的 SendToolGenAction 触发移交。HITL 拒绝时不会执行真实工具，
-							// 若仍走 returnDirectly 分支，监督者会在无 Transfer 动作的情况下结束，模型不再迭代。
-							hitlClearReturnDirectlyIfTransfer(ctx, input.Name)
-							return &compose.ToolOutput{Result: msg}, nil
-						}
-						return nil, err
-					}
-					if edited != "" {
-						editedArgs = edited
-						input.Arguments = edited
-					}
-				}
-			}
-			out, err := next(ctx, input)
-			if err != nil || out == nil {
-				return out, err
-			}
-			out.Result = hitlPrependEditedArgumentsNotice(out.Result, originalArgs, editedArgs)
-			return out, nil
-		}
-	}
-}
-
-func hitlStreamableToolCallMiddleware() compose.StreamableToolMiddleware {
-	return func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
-		return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
-			originalArgs := ""
-			editedArgs := ""
-			if input != nil {
-				if fn, ok := ctx.Value(hitlInterceptorKey{}).(HITLToolInterceptor); ok && fn != nil {
-					originalArgs = input.Arguments
-					edited, err := fn(ctx, input.Name, input.Arguments)
-					if err != nil {
-						if IsHumanRejectError(err) {
-							msg := HitlRejectToolResult(input.Name, err.Error())
-							hitlClearReturnDirectlyIfTransfer(ctx, input.Name)
-							return &compose.StreamToolOutput{
-								Result: schema.StreamReaderFromArray([]string{msg}),
-							}, nil
-						}
-						return nil, err
-					}
-					if edited != "" {
-						editedArgs = edited
-						input.Arguments = edited
-					}
-				}
-			}
-			out, err := next(ctx, input)
-			if err != nil || out == nil {
-				return out, err
-			}
-			if hitlEditedArgumentsNotice(originalArgs, editedArgs) == "" {
-				return out, nil
-			}
-			result, collectErr := hitlCollectStringStream(out.Result)
-			if collectErr != nil {
-				return nil, collectErr
-			}
-			out.Result = schema.StreamReaderFromArray([]string{
-				hitlPrependEditedArgumentsNotice(result, originalArgs, editedArgs),
-			})
-			return out, nil
-		}
 	}
 }

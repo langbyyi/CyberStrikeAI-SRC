@@ -1,97 +1,53 @@
 package handler
 
-import (
-	"strings"
-)
+import "strings"
 
+// hitlCognitionState only retains user-authored declarations that can establish
+// approval scope. Assistant reasoning and plans are intentionally excluded.
 type hitlCognitionState struct {
-	AssistantMessageID string
-	UserMessage        string
-	Thinking           string
-	ReasoningChain     string
-	Planning           string
+	UserMessages []string
 }
 
-// GetHitlCognition 返回当前运行任务上缓存的本轮 HITL 上下文（不含会话历史）。
-func (m *AgentTaskManager) GetHitlCognition(conversationID string) hitlCognitionFields {
+func (m *AgentTaskManager) GetHitlUserMessages(conversationID string) []string {
 	conversationID = strings.TrimSpace(conversationID)
 	if m == nil || conversationID == "" {
-		return hitlCognitionFields{}
+		return nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	t, ok := m.tasks[conversationID]
-	if !ok || t == nil || t.hitlCognition == nil {
-		return hitlCognitionFields{}
+	t := m.tasks[conversationID]
+	if t == nil || t.hitlCognition == nil {
+		return nil
 	}
-	c := t.hitlCognition
-	return hitlCognitionFields{
-		UserMessage:    c.UserMessage,
-		Thinking:       c.Thinking,
-		ReasoningChain: c.ReasoningChain,
-		Planning:       c.Planning,
-	}
+	return append([]string(nil), t.hitlCognition.UserMessages...)
 }
 
-// ResetHitlCognition 新任务开始时重置本轮 HITL 上下文。
-func (m *AgentTaskManager) ResetHitlCognition(conversationID, userMessage string) {
+// RecordHitlUserDeclaration records user-authored text that may establish an
+// approval scope for the currently running task.
+func (m *AgentTaskManager) RecordHitlUserDeclaration(conversationID, message string) {
 	conversationID = strings.TrimSpace(conversationID)
 	if m == nil || conversationID == "" {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.tasks[conversationID]
-	if !ok || t == nil {
-		return
-	}
-	t.hitlCognition = &hitlCognitionState{UserMessage: strings.TrimSpace(userMessage)}
-}
-
-// SetHitlAssistantMessageID 记录当前助手消息 ID，供 HITL 与 DB 回退对齐。
-func (m *AgentTaskManager) SetHitlAssistantMessageID(conversationID, assistantMessageID string) {
-	conversationID = strings.TrimSpace(conversationID)
-	assistantMessageID = strings.TrimSpace(assistantMessageID)
-	if m == nil || conversationID == "" || assistantMessageID == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.tasks[conversationID]
-	if !ok || t == nil {
+	t := m.tasks[conversationID]
+	if t == nil {
 		return
 	}
 	if t.hitlCognition == nil {
 		t.hitlCognition = &hitlCognitionState{}
 	}
-	t.hitlCognition.AssistantMessageID = assistantMessageID
+	appendHitlUserMessage(t.hitlCognition, message)
 }
 
-// UpdateHitlCognitionSnapshot 从进行中的进度流快照更新 thinking / reasoning / planning。
-func (m *AgentTaskManager) UpdateHitlCognitionSnapshot(conversationID, assistantMessageID, thinking, reasoningChain, planning string) {
-	conversationID = strings.TrimSpace(conversationID)
-	if m == nil || conversationID == "" {
+func appendHitlUserMessage(state *hitlCognitionState, message string) {
+	message = strings.TrimSpace(message)
+	if state == nil || message == "" {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.tasks[conversationID]
-	if !ok || t == nil {
+	if n := len(state.UserMessages); n > 0 && state.UserMessages[n-1] == message {
 		return
 	}
-	if t.hitlCognition == nil {
-		t.hitlCognition = &hitlCognitionState{}
-	}
-	if id := strings.TrimSpace(assistantMessageID); id != "" {
-		t.hitlCognition.AssistantMessageID = id
-	}
-	if s := strings.TrimSpace(thinking); s != "" {
-		t.hitlCognition.Thinking = s
-	}
-	if s := strings.TrimSpace(reasoningChain); s != "" {
-		t.hitlCognition.ReasoningChain = s
-	}
-	if s := strings.TrimSpace(planning); s != "" {
-		t.hitlCognition.Planning = s
-	}
+	state.UserMessages = append(state.UserMessages, message)
 }

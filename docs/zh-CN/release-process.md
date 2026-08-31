@@ -6,7 +6,7 @@
 
 发布前检查：
 
-- `README.md` 和 `README_CN.md` 的功能说明是否更新。
+- `README.md` 的功能说明是否更新。
 - `docs/` 是否补充新功能文档。
 - `config.yaml` 示例是否包含新增配置。
 - OpenAPI 是否包含新增接口。
@@ -53,7 +53,7 @@ go build -o cyberstrike-ai ./cmd/server
 - `skills/`
 - `agents/`
 - `docs/`
-- `README.md` / `README_CN.md`
+- `README.md`
 - `LICENSE`
 
 不要把本地 `data/`、真实 `config.yaml` 密钥、上传附件和日志打进公开发布包。

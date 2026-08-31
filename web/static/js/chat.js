@@ -142,7 +142,6 @@ let multiAgentAPIEnabled = false;
 let chatAIChannels = {};
 let chatDefaultAIChannel = '';
 let chatAIChannelIdByNormalizedId = {};
-let chatHitlAuditModelName = '';
 let chatSystemModelRequestSeq = 0;
 let chatSystemModelSaving = false;
 let chatSystemModelCloseTimer = null;
@@ -152,195 +151,11 @@ let chatSystemModelLoadError = '';
 const CHAT_SYSTEM_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const chatSystemModelCache = new Map();
 
-// 人机协同（HITL）会话级配置
-const HITL_STORAGE_PREFIX = 'cyberstrike-chat-hitl';
-const HITL_DRAFT_KEY = 'cyberstrike-chat-hitl-draft';
-/** 跨会话记忆：用户最近一次在侧栏选择的 HITL 偏好（与 hitl.js 中 readHitlGlobalLast 使用同一 key） */
-const HITL_GLOBAL_LAST_KEY = `${HITL_STORAGE_PREFIX}:__last__`;
-const HITL_MODE_OFF = 'off';
-const HITL_MODE_APPROVAL = 'approval';
-const HITL_MODE_REVIEW_EDIT = 'review_edit';
-const HITL_MODE_OPTIONS = [HITL_MODE_OFF, HITL_MODE_APPROVAL, HITL_MODE_REVIEW_EDIT];
-const DEFAULT_HITL_TIMEOUT_SECONDS = 300;
-// Agent orchestration/control tools are safe baseline exemptions for every
-// conversation. Keep this separate from config.tool_whitelist: the latter is
-// enforced globally by the backend and must not be copied into this field.
-const DEFAULT_HITL_SESSION_TOOL_WHITELIST = 'tool_search, skill, task, write_todos, transfer_to_agent, exit, TaskCreate, TaskGet, TaskUpdate, TaskList, upsert_project_fact, get_project_fact';
-let hitlApplyFeedbackTimer = null;
-let hitlAutoSaveTimer = null;
-let hitlConfigSyncConversationId = '';
-let hitlConfigSyncPromise = Promise.resolve();
-const sessionSettingsSelects = new Map();
-let sessionSettingsSelectDocBound = false;
 
-function sessionSettingsSelectLabel(option) {
-    return option ? (option.textContent || option.label || option.value || '') : '';
-}
-
-function syncSessionSettingsSelect(select) {
-    const reg = sessionSettingsSelects.get(select);
-    if (!reg) return;
-    const selected = select.options[select.selectedIndex];
-    reg.value.textContent = sessionSettingsSelectLabel(selected);
-    reg.trigger.disabled = !!select.disabled;
-    reg.wrapper.classList.toggle('is-disabled', !!select.disabled);
-    reg.menu.innerHTML = '';
-
-    Array.prototype.forEach.call(select.options, function (option, index) {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'session-settings-select-option';
-        item.setAttribute('role', 'option');
-        item.setAttribute('data-index', String(index));
-        item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
-        item.disabled = !!option.disabled;
-        item.classList.toggle('is-selected', !!option.selected);
-
-        const label = document.createElement('span');
-        label.className = 'session-settings-select-option-label';
-        label.textContent = sessionSettingsSelectLabel(option);
-        item.appendChild(label);
-        reg.menu.appendChild(item);
-    });
-}
-
-function closeSessionSettingsSelect(select) {
-    const reg = sessionSettingsSelects.get(select);
-    if (!reg) return;
-    reg.wrapper.classList.remove('open');
-    reg.trigger.setAttribute('aria-expanded', 'false');
-}
-
-function closeAllSessionSettingsSelects() {
-    sessionSettingsSelects.forEach(function (_reg, select) {
-        closeSessionSettingsSelect(select);
-    });
-}
-
-function enhanceSessionSettingsSelect(select) {
-    if (!select || select.dataset.sessionSettingsSelect === '1') {
-        if (select) syncSessionSettingsSelect(select);
-        return;
-    }
-    const panel = select.closest && select.closest('.conversation-reasoning-card');
-    if (!panel) return;
-
-    select.dataset.sessionSettingsSelect = '1';
-    select.classList.add('session-settings-native-select');
-    select.tabIndex = -1;
-    select.setAttribute('aria-hidden', 'true');
-
-    const wrapper = document.createElement('div');
-    wrapper.className = 'session-settings-select';
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.className = 'session-settings-select-trigger';
-    trigger.setAttribute('aria-haspopup', 'listbox');
-    trigger.setAttribute('aria-expanded', 'false');
-    const value = document.createElement('span');
-    value.className = 'session-settings-select-value';
-    const caret = document.createElement('span');
-    caret.className = 'session-settings-select-caret';
-    caret.setAttribute('aria-hidden', 'true');
-    caret.textContent = '⌄';
-    trigger.appendChild(value);
-    trigger.appendChild(caret);
-
-    const menu = document.createElement('div');
-    menu.className = 'session-settings-select-menu';
-    menu.setAttribute('role', 'listbox');
-
-    select.parentNode.insertBefore(wrapper, select);
-    wrapper.appendChild(trigger);
-    wrapper.appendChild(menu);
-    wrapper.appendChild(select);
-    sessionSettingsSelects.set(select, { wrapper: wrapper, trigger: trigger, value: value, menu: menu });
-
-    trigger.addEventListener('click', function (event) {
-        event.stopPropagation();
-        if (select.disabled) return;
-        const willOpen = !wrapper.classList.contains('open');
-        closeAllSessionSettingsSelects();
-        wrapper.classList.toggle('open', willOpen);
-        trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-    });
-
-    trigger.addEventListener('keydown', function (event) {
-        if (select.disabled) return;
-        const enabled = Array.prototype.filter.call(select.options, function (option) { return !option.disabled; });
-        if (!enabled.length) return;
-        const currentOption = select.options[select.selectedIndex];
-        const current = Math.max(0, enabled.indexOf(currentOption));
-        let next = current;
-        if (event.key === 'ArrowDown') next = Math.min(enabled.length - 1, current + 1);
-        else if (event.key === 'ArrowUp') next = Math.max(0, current - 1);
-        else if (event.key === 'Home') next = 0;
-        else if (event.key === 'End') next = enabled.length - 1;
-        else if (event.key === 'Escape') {
-            closeSessionSettingsSelect(select);
-            return;
-        } else if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            wrapper.classList.add('open');
-            trigger.setAttribute('aria-expanded', 'true');
-            return;
-        } else {
-            return;
-        }
-        event.preventDefault();
-        const nextOption = enabled[next];
-        if (nextOption && select.value !== nextOption.value) {
-            select.value = nextOption.value;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        syncSessionSettingsSelect(select);
-    });
-
-    menu.addEventListener('click', function (event) {
-        const item = event.target.closest('.session-settings-select-option');
-        if (!item || item.disabled) return;
-        event.stopPropagation();
-        const option = select.options[Number(item.dataset.index)];
-        if (option && !option.disabled && select.value !== option.value) {
-            select.value = option.value;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        syncSessionSettingsSelect(select);
-        closeSessionSettingsSelect(select);
-    });
-
-    select.addEventListener('change', function () {
-        syncSessionSettingsSelect(select);
-    });
-    syncSessionSettingsSelect(select);
-}
-
-function initSessionSettingsSelects() {
-    const panel = document.getElementById('conversation-reasoning-body');
-    if (!panel) return;
-    panel.querySelectorAll('select').forEach(enhanceSessionSettingsSelect);
-    if (!sessionSettingsSelectDocBound) {
-        document.addEventListener('click', closeAllSessionSettingsSelects);
-        document.addEventListener('keydown', function (event) {
-            if (event.key === 'Escape') closeAllSessionSettingsSelects();
-        });
-        sessionSettingsSelectDocBound = true;
-    }
-}
-
-function refreshSessionSettingsSelects() {
-    sessionSettingsSelects.forEach(function (_reg, select) {
-        syncSessionSettingsSelect(select);
-    });
-}
 
 function syncChatReasoningBarHeight() {
-    const reasoning = document.getElementById('chat-reasoning-wrapper');
     const inputBar = document.getElementById('chat-input-container');
-    if (!reasoning || !inputBar) return;
-    // The composer is now a two-layer surface and is intentionally taller than
-    // the sidebar trigger. Do not mirror its height into the settings card.
-    reasoning.style.removeProperty('--chat-input-bar-height');
+    if (!inputBar) return;
     const chatContainer = inputBar.closest('.chat-container');
     const height = Math.ceil(inputBar.getBoundingClientRect().height || 0);
     if (chatContainer && height > 0) {
@@ -348,28 +163,7 @@ function syncChatReasoningBarHeight() {
     }
 }
 
-function mountChatSessionSettingsPopover() {
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    const composerSurface = document.querySelector('.chat-composer-surface');
-    if (!wrap || !composerSurface) return;
-    if (wrap.parentElement !== composerSurface) {
-        composerSurface.appendChild(wrap);
-    }
-    wrap.classList.add('chat-session-settings-popover');
-    syncChatSessionSettingsLayerState();
-}
-
-function syncChatSessionSettingsLayerState() {
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    const inputBar = document.getElementById('chat-input-container');
-    if (!inputBar) return;
-    const open = !!wrap && wrap.style.display !== 'none' &&
-        !wrap.classList.contains('conversation-reasoning-collapsed');
-    inputBar.classList.toggle('is-session-settings-open', open);
-}
-
 function initChatReasoningBarHeightSync() {
-    mountChatSessionSettingsPopover();
     syncChatReasoningBarHeight();
     window.addEventListener('resize', syncChatReasoningBarHeight);
     const inputBar = document.getElementById('chat-input-container');
@@ -416,89 +210,6 @@ function chatAgentModeIsEinoSingle(mode) {
     return mode === CHAT_AGENT_MODE_EINO_SINGLE;
 }
 
-function normalizeHitlMode(mode) {
-    let v = String(mode || '').trim().toLowerCase().replace(/-/g, '_');
-    if (v === 'feedback' || v === 'followup') {
-        v = HITL_MODE_APPROVAL;
-    }
-    if (HITL_MODE_OPTIONS.includes(v)) return v;
-    return HITL_MODE_OFF;
-}
-
-function normalizeHitlTimeoutForChat(value, fallback) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(0, Math.min(86400, Math.round(n)));
-}
-
-function defaultHitlConfig() {
-    const serverReviewer = (typeof window !== 'undefined' && window.csaiHitlDefaultReviewer)
-        ? window.csaiHitlDefaultReviewer
-        : 'human';
-    return {
-        mode: HITL_MODE_OFF,
-        reviewer: normalizeHitlReviewer(serverReviewer),
-        sensitiveTools: DEFAULT_HITL_SESSION_TOOL_WHITELIST,
-        timeoutSeconds: DEFAULT_HITL_TIMEOUT_SECONDS,
-        updatedAt: ''
-    };
-}
-
-function normalizeHitlReviewer(v) {
-    const x = String(v || '').trim().toLowerCase();
-    if (x === 'audit_agent' || x === 'agent' || x === 'ai') return 'audit_agent';
-    return 'human';
-}
-
-/** 白名单字符串拆成数组（逗号或换行分隔，与 textarea 一致） */
-function hitlToolsSplitToArray(s) {
-    return String(s || '')
-        .split(/[,\n\r]+/)
-        .map(function (x) { return x.trim(); })
-        .filter(Boolean);
-}
-
-/** 与 config.yaml hitl.tool_whitelist 合并为输入框展示（全局项在前，去重不区分大小写） */
-function hitlMergeToolsForDisplay(globalArr, sessionToolsArr) {
-    const seen = Object.create(null);
-    const out = [];
-    function addOne(t) {
-        const n = String(t || '').trim();
-        if (!n) return;
-        const k = n.toLowerCase();
-        if (seen[k]) return;
-        seen[k] = true;
-        out.push(n);
-    }
-    if (Array.isArray(globalArr)) {
-        globalArr.forEach(addOne);
-    }
-    if (Array.isArray(sessionToolsArr)) {
-        sessionToolsArr.forEach(addOne);
-    }
-    return out.join(', ');
-}
-
-/** 保存/发请求前去掉全局白名单工具，避免会话里重复存 config 已有项 */
-function hitlStripGlobalToolsFromFormString(globalArr, commaStr) {
-    if (!Array.isArray(globalArr) || globalArr.length === 0) {
-        return typeof commaStr === 'string' ? commaStr.trim() : '';
-    }
-    const g = Object.create(null);
-    globalArr.forEach(function (t) {
-        const k = String(t || '').trim().toLowerCase();
-        if (k) g[k] = true;
-    });
-    return hitlToolsSplitToArray(commaStr)
-        .filter(function (p) {
-            return p && !g[p.toLowerCase()];
-        })
-        .join(', ');
-}
-
-function getHitlStorageKeyByConversation(conversationId) {
-    return `${HITL_STORAGE_PREFIX}:${String(conversationId || '').trim()}`;
-}
 
 function chatTranslate(key, fallback) {
     if (typeof window.t === 'function') {
@@ -508,358 +219,8 @@ function chatTranslate(key, fallback) {
     return fallback;
 }
 
-function getHitlModeLabel(mode) {
-    const safeMode = normalizeHitlMode(mode);
-    switch (safeMode) {
-        case HITL_MODE_APPROVAL:
-            return chatTranslate('chat.hitlModeApproval', '审批模式');
-        case HITL_MODE_REVIEW_EDIT:
-            return chatTranslate('chat.hitlModeReviewEdit', '审查编辑');
-        default:
-            return chatTranslate('chat.hitlModeOff', '关闭');
-    }
-}
 
-function getHitlLastGlobalConfig() {
-    const fallback = defaultHitlConfig();
-    try {
-        const raw = localStorage.getItem(HITL_GLOBAL_LAST_KEY);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        return {
-            mode: normalizeHitlMode(parsed.mode),
-            reviewer: normalizeHitlReviewer(parsed.reviewer),
-            sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(parsed.timeoutSeconds, fallback.timeoutSeconds),
-            updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
-        };
-    } catch (e) {
-        return null;
-    }
-}
 
-function saveHitlLastGlobalConfig(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    try {
-        localStorage.setItem(HITL_GLOBAL_LAST_KEY, JSON.stringify(payload));
-    } catch (e) {
-        console.warn('saveHitlLastGlobalConfig failed', e);
-    }
-}
-
-function getHitlConfigForConversation(conversationId) {
-    const fallback = defaultHitlConfig();
-    const cid = conversationId ? String(conversationId).trim() : '';
-    if (!cid) {
-        const globalLast = getHitlLastGlobalConfig();
-        let draftCfg = null;
-        try {
-            const raw = localStorage.getItem(HITL_DRAFT_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === 'object') {
-                    draftCfg = {
-                        mode: normalizeHitlMode(parsed.mode),
-                        reviewer: normalizeHitlReviewer(parsed.reviewer),
-                        sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
-                        timeoutSeconds: normalizeHitlTimeoutForChat(parsed.timeoutSeconds, fallback.timeoutSeconds),
-                        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
-                    };
-                }
-            }
-        } catch (e) {
-            draftCfg = null;
-        }
-        const g = globalLast ? {
-            mode: normalizeHitlMode(globalLast.mode),
-            reviewer: normalizeHitlReviewer(globalLast.reviewer),
-            sensitiveTools: typeof globalLast.sensitiveTools === 'string' ? globalLast.sensitiveTools : fallback.sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(globalLast.timeoutSeconds, fallback.timeoutSeconds),
-            updatedAt: typeof globalLast.updatedAt === 'string' ? globalLast.updatedAt : ''
-        } : null;
-        if (!draftCfg && !g) return fallback;
-        if (!draftCfg) return g;
-        if (!g) return draftCfg;
-        const tg = Date.parse(g.updatedAt) || 0;
-        const td = Date.parse(draftCfg.updatedAt) || 0;
-        return tg > td ? g : draftCfg;
-    }
-    const key = getHitlStorageKeyByConversation(cid);
-    try {
-        const raw = localStorage.getItem(key);
-        if (!raw) {
-            return fallback;
-        }
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') {
-            return fallback;
-        }
-        return {
-            mode: normalizeHitlMode(parsed.mode),
-            reviewer: normalizeHitlReviewer(parsed.reviewer),
-            sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(parsed.timeoutSeconds, fallback.timeoutSeconds),
-            updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
-        };
-    } catch (e) {
-        return fallback;
-    }
-}
-
-function setHitlReviewerUI(reviewer) {
-    const v = normalizeHitlReviewer(reviewer);
-    const hidden = document.getElementById('hitl-reviewer-select');
-    if (hidden) hidden.value = v;
-    document.querySelectorAll('.hitl-reviewer-toggle-btn').forEach(function (btn) {
-        const active = btn.getAttribute('data-reviewer') === v;
-        btn.classList.toggle('is-active', active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-}
-
-async function onHitlReviewerChanged(reviewer) {
-    setHitlReviewerUI(reviewer);
-    updateChatReasoningSummary();
-    const cfg = readHitlConfigFromForm();
-    const cid = typeof currentConversationId === 'string' ? currentConversationId.trim() : '';
-    saveHitlConfigForConversation(cid, cfg, { syncGlobalLast: true });
-    try {
-        if (cid && typeof window.saveHitlConversationConfig === 'function') {
-            await window.saveHitlConversationConfig(cid, cfg);
-        } else if (typeof window.putHitlDefaultReviewer === 'function') {
-            await window.putHitlDefaultReviewer(cfg.reviewer);
-        }
-        const ok = typeof window.t === 'function' ? window.t('hitl.pageReviewerSaved') : '审批方已保存。';
-        showChatToast(ok, 'success');
-    } catch (e) {
-        console.warn('onHitlReviewerChanged', e);
-        const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
-        showChatToast(prefix, 'error');
-    }
-}
-
-function bindHitlReviewerToggleListeners() {
-    document.querySelectorAll('.hitl-reviewer-toggle-btn').forEach(function (btn) {
-        if (btn.dataset.hitlReviewerBound === '1') return;
-        btn.dataset.hitlReviewerBound = '1';
-        btn.addEventListener('click', function () {
-            const v = btn.getAttribute('data-reviewer');
-            if (!v) return;
-            onHitlReviewerChanged(v);
-        });
-    });
-}
-
-function saveHitlConfigForConversation(conversationId, cfg, opts) {
-    const syncGlobalLast = !!(opts && opts.syncGlobalLast);
-    const payload = {
-        mode: normalizeHitlMode(cfg && cfg.mode),
-        reviewer: normalizeHitlReviewer(cfg && cfg.reviewer),
-        sensitiveTools: typeof (cfg && cfg.sensitiveTools) === 'string' ? cfg.sensitiveTools : '',
-        timeoutSeconds: normalizeHitlTimeoutForChat(cfg && cfg.timeoutSeconds, DEFAULT_HITL_TIMEOUT_SECONDS),
-        updatedAt: typeof (cfg && cfg.updatedAt) === 'string' ? cfg.updatedAt : ''
-    };
-    const key = conversationId ? getHitlStorageKeyByConversation(conversationId) : HITL_DRAFT_KEY;
-    try {
-        localStorage.setItem(key, JSON.stringify(payload));
-        if (syncGlobalLast) {
-            saveHitlLastGlobalConfig(payload);
-        }
-    } catch (e) {
-        console.warn('saveHitlConfigForConversation failed', e);
-    }
-}
-
-function readHitlConfigFromForm() {
-    const modeEl = document.getElementById('hitl-mode-select');
-    const reviewerEl = document.getElementById('hitl-reviewer-select');
-    const toolsEl = document.getElementById('hitl-sensitive-tools');
-    const timeoutEl = document.getElementById('hitl-timeout-select');
-    const mode = normalizeHitlMode(modeEl ? modeEl.value : HITL_MODE_OFF);
-    const reviewer = normalizeHitlReviewer(reviewerEl ? reviewerEl.value : 'human');
-    let sensitiveTools = toolsEl ? String(toolsEl.value || '').trim() : '';
-    const g = typeof window !== 'undefined' ? window.csaiHitlGlobalToolWhitelist : null;
-    if (Array.isArray(g) && g.length > 0) {
-        sensitiveTools = hitlStripGlobalToolsFromFormString(g, sensitiveTools);
-    }
-    return {
-        mode,
-        reviewer,
-        sensitiveTools,
-        timeoutSeconds: normalizeHitlTimeoutForChat(timeoutEl ? timeoutEl.value : DEFAULT_HITL_TIMEOUT_SECONDS, DEFAULT_HITL_TIMEOUT_SECONDS),
-        updatedAt: new Date().toISOString()
-    };
-}
-
-function updateHitlStatusUI(_cfg) {
-    /* 侧栏已改为自动保存；同步更新输入框快捷摘要。 */
-    updateChatReasoningSummary();
-}
-
-function applyHitlConfigToUI(cfg) {
-    const conf = cfg || defaultHitlConfig();
-    const modeEl = document.getElementById('hitl-mode-select');
-    const toolsEl = document.getElementById('hitl-sensitive-tools');
-    const timeoutEl = document.getElementById('hitl-timeout-select');
-    const uiMode = normalizeHitlMode(conf.mode);
-    if (modeEl) modeEl.value = uiMode;
-    setHitlReviewerUI(conf.reviewer);
-    // Keep this field scoped to the current conversation. The config-level
-    // allowlist is applied by the backend and must not be copied into the
-    // editable session value. Empty/legacy sessions receive only the stable
-    // Agent control-tool baseline shown by the original UI.
-    const toolsVal = typeof conf.sensitiveTools === 'string' && conf.sensitiveTools.trim()
-        ? conf.sensitiveTools.trim()
-        : DEFAULT_HITL_SESSION_TOOL_WHITELIST;
-    if (toolsEl) {
-        toolsEl.value = toolsVal;
-    }
-    if (timeoutEl) {
-        const timeoutSeconds = normalizeHitlTimeoutForChat(conf.timeoutSeconds, DEFAULT_HITL_TIMEOUT_SECONDS);
-        const supported = Array.from(timeoutEl.options || []).some(function (option) {
-            return Number(option.value) === timeoutSeconds;
-        });
-        timeoutEl.value = String(supported ? timeoutSeconds : DEFAULT_HITL_TIMEOUT_SECONDS);
-    }
-    updateHitlStatusUI(conf);
-    refreshSessionSettingsSelects();
-}
-
-function bindHitlSidebarModeListener() {
-    const modeEl = document.getElementById('hitl-mode-select');
-    const timeoutEl = document.getElementById('hitl-timeout-select');
-    [modeEl, timeoutEl].forEach(function (el) {
-        if (!el || el.dataset.hitlModeBound === '1') return;
-        el.dataset.hitlModeBound = '1';
-        el.addEventListener('change', function () {
-            applyHitlConfigToUI(readHitlConfigFromForm());
-            refreshSessionSettingsSelects();
-            scheduleHitlSidebarAutosave(0);
-            updateChatReasoningSummary();
-        });
-    });
-}
-
-function refreshHitlConfigByCurrentConversation() {
-    const cfg = getHitlConfigForConversation(currentConversationId || '');
-    applyHitlConfigToUI(cfg);
-}
-
-async function waitForHitlConfigReady(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (cid && hitlConfigSyncConversationId === cid) {
-        await hitlConfigSyncPromise;
-        return;
-    }
-    if (!cid && window.csaiHitlDefaultReviewerReady && typeof window.csaiHitlDefaultReviewerReady.then === 'function') {
-        await window.csaiHitlDefaultReviewerReady.catch(function () {});
-        if (!currentConversationId) refreshHitlConfigByCurrentConversation();
-    }
-}
-
-function showHitlApplyFeedback(text, isError, partial) {
-    const el = document.getElementById('hitl-apply-feedback');
-    if (hitlApplyFeedbackTimer) {
-        clearTimeout(hitlApplyFeedbackTimer);
-        hitlApplyFeedbackTimer = null;
-    }
-    if (!el) {
-        if (text && isError) {
-            showChatToast(text, 'error');
-        }
-        return;
-    }
-    el.classList.toggle('hitl-apply-feedback--error', !!isError);
-    el.classList.toggle('hitl-apply-feedback--partial', !!partial && !isError);
-    if (!text) {
-        el.textContent = '';
-        el.style.display = 'none';
-        el.classList.remove('hitl-apply-feedback--error', 'hitl-apply-feedback--partial');
-        return;
-    }
-    el.textContent = text;
-    el.style.display = 'block';
-    if (!isError) {
-        hitlApplyFeedbackTimer = setTimeout(function () {
-            el.textContent = '';
-            el.style.display = 'none';
-            el.classList.remove('hitl-apply-feedback--error');
-            el.classList.remove('hitl-apply-feedback--partial');
-            hitlApplyFeedbackTimer = null;
-        }, 3200);
-    }
-}
-
-/** 侧栏人机协同：自动写入本地、合并展示并尽量同步服务端 */
-async function applyHitlSidebarConfig() {
-    const btn = document.getElementById('hitl-apply-btn');
-    showHitlApplyFeedback('', false);
-    if (btn) btn.disabled = true;
-    try {
-        const cfg = readHitlConfigFromForm();
-        const cid = typeof currentConversationId === 'string' ? currentConversationId.trim() : '';
-        saveHitlConfigForConversation(cid, cfg, { syncGlobalLast: true });
-
-        const toolsArr = hitlToolsSplitToArray(cfg.sensitiveTools || '');
-
-        let yamlMerged = false;
-        if (!cid && toolsArr.length > 0 && typeof window.mergeHitlGlobalToolWhitelist === 'function') {
-            const newGlobal = await window.mergeHitlGlobalToolWhitelist(toolsArr);
-            if (Array.isArray(newGlobal)) {
-                window.csaiHitlGlobalToolWhitelist = newGlobal;
-            }
-            yamlMerged = true;
-        }
-
-        applyHitlConfigToUI(cfg);
-
-        if (cid && typeof window.saveHitlConversationConfig === 'function') {
-            await window.saveHitlConversationConfig(cid, cfg);
-            const ok = typeof window.t === 'function' ? window.t('chat.hitlApplyOkSync') : '人机协同配置已保存并同步到服务器。';
-            showHitlApplyFeedback(ok, false);
-        } else if (yamlMerged) {
-            const okYaml = typeof window.t === 'function' ? window.t('chat.hitlApplyOkWhitelistYaml') : '免审批工具已合并进 config.yaml 并生效。会话配置会自动保存。';
-            showHitlApplyFeedback(okYaml, false);
-        } else {
-            const localOnly = typeof window.t === 'function' ? window.t('chat.hitlApplyOkLocal') : '已保存到本浏览器。';
-            showHitlApplyFeedback(localOnly, false);
-        }
-        if (typeof window.refreshHitlPageWhitelist === 'function') {
-            window.refreshHitlPageWhitelist();
-        }
-    } catch (e) {
-        console.warn('applyHitlSidebarConfig', e);
-        const prefix = typeof window.t === 'function' ? window.t('chat.hitlApplyFail') : '同步到服务器失败';
-        const detail = (e && e.message) ? e.message : String(e);
-        showHitlApplyFeedback(prefix + (detail ? '：' + detail : ''), true);
-    } finally {
-        if (btn) btn.disabled = false;
-    }
-}
-
-function scheduleHitlSidebarAutosave(delayMs) {
-    if (hitlAutoSaveTimer) {
-        clearTimeout(hitlAutoSaveTimer);
-        hitlAutoSaveTimer = null;
-    }
-    hitlAutoSaveTimer = setTimeout(function () {
-        hitlAutoSaveTimer = null;
-        applyHitlSidebarConfig();
-    }, typeof delayMs === 'number' ? delayMs : 500);
-}
-
-function bindHitlSensitiveToolsAutosaveListener() {
-    const toolsEl = document.getElementById('hitl-sensitive-tools');
-    if (!toolsEl || toolsEl.dataset.hitlAutosaveBound === '1') return;
-    toolsEl.dataset.hitlAutosaveBound = '1';
-    toolsEl.addEventListener('input', function () {
-        scheduleHitlSidebarAutosave(700);
-    });
-    toolsEl.addEventListener('blur', function () {
-        scheduleHitlSidebarAutosave(0);
-    });
-}
 
 /** 将 localStorage 规范为 eino_single | deep | plan_execute | supervisor */
 function chatAgentModeNormalizeStored(stored, cfg) {
@@ -913,7 +274,6 @@ function applyConversationAgentMode(conversationId, conversation) {
 
 if (typeof window !== 'undefined') {
     window.csaiHitlGlobalToolWhitelist = window.csaiHitlGlobalToolWhitelist || [];
-    window.csaiHitlDefaultReviewer = window.csaiHitlDefaultReviewer || 'human';
     window.csaiChatAgentMode = {
         EINO_MODES: CHAT_AGENT_EINO_MODES,
         EINO_SINGLE: CHAT_AGENT_MODE_EINO_SINGLE,
@@ -922,60 +282,8 @@ if (typeof window !== 'undefined') {
         normalizeStored: chatAgentModeNormalizeStored,
         normalizeOrchestration: normalizeOrchestrationClient
     };
-    window.applyHitlSidebarConfig = applyHitlSidebarConfig;
-    window.readHitlConfigFromForm = readHitlConfigFromForm;
-    window.applyHitlConfigToUI = applyHitlConfigToUI;
-    window.refreshHitlConfigByCurrentConversation = refreshHitlConfigByCurrentConversation;
-    window.saveHitlConfigForConversation = saveHitlConfigForConversation;
-    window.getHitlConfigForConversation = getHitlConfigForConversation;
-    bindHitlSidebarModeListener();
-    bindHitlReviewerToggleListeners();
-    bindHitlSensitiveToolsAutosaveListener();
-    window.setHitlReviewerUI = setHitlReviewerUI;
-    window.onHitlReviewerChanged = onHitlReviewerChanged;
-    window.bindHitlReviewerToggleListeners = bindHitlReviewerToggleListeners;
-    window.getHitlLastGlobalConfig = getHitlLastGlobalConfig;
-    window.hitlMergeToolsForDisplay = hitlMergeToolsForDisplay;
-    window.hitlStripGlobalToolsFromFormString = hitlStripGlobalToolsFromFormString;
-    window.hitlToolsSplitToArray = hitlToolsSplitToArray;
-    window.updateHitlStatusUI = updateHitlStatusUI;
 }
 
-function syncHitlSidebarAriaExpanded() {
-    var card = document.getElementById('hitl-sidebar-card');
-    var toggle = document.getElementById('hitl-sidebar-toggle');
-    if (!card || !toggle) return;
-    toggle.setAttribute('aria-expanded', card.classList.contains('hitl-sidebar-collapsed') ? 'false' : 'true');
-}
-
-function closeHitlSidebarCard() {
-    var card = document.getElementById('hitl-sidebar-card');
-    if (!card || card.classList.contains('hitl-sidebar-collapsed')) return;
-    card.classList.add('hitl-sidebar-collapsed');
-    syncHitlSidebarAriaExpanded();
-    try {
-        localStorage.setItem('hitl-sidebar-collapsed', '1');
-    } catch (e) {}
-}
-
-function toggleHitlSidebarCard() {
-    var card = document.getElementById('hitl-sidebar-card');
-    if (!card) return;
-    card.classList.toggle('hitl-sidebar-collapsed');
-    syncHitlSidebarAriaExpanded();
-    try {
-        localStorage.setItem('hitl-sidebar-collapsed', card.classList.contains('hitl-sidebar-collapsed') ? '1' : '0');
-    } catch (e) {}
-}
-window.toggleHitlSidebarCard = toggleHitlSidebarCard;
-
-document.addEventListener('DOMContentLoaded', function () {
-    var card = document.getElementById('hitl-sidebar-card');
-    if (card && localStorage.getItem('hitl-sidebar-collapsed') === '0') {
-        card.classList.remove('hitl-sidebar-collapsed');
-    }
-    syncHitlSidebarAriaExpanded();
-});
 
 function getAgentModeLabelForValue(mode) {
     if (typeof window.t === 'function') {
@@ -1029,21 +337,6 @@ function syncAgentModeFromValue(value) {
         const v = el.getAttribute('data-value');
         el.classList.toggle('selected', v === value);
     });
-    syncReasoningRowVisibility(value);
-}
-
-function syncReasoningRowVisibility(modeVal) {
-    mountChatSessionSettingsPopover();
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    if (!wrap) return;
-    const show = modeVal === CHAT_AGENT_MODE_EINO_SINGLE || (multiAgentAPIEnabled && chatAgentModeIsEino(modeVal));
-    wrap.style.display = show ? '' : 'none';
-    if (!show) {
-        closeChatReasoningPanel();
-    } else {
-        syncChatReasoningBarHeight();
-        updateChatReasoningSummary();
-    }
 }
 
 function normalizeChatAIChannelId(s) {
@@ -1087,7 +380,6 @@ function populateChatAIChannelSelect(ai) {
     try { stored = localStorage.getItem(AI_CHANNEL_STORAGE_KEY) || ''; } catch (e) {}
     stored = resolveChatAIChannelId(stored);
     select.value = stored || '';
-    refreshSessionSettingsSelects();
     updateChatReasoningSummary();
 }
 
@@ -1118,9 +410,6 @@ function currentSystemModelLabel() {
     return model || (ch && (ch.name || chatDefaultAIChannel)) || currentChatModelLabel();
 }
 
-function currentHitlAuditModelLabel() {
-    return chatHitlAuditModelName || currentSystemModelLabel();
-}
 
 function resolveChatPickerChannelId() {
     return selectedChatAIChannelId() || chatDefaultAIChannel;
@@ -1454,7 +743,6 @@ async function selectChatAIChannel(channelId) {
     const resolved = resolveChatAIChannelId(channelId);
     select.value = resolved || '';
     persistChatAIChannelPref();
-    refreshSessionSettingsSelects();
     updateChatSystemModelPickerValues();
     openChatSystemModelView('main');
     setChatSystemModelStatus(chatTranslate('chat.systemModelLoading', '正在获取模型列表…'), 'loading');
@@ -1665,7 +953,6 @@ async function openChatSystemModelPicker(event) {
         window.clearTimeout(chatSystemModelCloseTimer);
         chatSystemModelCloseTimer = null;
     }
-    if (typeof closeChatReasoningPanel === 'function') closeChatReasoningPanel();
     ui.menu.hidden = false;
     ui.button.classList.add('active');
     ui.button.setAttribute('aria-expanded', 'true');
@@ -1703,40 +990,28 @@ function reasoningSummaryModeLabel(mode) {
 }
 
 function updateChatReasoningSummary() {
-    const el = document.getElementById('chat-reasoning-summary');
     const modeEl = document.getElementById('chat-reasoning-mode');
     const effEl = document.getElementById('chat-reasoning-effort');
-    if (!el || !modeEl) return;
+    if (!modeEl) return;
     const mode = (modeEl.value || 'default').trim();
     const effort = effEl && effEl.value ? String(effEl.value).trim() : '';
     const t = (typeof window.t === 'function') ? window.t : function (k) { return k; };
     const modePart = reasoningSummaryModeLabel(mode);
     const reasoningPart = effort || modePart || t('chat.reasoningSummaryDash');
-    let hitlPart = '';
-    try {
-        const hitlCfg = readHitlConfigFromForm();
-        hitlPart = getHitlModeLabel(hitlCfg.mode);
-    } catch (e) {
-        hitlPart = '';
-    }
     const channelPart = currentChatAIChannelLabel();
     const modelPart = currentChatModelLabel();
-    el.textContent = hitlPart;
-    el.title = hitlPart;
     updateChatComposerSessionShortcuts({
         channel: channelPart,
         model: modelPart,
-        reasoning: reasoningPart,
-        hitl: hitlPart
+        reasoning: reasoningPart
     });
 }
 
 function updateChatComposerSessionShortcuts(summary) {
     const data = summary || {};
     const modelEl = document.getElementById('chat-model-shortcut-text');
-    const hitlEl = document.getElementById('chat-hitl-shortcut-text');
     if (modelEl) {
-        // 输入框右侧展示当前会话通道的模型；审批模型只出现在 HITL 入口。
+        // 输入框右侧展示当前会话通道的模型。
         const label = currentChatModelLabel();
         modelEl.textContent = truncateChatAIChannelSummaryLabel(label);
         modelEl.title = label;
@@ -1750,51 +1025,8 @@ function updateChatComposerSessionShortcuts(summary) {
         }
         updateChatSystemModelPickerValues();
     }
-    if (hitlEl) {
-        const cfg = readHitlConfigFromForm();
-        const auditAgent = normalizeHitlReviewer(cfg.reviewer) === 'audit_agent';
-        const prefix = auditAgent
-            ? chatTranslate('chat.sessionShortcutAuditAgent', 'Agent 审查')
-            : chatTranslate('chat.sessionShortcutHuman', '人工审批');
-        const modeLabel = data.hitl || getHitlModeLabel(cfg.mode);
-        const approvalModel = auditAgent ? currentHitlAuditModelLabel() : '';
-        const label = prefix + '：' + modeLabel + (approvalModel ? ' · ' + approvalModel : '');
-        hitlEl.textContent = label;
-        hitlEl.title = label;
-    }
 }
 
-function openChatSessionSettings(section, event) {
-    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-    mountChatSessionSettingsPopover();
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    const toggle = document.getElementById('conversation-reasoning-toggle');
-    if (!wrap || !toggle || wrap.style.display === 'none') return;
-    syncChatReasoningBarHeight();
-    wrap.classList.remove('conversation-reasoning-collapsed');
-    syncChatSessionSettingsLayerState();
-    toggle.setAttribute('aria-expanded', 'true');
-    if (typeof closeAgentModePanel === 'function') closeAgentModePanel();
-    if (typeof closeRoleSelectionPanel === 'function') closeRoleSelectionPanel();
-    if (typeof closeChatProjectPanel === 'function') closeChatProjectPanel();
-    updateChatReasoningSummary();
-
-    let target = null;
-    if (section === 'hitl') target = document.getElementById('hitl-mode-select');
-    else if (section === 'reasoning') target = document.getElementById('chat-reasoning-mode');
-    else target = document.getElementById('chat-ai-channel-select');
-    const group = target && target.closest('.session-settings-group');
-    if (group && typeof group.scrollIntoView === 'function') {
-        group.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-    const customTrigger = target && target.closest('.session-settings-select')
-        ? target.closest('.session-settings-select').querySelector('.session-settings-select-trigger')
-        : null;
-    window.setTimeout(function () {
-        if (customTrigger) customTrigger.focus({ preventScroll: true });
-        else if (target) target.focus({ preventScroll: true });
-    }, 180);
-}
 
 function getVisibleChatConversationId() {
     return typeof currentConversationId === 'string' && currentConversationId.trim()
@@ -1939,37 +1171,6 @@ function initChatPrimaryActionButton() {
     updateChatPrimaryActionState();
 }
 
-function closeChatReasoningPanel() {
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    const toggle = document.getElementById('conversation-reasoning-toggle');
-    if (wrap) wrap.classList.add('conversation-reasoning-collapsed');
-    syncChatSessionSettingsLayerState();
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-}
-
-function toggleConversationReasoningCard() {
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    const toggle = document.getElementById('conversation-reasoning-toggle');
-    if (!wrap || !toggle) return;
-    syncChatReasoningBarHeight();
-    wrap.classList.toggle('conversation-reasoning-collapsed');
-    syncChatSessionSettingsLayerState();
-    const collapsed = wrap.classList.contains('conversation-reasoning-collapsed');
-    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    if (!collapsed) {
-        if (typeof closeAgentModePanel === 'function') {
-            closeAgentModePanel();
-        }
-        if (typeof closeRoleSelectionPanel === 'function') {
-            closeRoleSelectionPanel();
-        }
-        updateChatReasoningSummary();
-    }
-}
-
-function toggleChatReasoningPanel() {
-    toggleConversationReasoningCard();
-}
 
 function restoreChatReasoningControlsFromStorage() {
     try {
@@ -1987,7 +1188,6 @@ function restoreChatReasoningControlsFromStorage() {
                 e.value = v;
             }
         }
-        refreshSessionSettingsSelects();
         updateChatReasoningSummary();
     } catch (err) { /* ignore */ }
 }
@@ -1998,17 +1198,12 @@ function persistChatReasoningPrefs() {
         const elEff = document.getElementById('chat-reasoning-effort');
         if (m) localStorage.setItem(REASONING_MODE_LS, m.value || 'default');
         if (elEff) localStorage.setItem(REASONING_EFFORT_LS, elEff.value || '');
-        refreshSessionSettingsSelects();
         updateChatReasoningSummary();
     } catch (err) { /* ignore */ }
 }
 
 /** 供 WebShell 等复用：在 Eino 路径下返回 reasoning 请求片段或 undefined */
 function buildReasoningRequestPayload() {
-    const wrap = document.getElementById('chat-reasoning-wrapper');
-    if (!wrap || wrap.style.display === 'none') {
-        return undefined;
-    }
     const modeEl = document.getElementById('chat-reasoning-mode');
     const effEl = document.getElementById('chat-reasoning-effort');
     if (!modeEl) return undefined;
@@ -2028,16 +1223,11 @@ if (typeof window !== 'undefined') {
     window.populateChatAIChannelSelect = populateChatAIChannelSelect;
     window.persistChatReasoningPrefs = persistChatReasoningPrefs;
     window.buildReasoningRequestPayload = buildReasoningRequestPayload;
-    window.closeChatReasoningPanel = closeChatReasoningPanel;
-    window.toggleChatReasoningPanel = toggleChatReasoningPanel;
-    window.toggleConversationReasoningCard = toggleConversationReasoningCard;
     window.updateChatReasoningSummary = updateChatReasoningSummary;
     window.updateChatComposerSessionShortcuts = updateChatComposerSessionShortcuts;
-    window.openChatSessionSettings = openChatSessionSettings;
     window.openChatSystemModelPicker = openChatSystemModelPicker;
     window.openChatSystemModelView = openChatSystemModelView;
     window.closeChatSystemModelPicker = closeChatSystemModelPicker;
-    window.refreshSessionSettingsSelects = refreshSessionSettingsSelects;
     window.updateChatPrimaryActionState = updateChatPrimaryActionState;
 }
 
@@ -2059,9 +1249,6 @@ function toggleAgentModePanel() {
     if (isOpen) {
         closeAgentModePanel();
         return;
-    }
-    if (typeof closeChatReasoningPanel === 'function') {
-        closeChatReasoningPanel();
     }
     if (typeof closeRoleSelectionPanel === 'function') {
         closeRoleSelectionPanel();
@@ -2107,7 +1294,6 @@ async function initChatAgentModeFromConfig() {
         }
     });
     restoreChatReasoningControlsFromStorage();
-    syncReasoningRowVisibility(stored);
 
     try {
         const r = await apiFetch('/api/config');
@@ -2115,10 +1301,6 @@ async function initChatAgentModeFromConfig() {
         const cfg = await r.json();
         multiAgentAPIEnabled = !!(cfg.multi_agent && cfg.multi_agent.enabled);
         populateChatAIChannelSelect(cfg.ai || {});
-        const hitlAuditModel = cfg.hitl && cfg.hitl.audit_model;
-        chatHitlAuditModelName = hitlAuditModel && typeof hitlAuditModel.model === 'string'
-            ? hitlAuditModel.model.trim()
-            : '';
         updateChatReasoningSummary();
         if (typeof window !== 'undefined') {
             window.__csaiMultiAgentPublic = cfg.multi_agent || null;
@@ -2145,7 +1327,6 @@ async function initChatAgentModeFromConfig() {
         sel.value = stored;
         syncAgentModeFromValue(stored);
         restoreChatReasoningControlsFromStorage();
-        syncReasoningRowVisibility(stored);
     } catch (e) {
         console.warn('initChatAgentModeFromConfig', e);
     }
@@ -2272,14 +1453,6 @@ async function sendMessage() {
         return;
     }
 
-    // A restored conversation renders from the local cache first, while its
-    // authoritative HITL config is fetched separately. Do not let a fast send
-    // reuse the temporary/default reviewer (historically "human") before that
-    // fetch completes, otherwise refreshing could turn Audit Agent review into
-    // a human approval for the next tool call.
-    const hitlConversationAtSendStart = String(currentConversationId || '').trim();
-    await waitForHitlConfigReady(hitlConversationAtSendStart);
-    if (String(currentConversationId || '').trim() !== hitlConversationAtSendStart) return;
 
     // Enter 会直接调用 sendMessage；同一会话在其他标签页已启动任务时，
     // 必须在渲染用户气泡和发起 POST 前做一次权威状态同步，避免生成一轮“已有任务执行中”伪对话。
@@ -2381,17 +1554,6 @@ async function sendMessage() {
     const aiChannelId = selectedChatAIChannelId();
     if (aiChannelId) {
         body.aiChannelId = aiChannelId;
-    }
-    const hitlCfg = readHitlConfigFromForm();
-    if (normalizeHitlMode(hitlCfg.mode) !== HITL_MODE_OFF) {
-        const sensitiveTools = hitlToolsSplitToArray(hitlCfg.sensitiveTools || '');
-        body.hitl = {
-            enabled: true,
-            mode: normalizeHitlMode(hitlCfg.mode),
-            reviewer: normalizeHitlReviewer(hitlCfg.reviewer),
-            sensitiveTools: sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(hitlCfg.timeoutSeconds, DEFAULT_HITL_TIMEOUT_SECONDS)
-        };
     }
     if (hasAttachments) {
         body.attachments = chatAttachments.map((a) => ({
@@ -5964,14 +5126,6 @@ async function startNewConversation(options = {}) {
         chatInput.value = '';
         adjustTextareaHeight(chatInput);
     }
-    // 把当前侧栏人机协同选项写入草稿与「最近应用」记忆，避免刷新时被旧草稿里的「关闭」覆盖
-    try {
-        if (typeof readHitlConfigFromForm === 'function' && typeof saveHitlConfigForConversation === 'function') {
-            const snap = readHitlConfigFromForm();
-            saveHitlConfigForConversation('', snap, { syncGlobalLast: true });
-        }
-    } catch (e) { /* ignore */ }
-    refreshHitlConfigByCurrentConversation();
 }
 
 // 与 loadConversationsWithGroups 合并实现，避免并发加载时重复追加列表项
@@ -6511,17 +5665,6 @@ async function loadConversation(conversationId) {
         if (typeof refreshChatProjectSelector === 'function') {
             refreshChatProjectSelector({ reloadFolders: false, renderFolders: false });
         }
-        refreshHitlConfigByCurrentConversation();
-        const hitlSyncPromise = (typeof window.syncHitlConfigFromServer === 'function')
-            ? window.syncHitlConfigFromServer(conversationId).then(() => {
-                if (seq === loadConversationRequestSeq && currentConversationId === conversationId) {
-                    refreshHitlConfigByCurrentConversation();
-                }
-            }).catch(() => {})
-            : Promise.resolve();
-        hitlConfigSyncConversationId = conversationId;
-        hitlConfigSyncPromise = Promise.resolve(hitlSyncPromise);
-        await hitlConfigSyncPromise;
         if (seq !== loadConversationRequestSeq || currentConversationId !== conversationId) {
             return;
         }
@@ -12403,8 +11546,6 @@ function applyCustomIcon() {
 
 // 自定义图标输入框回车键处理
 document.addEventListener('DOMContentLoaded', function() {
-    mountChatSessionSettingsPopover();
-    initSessionSettingsSelects();
     initChatReasoningBarHeightSync();
     initChatPrimaryActionButton();
     const customInput = document.getElementById('custom-icon-input');
@@ -12416,17 +11557,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
-    initChatAgentModeFromConfig()
-        .then(function () {
-            refreshHitlConfigByCurrentConversation();
-        })
-        .catch(function () {
-            refreshHitlConfigByCurrentConversation();
-        });
+    initChatAgentModeFromConfig().catch(function () {});
 });
 
 document.addEventListener('languagechange', function () {
-    refreshHitlConfigByCurrentConversation();
     updateChatPrimaryActionState();
 });
 
@@ -12459,20 +11593,6 @@ document.addEventListener('click', function(event) {
         closeChatSystemModelPicker();
     }
 
-    const reasoningWrap = document.getElementById('chat-reasoning-wrapper');
-    if (reasoningWrap && reasoningWrap.style.display !== 'none' &&
-        !reasoningWrap.classList.contains('conversation-reasoning-collapsed')) {
-        if (!reasoningWrap.contains(event.target)) {
-            closeChatReasoningPanel();
-        }
-    }
-
-    const hitlCard = document.getElementById('hitl-sidebar-card');
-    if (hitlCard && !hitlCard.classList.contains('hitl-sidebar-collapsed')) {
-        if (!hitlCard.contains(event.target)) {
-            closeHitlSidebarCard();
-        }
-    }
 });
 
 // 创建分组

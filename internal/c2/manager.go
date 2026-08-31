@@ -34,8 +34,7 @@ type Manager struct {
 	runningListeners map[string]Listener // listener_id → 已 Start 的 listener 实例
 	storageDir       string              // 大结果（截图/下载）落盘根目录
 
-	hitlBridge        HITLBridge                                    // 危险任务在 EnqueueTask 时调它发起审批（nil 表示不接 HITL）
-	hitlDangerousGate func(conversationID, mcpToolName string) bool // 与人机协同一致：为 nil 或返回 false 时不走桥
+	hitlBridge HITLBridge // 危险任务在 EnqueueTask 时调它发起审批（nil 表示不接 HITL）
 	hooks             Hooks                                         // 扩展挂钩：会话上线 / 任务完成 时通知漏洞库与攻击链
 }
 
@@ -53,6 +52,10 @@ type HITLBridge interface {
 	// RequestApproval 阻塞等待人工审批；返回 nil 表示批准，error 表示拒绝/超时。
 	// ctx 携带用户/会话信息；危险任务调用时会创建超时 ctx 避免无限挂起。
 	RequestApproval(ctx context.Context, req HITLApprovalRequest) error
+
+	// CompleteTask 在任务到达终态（success/failed/cancelled）时回写真实执行
+	// 结果到审批单与台账；无审批记录的任务（allow 直通）内部自行忽略。
+	CompleteTask(taskID string, success bool, summary string)
 }
 
 // HITLApprovalRequest 待审批的 C2 操作描述
@@ -94,14 +97,6 @@ func NewManager(db *database.DB, logger *zap.Logger, storageDir string) *Manager
 func (m *Manager) SetHITLBridge(b HITLBridge) {
 	m.mu.Lock()
 	m.hitlBridge = b
-	m.mu.Unlock()
-}
-
-// SetHITLDangerousGate 设置 C2 危险任务是否应走 HITL 桥；须与 Agent 人机协同判定一致（例如 handler.HITLManager.NeedsToolApproval）。
-// gate 为 nil 时，即使已设置桥也不会对危险任务发起审批（与未开启人机协同时其他工具行为一致）。
-func (m *Manager) SetHITLDangerousGate(gate func(conversationID, mcpToolName string) bool) {
-	m.mu.Lock()
-	m.hitlDangerousGate = gate
 	m.mu.Unlock()
 }
 
@@ -481,10 +476,9 @@ type EnqueueTaskInput struct {
 	Source         string // manual|ai|batch|api
 	ConversationID string
 	UserCtx        context.Context // 给 HITL 用
-	BypassHITL     bool            // true 表示跳过 HITL 审批（仅供白名单机制 / 系统内部用）
 }
 
-// EnqueueTask 入队一个新任务；若任务类型危险且未 BypassHITL，且 SetHITLDangerousGate 对当前会话与 MCPToolC2Task 返回 true，才会调 HITL 桥审批。
+// EnqueueTask 入队一个新任务；危险任务统一交给审批桥评估，桥内策略决定放行、拒绝或审批。
 // 返回任务记录；任务派发由 PopTasksForBeacon 在 beacon 拉任务时完成。
 func (m *Manager) EnqueueTask(in EnqueueTaskInput) (*database.C2Task, error) {
 	if strings.TrimSpace(in.SessionID) == "" {
@@ -558,58 +552,60 @@ func (m *Manager) EnqueueTask(in EnqueueTaskInput) (*database.C2Task, error) {
 		CreatedAt:      time.Now(),
 	}
 
-	// HITL 检查：仅当注入的 gate 认为当前会话应对统一 MCP 工具 c2_task 做人机协同时才走桥（关闭人机协同时与其它工具一致，直接入队）。
-	if IsDangerousTaskType(in.TaskType) && !in.BypassHITL {
-		m.mu.RLock()
-		bridge := m.hitlBridge
-		gate := m.hitlDangerousGate
-		m.mu.RUnlock()
-		convID := strings.TrimSpace(in.ConversationID)
-		useBridge := bridge != nil && gate != nil && gate(convID, MCPToolC2Task)
-		if useBridge {
-			task.ApprovalStatus = "pending"
-			if err := m.db.CreateC2Task(task); err != nil {
-				return nil, err
-			}
-			m.publishEvent("warn", "task", in.SessionID, taskID, fmt.Sprintf("危险任务待审批: %s", in.TaskType), map[string]interface{}{
-				"task_id":   taskID,
-				"task_type": in.TaskType,
-			})
-			payloadBytes, _ := json.Marshal(in.Payload)
-			ctx := HITLUserContext(in.UserCtx)
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			go func() {
-				err := bridge.RequestApproval(ctx, HITLApprovalRequest{
-					TaskID:         taskID,
-					SessionID:      in.SessionID,
-					TaskType:       string(in.TaskType),
-					PayloadJSON:    string(payloadBytes),
-					ConversationID: in.ConversationID,
-					Source:         task.Source,
-					Reason:         fmt.Sprintf("C2 危险任务 %s", in.TaskType),
-				})
-				if err != nil {
-					rejected := "rejected"
-					failed := string(TaskFailed)
-					errMsg := "HITL 拒绝: " + err.Error()
-					_ = m.db.UpdateC2Task(taskID, database.C2TaskUpdate{
-						ApprovalStatus: &rejected,
-						Status:         &failed,
-						Error:          &errMsg,
-					})
-					m.publishEvent("warn", "task", in.SessionID, taskID, errMsg, nil)
-					return
-				}
-				approved := "approved"
-				_ = m.db.UpdateC2Task(taskID, database.C2TaskUpdate{ApprovalStatus: &approved})
-				m.publishEvent("info", "task", in.SessionID, taskID, "危险任务已批准", nil)
-			}()
-			return task, nil
+	// HITL 检查：所有 C2 任务统一过审批桥，由协调器策略决定放行、拒绝或转
+	// 人工——单一门控口径，不按任务类型预筛（类别与底线由 approval 规则
+	// 资产决定）。桥不可用时不允许绕行：危险任务一律 fail-closed 拒绝入队。
+	m.mu.RLock()
+	bridge := m.hitlBridge
+	m.mu.RUnlock()
+	if bridge == nil && IsDangerousTaskType(in.TaskType) {
+		return nil, &CommonError{
+			Code:    "approval_unavailable",
+			Message: "审批协调器不可用，危险任务已拒绝入队",
+			HTTP:    503,
 		}
-		// 未接桥或会话未开启人机协同 / 工具在白名单：直接入队
-		task.ApprovalStatus = "approved"
+	}
+	if bridge != nil {
+		task.ApprovalStatus = "pending"
+		if err := m.db.CreateC2Task(task); err != nil {
+			return nil, err
+		}
+		m.publishEvent("warn", "task", in.SessionID, taskID, fmt.Sprintf("任务待审批: %s", in.TaskType), map[string]interface{}{
+			"task_id":   taskID,
+			"task_type": in.TaskType,
+		})
+		payloadBytes, _ := json.Marshal(in.Payload)
+		ctx := HITLUserContext(in.UserCtx)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		go func() {
+			err := bridge.RequestApproval(ctx, HITLApprovalRequest{
+				TaskID:         taskID,
+				SessionID:      in.SessionID,
+				TaskType:       string(in.TaskType),
+				PayloadJSON:    string(payloadBytes),
+				ConversationID: in.ConversationID,
+				Source:         task.Source,
+				Reason:         fmt.Sprintf("C2 任务 %s", in.TaskType),
+			})
+			if err != nil {
+				rejected := "rejected"
+				failed := string(TaskFailed)
+				errMsg := "HITL 拒绝: " + err.Error()
+				_ = m.db.UpdateC2Task(taskID, database.C2TaskUpdate{
+					ApprovalStatus: &rejected,
+					Status:         &failed,
+					Error:          &errMsg,
+				})
+				m.publishEvent("warn", "task", in.SessionID, taskID, errMsg, nil)
+				return
+			}
+			approved := "approved"
+			_ = m.db.UpdateC2Task(taskID, database.C2TaskUpdate{ApprovalStatus: &approved})
+			m.publishEvent("info", "task", in.SessionID, taskID, "任务已批准", nil)
+		}()
+		return task, nil
 	}
 
 	if err := m.db.CreateC2Task(task); err != nil {
@@ -641,6 +637,13 @@ func (m *Manager) CancelTask(taskID string) error {
 		return err
 	}
 	m.publishEvent("info", "task", t.SessionID, taskID, "任务已取消", nil)
+	m.mu.RLock()
+	bridge := m.hitlBridge
+	m.mu.RUnlock()
+	if bridge != nil {
+		// 取消也是终态：审批单/台账不能悬挂在 executing。
+		bridge.CompleteTask(taskID, false, "task cancelled by operator")
+	}
 	return nil
 }
 

@@ -1,8 +1,6 @@
 package security
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -10,16 +8,9 @@ import (
 	"strings"
 )
 
-// SensitiveHTTPGate blocks irreversible / high-impact HTTP write actions until the
-// operator explicitly confirms the exact target. This is a hard tool-layer gate
-// (not HITL and not prompt-only).
-//
-// Confirmation (either is enough):
-//  1. Legacy: confirmed=<exact URL substring present in the call>
-//  2. Preferred: confirm_destructive=true + confirm_token=<token from prior block message>
-//
-// The token is derived from method+normalized target so a confirm for one endpoint
-// cannot unlock a different one.
+// SensitiveHTTPGate classifies irreversible or high-impact HTTP writes. The
+// Executor only lets a classified call pass when Context carries an internal,
+// exact-argument approval Grant; no model-visible argument can unlock it.
 
 var (
 	reHTTPURL = regexp.MustCompile(`(?i)https?://[^\s"'<>\\]+`)
@@ -57,13 +48,12 @@ var (
 
 // SensitiveHTTPAssessment is the gate decision payload.
 type SensitiveHTTPAssessment struct {
-	Blocked      bool
-	ToolName     string
-	Method       string
-	Target       string
-	Reason       string
-	ConfirmToken string
-	Message      string
+	Blocked  bool
+	ToolName string
+	Method   string
+	Target   string
+	Reason   string
+	Message  string
 }
 
 // CheckSensitiveHTTPGate inspects a tool invocation before real execution.
@@ -99,22 +89,9 @@ func AssessSensitiveHTTP(toolName string, args map[string]interface{}) Sensitive
 		return out
 	}
 
-	token := SensitiveHTTPConfirmToken(method, target)
-	out.ConfirmToken = token
-	if sensitiveHTTPConfirmed(args, method, target, token) {
-		return out
-	}
-
 	out.Blocked = true
 	out.Message = formatSensitiveHTTPBlockMessage(out)
 	return out
-}
-
-// SensitiveHTTPConfirmToken binds approval to a specific method+target pair.
-func SensitiveHTTPConfirmToken(method, target string) string {
-	norm := strings.ToLower(strings.TrimSpace(method)) + "|" + normalizeSensitiveTarget(target)
-	sum := sha256.Sum256([]byte(norm))
-	return hex.EncodeToString(sum[:8])
 }
 
 func extractSensitiveHTTPRisk(toolName string, args map[string]interface{}) (method, target, reason string) {
@@ -322,50 +299,12 @@ func isCriticalPathHit(hit string) bool {
 	return false
 }
 
-func sensitiveHTTPConfirmed(args map[string]interface{}, method, target, token string) bool {
-	// Always require an explicit confirm_destructive flag so the model cannot
-	// auto-unlock by merely echoing confirmed=<url> without user consent.
-	if !truthyArg(args, "confirm_destructive") && !truthyArg(args, "confirmDestructive") {
-		return false
-	}
-	gotToken := strings.TrimSpace(strFromArgs(args, "confirm_token"))
-	if gotToken == "" {
-		gotToken = strings.TrimSpace(strFromArgs(args, "confirmToken"))
-	}
-	// Preferred: method+target bound token.
-	if gotToken != "" && strings.EqualFold(gotToken, token) {
-		return true
-	}
-	// confirmed 仅作为 confirm_token 的历史别名，必须精确等于 method+target 绑定的 token；
-	// 不再做子串/URL 包含匹配——否则传单字符即可匹配几乎所有 target，绕过绑定。
-	confirmed := strings.TrimSpace(strFromArgs(args, "confirmed"))
-	if confirmed == "" {
-		return false
-	}
-	return strings.EqualFold(confirmed, token)
-}
-
-func normalizeSensitiveTarget(t string) string {
-	t = strings.TrimSpace(t)
-	t = strings.TrimRight(t, `/`)
-	if u, err := url.Parse(t); err == nil && u.Host != "" {
-		return strings.ToLower(u.Host + u.Path)
-	}
-	return strings.ToLower(t)
-}
-
 func formatSensitiveHTTPBlockMessage(a SensitiveHTTPAssessment) string {
 	return fmt.Sprintf(
 		"[sensitive_http_gate] blocked\n"+
-			"⚠️ 敏感接口硬拦截（工具层，非 HITL）：检测到可能不可逆/高影响的 HTTP 写操作，已阻止真实发送。\n\n"+
-			"tool: %s\nmethod: %s\ntarget: %s\nreason: %s\nconfirm_token: %s\n\n"+
-			"请先向用户说明：接口、方法、推测功能与风险。用户明确同意后，用相同参数重试，并附加：\n"+
-			"  confirm_destructive=true\n"+
-			"  confirm_token=%s\n"+
-			"（可选兼容）confirmed=<用户同意的完整 URL 或同上 token>；缺少 confirm_destructive=true 一律不放行。\n"+
-			"不同接口/目标须分别确认；令牌与 method+target 绑定，不能复用。\n"+
-			"只读探测（GET/HEAD）一般不拦截；DELETE 与路径含 delete/delOne/reboot/poweroff 等写操作会拦截。",
-		a.ToolName, a.Method, a.Target, a.Reason, a.ConfirmToken, a.ConfirmToken,
+			"检测到可能不可逆或高影响的 HTTP 写操作，当前执行上下文没有与该工具及参数完全匹配的内部审批授权，已阻止真实发送。\n\n"+
+			"tool: %s\nmethod: %s\ntarget: %s\nreason: %s",
+		a.ToolName, a.Method, a.Target, a.Reason,
 	)
 }
 
@@ -388,29 +327,6 @@ func strFromArgs(args map[string]interface{}, key string) string {
 	}
 }
 
-func truthyArg(args map[string]interface{}, key string) bool {
-	if args == nil {
-		return false
-	}
-	v, ok := args[key]
-	if !ok || v == nil {
-		return false
-	}
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		s := strings.ToLower(strings.TrimSpace(t))
-		return s == "1" || s == "true" || s == "yes" || s == "y" || s == "on"
-	case float64:
-		return t != 0
-	case int:
-		return t != 0
-	default:
-		return false
-	}
-}
-
 func normalizeToolKey(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if i := strings.LastIndex(name, "__"); i >= 0 {
@@ -420,14 +336,4 @@ func normalizeToolKey(name string) string {
 		name = name[i+2:]
 	}
 	return name
-}
-
-// isSensitiveGateOnlyParam marks framework-only args that must not be forwarded to tool binaries.
-func isSensitiveGateOnlyParam(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "confirmed", "confirm_destructive", "confirmdestructive", "confirm_token", "confirmtoken":
-		return true
-	default:
-		return false
-	}
 }

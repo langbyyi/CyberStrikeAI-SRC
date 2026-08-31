@@ -11,22 +11,30 @@ description: 'PHP WebShell 生成与连接管理工具。
 parameters:
   - name: mode
     type: string
-    required: true
+    required: false
     position: 0
     format: positional
     options:
       - generate
       - session
-    description: generate(生成)/session(连接)
-  - name: target
+    description: '运行模式（可选，缺省为直接连接）：
+
+      - 不传：直接连接 WebShell，语法 `weevely <URL> <password> [cmd]`
+
+      - `generate`：生成 WebShell，语法 `weevely generate <password> <path>`
+
+      - `session`：恢复已保存会话，语法 `weevely session <path> [cmd]`
+
+'
+  - name: arg1
     type: string
     required: true
     position: 1
     format: positional
-    description: 'generate: 输出路径 / session: WebShell URL'
-  - name: password
+    description: '按 mode 取值：缺省=WebShell URL；`generate`=连接密码；`session`=会话文件路径'
+  - name: arg2
     type: string
     required: false
     position: 2
     format: positional
-    description: 连接密码
+    description: '按 mode 取值：缺省=连接密码；`generate`=shell 输出路径；`session`=要执行的命令（可省）'

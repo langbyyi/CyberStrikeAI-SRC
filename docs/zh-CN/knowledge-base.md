@@ -17,7 +17,7 @@ database:
   knowledge_db_path: data/knowledge.db
 ```
 
-`embedding.base_url/api_key` 留空时会复用 `openai` 配置。建议知识库数据库独立保存，便于迁移和复用。
+`embedding.api_key` 留空时会复用 `openai` 配置的 API Key；`embedding.base_url` 留空时默认 `https://api.openai.com/v1`，不会沿用 `openai.base_url`（见 `internal/knowledge/embedder.go`）。建议知识库数据库独立保存，便于迁移和复用。
 
 ## 内容目录
 
@@ -28,6 +28,14 @@ knowledge_base/
   SQL Injection/
     README.md
     MySQL Injection.md
+    PostgreSQL Injection.md
+    MSSQL Injection.md
+    SQLite Injection.md
+    OracleSQL Injection.md
+    BigQuery Injection.md
+    Cassandra Injection.md
+    DB2 Injection.md
+    SQLmap.md
   Prompt Injection/
     README.md
 ```
@@ -126,15 +134,14 @@ knowledge:
       api_key: ""
 ```
 
-留空时会根据 `base_url` 推断。DashScope 常用 `gte-rerank`；其他 OpenAI 兼容端点可能走 `/v1/rerank`。如果服务商不支持 rerank，检索质量可能下降，建议降低 `top_k` 并提高知识条目质量。
+`provider` 留空时按 `base_url` 推断：包含 `dashscope` 走 DashScope（默认模型 `gte-rerank`），否则按 Cohere 兼容协议请求 `{base_url}/v1/rerank`（默认模型 `rerank-multilingual-v3.0`）。`base_url`、`api_key` 留空时回退 `openai` 配置（见 `internal/knowledge/rerank_http.go`）。如果服务商不支持 rerank，检索质量可能下降，建议降低 `top_k` 并提高知识条目质量。
 
 ## MCP 工具
 
-启用知识库后，会注册类似以下能力：
+启用知识库后，会注册以下 MCP 工具（`internal/knowledge/tool.go`）：
 
-- 列出风险类型。
-- 搜索知识库。
-- 获取相关知识片段。
+- `list_knowledge_risk_types`：列出知识库中已识别的风险类型。
+- `search_knowledge_base`：按查询语义搜索知识库，可按风险类型过滤，返回相关片段。
 
 角色提示词中可以写明：
 

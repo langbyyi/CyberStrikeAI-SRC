@@ -21,10 +21,10 @@ func TestVisionConfig_OpenAICfgEffective_fallbackToMain(t *testing.T) {
 
 func TestVisionConfig_OpenAICfgEffective(t *testing.T) {
 	main := OpenAIConfig{
-		APIKey:  "main-key",
-		BaseURL: "https://main.example/v1",
-		Model:   "main-model",
-		Provider: "openai",
+		APIKey:    "main-key",
+		BaseURL:   "https://main.example/v1",
+		Model:     "main-model",
+		Provider:  "openai",
 		Reasoning: OpenAIReasoningConfig{Mode: "on"},
 	}
 	v := VisionConfig{

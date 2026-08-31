@@ -1,12 +1,10 @@
 # 安全加固指南
 
-[English](../en-US/security-hardening.md)
-
 本文给出 CyberStrikeAI 上线前和持续运行中的安全加固清单。
 
 ## 上线前必做
 
-- 首次部署后立即修改 `admin` 初始密码（Web 界面或平台权限 → 用户管理）。
+- 首次部署后立即修改 `admin` 初始密码（Web 界面或平台权限 → 成员管理）。
 - 使用 HTTPS，或放在可信反向代理之后。
 - 限制来源 IP、VPN 或堡垒机访问。
 - 开启 `audit.enabled`。
@@ -38,22 +36,24 @@ add_header Referrer-Policy no-referrer;
 add_header X-Frame-Options DENY;
 ```
 
-## HITL 白名单基线
+## 统一审批白名单基线
 
 推荐最小白名单：
 
 ```yaml
-hitl:
-  tool_whitelist:
-    - read_file
-    - glob
-    - grep
-    - tool_search
+approval:
+  tool_approval:
+    enabled: true
+    tool_whitelist:
+      - read_file
+      - glob
+      - grep
+      - tool_search
 ```
 
 不要默认加入：
 
-- `execute`
+- `exec`
 - WebShell 写入/执行工具
 - C2 任务和 payload 工具
 - 外部 MCP 高风险工具
@@ -97,7 +97,7 @@ cyberstrike-ai:cyberstrike-ai
 
 C2：
 
-- 默认关闭。
+- 未显式配置 `c2.enabled` 时默认启用；生产环境不需要 C2 应显式设置 `c2.enabled: false`。
 - 演练窗口临时开启。
 - Listener 端口与管理端口分离。
 - 结束后清理 payload、session、task、event。

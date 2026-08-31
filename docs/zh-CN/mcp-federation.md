@@ -14,6 +14,10 @@ Web 服务内部会创建 MCP Server，并注册：
 - WebShell 工具。
 - 批量任务工具。
 - 视觉分析工具。
+- 漏洞记录工具。
+- 资产工具。
+- FOFA 搜索工具。
+- 联网搜索工具。
 
 前端和 Agent 通常通过应用内部调用，不需要额外配置。
 
@@ -26,11 +30,12 @@ mcp:
   enabled: true
   host: 0.0.0.0
   port: 8081
+  allow_global_access: true
   auth_header: "X-MCP-Token"
   auth_header_value: "random-secret"
 ```
 
-生产环境必须设置 `auth_header_value`，并限制网络访问。
+静态凭证 `auth_header_value` 仅在 `allow_global_access: true` 时生效（此时留空会在启动时自动生成随机密钥写回配置）；未开启 `allow_global_access` 时只能使用用户 `Authorization: Bearer <token>` 调用。生产环境必须设置强密钥，并限制网络访问。
 
 ## Web 内 MCP 端点
 

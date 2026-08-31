@@ -74,6 +74,7 @@ type ExternalMCPManager struct {
 	reconnectLastTry   map[string]time.Time
 	reconnectAttempts  map[string]int
 	toolAuthorizer     func(context.Context, string, map[string]interface{}) error
+	invocationGuard    InvocationGuard
 	executionService   *ExecutionService
 	toolWaitTimeout    time.Duration
 	toolResultMaxBytes int
@@ -93,6 +94,15 @@ func NewExternalMCPManager(logger *zap.Logger) *ExternalMCPManager {
 func (m *ExternalMCPManager) SetToolAuthorizer(authorizer func(context.Context, string, map[string]interface{}) error) {
 	m.mu.Lock()
 	m.toolAuthorizer = authorizer
+	m.mu.Unlock()
+}
+
+func (m *ExternalMCPManager) SetInvocationGuard(guard InvocationGuard) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.invocationGuard = guard
 	m.mu.Unlock()
 }
 
@@ -685,6 +695,8 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 	}
 	var mcpName, actualToolName string
 	var client ExternalMCPClient
+	var guardedCtx context.Context
+	var frozenArgs map[string]interface{}
 	handle, err := m.executionService.Submit(ctx, ExecutionRequest{
 		ToolName:       toolName,
 		Arguments:      args,
@@ -694,6 +706,7 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			_, authenticated := authctx.PrincipalFromContext(runCtx)
 			m.mu.RLock()
 			authorizer := m.toolAuthorizer
+			guard := m.invocationGuard
 			m.mu.RUnlock()
 			if authorizer != nil {
 				if err := authorizer(runCtx, toolName, args); err != nil {
@@ -701,6 +714,17 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 				}
 			} else if authenticated {
 				return nil, fmt.Errorf("external tool authorization policy is not configured")
+			}
+			guardedCtx, frozenArgs = runCtx, args
+			if guard != nil {
+				var guardErr error
+				guardedCtx, frozenArgs, guardErr = guard(runCtx, toolName, args)
+				if guardErr != nil {
+					return nil, fmt.Errorf("external tool approval denied: %w", guardErr)
+				}
+				if guardedCtx == nil {
+					guardedCtx = runCtx
+				}
 			}
 
 			// 解析工具名称：name::toolName
@@ -741,7 +765,11 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			return release, nil
 		},
 		Run: func(runCtx context.Context) (*ToolResult, error) {
-			result, callErr := client.CallTool(runCtx, actualToolName, args)
+			if guardedCtx == nil {
+				guardedCtx = runCtx
+			}
+			result, callErr := client.CallTool(guardedCtx, actualToolName, frozenArgs)
+			completeInvocation(guardedCtx, toolName, frozenArgs, result, callErr)
 			if callErr != nil {
 				m.handleConnectionDead(mcpName, client, callErr)
 			}

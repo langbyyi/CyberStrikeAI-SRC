@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/c2"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/handler"
 
 	"go.uber.org/zap"
 )
@@ -15,7 +15,7 @@ import (
 func setupC2Runtime(
 	cfg *config.Config,
 	db *database.DB,
-	agentHandler *handler.AgentHandler,
+	coordinator *approval.Coordinator,
 	logger *zap.Logger,
 ) (*c2.Manager, *c2.SessionWatchdog, context.CancelFunc) {
 	if !cfg.C2.EnabledEffective() {
@@ -26,11 +26,11 @@ func setupC2Runtime(
 	c2Manager.Registry().Register(string(c2.ListenerTypeHTTPBeacon), c2.NewHTTPBeaconListener)
 	c2Manager.Registry().Register(string(c2.ListenerTypeHTTPSBeacon), c2.NewHTTPSBeaconListener)
 	c2Manager.Registry().Register(string(c2.ListenerTypeWebSocket), c2.NewWebSocketListener)
-	c2HITLBridge := NewC2HITLBridge(db, logger)
-	c2Manager.SetHITLBridge(c2HITLBridge)
-	c2Manager.SetHITLDangerousGate(func(conversationID, toolName string) bool {
-		return agentHandler.HITLNeedsToolApproval(conversationID, toolName)
-	})
+	var c2Bridge *C2HITLBridge
+	if coordinator != nil {
+		c2Bridge = NewC2ApprovalBridge(coordinator, logger)
+		c2Manager.SetHITLBridge(c2Bridge)
+	}
 	c2Hooks := SetupC2Hooks(&C2HooksConfig{
 		DB:     db,
 		Logger: logger,
@@ -47,6 +47,12 @@ func setupC2Runtime(
 				zap.String("title", title),
 				zap.String("severity", severity),
 			)
+		},
+		// 任务终态 → 审批单回写真实执行结果（台账 execution 事件）。
+		OnTaskFinal: func(task *database.C2Task, sessionID string) {
+			if c2Bridge != nil {
+				c2Bridge.CompleteTask(task.ID, task.Status == string(c2.TaskSuccess), taskStatusSummary(task))
+			}
 		},
 	})
 	c2Manager.SetHooks(c2Hooks)
@@ -69,7 +75,7 @@ func (a *App) ReconcileC2AfterConfigApply() error {
 	if a.db == nil || a.agentHandler == nil {
 		return nil
 	}
-	m, wd, cancel := setupC2Runtime(a.config, a.db, a.agentHandler, a.logger.Logger)
+	m, wd, cancel := setupC2Runtime(a.config, a.db, a.approvalCoordinator, a.logger.Logger)
 	if m == nil {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/security"
 
@@ -206,17 +207,17 @@ func appendVulnerabilityNotificationAccessSQL(query string, args []interface{}, 
 	return query, args
 }
 
-func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, error) {
+func (h *NotificationHandler) loadPendingApprovalItems(limit int, english bool, access database.RBACListAccess) ([]NotificationSummaryItem, error) {
 	query := `
 		SELECT
 			id,
-			conversation_id,
+			COALESCE(conversation_id, ''),
 			tool_name,
 			COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
-		FROM hitl_interrupts
-		WHERE status = 'pending'
+		FROM approval_requests
+		WHERE status IN (?, ?)
 	`
-	args := []interface{}{}
+	args := []interface{}{approval.StatusPendingAgent, approval.StatusPendingHuman}
 	query, args = appendConversationAccessSQL(query, args, "conversation_id", access)
 	query += ` ORDER BY created_at DESC
 		LIMIT ?
@@ -234,7 +235,7 @@ func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool, acce
 		if err := rows.Scan(&id, &conversationID, &toolName, &createdSec); err != nil {
 			continue
 		}
-		desc := i18nText(english, "会话 "+conversationID+" 的审批中断待处理", "Conversation "+conversationID+" has pending HITL approval")
+		desc := i18nText(english, "会话 "+conversationID+" 有待处理审批", "Conversation "+conversationID+" has a pending approval")
 		if strings.TrimSpace(toolName) != "" {
 			desc = i18nText(english, "工具 "+toolName+" 等待审批", "Tool "+toolName+" is waiting for approval")
 		}
@@ -242,7 +243,7 @@ func (h *NotificationHandler) loadPendingHITLItems(limit int, english bool, acce
 			ID:             "hitl:" + id,
 			Level:          "p0",
 			Type:           "hitl_pending",
-			Title:          i18nText(english, "HITL 待审批", "HITL Pending Approval"),
+			Title:          i18nText(english, "待审批", "Pending Approval"),
 			Desc:           desc,
 			Ts:             unixSecToRFC3339(createdSec),
 			Count:          1,
@@ -731,9 +732,9 @@ func (h *NotificationHandler) GetSummary(c *gin.Context) {
 	access := notificationAccessFromContext(c)
 
 	hitlItems := []NotificationSummaryItem{}
-	if security.SessionHasPermission(c, "hitl:read") {
+	if security.SessionHasPermission(c, "approval:read") {
 		var err error
-		hitlItems, err = h.loadPendingHITLItems(limit, english, access)
+		hitlItems, err = h.loadPendingApprovalItems(limit, english, access)
 		if err != nil {
 			h.logger.Warn("加载 HITL 通知失败", zap.Error(err))
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to summarize hitl notifications"})

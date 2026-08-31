@@ -171,7 +171,7 @@ sudo journalctl -u cyberstrikeai -f
 - `config.yaml`
 - `data/conversations.db`
 - `data/knowledge.db`
-- `data/eino-checkpoints/`
+- `data/workflow-checkpoints/`（若使用工作流功能）
 - 自定义 `tools/roles/skills/agents/knowledge_base`
 - 上传文件目录 `chat_uploads/`
 
@@ -215,7 +215,7 @@ SQLite 热备份时最好先停止服务，或至少复制 `*.db`、`*.db-wal`�
 
 - 可替换：二进制、`web/`、默认 `tools/roles/skills/agents/docs`。
 - 必须保留：`config.yaml`、`data/`、自定义工具/角色/技能/子代理、`knowledge_base/`、`chat_uploads/`。
-- 可清理但要谨慎：`data/eino-checkpoints/`、临时 workspace、旧 payload、旧工具执行记录。
+- 可清理但要谨慎：`data/workflow-checkpoints/`、临时 workspace、旧 payload、旧工具执行记录。
 
 升级时如果覆盖整个目录，应先把自定义目录和 `data/` 移出或备份。很多“升级后配置丢了”的问题，本质是把运行态文件当成发布包的一部分覆盖掉。
 

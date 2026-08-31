@@ -28,15 +28,15 @@
   - `common.ok`
   - `nav.dashboard`
   - `header.apiDocs`
-  - `settings.robot.wecom.token`
+  - `settings.robots.wecom.token`
 
 ### 2.2 目录结构
 
 - `web/templates/index.html`  
-  - 页面骨架 + 所有静态文案位置，将逐步改为 `data-i18n` 标记。
+  - 页面骨架 + 所有静态文案位置，已逐步改为 `data-i18n` 标记。
 - `web/static/js/i18n.js`  
-  - 前端 i18n 初始化与 DOM 应用逻辑（本方案新增）。
-- `web/static/i18n/`（新增目录）
+  - 前端 i18n 初始化与 DOM 应用逻辑。
+- `web/static/i18n/`
   - `zh-CN.json`：中文文案（默认语言）
   - `en-US.json`：英文文案
   - 未来可新增：`ja-JP.json`、`ko-KR.json` 等。
@@ -52,8 +52,8 @@
   - 头部：`header.title`、`header.apiDocs`、`header.logout`
   - 登录：`login.title`、`login.subtitle`、`login.passwordLabel`、`login.submit`
   - 仪表盘：`dashboard.title`、`dashboard.refresh`、`dashboard.runningTasks`
-  - 系统设置：`settings.title`、`settings.nav.basic`、`settings.nav.robot`、`settings.apply`
-  - 机器人配置：`settings.robot.wecom.enabled`、`settings.robot.wecom.token` 等。
+  - 系统设置：`settings.title`、`settings.nav.basic`、`settings.nav.robots`、`settings.apply`
+  - 机器人配置：`settings.robots.wecom.enabled`、`settings.robots.wecom.token` 等。
 - 尽量按「界面区域」而不是「文件名」划分域，便于非开发人员理解。
 
 ### 3.2 JSON 示例
@@ -82,7 +82,7 @@
   },
   "login": {
     "title": "登录 CyberStrikeAI",
-    "subtitle": "请输入配置中的访问密码",
+    "subtitle": "使用平台账号登录，默认管理员为 admin。",
     "passwordLabel": "密码",
     "passwordPlaceholder": "输入登录密码",
     "submit": "登录"
@@ -114,7 +114,7 @@
   },
   "login": {
     "title": "Sign in to CyberStrikeAI",
-    "subtitle": "Enter the access password from config",
+    "subtitle": "Sign in with a platform account. The default administrator is admin.",
     "passwordLabel": "Password",
     "passwordPlaceholder": "Enter password",
     "submit": "Sign in"
@@ -136,8 +136,9 @@
 <span data-i18n="nav.dashboard">仪表盘</span>
 ```
 
-- 默认行为：脚本会替换元素的 `textContent`。
-- 同时翻译属性时，额外使用 `data-i18n-attr`，逗号分隔多个属性名：
+- 默认行为：脚本仅在元素**没有子元素**时替换其 `textContent`（避免覆盖卡片内的数字、子节点等）；`input` / `textarea` 永不设置 `textContent`，只处理属性。
+- 如需保留元素自身文本、只翻译属性，可加 `data-i18n-skip-text="true"`。
+- 同时翻译属性时，额外使用 `data-i18n-attr`，逗号分隔多个属性名；`title` 属性可用独立的 `data-i18n-title` 指定专用 key：
 
 ```html
 <button
@@ -145,6 +146,7 @@
   onclick="window.open('/api-docs', '_blank')"
   data-i18n="header.apiDocs"
   data-i18n-attr="title"
+  data-i18n-skip-text="true"
   title="API 文档">
   <span data-i18n="header.apiDocs">API 文档</span>
 </button>
@@ -164,8 +166,8 @@
 
 由 `i18n.js` 暴露以下全局函数：
 
-- `window.t(key: string): string`  
-  - 返回当前语言下的翻译文本，若缺失则回退到默认语言，再不行则返回 key 本身。
+- `window.t(key: string, opts?: object): string`  
+  - 返回当前语言下的翻译文本，支持 i18next 插值参数（如 `_t('key', { count: 2 })`），若缺失则回退到默认语言，再不行则返回 key 本身。
 - `window.changeLanguage(lang: string): Promise<void>`  
   - 切换语言并刷新页面文案（不会刷新整页）。
 
@@ -198,8 +200,8 @@ alert(t('settings.loadConfigFailed') + ': ' + error.message);
 - 默认语言：`zh-CN`。
 - 优先级（从高到低）：
   1. `localStorage` 中的用户选择（key：`csai_lang`）。
-  2. 浏览器 `navigator.language`（`zh` 开头 → `zh-CN`，否则 `en-US`）。
-  3. 默认 `zh-CN`。
+  2. 浏览器 `navigator.language`（`zh` 开头 → `zh-CN`，`en` 开头 → `en-US`）。
+  3. 其余情况回退默认 `zh-CN`。
 
 ### 6.2 初始化流程（`i18n.js`）
 
@@ -208,7 +210,7 @@ alert(t('settings.loadConfigFailed') + ': ' + error.message);
    - `lng` 为当前语言；
    - `fallbackLng` 为 `zh-CN`；
    - 资源先留空，采用按需加载。
-3. 通过 `fetch` 拉取 `/static/i18n/{lng}.json` 并 `i18next.addResources`。
+3. 通过 `fetch` 拉取 `/static/i18n/{lng}.json`，并调用 `i18next.addResourceBundle(lang, 'translation', data, true, true)` 注入资源。
 4. 更新：
    - `<html lang="...">` 属性；
    - 所有带 `data-i18n` / `data-i18n-attr` 的元素。
@@ -216,7 +218,7 @@ alert(t('settings.loadConfigFailed') + ': ' + error.message);
 
 ### 6.3 DOM 应用逻辑
 
-伪代码：
+伪代码（简化自 `i18n.js` 的 `applyTranslations`）：
 
 ```js
 function applyTranslations(root = document) {
@@ -224,16 +226,26 @@ function applyTranslations(root = document) {
   elements.forEach(el => {
     const key = el.getAttribute('data-i18n');
     if (!key) return;
-    const text = i18next.t(key);
-    if (text) {
+    const translated = i18next.t(key);
+    // 缺键时保留模板中的后备文案，不显示原始 key
+    const text = translated && translated !== key ? translated : '';
+    const skipText = el.getAttribute('data-i18n-skip-text') === 'true';
+    const isFormControl = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+    // 仅无子元素的普通元素才替换文本
+    if (!skipText && !isFormControl && !el.querySelector('*') && text) {
       el.textContent = text;
     }
 
     const attrList = el.getAttribute('data-i18n-attr');
     if (attrList) {
+      const titleKey = el.getAttribute('data-i18n-title');
       attrList.split(',').map(s => s.trim()).forEach(attr => {
         if (!attr) return;
-        const val = i18next.t(key);
+        let val = text;
+        if (attr === 'title' && titleKey) {
+          const titleText = i18next.t(titleKey);
+          if (titleText && titleText !== titleKey) val = titleText;
+        }
         if (val) el.setAttribute(attr, val);
       });
     }
@@ -270,19 +282,19 @@ function applyTranslations(root = document) {
 </div>
 ```
 
-对应 JS（在 `i18n.js` 中）：
+对应 JS（在 `i18n.js` 中，语言标签文案取自 `lang.zhCN` / `lang.enUS` key）：
 
 ```js
 function onLanguageSelect(lang) {
-  changeLanguage(lang).then(updateLangLabel).catch(console.error);
+  changeLanguage(lang); // changeLanguage 内部会更新文案与语言标签
   closeLangDropdown();
 }
 
 function updateLangLabel() {
   const labelEl = document.getElementById('current-lang-label');
-  if (!labelEl) return;
-  const lang = i18next.language || 'zh-CN';
-  labelEl.textContent = lang.startsWith('zh') ? '中文' : 'English';
+  if (!labelEl || typeof i18next === 'undefined') return;
+  const lang = (i18next.language || 'zh-CN').toLowerCase();
+  labelEl.textContent = lang.indexOf('zh') === 0 ? i18next.t('lang.zhCN') : i18next.t('lang.enUS');
 }
 ```
 
@@ -301,9 +313,9 @@ function updateLangLabel() {
 
 ### 8.2 渐进式改造顺序（推荐）
 
-1. **阶段 1（已规划）**
+1. **阶段 1（已完成）**
    - 引入 i18next 与 `i18n.js`。
-   - 新建 `zh-CN.json` / `en-US.json`（先覆盖 header / 登录 / 左侧导航）。
+   - 新建 `zh-CN.json` / `en-US.json`（覆盖 header / 登录 / 左侧导航）。
    - 实现 header 区域语言切换组件。
 2. **阶段 2**（已完成）
    - 系统设置页面（包括机器人配置页面）全部文案 i18n 化。

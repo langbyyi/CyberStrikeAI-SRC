@@ -5,6 +5,29 @@ import (
 	"strings"
 )
 
+type invocationCompletionKey struct{}
+
+type InvocationCompletion func(context.Context, string, map[string]interface{}, *ToolResult, error)
+
+func WithInvocationCompletion(ctx context.Context, completion InvocationCompletion) context.Context {
+	if completion == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, invocationCompletionKey{}, completion)
+}
+
+func completeInvocation(ctx context.Context, toolName string, args map[string]interface{}, result *ToolResult, err error) {
+	if ctx == nil {
+		return
+	}
+	if completion, ok := ctx.Value(invocationCompletionKey{}).(InvocationCompletion); ok && completion != nil {
+		completion(ctx, toolName, args, result, err)
+	}
+}
+
 // ToolRunRegistry 在工具开始/结束时登记当前 executionId，供对话页「仅终止当前工具」与监控页共用取消逻辑。
 type ToolRunRegistry interface {
 	RegisterRunningTool(conversationID, executionID string)

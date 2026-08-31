@@ -4,6 +4,18 @@
 
 本文说明 CyberStrikeAI 对长时间工具、MCP 阻塞、大输出、取消和恢复上下文的治理策略。目标是让 Agent 保持标准工具语义，同时避免工具卡死、上下文爆炸、数据库膨胀或恢复时重新注入历史大输出。
 
+> **本分支与官方的差异**：官方 CyberStrikeAI 的工具治理层还包含 execution_controller、skill_router、session_intent、coverage、finalization、depth_force、evidence_policy 等模块。本分支（SRC 二开）已移除这些治理模块，仅保留两道硬性机制：**敏感接口硬门**（`internal/security/sensitive_http_gate.go`）和 **`record_vulnerability` 可复现证据校验**（`internal/app/vulnerability_tools.go`），详见下文「本分支保留的治理机制」。本文其余内容（异步工具执行、超时与取消、外部 MCP 隔离、输出兜底）均为本分支实际存在的执行基础设施。
+
+## 本分支保留的治理机制
+
+### 敏感接口硬门
+
+工具真正执行前，Executor 会用敏感 HTTP 门对调用做分类：`http-framework-test`、`exec`、`execute-python-script` 等入口的请求若命中破坏性路径关键字（`delete`、`drop`、`truncate`、`shutdown`、`poweroff`、`resetpassword`、`kill` 等）且方法为写操作，或任意 `curl -X DELETE` 类自由命令，会被直接拦截，模型只会收到 `[sensitive_http_gate] blocked` 说明，真实请求不会发出。唯一的放行方式是 Context 中存在与该工具及**冻结的完整参数**完全匹配的内部审批授权（`DangerousInvocationGranted`，见 `internal/security/executor.go`），模型无法通过改写参数自行解锁。GET/HEAD/OPTIONS 等只读方法默认放行，但 `shutdown`、`drop`、`truncate` 等关键控制面路径即使 GET 也会拦截。
+
+### record_vulnerability 可复现证据校验
+
+`record_vulnerability` 落库前会执行可复现校验：检查本会话 `tool_executions` 中状态为 `completed` 的真实工具探测记录，要求漏洞 `target` 的 host（IP 按字符边界匹配）出现在某次非漏洞管理类工具的 arguments 或 result 中。没有任何真实探测证据时，工具返回"可复现校验未通过"并拒绝记录，防止 Agent 编造或记录未实测的漏洞（见 `internal/app/vulnerability_tools.go` 的 `reproducibleEvidenceExists` 与 `internal/database/monitor.go` 的探测证据查询）。
+
 ## 设计目标
 
 - **Agent 不被工具绑死**：工具调用可以很慢，但当前 runner 只等待有限时间。
@@ -98,13 +110,13 @@ agent:
 
 ## 输出兜底
 
-系统使用 `multi_agent.eino_middleware.reduction_max_length_for_trunc` 作为统一工具结果上限。当前示例配置为 50000 bytes。
+系统使用 `multi_agent.eino_middleware.reduction_max_length_for_trunc` 作为统一工具结果上限。当前示例配置为 100000 bytes。
 
 ```yaml
 multi_agent:
   eino_middleware:
     reduction_enable: true
-    reduction_max_length_for_trunc: 50000
+    reduction_max_length_for_trunc: 100000
 ```
 
 兜底覆盖：
@@ -120,7 +132,7 @@ multi_agent:
 | PTY 执行路径 | 同样受上限控制 |
 | 前端详情弹窗 | 额外有 UI 展示截断保护 |
 
-触发上限后，完整输出先写入本地 trunc 文件，Agent 侧只保留计入预算的 `<persisted-output>` 预览（含绝对路径）。因此阈值为 50000 时，上下文文本不会超过该上限。
+触发上限后，完整输出先写入本地 trunc 文件，Agent 侧只保留计入预算的 `<persisted-output>` 预览（含绝对路径）。因此阈值为 100000 时，上下文文本不会超过该上限。
 
 示例：
 
@@ -157,7 +169,7 @@ Preview (last …):
 
 - 升级前 DB 已经存过原始大输出。
 - 手工迁移或导入的数据绕过了当前写入路径。
-- 配置从更大阈值改成 50000。
+- 配置从更大阈值改成 100000。
 - 未来某条旁路写入漏掉 canonicalize。
 
 ## 关键配置建议
@@ -166,32 +178,32 @@ Preview (last …):
 
 ```yaml
 agent:
-  max_iterations: 800
+  max_iterations: 12000
   tool_timeout_minutes: 60
-  tool_wait_timeout_seconds: 30
-  external_mcp_max_concurrent_per_server: 2
+  tool_wait_timeout_seconds: 900
+  external_mcp_max_concurrent_per_server: 5
   external_mcp_max_concurrent_total: 16
-  external_mcp_circuit_failure_threshold: 3
+  external_mcp_circuit_failure_threshold: 15
   external_mcp_circuit_cooldown_seconds: 60
   shell_no_output_timeout_seconds: 1200
 
 multi_agent:
   eino_middleware:
     reduction_enable: true
-    reduction_max_length_for_trunc: 50000
+    reduction_max_length_for_trunc: 100000
 ```
 
-参数说明：
+参数说明（与 `config.example.yaml` 对齐）：
 
-| 参数 | 建议 | 说明 |
+| 参数 | 示例配置 | 说明 |
 |---|---:|---|
-| `max_iterations` | `300-1000` | 太大等于放弃循环保护 |
+| `max_iterations` | `12000` | SRC 长扫描场景放开了循环保护；希望更早收敛时调小 |
 | `tool_timeout_minutes` | `60` | 单次工具硬超时，适合 sqlmap 等长任务 |
-| `tool_wait_timeout_seconds` | `30-60` | Agent 本轮等待上限，到时返回 `execution_id` |
+| `tool_wait_timeout_seconds` | `600-900` | Agent 本轮等待上限，到时返回 `execution_id`；SRC 全端口扫描、目录爆破建议 600-900，避免频繁转入后台 |
 | `shell_no_output_timeout_seconds` | `600-1200` | 连续无输出时终止，防止静默挂死 |
-| `reduction_max_length_for_trunc` | `50000` | 工具结果统一上限 |
+| `reduction_max_length_for_trunc` | `100000` | 工具结果统一上限 |
 
-不建议把 `tool_wait_timeout_seconds` 设置得很大。长任务应由 worker 后台跑，Agent 通过 `execution_id` 继续观察，而不是一轮等待数分钟。
+本分支面向 SRC 长扫描场景，示例配置把 `tool_wait_timeout_seconds` 提高到 600-900，让 nmap 全端口、目录爆破等任务尽量在本轮等待中跑完，减少转入后台和续跑轮次。交互式使用或希望更早拿回控制权时，可以调小该值，让长任务提前返回 `execution_id` 转入后台，由 Agent 通过 `execution_id` 继续观察。
 
 ## 测试建议
 

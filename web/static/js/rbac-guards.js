@@ -27,17 +27,13 @@
         applyCustomIcon: 'group:write',
 
         // 人机协同
-        applyHitlSidebarConfig: 'hitl:write',
-        saveHitlPageWhitelist: 'hitl:write',
-        saveHitlAuditStrategy: 'hitl:write',
-        saveHitlConversationConfig: 'hitl:write',
-        submitHitlDecision: 'hitl:write',
-        submitHitlDecisionWithPayload: 'hitl:write',
-        submitWorkflowHitlDecisionFromPage: 'hitl:write',
-        submitWorkflowHitlDecision: 'hitl:write',
-        dismissHitlItem: 'hitl:write',
-        batchDeleteHitlLogs: 'hitl:write',
-        clearHitlLogs: 'hitl:write',
+        submitHitlDecision: 'approval:decide',
+        submitHitlDecisionWithPayload: 'approval:decide',
+		submitWorkflowHitlDecision: 'workflow:execute',
+        saveApprovalPolicies: 'approval:policy:write',
+        publishApprovalRule: 'approval:policy:write',
+        disableApprovalRule: 'approval:policy:write',
+        deleteApprovalRule: 'approval:policy:write',
 
         // 项目
         showNewProjectModal: 'project:write',

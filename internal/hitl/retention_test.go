@@ -1,10 +1,12 @@
 package hitl
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"cyberstrike-ai/internal/approval"
 	appconfig "cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 
@@ -18,24 +20,19 @@ func TestServicePurgeExpired_respectsZeroRetention(t *testing.T) {
 		t.Fatalf("NewDB: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS hitl_interrupts (
-		id TEXT PRIMARY KEY,
-		conversation_id TEXT NOT NULL,
-		mode TEXT NOT NULL,
-		tool_name TEXT NOT NULL,
-		status TEXT NOT NULL,
-		decision TEXT,
-		created_at DATETIME NOT NULL,
-		decided_at DATETIME
-	)`); err != nil {
-		t.Fatalf("create table: %v", err)
+	store := approval.NewSQLiteStore(db)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-
-	old := time.Now().AddDate(0, 0, -100).UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO hitl_interrupts
-		(id, conversation_id, mode, tool_name, status, decision, created_at, decided_at)
-		VALUES ('old-1', 'c1', 'approval', 'exec', 'decided', 'approve', ?, ?)`, old, old); err != nil {
-		t.Fatalf("insert: %v", err)
+	old := time.Now().AddDate(0, 0, -100).UTC()
+	if err := store.CreateRequest(context.Background(), &approval.Request{
+		ID: "approval-kept", InvocationID: "invocation-kept", InvocationHash: "hash-kept",
+		Source: "test", RequesterUserID: "user-1", ToolName: "shell", Arguments: map[string]any{},
+		RiskLevel: approval.RiskHigh, TriggerSources: []string{"dangerous_action"},
+		Reviewer: approval.ReviewerHuman, Stage: approval.StageTerminal, Status: approval.StatusSucceeded,
+		CreatedAt: old, UpdatedAt: old,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	zero := 0
@@ -44,7 +41,34 @@ func TestServicePurgeExpired_respectsZeroRetention(t *testing.T) {
 	}, zap.NewNop())
 	svc.PurgeExpired()
 
-	if err := db.QueryRow(`SELECT id FROM hitl_interrupts WHERE id = 'old-1'`).Scan(new(string)); err != nil {
+	if _, err := store.GetRequest(context.Background(), "approval-kept"); err != nil {
 		t.Fatalf("record should remain when retention_days=0: %v", err)
+	}
+}
+
+func TestServicePurgeExpiredUsesUnifiedApprovalStoreOnFreshDatabase(t *testing.T) {
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "approval-retention.db"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	defer db.Close()
+	store := approval.NewSQLiteStore(db)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().AddDate(0, 0, -100).UTC()
+	if err := store.CreateRequest(context.Background(), &approval.Request{
+		ID: "approval-old", InvocationID: "invocation-old", InvocationHash: "hash-old",
+		Source: "test", RequesterUserID: "user-1", ToolName: "shell", Arguments: map[string]any{},
+		RiskLevel: approval.RiskHigh, TriggerSources: []string{"dangerous_action"},
+		Reviewer: approval.ReviewerHuman, Stage: approval.StageTerminal, Status: approval.StatusSucceeded,
+		CreatedAt: old, UpdatedAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	days := 90
+	NewService(db, &appconfig.Config{Hitl: appconfig.HitlConfig{RetentionDays: &days}}, zap.NewNop()).PurgeExpired()
+	if _, err := store.GetRequest(context.Background(), "approval-old"); err == nil {
+		t.Fatal("expired unified approval should be purged on a fresh database")
 	}
 }

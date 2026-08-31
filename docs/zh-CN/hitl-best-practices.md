@@ -1,130 +1,77 @@
-# 人机协同（HITL）最佳实践
+# 统一审批最佳实践
 
-[English](../en-US/hitl-best-practices.md)
+统一审批用于在 AI 执行工具前阻断敏感操作，并保留从规则命中、审批到真实执行结果的审计链。
 
-人机协同用于在 Agent 执行工具前做审批拦截。它适合控制高风险操作、保留审计痕迹，并在人工审计压力过大时让审计 Agent 接管常规审批。
+## 架构与语义
 
-## 配置入口
+- `tool_approval` 控制普通工具是否需要审批；白名单工具可直接放行。
+- `dangerous_action` 控制命中危险规则的调用是否需要审批。
+- 两个开关互相独立，但触发后进入同一个协调器，同一调用最多产生一张审批单。
+- 审批方是全局共享的 `human` 或 `agent`，不为两种触发器分别配置。
+- 裁决只有 `approve` 和 `reject`；审批不能改写工具参数。
+- 通过后签发的 Grant 与工具名、规范化参数和规则版本精确绑定，只能领取一次。
+- 会话 ID 和项目 ID 只用于 RBAC、筛选和导航，不参与策略解析。
 
-Web 端进入 **系统设置 → 人机协同**，可配置：
-
-- 全局默认审批方：`human` 或 `audit_agent`
-- 审计 Agent 专用模型：`hitl.audit_model`
-- 已决策审计日志保留天数
-- 免审批工具白名单：`hitl.tool_whitelist`
-- 审批模式与审查编辑模式的审计提示词
-
-对应的 `config.yaml` 示例：
+## 配置
 
 ```yaml
+approval:
+  reviewer: human # human | agent
+  timeout_seconds: 300
+  tool_approval:
+    enabled: false
+    tool_whitelist: [read_file, ls, list_dir, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
+
 hitl:
-  default_reviewer: human
   audit_model:
     provider: ""
     base_url: ""
     api_key: ""
-    model: "" # 可填小模型；留空复用默认 AI 通道的模型
+    model: ""
   retention_days: 90
-  tool_whitelist: [read_file, ls, glob, grep, tool_search, get_project_fact, list_project_facts, search_project_facts, list_vulnerabilities, get_vulnerability, get_asset, query_assets, list_knowledge_risk_types, get_tool_execution, wait_tool_execution, batch_task_list, batch_task_get, manage_webshell_list, c2_event, c2_file]
+  audit_agent_prompt: ""
 ```
 
-`audit_model` 的字段可以只填一部分。空字段会自动继承默认 AI 通道解析后的模型配置，因此常见做法是只填 `model`，让审计 Agent 使用更便宜的小模型。
+`approval` 是审批行为的唯一权威配置。`hitl.audit_model` 只在 `reviewer: agent` 时提供审批模型，空字段继承主模型配置。
 
-## 推荐审批策略
+`approval.timeout_seconds` 是单张审批单从创建到失效的最长秒数，必须大于 0。超时会自动拒绝本次调用；超时后不能补批准。即使人工已经点击通过，工具在领取执行凭证前也会再次校验有效期。
 
-### 1. 默认人工，逐步放权
+## 人工审批流程
 
-刚开始建议：
+当 `approval.reviewer: human` 且任一触发器要求审批时：
 
-- `default_reviewer: human`
-- 仅把明显只读工具加入 `tool_whitelist`
-- 对写文件、执行命令、C2 任务、WebShell 操作保持人工审批
+1. 协调器冻结工具名称和完整参数，创建 `pending_human` 审批单并暂停原调用。
+2. 具备 `approval:read` 权限的用户可在人机协同页面查看工具、参数、风险和触发来源。
+3. 具备 `approval:decide` 权限的登录用户提交 `approve` 或 `reject`，备注可选。
+4. 后端只接受仍处于 `pending_human`、未超时且存在在线等待任务的审批单；重复裁决、过期审批或进程重启后的孤立记录返回 `409`。
+5. 通过后协调器签发一次性执行凭证；执行器领取成功后状态进入 `executing`，最终记录为 `succeeded` 或 `failed`。
 
-运行一段时间后，观察审计日志，把重复、低风险、误报少的工具加入白名单。
+人工决策通过 `POST /api/approvals/:id/decision` 提交。数据库记录是审计依据，在线 broker 只负责唤醒当前正在等待的调用；不能仅修改数据库状态来恢复或执行任务。
 
-### 2. 人工审不过来时，用小模型接管常规审批
+## 参数冻结与动态字段
 
-当待审批积压明显时，可以切换为：
+审批凭证与工具名、规范化后的完整参数、调用 ID 和规则版本绑定。审批页面展示的参数就是被授权参数，人工或审计 Agent 都不能在批准时改写参数。
 
-```yaml
-hitl:
-  default_reviewer: audit_agent
-  audit_model:
-    model: "your-small-reviewer-model"
-```
+时间戳、nonce、请求 ID 等动态值也属于参数的一部分：
 
-建议让小模型处理：
+- 在审批前生成并保持不变，可以正常批准和执行。
+- 审批后重新生成或修改，会导致参数摘要不一致，执行器拒绝使用原凭证。
+- 必须在批准后生成的动态值，应先在工具契约中明确设计为非安全语义字段并经过独立安全评审；当前实现不会自动忽略任何名称类似时间戳的字段。
 
-- 只读查询
-- 信息收集
-- 端口与服务扫描
-- 目录枚举
-- 无破坏性的验证命令
+## 建议
 
-仍建议人工处理：
+- 初次上线使用 `reviewer: human`，只将明确只读工具加入白名单。
+- 待审批量过大时可改用 `reviewer: agent`，但仍应保留危险规则开关。
+- 规则发布前会在服务端编译校验；失败时保留上一份有效快照。
+- 重启时尚未执行的审批会被取消，不允许凭旧授权继续执行。
+- 工作流 checkpoint 是流程暂停机制，不是安全审批，两者不共享状态。
 
-- 删除、覆盖、清空数据
-- 修改权限、密码、账号
-- 持久化、横向移动、C2 高风险任务
-- 对生产目标的写入操作
+## 权限
 
-### 3. 用提示词定义组织策略
+- 读取审批单、配置和规则：`approval:read`
+- 人工裁决：`approval:decide`
+- 修改全局配置和危险规则：`approval:policy:write`
 
-审计 Agent 的提示词应该写成策略，而不是泛泛地说“谨慎审批”。建议明确：
-
-- 默认放行哪些低风险操作
-- 必须拒绝哪些破坏性操作
-- 哪些情况需要人工升级
-- 审查编辑模式下允许怎样收窄参数
-
-示例策略片段：
-
-```text
-常规信息收集、只读查询、端口扫描默认 approve。
-涉及删除文件、清空数据库、修改账号权限、写入持久化后门、停止关键服务时必须 reject。
-若目标范围超出用户授权范围，应 reject。
-审查编辑模式下，可将路径、目标、命令参数收窄后 approve，但不得扩大攻击面。
-```
-
-### 4. 白名单只放稳定低风险工具
-
-白名单工具会跳过审批，因此要保守维护。推荐放：
-
-- `read_file`
-- `ls`
-- `glob`
-- `grep`
-- `tool_search`
-- 项目与漏洞查询：`get_project_fact`、`list_project_facts`、`search_project_facts`、`list_vulnerabilities`、`get_vulnerability`
-- 资产与知识元数据查询：`get_asset`、`query_assets`、`list_knowledge_risk_types`
-- 执行与任务状态查询：`get_tool_execution`、`wait_tool_execution`、`batch_task_list`、`batch_task_get`
-- 本地管理元数据查询：`manage_webshell_list`、`c2_event`、`c2_file`
-
-上述内置 MCP 查询仍受 RBAC 和资源范围约束；白名单只跳过 HITL 审批，不扩大访问权限。`list_dir` 仅在实际工具名为该值时有效；Eino 文件系统的目录列表工具名是 `ls`。
-
-不建议直接全局白名单：
-
-- 任意 shell 执行工具
-- 文件写入/删除工具
-- C2 任务工具
-- WebShell 命令执行工具
-- 会向目标或外部服务发起请求的“只读”工具，例如 `webshell_file_read`、`webshell_file_list` 和 `search_knowledge_base`
-- 同一工具名同时包含读写 action 的复合工具，例如 `c2_session`、`c2_listener`、`c2_profile`、`c2_task_manage`
-
-## 模式选择
-
-| 模式 | 适用场景 |
-|------|----------|
-| 关闭 | 本地实验、完全信任工具链 |
-| 审批模式 | 只需要通过/拒绝 |
-| 审查编辑 | 希望审计 Agent 收窄参数后放行 |
-
-如果你已经配置了小模型审计，推荐从 **审批模式** 开始。只有当你希望 AI 自动收窄路径、目标范围或命令参数时，再开启 **审查编辑**。
-
-## 运维建议
-
-- 定期查看 **人机协同 → 审计日志**，调整白名单和提示词。
-- 高风险环境下保持 `default_reviewer: human`，只让审计 Agent 辅助给出建议。
-- 小模型审批失败时默认保守拒绝，这是预期行为。
-- 修改 `hitl.audit_model` 后先在页面点击 **测试审计模型**。
-- 对生产、客户、真实业务系统操作前，应保留人工最终确认。
+旧 `hitl:*` 权限不会自动获得统一审批的读取、裁决或策略修改权限。

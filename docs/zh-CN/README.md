@@ -1,9 +1,10 @@
 # 中文文档
 
-[文档首页](../README.md) | [English](../en-US/README.md)
+[文档首页](../README.md)
 
 ## 按目标开始
 
+- **本分支特性**：[SRC 二开特性](../SRC二开.md)
 - **快速体验**：[部署指南](deployment.md) → [配置参考](configuration.md) → [排错指南](troubleshooting.md)
 - **生产部署**：[配置画像](configuration-profiles.md) → [安全加固](security-hardening.md) → [运维 Runbooks](runbooks.md) → [审计与监控](audit-and-monitoring.md)
 - **接入与自动化**：[API 参考](api-reference.md) → [API Recipes](api-recipes.md) → [MCP 联邦](mcp-federation.md)

@@ -18,6 +18,7 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/agentfinalizer"
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
@@ -183,25 +184,27 @@ func discardPlanningIfEchoesToolResult(respPlan *responsePlanAgg, toolData inter
 
 // AgentHandler Agent处理器
 type AgentHandler struct {
-	agent            *agent.Agent
-	db               *database.DB
-	logger           *zap.Logger
-	tasks            *AgentTaskManager
-	taskEventBus     *TaskEventBus // 镜像 SSE 事件，供刷新后订阅同一运行中任务
-	batchTaskManager *BatchTaskManager
-	hitlManager      *HITLManager
-	config           *config.Config // 配置引用，用于获取角色信息
-	knowledgeManager interface {    // 知识库管理器接口
+	agent               *agent.Agent
+	db                  *database.DB
+	logger              *zap.Logger
+	tasks               *AgentTaskManager
+	taskEventBus        *TaskEventBus // 镜像 SSE 事件，供刷新后订阅同一运行中任务
+	batchTaskManager    *BatchTaskManager
+	approvalCoordinator *approval.Coordinator
+	config              *config.Config // 配置引用，用于获取角色信息
+	knowledgeManager    interface {    // 知识库管理器接口
 		LogRetrieval(conversationID, messageID, query, riskType string, retrievedItems []string) error
 	}
 	agentsMarkdownDir string // 多代理：Markdown 子 Agent 目录（绝对路径，空则不从磁盘合并）
 	batchCronParser   cron.Parser
-	// hitlWhitelistSaver 侧栏「应用」HITL 时将会话增量白名单合并写入 config.yaml（可选）
-	hitlWhitelistSaver       HitlToolWhitelistSaver
-	hitlStrategySaver        HitlAuditStrategySaver
-	hitlDefaultReviewerSaver HitlDefaultReviewerSaver
-	auditLLM                 *openai.Client
-	audit                    *audit.Service
+	auditLLM          *openai.Client
+	audit             *audit.Service
+}
+
+func (h *AgentHandler) SetApprovalCoordinator(coordinator *approval.Coordinator) {
+	if h != nil {
+		h.approvalCoordinator = coordinator
+	}
 }
 
 // SetAudit wires platform audit logging.
@@ -255,12 +258,6 @@ func (h *AgentHandler) cancelRunningMCPToolsForConversation(conversationID strin
 	}
 }
 
-// HitlToolWhitelistSaver 合并/设置 HITL 免审批工具到全局配置并落盘
-type HitlToolWhitelistSaver interface {
-	MergeHitlToolWhitelistIntoConfig(add []string) error
-	SetHitlToolWhitelist(tools []string) error
-}
-
 // NewAgentHandler 创建新的Agent处理器
 func NewAgentHandler(agent *agent.Agent, db *database.DB, cfg *config.Config, logger *zap.Logger) *AgentHandler {
 	batchTaskManager := NewBatchTaskManager(logger)
@@ -287,14 +284,10 @@ func NewAgentHandler(agent *agent.Agent, db *database.DB, cfg *config.Config, lo
 		taskEventBus:     bus,
 		batchTaskManager: batchTaskManager,
 		config:           cfg,
-		hitlManager:      NewHITLManager(db, logger),
 		batchCronParser:  cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
 		auditLLM:         openai.NewClient(llmCfg, llmHTTP, logger),
 	}
 	tm.SetToolCanceler(handler.cancelRunningMCPToolsForConversation)
-	if err := handler.hitlManager.EnsureSchema(); err != nil {
-		logger.Warn("初始化 HITL 表失败", zap.Error(err))
-	}
 	go handler.batchQueueSchedulerLoop()
 	return handler
 }
@@ -309,36 +302,6 @@ func (h *AgentHandler) SetKnowledgeManager(manager interface {
 // SetAgentsMarkdownDir 设置 agents/*.md 子代理目录（绝对路径）；空表示仅使用 config.yaml 中的 sub_agents。
 func (h *AgentHandler) SetAgentsMarkdownDir(absDir string) {
 	h.agentsMarkdownDir = strings.TrimSpace(absDir)
-}
-
-// SetHitlToolWhitelistSaver 设置 HITL 白名单落盘（与 ConfigHandler 配合，避免循环引用用接口）
-func (h *AgentHandler) SetHitlToolWhitelistSaver(s HitlToolWhitelistSaver) {
-	h.hitlWhitelistSaver = s
-}
-
-// HitlDefaultReviewerSaver 持久化全局默认审批方到 config.yaml。
-type HitlDefaultReviewerSaver interface {
-	UpdateHitlDefaultReviewer(reviewer string) error
-}
-
-// SetHitlDefaultReviewerSaver 设置 HITL 默认审批方落盘。
-func (h *AgentHandler) SetHitlDefaultReviewerSaver(s HitlDefaultReviewerSaver) {
-	h.hitlDefaultReviewerSaver = s
-}
-
-func (h *AgentHandler) hitlEffectiveDefaultReviewer() string {
-	if h != nil && h.config != nil {
-		return normalizeHitlReviewer(h.config.Hitl.EffectiveDefaultReviewer())
-	}
-	return "human"
-}
-
-// HITLNeedsToolApproval 供 C2 危险任务门控：与会话侧人机协同及免审批白名单判定一致。
-func (h *AgentHandler) HITLNeedsToolApproval(conversationID, toolName string) bool {
-	if h == nil || h.hitlManager == nil {
-		return false
-	}
-	return h.hitlManager.NeedsToolApproval(conversationID, toolName)
 }
 
 // ChatAttachment 聊天附件（用户上传的文件）
@@ -372,7 +335,6 @@ type ChatRequest struct {
 	Attachments          []ChatAttachment        `json:"attachments,omitempty"`
 	WebShellConnectionID string                  `json:"webshellConnectionId,omitempty"` // WebShell 管理 - AI 助手：当前选中的连接 ID，仅使用 webshell_* 工具
 	AIChannelID          string                  `json:"aiChannelId,omitempty"`          // 会话级 AI 通道；空则使用 ai.default_channel
-	Hitl                 *HITLRequest            `json:"hitl,omitempty"`
 	Reasoning            *ChatReasoningRequest   `json:"reasoning,omitempty"`
 	Finalization         ChatFinalizationRequest `json:"finalization,omitempty"`
 	// Orchestration 仅对 /api/multi-agent、/api/multi-agent/stream：deep | plan_execute | supervisor；空则等同 deep。机器人/批量等无请求体时由服务端默认 deep。/api/eino-agent* 不使用此字段。
@@ -397,14 +359,6 @@ func chatReasoningToClientIntent(r *ChatReasoningRequest) *reasoning.ClientInten
 		return nil
 	}
 	return &reasoning.ClientIntent{Mode: r.Mode, Effort: r.Effort}
-}
-
-type HITLRequest struct {
-	Enabled        bool     `json:"enabled"`
-	Mode           string   `json:"mode,omitempty"`
-	Reviewer       string   `json:"reviewer,omitempty"` // human | audit_agent
-	SensitiveTools []string `json:"sensitiveTools,omitempty"`
-	TimeoutSeconds int      `json:"timeoutSeconds,omitempty"`
 }
 
 const (
@@ -1059,12 +1013,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 	// response_start + response_delta：前端时间线显示为「📝 规划中」（monitor.js），不落逐条 delta；
 	// 聚合为一条 planning 写入 process_details，刷新后与线上一致。
 	var respPlan responsePlanAgg
-	if assistantMessageID != "" {
-		h.tasks.SetHitlAssistantMessageID(conversationID, assistantMessageID)
-	}
-	syncHitlCognition := func() {
-		h.syncHitlCognitionFromProgress(conversationID, assistantMessageID, thinkingStreams, &respPlan)
-	}
 	persistResponsePlan := func(reset bool) {
 		if assistantMessageID == "" {
 			return
@@ -1096,7 +1044,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 			respPlan.lastPersistAt = time.Now()
 			respPlan.lastPersistSize = respPlan.b.Len()
 		}
-		syncHitlCognition()
 		if reset {
 			respPlan = responsePlanAgg{}
 		}
@@ -1135,7 +1082,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 			}
 			flushedThinking[sid] = true
 		}
-		syncHitlCognition()
 	}
 
 	return func(eventType, message string, data interface{}) {
@@ -1207,25 +1153,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 						}
 					}
 				}
-			}
-		}
-
-		if eventType == "tool_result" {
-			if dataMap, ok := data.(map[string]interface{}); ok {
-				toolName, _ := dataMap["toolName"].(string)
-				toolCallID, _ := dataMap["toolCallId"].(string)
-				success := true
-				if v, ok := dataMap["success"].(bool); ok {
-					success = v
-				}
-				resultText := ""
-				if r, ok := dataMap["result"].(string); ok {
-					resultText = r
-				}
-				if strings.TrimSpace(resultText) == "" {
-					resultText = message
-				}
-				h.recordHitlToolExecutionResult(conversationID, toolCallID, toolName, success, resultText)
 			}
 		}
 
@@ -1444,7 +1371,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 				respPlan.b.Len()-respPlan.lastPersistSize >= 1024 {
 				persistResponsePlan(false)
 			}
-			syncHitlCognition()
 			return
 		}
 		if eventType == "response" {
@@ -1514,7 +1440,6 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 					}
 				}
 			}
-			syncHitlCognition()
 			return
 		}
 
@@ -1600,6 +1525,7 @@ func (h *AgentHandler) cancelToolContinueAfter(conversationID, preferredExecID, 
 	}
 	if execID != "" {
 		if h.agent.CancelMCPToolExecutionWithNote(execID, note) {
+			h.tasks.RecordHitlUserDeclaration(conversationID, note)
 			return true, gin.H{
 				"status":              "tool_abort_requested",
 				"conversationId":      conversationID,

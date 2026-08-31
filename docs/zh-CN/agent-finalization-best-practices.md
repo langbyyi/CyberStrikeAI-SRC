@@ -84,7 +84,7 @@ type FinalizationDecision struct {
 | `tool_call` / `tool_result` | 执行详情 | 否 | 工具事件 |
 | `eino_agent_reply` | 执行详情 | 否 | 子代理返回材料 |
 | `finalization_check` | 执行详情 | 否 | verifier 结果 |
-| `finalization_auto_continue` | 执行详情 | 否 | verifier 触发的工程续跑，`contextInjection=false` |
+| `finalization_auto_continue` | 执行详情 | 否 | verifier 触发的工程续跑，注入内部续跑指令但 `persistedUserMessage=false`，不写入用户消息表 |
 | `response` | 主消息气泡 | 是 | 只能在 `data.finalized=true` 时使用 |
 | `done` | 关闭流 | 否 | 仅表示流结束，不表示任务成功 |
 | `error` / `cancelled` | 主消息气泡或系统提示 | 是，终态失败类 | 必须带原因 |
@@ -148,7 +148,8 @@ Do not produce a final answer until verification is complete.
 - [web/static/js/monitor.js](../../web/static/js/monitor.js) 只把 `data.finalized === true` 的 `response` 当最终回复；未最终化文本会显示为最终回复检查未通过。
 - [web/static/js/webshell.js](../../web/static/js/webshell.js) 将流式正文标记为候选输出，只有 `response(finalized=true)` 才切换为完成态。
 - [internal/agentfinalizer/decision_test.go](../../internal/agentfinalizer/decision_test.go) 覆盖 pending tool、HITL、空输出、证据策略要求但缺执行证据、失败证据不能支撑最终化、完成态证据可 final 等回归场景。
-- [internal/handler/finalization_auto_continue.go](../../internal/handler/finalization_auto_continue.go) 在缺 completed 执行证据时最多自动续跑 2 段；续跑只恢复已有模型轨迹，不向 agent 注入新的 user/system 文案。
+- [internal/handler/finalization_auto_continue.go](../../internal/handler/finalization_auto_continue.go) 在缺 completed 执行证据时最多自动续跑 2 段；缺显式完成信号且候选文本非空时最多再续跑 1 段。续跑基于已有轨迹恢复上下文，并向 Runner 注入内部续跑指令（`persistedUserMessage=false`，不写入用户消息表）。
+- 迭代结束后若仍有 `queued/running` 工具执行，会先自动取消并等待其离开 pending（`finalization_pending_tools_cancelled` 事件），再重新决策。
 
 当前契约的核心规则：
 
@@ -165,9 +166,12 @@ Do not produce a final answer until verification is complete.
    后端不从用户自然语言、助手回复或 agent mode 名称中推断执行意图。聊天请求通过 `finalization.requireExecutionEvidence` 显式声明；WebShell、Workflow、批量、机器人等执行入口由调用点显式传入 policy。policy 要求证据时，至少需要一个可查询到的 `completed` 工具执行记录；只有 failed/cancelled 记录不能支撑最终化。
 
 5. **缺执行证据先工程续跑，再阻断。**
-   Eino 单代理和 Eino 多代理主链路在 `missing_execution_evidence` 时会先通过已有 trace 自动续跑，不注入额外上下文；达到续跑上限后仍缺证据才写入 blocked。
+   Eino 单代理和 Eino 多代理主链路在 `missing_execution_evidence` 时会先基于已有 trace 自动续跑，并向 Runner 注入内部续跑指令（不写入用户消息表）；达到续跑上限后仍缺证据才写入 blocked。
 
-6. **HITL 和空输出不会 final。**
+6. **缺显式完成信号不 final。**
+   Eino 主链路要求显式完成信号：子代理调用 `exit`，Plan-Execute 发出 `plan_completed`，其余模式发出 `framework_completed`。候选文本非空时先续跑一次要求补交完成信号；仍无信号则以 `missing_completion_signal` 阻断，阻断文案保留候选文本并附加未通过最终确认的警告。
+
+7. **HITL 和空输出不会 final。**
    workflow 等待人工确认、空 assistant 文本、Eino 空输出占位均会写入阻断文案，而不是成功总结。
 
 ## 五、贴合当前项目的推荐架构
@@ -210,6 +214,11 @@ type RunResult struct {
     EvidenceRefs        []string
     PendingExecutionIDs []string
     MissingChecks       []string
+
+    CompletionContractRequired bool
+    CompletionState            CompletionState // unsignaled | succeeded | blocked | failed | cancelled | awaiting_hitl
+    CompletionSignal           string          // exit | plan_completed | framework_completed ...
+    FinalResponse              string
 }
 ```
 
@@ -234,9 +243,11 @@ sendEvent("response", decision.FinalText, finalizationResponsePayload(decision, 
 
 ```js
 const responseFinalized = isFinalizedResponseData(responseData);
+const responseHasFinalizationContract = hasFinalizationContract(responseData);
+const resolvedResponseText = resolveFinalAssistantResponseText(event.message, streamState);
 const bubbleText = responseFinalized
   ? resolvedResponseText
-  : (event.message || '任务尚未达到最终回复条件，暂不生成成功结论。');
+  : finalizationNoticeMarkdown(responseData, event.message);
 markAssistantFinalizationState(assistantIdFinal, responseData);
 ```
 
@@ -268,7 +279,7 @@ WebShell 侧同理：`response_delta` 可以用于实时预览，但 UI 文案�
 
 ### P0：先修“误 final”（已落地）
 
-1. 已引入 `FinalizationDecision`。
+1. 已引入 `FinalizationDecision`（实现为 `agentfinalizer.Decision`）。
 2. 主要 agent SSE `response` 事件已携带 `data.finalized/finalizable/status/completionReason` 等字段。
 3. 前端 `monitor.js` 和 `webshell.js` 已按 `finalized=true` 区分候选输出和最终回复。
 4. `RunResult.Response` 仍保留兼容字段名，但语义已由 finalizer 统一提升；后续可再拆成 `CandidateResponse` / `FinalResponse`，减少误用空间。
@@ -278,7 +289,7 @@ WebShell 侧同理：`response_delta` 可以用于实时预览，但 UI 文案�
 
 1. 已用 `mcp_execution:<id>` 作为基础 evidence refs。
 2. `finalization_check` 事件已展示 pending execution 与 missing checks。
-3. 执行入口已启用显式 execution evidence policy；Eino 主链路在 policy 要求证据且缺少 completed 工具证据时先无注入续跑，达到上限后才阻断 final。
+3. 执行入口已启用显式 execution evidence policy；Eino 主链路在 policy 要求证据且缺少 completed 工具证据时先注入内部续跑指令续跑（不落库为用户消息），达到上限后才阻断 final。
 4. 后续建议：为 `record_vulnerability`、`upsert_project_fact`、项目黑板记录建立更细粒度 evidence refs。
 5. 后续建议：最终报告模板固定包含“结论、证据、风险/不确定性、后续动作”。
 

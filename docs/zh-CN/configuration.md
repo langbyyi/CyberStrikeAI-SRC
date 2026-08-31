@@ -98,13 +98,19 @@ agent:
 - `workspace_root_dir`：会话工作区根目录，建议不要设置到系统 `/tmp`。
 - `system_prompt_path`：单代理系统提示词覆盖文件。
 
-## HITL
+## 统一审批
 
 ```yaml
+approval:
+  reviewer: human
+  timeout_seconds: 300
+  tool_approval:
+    enabled: false
+    tool_whitelist: [read_file, list_dir, glob, grep, tool_search]
+  dangerous_action:
+    enabled: true
 hitl:
-  default_reviewer: audit_agent
   retention_days: 90
-  tool_whitelist: [read_file, list_dir, glob, grep, tool_search]
   audit_model:
     provider: ""
     base_url: ""
@@ -112,10 +118,12 @@ hitl:
     model: ""
 ```
 
-- `default_reviewer`：`human` 或 `audit_agent`。
-- `tool_whitelist`：全局免审批工具列表，会与会话白名单合并。
-- `audit_model`：审计 Agent 独立模型；留空复用主模型。
-- `audit_agent_prompt` / `audit_agent_prompt_review_edit`：可覆盖默认审批策略。
+- `approval.reviewer`：`human` 或 `agent`。
+- `approval.timeout_seconds`：单张审批单有效期（秒，必须大于 0）；到期自动拒绝，已过期审批不能补批准。
+- `approval.tool_approval` 和 `approval.dangerous_action`：独立触发开关，共用一个审批方。
+- `approval.tool_approval.tool_whitelist`：普通工具审批的全局免审批列表。
+- `hitl.audit_model`：审计 Agent 独立模型；留空复用主模型。
+- `hitl.audit_agent_prompt`：可覆盖 Agent 审批提示词。
 
 更多策略见 [人机协同最佳实践](hitl-best-practices.md)。
 
@@ -149,7 +157,7 @@ security:
   tool_description_mode: full
 mcp:
   enabled: false
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8081
   auth_header: "X-MCP-Token"
   auth_header_value: ""
@@ -160,7 +168,7 @@ external_mcp:
 - `security.tools_dir`：内置工具 YAML 目录。
 - `tool_description_mode`：`short` 更省 token，`full` 更完整。
 - `mcp.enabled`：是否启动独立 HTTP MCP 服务。
-- `mcp.auth_header_value`：外部调用 MCP 时的共享密钥，生产环境必须设置。
+- `mcp.auth_header_value`：外部调用 MCP 时的共享密钥，仅在 `allow_global_access: true` 时生效；生产环境如开启该兼容模式必须设置强密钥。
 - `external_mcp.servers`：外部 MCP 联邦配置。
 
 工具 YAML 规则见 `tools/README.md`。
@@ -284,7 +292,7 @@ project:
 | `openai` | 兼容字段；通常由默认 AI 通道同步 | 新配置优先维护 `ai.channels` |
 | `agent.max_iterations` | 新 Agent 任务生效 | 已运行任务按启动时状态继续 |
 | `security.tool_description_mode` | 工具重新暴露时生效 | 模型已有上下文不会回滚 |
-| `hitl.tool_whitelist` | 新工具调用审批判断生效 | 已挂起审批不自动重判 |
+| `approval` | 新工具调用立即使用新的全局快照 | 已创建审批单继续使用创建时冻结的审批方和参数 |
 | `knowledge.enabled` | 会尝试初始化/更新组件 | 启用后仍需扫描和索引 |
 | `knowledge.embedding` | 检索器/索引器配置更新 | 已有向量通常需要重建索引 |
 | `robots` | 会触发连接重启 | 平台回调配置仍需在平台侧正确 |

@@ -50,6 +50,19 @@ server:
 	}
 }
 
+func TestExampleConfigUsesBuiltinAuditAgentPromptByDefault(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("load config example: %v", err)
+	}
+	if cfg.Hitl.AuditAgentPrompt != "" {
+		t.Fatal("config example must not override the built-in audit-agent prompt")
+	}
+	if got, want := cfg.Hitl.EffectiveAuditAgentPrompt(), DefaultHitlAuditAgentPrompt(); got != want {
+		t.Fatal("empty audit_agent_prompt must resolve to the built-in default")
+	}
+}
+
 func TestLoadIgnoresLegacyAuthPasswordField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -72,6 +85,52 @@ func TestLoadIgnoresLegacyAuthPasswordField(t *testing.T) {
 	}
 	if cfg.Auth.SessionDurationHours != 12 {
 		t.Fatalf("SessionDurationHours = %d, want 12", cfg.Auth.SessionDurationHours)
+	}
+}
+
+func TestLoadIndependentApprovalPolicyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := `approval:
+  reviewer: agent
+  timeout_seconds: 420
+  tool_approval:
+    enabled: false
+    tool_whitelist: [read_file, ls]
+  dangerous_action:
+    enabled: true
+`
+	if err := os.WriteFile(path, []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Approval.EffectiveReviewer() != "agent" || cfg.Approval.TimeoutSecondsEffective() != 420 {
+		t.Fatalf("approval config = %+v", cfg.Approval)
+	}
+	if cfg.Approval.ToolApproval.EnabledEffective(false) {
+		t.Fatal("tool approval should be disabled")
+	}
+	if !cfg.Approval.DangerousAction.EnabledEffective(true) || len(cfg.Approval.ToolApproval.ToolWhitelist) != 2 {
+		t.Fatalf("approval triggers = %+v", cfg.Approval)
+	}
+}
+
+func TestApprovalPolicyDefaultsKeepDangerGateIndependent(t *testing.T) {
+	var cfg Config
+	if cfg.Approval.ToolApproval.EnabledEffective(false) {
+		t.Fatal("tool approval default should be off")
+	}
+	if !cfg.Approval.DangerousAction.EnabledEffective(true) {
+		t.Fatal("dangerous action default should be on")
+	}
+	if cfg.Approval.EffectiveReviewer() != "human" {
+		t.Fatalf("reviewer = %q, want human", cfg.Approval.EffectiveReviewer())
+	}
+	if cfg.Approval.TimeoutSecondsEffective() != 300 {
+		t.Fatalf("timeout = %d, want 300", cfg.Approval.TimeoutSecondsEffective())
 	}
 }
 
@@ -203,5 +262,49 @@ func TestLatestUserMessageRunesEffective(t *testing.T) {
 	}
 	if got := custom.LatestUserMessageTailRunesEffective(); got != 60 {
 		t.Fatalf("custom latest user tail runes = %d", got)
+	}
+}
+
+func TestDefaultAuditAgentPromptContract(t *testing.T) {
+	prompt := DefaultHitlAuditAgentPrompt()
+	// 字段信任分级：userMessage 可信、参数内容防注入
+	for _, want := range []string{
+		"userMessage 是人类用户向主 Agent 下达的任务指令",
+		"一律忽略",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default audit prompt missing %q", want)
+		}
+	}
+	// 声明对齐：未声明的敏感危险操作必须拦下并提示补充授权；已声明才放行；
+	// userMessage 明确声明的大规模操作视为知情授权，仅超出声明范围才 reject
+	for _, want := range []string{
+		"核心裁决原则（声明对齐）",
+		"请确认是否授权本次操作",
+		"敏感危险操作清单",
+		"泛化任务描述",
+		"视为用户知情授权",
+		"行为超出声明范围的大规模破坏",
+		"按测试类操作裁决",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default audit prompt missing %q", want)
+		}
+	}
+	// 普通渗透操作不受声明要求限制
+	for _, want := range []string{"普通操作放行清单", "反弹 Shell", "webshell"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default audit prompt missing %q", want)
+		}
+	}
+	// 拒绝后是否询问用户由主 Agent 自行判断（可选，不强制）；命中规则有编号定义
+	for _, want := range []string{
+		"由主 Agent 自行判断",
+		"规则编号（comment 的「命中规则」必须取以下之一",
+		"R2 超范围",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default audit prompt missing %q", want)
+		}
 	}
 }

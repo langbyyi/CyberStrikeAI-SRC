@@ -52,30 +52,20 @@ func TestParseAuditAgentLLMContentChineseDecision(t *testing.T) {
 	}
 }
 
-func TestParseAuditAgentLLMContentWithEditedArguments(t *testing.T) {
-	d, err := parseAuditAgentLLMContent(`{"decision":"approve","comment":"收窄路径","editedArguments":{"path":"/safe"}}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Decision != "approve" {
-		t.Fatalf("expected approve, got %s", d.Decision)
-	}
-	if d.EditedArguments == nil || d.EditedArguments["path"] != "/safe" {
-		t.Fatalf("unexpected edited args: %+v", d.EditedArguments)
-	}
-}
-
-func TestBuildAuditAgentReviewInputIncludesMode(t *testing.T) {
-	s := buildAuditAgentReviewInput("review_edit", "execute", map[string]interface{}{
+func TestBuildAuditAgentReviewInputHasSingleApprovalContract(t *testing.T) {
+	s := buildAuditAgentReviewInput("execute", map[string]interface{}{
 		"arguments": `{"command":"pwd"}`,
 	})
-	if !strings.Contains(s, "review_edit") || !strings.Contains(s, "execute") {
+	if strings.Contains(s, "hitlMode") {
+		t.Fatalf("legacy approval mode leaked into input: %s", s)
+	}
+	if !strings.Contains(s, "execute") {
 		t.Fatalf("unexpected input: %s", s)
 	}
 }
 
 func TestBuildAuditAgentReviewInput(t *testing.T) {
-	s := buildAuditAgentReviewInput("approval", "nmap", map[string]interface{}{
+	s := buildAuditAgentReviewInput("nmap", map[string]interface{}{
 		"arguments":   `{"target":"10.0.0.1"}`,
 		"userMessage": "扫描内网",
 	})

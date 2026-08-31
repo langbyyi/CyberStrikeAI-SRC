@@ -4429,21 +4429,19 @@ function renderToolCallApprovalSummary(item, data) {
     }
     const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
     const mode = String(data.mode || 'approval').trim().toLowerCase();
-    const allowEdit = mode === 'review_edit';
     const argsObj = payload.argumentsObj && typeof payload.argumentsObj === 'object'
         ? payload.argumentsObj
         : {};
     panel.innerHTML = buildInlineHitlApprovalHtml(data, {
         toolName: '',
         mode: mode,
-        allowEdit: allowEdit,
         argsJSON: JSON.stringify(argsObj, null, 2)
     });
     panel.dataset.hitlInterruptId = String(data.interruptId);
     panel.dataset.conversationId = String(data.conversationId || window.currentConversationId || '').trim();
     panel.classList.toggle('hitl-inline-done', !!data.resolved || String(data.status || '') === 'decided');
     if (!data.resolved && !isAgentReviewedHitl(data)) {
-        bindInlineHitlApproval(panel, data, { allowEdit: allowEdit });
+        bindInlineHitlApproval(panel, data);
         bindHitlApprovalCountdown(panel, data);
         setHitlApprovalTaskAvailability(panel, panel.dataset.conversationId);
     }
@@ -4487,10 +4485,9 @@ function renderInlineHitlApproval(itemId, data) {
     if (mode === 'feedback' || mode === 'followup') {
         mode = 'approval';
     }
-    const allowEdit = mode === 'review_edit';
     const argsObj = payload.argumentsObj && typeof payload.argumentsObj === 'object' ? payload.argumentsObj : {};
     const argsJSON = JSON.stringify(argsObj, null, 2);
-    const modeLabel = mode === 'review_edit' ? '审查编辑' : '审批模式';
+    const modeLabel = '审批模式';
 
     const panel = document.createElement('div');
     panel.className = 'hitl-inline-approval';
@@ -4500,12 +4497,11 @@ function renderInlineHitlApproval(itemId, data) {
         toolName: toolName,
         mode: mode,
         modeLabel: modeLabel,
-        allowEdit: allowEdit,
         argsJSON: argsJSON
     });
     contentEl.appendChild(panel);
     if (!isAgentReviewedHitl(data)) {
-        bindInlineHitlApproval(panel, data, { allowEdit: allowEdit });
+        bindInlineHitlApproval(panel, data);
         bindHitlApprovalCountdown(panel, data);
         setHitlApprovalTaskAvailability(panel, panel.dataset.conversationId);
     }
@@ -4532,14 +4528,8 @@ function resolveInlineHitlDecision(timeline, data, decision, message) {
             reviewer: data.reviewer || data.decidedBy || (state.hitlData && (state.hitlData.reviewer || state.hitlData.decidedBy)) || 'human',
             decidedBy: data.decidedBy || (state.hitlData && state.hitlData.decidedBy) || '',
             status: 'decided',
-            comment: data.comment || (state.hitlData && state.hitlData.comment) || '',
-            editedArgs: data.editedArgs || data.editedArguments || (state.hitlData && (state.hitlData.editedArgs || state.hitlData.editedArguments)) || null
+            comment: data.comment || (state.hitlData && state.hitlData.comment) || ''
         });
-        if (decision === 'approve' && state.hitlData.editedArgs && typeof state.hitlData.editedArgs === 'object') {
-            state.originalArgs = state.originalArgs || state.args || {};
-            state.args = state.hitlData.editedArgs;
-            state.argsEditedByHitl = true;
-        }
         state.pending = decision === 'approve';
         setToolCallDetailState(item, state);
         const content = item.querySelector('.timeline-item-content.tool-call-detail-content');
@@ -4593,7 +4583,6 @@ function buildInlineHitlApprovalHtml(data, opts) {
     const hasToolNameOverride = opts && Object.prototype.hasOwnProperty.call(opts, 'toolName');
     const toolName = hasToolNameOverride ? String(opts.toolName || '') : (data.toolName || '-');
     const mode = opts && opts.mode ? opts.mode : String(data.mode || 'approval').trim().toLowerCase();
-    const allowEdit = opts && opts.allowEdit === true;
     const request = describeHitlApprovalRequest(Object.assign({}, data, toolName ? { toolName: toolName } : {}));
     const argsJSON = opts && opts.argsJSON ? opts.argsJSON : request.argsJSON;
     const reviewer = String(data.reviewer || data.decidedBy || '').trim().toLowerCase();
@@ -4602,8 +4591,6 @@ function buildInlineHitlApprovalHtml(data, opts) {
     const timedOut = status === 'timeout' || String(data.decidedBy || '').trim().toLowerCase() === 'system' && /timeout|超时/i.test(String(data.comment || data.decisionMessage || ''));
     const cancelled = status === 'cancelled';
     const resolved = !!data.resolved || status === 'decided' || status === 'timeout' || cancelled || data.decision === 'approve' || data.decision === 'reject';
-    const editedArgs = data.editedArgs || data.editedArguments;
-    const hasEditedArgs = editedArgs && typeof editedArgs === 'object' && Object.keys(editedArgs).length > 0;
     const tr = hitlApprovalTranslate;
     const shield = '<svg class="hitl-codex-shield" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 2.2l6 2.5v4.5c0 3.8-2.35 6.55-6 8.6-3.65-2.05-6-4.8-6-8.6V4.7l6-2.5z" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"/><path d="M7.5 10l1.55 1.55L12.8 7.8" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     const toolHeading = toolName || request.displayTool
@@ -4629,18 +4616,15 @@ function buildInlineHitlApprovalHtml(data, opts) {
             statusText = tr('hitl.expiredRejected', '审批超时，已自动拒绝');
         } else if (audit) {
             statusText = ok
-                ? (hasEditedArgs ? tr('hitl.auditEditedApproved', '审计 Agent 已修改参数并批准') : tr('hitl.auditApproved', '审计 Agent 已批准'))
+                ? tr('hitl.auditApproved', '审计 Agent 已批准')
                 : tr('hitl.auditRejected', '审计 Agent 已拒绝');
         } else {
             statusText = ok
-                ? (hasEditedArgs ? tr('hitl.humanEditedApproved', '已修改参数并允许') : tr('hitl.humanApproved', '已允许一次'))
+                ? tr('hitl.humanApproved', '已允许一次')
                 : tr('hitl.humanRejected', '人工审批已拒绝');
         }
         const comment = data.comment
             ? '<p class="hitl-codex-explainer">' + escapeHtml(data.comment) + '</p>'
-            : '';
-        const diff = hasEditedArgs
-            ? '<details class="hitl-codex-diff"><summary>' + escapeHtml(tr('hitl.viewEditedArgs', '查看修改后的参数')) + '</summary><pre>' + escapeHtml(JSON.stringify(editedArgs, null, 2)) + '</pre></details>'
             : '';
         return toolHeading + `
             <div class="hitl-codex-state hitl-codex-state--${ok ? 'approved' : 'rejected'}">
@@ -4648,13 +4632,10 @@ function buildInlineHitlApprovalHtml(data, opts) {
                 <strong>${escapeHtml(statusText)}</strong>
             </div>
             ${comment}
-            ${diff}
         `;
     }
     if (audit) {
-        const auditStatus = mode === 'review_edit'
-            ? tr('hitl.auditReviewEditing', '自动审查并校正中')
-            : tr('hitl.auditReviewing', '自动审核中');
+        const auditStatus = tr('hitl.auditReviewing', '自动审核中');
         const explanation = tr('hitl.auditReviewExplanation', '经过谨慎提示的审查智能体正在审查此请求，通过后才会执行。');
         return toolHeading + `
             <div class="hitl-codex-state hitl-codex-state--running">
@@ -4664,24 +4645,16 @@ function buildInlineHitlApprovalHtml(data, opts) {
             <p class="hitl-codex-explainer">${escapeHtml(explanation)}</p>
         `;
     }
-    const pendingStatus = allowEdit
-        ? tr('hitl.waitingHumanReview', '等待人工审查')
-        : tr('hitl.waitingHumanApproval', '等待人工审批');
+    const pendingStatus = tr('hitl.waitingHumanApproval', '等待人工审批');
     const rejectLabel = tr('hitl.reject', '拒绝');
-    const approveLabel = allowEdit
-        ? tr('hitl.saveEditedAndAllow', '保存修改并允许')
-        : tr('hitl.allowOnce', '允许一次');
+    const approveLabel = tr('hitl.allowOnce', '允许一次');
     const hasArgs = request.args && Object.keys(request.args).length > 0;
     const primary = request.primary
         ? '<div class="hitl-approval-primary hitl-approval-primary--' + request.kind + '"><code>' + escapeHtml(request.primary) + '</code></div>'
         : '';
     const requestDetails = hasArgs
-        ? '<details class="hitl-approval-details"' + (allowEdit ? ' open' : '') + '><summary>' + escapeHtml(allowEdit
-            ? tr('hitl.editRequestDetails', '查看或修改请求参数')
-            : tr('hitl.viewRequestDetails', '查看请求详情')) + '</summary>' +
-            (allowEdit
-                ? '<textarea class="hitl-edit-args hitl-inline-edit" spellcheck="false">' + escapeHtml(argsJSON === '{}' ? '' : argsJSON) + '</textarea>'
-                : '<pre>' + escapeHtml(argsJSON) + '</pre>') + '</details>'
+        ? '<details class="hitl-approval-details"><summary>' + escapeHtml(tr('hitl.viewRequestDetails', '查看请求详情')) + '</summary>' +
+            '<pre>' + escapeHtml(argsJSON) + '</pre></details>'
         : '';
     return `
         ${toolHeading}
@@ -4706,27 +4679,12 @@ function buildInlineHitlApprovalHtml(data, opts) {
     `;
 }
 
-function autoResizeHitlTextarea(textarea) {
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = Math.max(textarea.scrollHeight, textarea.offsetHeight || 0) + 'px';
-}
-
-function bindInlineHitlApproval(panel, data, opts) {
+function bindInlineHitlApproval(panel, data) {
     const approveBtn = panel.querySelector('.hitl-inline-approve');
     const rejectBtn = panel.querySelector('.hitl-inline-reject');
     const commentInput = panel.querySelector('.hitl-inline-comment');
-    const editInput = panel.querySelector('.hitl-inline-edit');
     const statusEl = panel.querySelector('.hitl-inline-status');
-    const allowEdit = opts && opts.allowEdit === true;
     if (!approveBtn || !rejectBtn || !statusEl) return;
-
-    if (editInput) {
-        autoResizeHitlTextarea(editInput);
-        editInput.addEventListener('input', function () {
-            autoResizeHitlTextarea(editInput);
-        });
-    }
 
     const setBusy = function (busy) {
         approveBtn.disabled = busy;
@@ -4735,28 +4693,11 @@ function bindInlineHitlApproval(panel, data, opts) {
 
     const submit = async function (decision) {
         setBusy(true);
-        let editedArgs = null;
-        if (decision === 'approve' && allowEdit && editInput) {
-            const raw = String(editInput.value || '').trim();
-            if (raw) {
-                try {
-                    editedArgs = JSON.parse(raw);
-                } catch (e) {
-                    statusEl.textContent = 'JSON 参数格式错误';
-                    setBusy(false);
-                    return;
-                }
-            }
-            const originalArgs = hitlApprovalArguments(data);
-            if (editedArgs && JSON.stringify(editedArgs) === JSON.stringify(originalArgs)) {
-                editedArgs = null;
-            }
-        }
         const comment = commentInput ? String(commentInput.value || '').trim() : '';
         try {
             if (typeof window.submitHitlDecisionWithPayload === 'function') {
                 const convFollow = data.conversationId || (typeof window.currentConversationId === 'string' ? window.currentConversationId : '');
-                const ok = await window.submitHitlDecisionWithPayload(data.interruptId, decision, comment, (decision === 'approve' && allowEdit) ? editedArgs : null, convFollow);
+                const ok = await window.submitHitlDecisionWithPayload(data.interruptId, decision, comment, convFollow);
                 if (!ok) {
                     statusEl.textContent = '提交失败，请重试';
                     setBusy(false);
@@ -4777,14 +4718,8 @@ function bindInlineHitlApproval(panel, data, opts) {
                     decisionMessage: msg,
                     reviewer: 'human',
                     status: 'decided',
-                    comment: comment,
-                    editedArgs: editedArgs
+                    comment: comment
                 });
-                if (decision === 'approve' && editedArgs && typeof editedArgs === 'object') {
-                    state.originalArgs = state.originalArgs || state.args || {};
-                    state.args = editedArgs;
-                    state.argsEditedByHitl = true;
-                }
                 state.pending = decision === 'approve';
                 setToolCallDetailState(toolItem, state);
                 renderToolCallApprovalSummary(toolItem, state.hitlData);
@@ -4883,20 +4818,18 @@ function renderChatHitlApprovalDock(data) {
     if (isAgentReviewedHitl(data)) return false;
     let mode = String(data.mode || 'approval').trim().toLowerCase();
     if (mode === 'feedback' || mode === 'followup') mode = 'approval';
-    const allowEdit = mode === 'review_edit';
     dock.dataset.hitlInterruptId = String(data.interruptId);
     dock.dataset.conversationId = conversationId || currentId;
     dock.setAttribute('tabindex', '-1');
     dock.innerHTML = buildInlineHitlApprovalHtml(data, {
         mode: mode,
-        allowEdit: allowEdit,
         argsJSON: JSON.stringify(hitlApprovalArguments(data), null, 2)
     });
     wrapChatHitlApprovalScrollRegion(dock);
     dock.hidden = false;
     const container = dock.closest('.chat-input-container');
     if (container) container.classList.add('has-hitl-approval');
-    bindInlineHitlApproval(dock, data, { allowEdit: allowEdit });
+    bindInlineHitlApproval(dock, data);
     bindHitlApprovalCountdown(dock, data);
     setHitlApprovalTaskAvailability(dock, dock.dataset.conversationId);
     return true;
@@ -5071,6 +5004,7 @@ function renderInlineWorkflowHitlApproval(itemId, data) {
     const item = document.getElementById(itemId);
     if (!item || !data) return;
     const runId = data.workflowRunId || data.workflow_run_id;
+    const approvalId = data.approvalId || data.approval_id || '';
     if (!runId) return;
     let contentEl = item.querySelector('.timeline-item-content');
     if (!contentEl) {
@@ -5127,10 +5061,15 @@ function renderInlineWorkflowHitlApproval(itemId, data) {
         const comment = String(commentInput.value || '').trim();
         try {
             const fetchFn = typeof apiFetch === 'function' ? apiFetch : fetch;
-            const response = await fetchFn(`/api/workflows/runs/${encodeURIComponent(runId)}/resume`, {
+            const endpoint = approvalId
+                ? `/api/approvals/${encodeURIComponent(approvalId)}/decision`
+                : `/api/workflows/runs/${encodeURIComponent(runId)}/resume`;
+            const response = await fetchFn(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ approved: approved, comment: comment })
+                body: JSON.stringify(approvalId
+                    ? { decision: approved ? 'approve' : 'reject', comment: comment }
+                    : { approved: approved, comment: comment })
             });
             const body = response && typeof response.json === 'function' ? await response.json() : null;
             if (!response || !response.ok) {
@@ -5174,6 +5113,7 @@ function workflowHitlDataFromRun(run) {
     const pending = parseWorkflowHitlPendingJSON(run.pending_hitl_json || run.pendingHitlJson || run.pendingHitlJSON);
     const pendingHitl = pending.pendingHitl && typeof pending.pendingHitl === 'object' ? pending.pendingHitl : pending;
     return {
+        approvalId: run.approvalId || run.approval_id || '',
         workflowRunId: String(runId),
         nodeId: pendingHitl.nodeId || run.pending_hitl_node_id || run.pendingHitlNodeId || '',
         label: pendingHitl.label || pendingHitl.nodeId || run.pending_hitl_node_id || run.pendingHitlNodeId || runId,
@@ -5206,10 +5146,22 @@ async function restoreWorkflowHitlInlineForConversation(conversationId) {
         return;
     }
     try {
-        const resp = await apiFetch('/api/workflows/runs/pending?conversationId=' + encodeURIComponent(conversationId));
+        const resp = await apiFetch('/api/approvals?conversationId=' + encodeURIComponent(conversationId) + '&status=pending_human&limit=50');
         if (!resp.ok) return;
         const data = await resp.json().catch(function () { return {}; });
-        const runs = Array.isArray(data.runs) ? data.runs : [];
+        const runs = (Array.isArray(data.items) ? data.items : []).filter(function (item) {
+            return item && item.source === 'workflow_node';
+        }).map(function (item) {
+            const args = item.arguments && typeof item.arguments === 'object' ? item.arguments : {};
+            return {
+                id: item.toolCallId || args.run_id,
+                approvalId: item.id,
+                conversationId: item.conversationId,
+                pendingHitlJson: JSON.stringify({ pendingHitl: {
+                    nodeId: args.node_id, label: args.node_label, prompt: args.prompt
+                } })
+            };
+        });
         if (!runs.length) return;
 
         let msgEl = document.querySelector('#chat-messages [data-backend-message-id]');
@@ -5333,7 +5285,9 @@ function findLastAssistantMessageElInChat() {
 
 function hitlPendingItemToData(item, fallbackConversationId) {
     if (!item) return null;
-    let payloadObj = item.payload && typeof item.payload === 'object' ? item.payload : {};
+    let payloadObj = item.payload && typeof item.payload === 'object'
+        ? item.payload
+        : (item.arguments && typeof item.arguments === 'object' ? item.arguments : {});
     if (typeof item.payload === 'string') {
         try {
             payloadObj = JSON.parse(item.payload || '{}');
@@ -5346,16 +5300,16 @@ function hitlPendingItemToData(item, fallbackConversationId) {
         : {};
     return {
         interruptId: String(item.interruptId || item.id || '').trim(),
-        mode: item.mode,
+        mode: item.mode || 'approval',
         toolName: item.toolName,
         toolCallId: item.toolCallId,
         payload: payloadObj,
         conversationId: String(item.conversationId || fallbackConversationId || '').trim(),
         createdAt: timing.createdAt || item.createdAt,
         timeoutSeconds: timing.timeoutSeconds,
-        expiresAt: timing.expiresAt,
+        expiresAt: item.expiresAt || timing.expiresAt,
         reviewer: item.reviewer || item.decidedBy || 'human',
-        status: item.status || 'pending'
+        status: item.status || 'pending_human'
     };
 }
 
@@ -5372,11 +5326,11 @@ async function restoreHitlInlineForConversation(conversationId) {
     }
     hitlInlineRestoreInFlight.add(conversationId);
     try {
-        const resp = await apiFetch('/api/hitl/pending?conversationId=' + encodeURIComponent(conversationId) + '&status=pending&pageSize=50');
+        const resp = await apiFetch('/api/approvals?conversationId=' + encodeURIComponent(conversationId) + '&status=pending_human&limit=50');
         if (!resp.ok) return;
         const data = await resp.json().catch(function () { return {}; });
         const rawItems = (Array.isArray(data.items) ? data.items : []).filter(function (item) {
-            return !isAgentReviewedHitl(item);
+            return item && item.source !== 'workflow_node' && !isAgentReviewedHitl(item);
         });
         // 任务列表是当前进程的权威运行态。服务重启或任务取消后，即使审批查询
         // 短暂读到旧 pending 记录，也不能重新挂载审批入口和倒计时。
@@ -6104,13 +6058,9 @@ async function renderToolCallDetailContent(item) {
     }
 
     const paramsLabel = typeof window.t === 'function' ? window.t('timeline.params') : '参数:';
-    const hitlEditedArgsLabel = state.argsEditedByHitl
-        ? '<span class="tool-args-hitl-edited">已按 HITL 改参执行</span>'
-        : '';
     const argsBlock = state.hideArgs ? '' :
         '<div class="tool-arg-section">' +
         '<strong data-i18n="timeline.params">' + escapeHtml(paramsLabel) + '</strong>' +
-        hitlEditedArgsLabel +
         '<pre class="tool-args">' + escapeHtml(JSON.stringify(args, null, 2)) + '</pre>' +
         '</div>';
     content.innerHTML = '<div class="tool-details">' + argsBlock + resultBlock + '</div>';
@@ -6893,9 +6843,12 @@ function loadActiveTasks(showErrors = false) {
     const bar = document.getElementById('active-tasks-bar');
     activeTasksLoadPromise = (async function () {
         try {
-            const [response, pendingResponse] = await Promise.all([
+            const pendingApprovals = Promise.resolve().then(function () {
+                return window.fetchAllPendingApprovals(apiFetch);
+            }).catch(function () { return []; });
+            const [response, pendingItems] = await Promise.all([
                 apiFetch('/api/agent-loop/tasks'),
-                apiFetch('/api/hitl/pending?page=1&pageSize=200').catch(function () { return null; })
+                pendingApprovals
             ]);
             const result = await response.json().catch(() => ({}));
 
@@ -6904,10 +6857,7 @@ function loadActiveTasks(showErrors = false) {
             }
 
             renderActiveTasks(result.tasks || []);
-            if (pendingResponse && pendingResponse.ok) {
-                const pendingResult = await pendingResponse.json().catch(function () { return {}; });
-                reconcilePendingHitlState(pendingResult.items || []);
-            }
+            reconcilePendingHitlState(pendingItems);
         } catch (error) {
             // 服务停止、重启或登录失效时，旧进程任务不可能仍可审批。
             // 立即清空本地运行/审批缓存，防止倒计时和按钮继续保持可用。

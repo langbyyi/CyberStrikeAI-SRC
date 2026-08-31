@@ -1,13 +1,10 @@
-# CyberStrikeAI Documentation
+# CyberStrikeAI 文档
 
-[中文](#中文文档) | [English](#english-documentation)
-
-CyberStrikeAI documentation is organized by user journey. Start with deployment, then move to the topic that matches your task.
-
-## 中文文档
+文档按使用路径组织。建议从部署开始，再按任务进入对应主题。
 
 ### 按目标开始
 
+- **本分支特性**：[SRC 二开特性](SRC二开.md)
 - **快速体验**：[部署指南](zh-CN/deployment.md) → [配置参考](zh-CN/configuration.md) → [排错指南](zh-CN/troubleshooting.md)
 - **生产部署**：[配置画像](zh-CN/configuration-profiles.md) → [安全加固](zh-CN/security-hardening.md) → [运维 Runbooks](zh-CN/runbooks.md) → [审计与监控](zh-CN/audit-and-monitoring.md)
 - **接入与自动化**：[API 参考](zh-CN/api-reference.md) → [API Recipes](zh-CN/api-recipes.md) → [MCP 联邦](zh-CN/mcp-federation.md)
@@ -42,46 +39,8 @@ CyberStrikeAI documentation is organized by user journey. Start with deployment,
 - [贡献规范](zh-CN/contributing-guide.md)
 - [发布流程](zh-CN/release-process.md)
 
-## English Documentation
+## 文档约定
 
-### Choose a path
-
-- **Try locally**: [Deployment](en-US/deployment.md) → [Configuration](en-US/configuration.md) → [Troubleshooting](en-US/troubleshooting.md)
-- **Run in production**: [Configuration Profiles](en-US/configuration-profiles.md) → [Security Hardening](en-US/security-hardening.md) → [Runbooks](en-US/runbooks.md) → [Audit and Monitoring](en-US/audit-and-monitoring.md)
-- **Integrate and automate**: [API Reference](en-US/api-reference.md) → [API Recipes](en-US/api-recipes.md) → [MCP Federation](en-US/mcp-federation.md)
-- **Contribute code**: [Developer Guide](en-US/developer-guide.md) → [Testing](en-US/testing.md) → [Contributing](en-US/contributing-guide.md)
-
-### Concepts and orchestration
-
-- [Architecture](en-US/architecture.md)
-- [Security Model](en-US/security-model.md)
-- [Agents and Roles](en-US/agent-and-role-guide.md)
-- [Skills](en-US/skills-guide.md)
-- [Eino Multi-Agent](en-US/MULTI_AGENT_EINO.md)
-- [Workflows](en-US/workflow-graph.md)
-- [Tool Execution Governance](en-US/tool-execution-governance.md)
-- [HITL Best Practices](en-US/hitl-best-practices.md)
-
-### Feature guides
-
-- [Knowledge Base](en-US/knowledge-base.md)
-- [RBAC Administration](en-US/rbac.md)
-- [Robot / Chatbot](en-US/robot.md)
-- [Vision Analysis](en-US/VISION.md)
-- [WebShell Management](en-US/webshell.md)
-- [C2 Guide](en-US/c2.md)
-
-### Development and release
-
-- [Developer Guide](en-US/developer-guide.md)
-- [Plugin Development](en-US/plugin-development.md)
-- [Frontend i18n](en-US/frontend-i18n.md)
-- [Testing](en-US/testing.md)
-- [Contributing](en-US/contributing-guide.md)
-- [Release Process](en-US/release-process.md)
-
-## Documentation conventions
-
-- Commands assume the repository root unless stated otherwise.
-- Examples use placeholders; never commit real credentials or target systems without explicit authorization.
-- Runtime behavior and configuration defaults are authoritative in `config.example.yaml` and the source code. If a document differs, report it as documentation drift.
+- 命令默认在仓库根目录执行，另有说明除外。
+- 示例使用占位符；禁止提交真实凭据或未授权目标系统。
+- 运行行为和配置默认值以 `config.example.yaml` 和源码为准。文档与代码不一致时，按文档漂移处理并修正。

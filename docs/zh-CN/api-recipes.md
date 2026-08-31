@@ -1,7 +1,5 @@
 # API Recipes
 
-[English](../en-US/api-recipes.md)
-
 本文给出外部脚本或插件常用的 API 调用配方。完整字段以 `/api-docs` 和 `/api/openapi/spec` 为准。
 
 ## Recipe 1：登录并验证
@@ -45,7 +43,7 @@ curl -k https://127.0.0.1:8080/api/conversations \
   -d '{"title":"Web 测试"}'
 ```
 
-然后把返回的 `conversationId` 放入 Agent 请求。
+然后把返回的 `id` 作为 Agent 请求体中的 `conversationId` 字段。
 
 ## Recipe 3：流式调用 Agent
 
@@ -97,16 +95,17 @@ curl -k https://127.0.0.1:8080/api/vulnerabilities \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
+    "conversation_id":"<conversation-id>",
     "title":"示例 SQL 注入",
     "severity":"high",
     "target":"https://example.com/item?id=1",
     "description":"参数 id 存在可验证 SQL 注入",
     "evidence":"只读验证输出...",
-    "remediation":"使用参数化查询"
+    "recommendation":"使用参数化查询"
   }'
 ```
 
-字段以 OpenAPI 为准。
+`conversation_id` 为必填字段；修复建议字段名为 `recommendation`（不是 `remediation`）。字段以 OpenAPI 为准。
 
 ## Recipe 7：查询知识库
 
@@ -145,12 +144,12 @@ curl -k https://127.0.0.1:8080/api/config/tools/nmap/schema \
 ## Recipe 10：导出审计日志
 
 ```bash
-curl -k "https://127.0.0.1:8080/api/audit/logs/export" \
+curl -k "https://127.0.0.1:8080/api/audit/logs/export?format=csv" \
   -H "Authorization: Bearer <token>" \
   -o audit.csv
 ```
 
-导出文件可能包含敏感操作信息，应加密保存。
+不带 `format=csv` 时默认导出 JSON（最多 5000 条）。导出文件可能包含敏感操作信息，应加密保存。
 
 ## Recipe 11：批量导入资产
 

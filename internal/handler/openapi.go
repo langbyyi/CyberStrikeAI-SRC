@@ -6810,6 +6810,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 		},
 	}
 
+	mergeUnifiedApprovalOpenAPI(spec)
 	enrichSpecWithI18nKeys(spec)
 	c.JSON(http.StatusOK, spec)
 }

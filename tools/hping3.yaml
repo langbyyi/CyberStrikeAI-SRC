@@ -18,23 +18,34 @@ parameters:
   - name: mode
     type: string
     required: false
-    flag: -S
-    format: flag
-    description: SYN 模式（半开扫描）
+    format: template
+    template: '-{value}'
+    options:
+      - S
+      - SA
+      - A
+      - F
+      - U
+      - P
+    description: 'TCP 标志组合（生成 `-S`/`-SA`/`-A`/`-F`/`-U`/`-P`）：
+
+      `S`=SYN（半开扫描） `SA`=SYN+ACK `A`=ACK `F`=FIN `U`=URG `P`=PUSH。
+
+      UDP 用 additional_args 传 `--udp`，ICMP 传 `--icmp`。'
   - name: port
     type: int
     required: false
     flag: -p
     format: flag
-    description: 目标端口
+    description: 目标端口（-p）
   - name: count
     type: int
     required: false
     flag: -c
     format: flag
-    description: 包数量
+    description: 包数量（-c/--count）
   - name: additional_args
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `-F`(FIN) `-A`(ACK) `-U`(UDP) `--tcp-timestamp`
+    description: 额外参数，如 `--udp`(UDP 模式) `--icmp` `--scan 1-1000`(端口扫描) `--tcp-timestamp` `--flood`

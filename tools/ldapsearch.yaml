@@ -1,5 +1,7 @@
 name: ldapsearch
 command: ldapsearch
+args:
+  - -x
 enabled: true
 short_description: LDAP 目录查询（AD 枚举）
 description: 'LDAP 目录查询工具，枚举 AD 用户、组、对象。
@@ -12,9 +14,9 @@ parameters:
   - name: host
     type: string
     required: true
-    flag: -h
+    flag: -H
     format: flag
-    description: LDAP 服务器
+    description: 'LDAP URI（-H），如 `ldap://DC01.example.com` `ldaps://1.2.3.4:636`'
   - name: base
     type: string
     required: true
@@ -24,11 +26,16 @@ parameters:
   - name: filter
     type: string
     required: false
-    flag: -x
-    format: combined
-    description: 查询过滤器（与 -x 组合）
+    format: positional
+    default: (objectClass=*)
+    description: 搜索过滤器（渲染于所有选项之后），如 `(objectClass=user)` `(sAMAccountName=admin)`
+  - name: attributes
+    type: string
+    required: false
+    format: positional
+    description: 返回属性列表（渲染于过滤器之后），如 `cn mail sAMAccountName`
   - name: additional_args
     type: string
     required: false
     format: positional
-    description: 额外参数，如 `-LLL`(简洁) `"(objectClass=user)"`(搜索过滤器)
+    description: 额外参数，如 `-LLL`(简洁输出) `-D <binddn> -w <password>`(认证)

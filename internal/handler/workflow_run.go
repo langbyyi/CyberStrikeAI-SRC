@@ -20,6 +20,32 @@ func (h *WorkflowHandler) SetRuntime(agent *agent.Agent, cfg *config.Config) {
 	h.cfg = cfg
 }
 
+func notifyWorkflowDecision(runID string, decision workflowrunner.HITLDecision) bool {
+	if workflowrunner.NotifyHITLDecision(runID, decision) {
+		return true
+	}
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if workflowrunner.NotifyHITLDecision(runID, decision) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowRoleForRun(cfg *config.Config, run *database.WorkflowRun) config.RoleConfig {
+	role := config.RoleConfig{Name: strings.TrimSpace(run.RoleID)}
+	if role.Name != "" && cfg != nil && cfg.Roles != nil {
+		if configured, ok := cfg.Roles[role.Name]; ok {
+			role = configured
+			if role.Name == "" {
+				role.Name = run.RoleID
+			}
+		}
+	}
+	return role
+}
+
 func (h *WorkflowHandler) GetRun(c *gin.Context) {
 	runID := strings.TrimSpace(c.Param("runId"))
 	if !h.workflowRunAllowed(c, runID) {
@@ -121,15 +147,7 @@ func (h *WorkflowHandler) ResumeRun(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "工作流运行不存在"})
 		return
 	}
-	role := config.RoleConfig{Name: strings.TrimSpace(run.RoleID)}
-	if role.Name != "" && h.cfg.Roles != nil {
-		if r, ok := h.cfg.Roles[role.Name]; ok {
-			role = r
-			if role.Name == "" {
-				role.Name = run.RoleID
-			}
-		}
-	}
+	role := workflowRoleForRun(h.cfg, run)
 	if run.Status != "awaiting_hitl" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "工作流运行不在等待审批状态: " + run.Status})
 		return
@@ -142,16 +160,7 @@ func (h *WorkflowHandler) ResumeRun(c *gin.Context) {
 		Approved: req.Approved,
 		Comment:  strings.TrimSpace(req.Comment),
 	}
-	delegated := workflowrunner.NotifyHITLDecision(runID, decision)
-	if !delegated {
-		for i := 0; i < 10; i++ {
-			time.Sleep(50 * time.Millisecond)
-			if workflowrunner.NotifyHITLDecision(runID, decision) {
-				delegated = true
-				break
-			}
-		}
-	}
+	delegated := notifyWorkflowDecision(runID, decision)
 	if delegated {
 		c.JSON(http.StatusOK, gin.H{
 			"workflowRunId":  runID,

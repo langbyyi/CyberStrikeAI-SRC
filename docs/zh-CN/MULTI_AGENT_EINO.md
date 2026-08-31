@@ -11,8 +11,8 @@
 
 | 项 | 说明 |
 |----|------|
-| 依赖与代理 | `go.mod` 直接依赖 `github.com/cloudwego/eino`、`eino-ext/.../openai`；`go.mod` 注释与 `scripts/bootstrap-go.sh` 指导 **GOPROXY**（如 `https://goproxy.cn,direct`）。 |
-| 配置 | `config.yaml` → `agent.max_iterations` 为全局 ReAct 上限（主/子代理统一）；`multi_agent`：`enabled`、`robot_use_multi_agent`、`sub_agents`（含可选 `bind_role`）、`eino_skills`、`eino_middleware` 等；结构体见 `internal/config/config.go`。 |
+| 依赖与代理 | `go.mod` 直接依赖 `github.com/cloudwego/eino`、`eino-ext/.../openai`；`go.mod` 注释指导 **GOPROXY**（如 `https://goproxy.cn,direct`）。 |
+| 配置 | `config.yaml` → `agent.max_iterations` 为全局迭代轮数上限（主/子代理统一，`agents/*.md` 的 `max_iterations` 可单独覆盖）；`multi_agent`：`enabled`、`sub_agents`（含可选 `bind_role`）、`eino_skills`、`eino_middleware` 等；结构体见 `internal/config/config.go`。 |
 | Markdown 子代理 / 主代理 | 在 `agents_dir` 下放 `*.md`。**子代理**：供 Deep `task` 与 `supervisor` `transfer`。**主代理（按模式分离）**：`orchestrator.md`（或 `kind: orchestrator` 的**单个**其他 .md）→ **Deep**；固定名 `orchestrator-plan-execute.md` → **plan_execute**；固定名 `orchestrator-supervisor.md` → **supervisor**。正文优先于 YAML：`multi_agent.orchestrator_instruction`、`orchestrator_instruction_plan_execute`、`orchestrator_instruction_supervisor`；plan_execute / supervisor **不会**回退到 Deep 的 `orchestrator_instruction`。皆空时 plan_execute / supervisor 使用代码内置默认提示。管理：**Agents → Agent管理**；API：`/api/multi-agent/markdown-agents*`。 |
 | MCP 桥 | `internal/einomcp`：`ToolsFromDefinitions` + 会话 ID 持有者，执行走 `Agent.ExecuteMCPToolForConversation`。 |
 | 编排 | `internal/multiagent/runner.go`：单代理、Deep 主代理与子代理、Supervisor 主代理与子代理均使用 `TypedChatModelAgent[*schema.AgenticMessage]` / `deep.NewTyped[*schema.AgenticMessage]`，再经 adapter 接回现有 `adk.Runner` / TurnLoop / SSE 边界；`plan_execute` 的 Executor 也使用 Agentic typed agent，经 adapter 挂入 Eino 官方 `planexecute.Config` 的经典外层契约。 |
@@ -45,7 +45,7 @@
 - `internal/handler/multi_agent.go` — SSE 与（同步）HTTP  
 - `internal/handler/multi_agent_prepare.go` — 会话准备（含 WebShell）  
 - `internal/einomcp/` — MCP → Eino Tool  
-- `config.yaml` — `multi_agent` 示例块  
+- `config.example.yaml` — `multi_agent` 示例块（复制为 `config.yaml` 后生效）  
 - `web/static/js/chat.js` — 模式选择与 stream URL  
 - `web/static/js/webshell.js` — WebShell AI 流式 URL 与主聊天模式对齐  
 - `web/static/js/settings.js` — 多代理标量、Eino 模型 retry/failover 设置保存  

@@ -18,10 +18,10 @@ skills/
     SKILL.md
   ssrf-testing/
     SKILL.md
-  cyberstrike-eino-demo/
+  burp-mcp-vuln-check/
     SKILL.md
-    REFERENCE.md
-    assets/
+    references/
+    scripts/
 ```
 
 每个 Skill 至少包含 `SKILL.md`。
@@ -42,6 +42,8 @@ description: SSRF 漏洞识别、验证、绕过和修复建议流程
 ```
 
 `description` 很重要，Agent 会根据它判断何时加载。
+
+`name` 必须与 Skill 目录名一致，且只能包含小写字母、数字和连字符（不能以连字符开头/结尾，也不能出现连续连字符）；front matter 还允许 `license`、`compatibility`、`metadata`、`allowed-tools` 等字段，其他键会被拒绝（见 `internal/skillpackage/validate.go`）。
 
 ## 渐进式披露
 
@@ -85,10 +87,10 @@ Skill 可以带附属文件，如 `REFERENCE.md`、模板、字典或示例。`S
 
 ## 与角色绑定
 
-角色可以提示 Agent 使用某类 Skill；Skill 也可以通过页面管理和角色形成绑定关系。建议：
+角色可以在 `user_prompt` 中提示 Agent 使用某类 Skill（例如"涉及 SSRF 时先加载 ssrf-testing 技能"）。本分支已移除角色与 Skill 的结构化绑定：角色不再配置 skill 绑定列表，技能页的"绑定角色"查询始终返回空列表（`internal/handler/skills.go` 的 `getRolesBoundToSkill`）。建议：
 
-- 通用技能保持不绑定，按描述自动触发。
-- 高风险技能绑定到专用角色。
+- 通用技能不绑定角色，按描述自动触发。
+- 高风险技能在专用角色的 `user_prompt` 中显式引导使用，并在其他角色提示词中说明禁用。
 - 同类技能不要描述过度重叠。
 
 ## 开发建议

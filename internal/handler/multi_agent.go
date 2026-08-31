@@ -123,11 +123,6 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 
 	conversationID := prep.ConversationID
 	assistantMessageID := prep.AssistantMessageID
-	h.activateHITLForConversation(conversationID, req.Hitl)
-	if h.hitlManager != nil {
-		defer h.hitlManager.DeactivateConversation(conversationID)
-	}
-
 	if prep.UserMessageID != "" {
 		sendEvent("message_saved", "", map[string]interface{}{
 			"conversationId": conversationID,
@@ -247,9 +242,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		taskCtxLoop = multiagent.WithAgentTurnLoopInterruptRegistrar(taskCtxLoop, func(push func(string) bool) func() {
 			return h.tasks.BindAgentTurnLoopInterrupt(conversationID, push)
 		})
-		taskCtxLoop = multiagent.WithHITLToolInterceptor(taskCtxLoop, func(ctx context.Context, toolName, arguments string) (string, error) {
-			return h.interceptHITLForEinoTool(ctx, cancelWithCause, conversationID, assistantMessageID, sendEvent, toolName, arguments)
-		})
+		taskCtxLoop = h.withApprovalToolInterceptor(taskCtxLoop, conversationID, assistantMessageID)
 
 		result, runErr = multiagent.RunDeepAgent(
 			taskCtxLoop,
@@ -454,10 +447,6 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 		c.JSON(status, gin.H{"error": msg})
 		return
 	}
-	h.activateHITLForConversation(prep.ConversationID, req.Hitl)
-	if h.hitlManager != nil {
-		defer h.hitlManager.DeactivateConversation(prep.ConversationID)
-	}
 	if h.runRoleWorkflowJSONIfBound(c, &req, prep) {
 		return
 	}
@@ -467,9 +456,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, 600*time.Minute)
 	defer timeoutCancel()
 	progressCallback := h.createProgressCallback(taskCtx, cancelWithCause, prep.ConversationID, prep.AssistantMessageID, nil)
-	taskCtx = multiagent.WithHITLToolInterceptor(taskCtx, func(ctx context.Context, toolName, arguments string) (string, error) {
-		return h.interceptHITLForEinoTool(ctx, cancelWithCause, prep.ConversationID, prep.AssistantMessageID, nil, toolName, arguments)
-	})
+	taskCtx = h.withApprovalToolInterceptor(taskCtx, prep.ConversationID, prep.AssistantMessageID)
 	runCfg, _, err := h.configForAIChannel(req.AIChannelID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

@@ -121,7 +121,7 @@ check_go() {
     if ! command -v go >/dev/null 2>&1; then
         error "Go not found"
         echo ""
-        info "Install Go 1.21 or later first:"
+        info "Install Go 1.25 or later first:"
         echo "  macOS:   brew install go"
         echo "  Ubuntu:  sudo apt-get install golang-go"
         echo "  CentOS:  sudo yum install golang"
@@ -133,8 +133,8 @@ check_go() {
     GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
     GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
     
-    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]); then
-        error "Go version too old: $GO_VERSION (requires 1.21+)"
+    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 25 ]); then
+        error "Go version too old: $GO_VERSION (requires 1.25+)"
         exit 1
     fi
     
@@ -145,7 +145,7 @@ check_go_quiet() {
     if ! command -v go >/dev/null 2>&1; then
         error "Go not found"
         echo ""
-        info "Install Go 1.21 or later first:"
+        info "Install Go 1.25 or later first:"
         echo "  macOS:   brew install go"
         echo "  Ubuntu:  sudo apt-get install golang-go"
         echo "  CentOS:  sudo yum install golang"
@@ -157,8 +157,8 @@ check_go_quiet() {
     GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
     GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
 
-    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]); then
-        error "Go version too old: $GO_VERSION (requires 1.21+)"
+    if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 25 ]); then
+        error "Go version too old: $GO_VERSION (requires 1.25+)"
         exit 1
     fi
 }
