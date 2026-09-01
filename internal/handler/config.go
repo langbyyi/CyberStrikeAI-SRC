@@ -372,6 +372,10 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		),
 	}
 
+	hitlCfg := h.config.Hitl
+	if strings.TrimSpace(hitlCfg.AuditAgentPrompt) == "" {
+		hitlCfg.AuditAgentPrompt = config.DefaultHitlAuditAgentPrompt()
+	}
 	c.JSON(http.StatusOK, GetConfigResponse{
 		AI:         h.config.AI,
 		OpenAI:     h.config.OpenAI,
@@ -384,7 +388,7 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		MCP:        h.config.MCP,
 		Tools:      tools,
 		Agent:      h.config.Agent,
-		Hitl:       h.config.Hitl,
+		Hitl:       hitlCfg,
 		Approval:   h.config.Approval,
 		Knowledge:  h.config.Knowledge,
 		C2:         h.config.C2.Public(),
@@ -949,7 +953,11 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 	if req.Hitl != nil {
 		h.config.Hitl.AuditModel = req.Hitl.AuditModel
-		h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(req.Hitl.AuditAgentPrompt)
+		p := strings.TrimSpace(req.Hitl.AuditAgentPrompt)
+		if p == config.DefaultHitlAuditAgentPrompt() {
+			p = ""
+		}
+		h.config.Hitl.AuditAgentPrompt = p
 		if req.Hitl.RetentionDays != nil {
 			v := *req.Hitl.RetentionDays
 			if v < 0 {
