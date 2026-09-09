@@ -3001,11 +3001,9 @@ function handleStreamEvent(event, progressElement, progressId,
                 loadActiveTasks();
                 // 延迟刷新对话列表，确保用户消息已保存，updated_at已更新
                 // 这样新对话才能正确显示在最近对话列表的顶部
-                // 使用loadConversationsWithGroups确保分组映射缓存正确加载，无论是否有分组都能立即显示
+                // 刷新最近对话列表
                 setTimeout(() => {
-                    if (typeof loadConversationsWithGroups === 'function') {
-                        loadConversationsWithGroups();
-                    } else if (typeof loadConversations === 'function') {
+                    if (typeof loadConversations === 'function') {
                         loadConversations();
                     }
                     if (typeof window.refreshChatProjectFolders === 'function') {
@@ -3644,13 +3642,15 @@ function handleStreamEvent(event, progressElement, progressId,
         case 'tool_result':
             const resultInfo = event.data || {};
             const resultToolName = resultInfo.toolName || (typeof window.t === 'function' ? window.t('chat.unknownTool') : '未知工具');
-            const success = resultInfo.success !== false;
+            const success = getToolResultDisplayState(resultInfo).success;
             const resultDisplayState = getToolResultDisplayState(resultInfo, { rawText: event.message || '' });
             const backgroundRunning = resultDisplayState.kind === 'background_running';
-            const statusIcon = backgroundRunning ? '⏳' : (success ? '✅' : '❌');
+            const statusIcon = resultDisplayState.kind === 'blocked' ? '🛡' : (backgroundRunning ? '⏳' : (success ? '✅' : '❌'));
             const resultToolCallId = resultInfo.toolCallId || null;
-            const resultStatusForCall = backgroundRunning ? 'background_running' : (success ? 'completed' : 'failed');
-            const resultExecText = backgroundRunning
+            const resultStatusForCall = toolDisplayStatusFromState(resultDisplayState);
+            const resultExecText = resultDisplayState.kind === 'blocked'
+                ? (typeof window.t === 'function' ? window.t('chat.toolExecBlocked', { name: escapeHtml(resultToolName) }) : '工具 ' + escapeHtml(resultToolName) + ' 已拦截')
+                : backgroundRunning
                 ? (getBackgroundRunningToolLabel() + ': ' + escapeHtml(resultToolName))
                 : (success ? (typeof window.t === 'function' ? window.t('chat.toolExecComplete', { name: escapeHtml(resultToolName) }) : '工具 ' + escapeHtml(resultToolName) + ' 执行完成') : (typeof window.t === 'function' ? window.t('chat.toolExecFailed', { name: escapeHtml(resultToolName) }) : '工具 ' + escapeHtml(resultToolName) + ' 执行失败'));
 
@@ -5845,9 +5845,41 @@ function collectToolResultTextParts(value, parts, depth) {
     if (value.content != null) collectToolResultTextParts(value.content, parts, depth + 1);
 }
 
+// Older records did not have a structured marker. Only recognize the exact
+// guard prefix at the start of a result, never a quoted mention in ordinary output.
+function isToolGuardBlockedResult(value, depth, allowLegacy) {
+    depth = depth || 0;
+    allowLegacy = allowLegacy !== false;
+    if (value == null || depth > 5) return false;
+    if (typeof value === 'string') {
+        const text = value.trimStart();
+        if (allowLegacy && /^工具调用已被安全规则拦截(?:[：:\r\n]|$)/.test(text)) return true;
+        if (text.startsWith('{')) {
+            try { return isToolGuardBlockedResult(JSON.parse(text), depth + 1, allowLegacy); } catch (e) { /* plain text */ }
+        }
+        return false;
+    }
+    if (typeof value !== 'object') return false;
+    if (Array.isArray(value)) return value.some(function (part) { return isToolGuardBlockedResult(part, depth + 1, allowLegacy); });
+    if (value.blocked === true || value.status === 'blocked' || value.displayStatus === 'blocked') return true;
+    if (value._meta && value._meta['cyberstrike.ai/blocked'] === true) return true;
+    if (value.success === true || value.isError === false || value.status === 'completed') allowLegacy = false;
+    return ['result', 'error', 'content', 'text', 'resultPreview'].some(function (key) {
+        return isToolGuardBlockedResult(value[key], depth + 1, allowLegacy);
+    });
+}
+
+function getToolExecutionDisplayStatus(execution) {
+    return isToolGuardBlockedResult(execution) ? 'blocked' : String(execution && execution.status || 'unknown').toLowerCase();
+}
+
 function getToolResultDisplayState(data, opts) {
     opts = opts || {};
     data = data || {};
+    const allowLegacyBlock = data.success !== true && data.isError !== false && data.status !== 'completed';
+    if (isToolGuardBlockedResult(data) || isToolGuardBlockedResult(opts.rawText, 0, allowLegacyBlock)) {
+        return { kind: 'blocked', isError: true, success: false };
+    }
     const toolName = String(data.toolName || data.name || '').trim().toLowerCase();
     const isObservationTool = toolName === 'wait_tool_execution' || toolName === 'get_tool_execution';
     const explicitStatus = String(data.displayStatus || data.status || '').toLowerCase();
@@ -5895,6 +5927,7 @@ function toolDisplayStatusFromState(displayState) {
     if (!displayState) return 'completed';
     if (displayState.kind === 'background_running') return 'background_running';
     if (displayState.kind === 'cancelled') return 'cancelled';
+    if (displayState.kind === 'blocked') return 'blocked';
     return displayState.isError ? 'failed' : 'completed';
 }
 
@@ -5919,7 +5952,7 @@ function buildToolResultSectionHtml(data, opts) {
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
     const rawText = opts.rawText != null ? String(opts.rawText) : resultStr;
     const displayState = getToolResultDisplayState(data, { rawText: rawText });
-    const sectionClass = displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success');
+    const sectionClass = displayState.kind === 'blocked' ? 'blocked' : (displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success'));
     return (
         '<div class="tool-result-section ' + sectionClass + '">' +
         '<strong data-i18n="timeline.executionResult">' + escapeHtml(execResultLabel) + '</strong>' +
@@ -6139,8 +6172,8 @@ function mergeToolResultIntoCallItem(item, data, options) {
         if (data.executionId != null && String(data.executionId).trim() !== '') {
             item.dataset.toolExecutionId = String(data.executionId).trim();
         }
-        item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed');
-        item.classList.add(backgroundRunning ? 'tool-call-running' : (displayState.isError ? 'tool-call-failed' : 'tool-call-completed'));
+        item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed', 'tool-call-blocked');
+        item.classList.add(getToolCallStatusPresentation(toolDisplayStatusFromState(displayState)).itemClass);
         applyToolCallStatus(item, item.dataset.toolDisplayStatus);
         return true;
     }
@@ -6153,7 +6186,7 @@ function mergeToolResultIntoCallItem(item, data, options) {
     if (!section) return false;
 
     section.classList.remove('pending');
-    section.className = 'tool-result-section ' + (backgroundRunning ? 'pending' : (displayState.isError ? 'error' : 'success'));
+    section.className = 'tool-result-section ' + (displayState.kind === 'blocked' ? 'blocked' : (backgroundRunning ? 'pending' : (displayState.isError ? 'error' : 'success')));
     const pre = section.querySelector('pre.tool-result');
     if (pre) {
         pre.classList.remove('tool-result-pending');
@@ -6182,8 +6215,8 @@ function mergeToolResultIntoCallItem(item, data, options) {
     if (data.executionId != null && String(data.executionId).trim() !== '') {
         item.dataset.toolExecutionId = String(data.executionId).trim();
     }
-    item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed');
-    item.classList.add(backgroundRunning ? 'tool-call-running' : (displayState.isError ? 'tool-call-failed' : 'tool-call-completed'));
+    item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed', 'tool-call-blocked');
+    item.classList.add(getToolCallStatusPresentation(toolDisplayStatusFromState(displayState)).itemClass);
     applyToolCallStatus(item, item.dataset.toolDisplayStatus);
     return true;
 }
@@ -6322,6 +6355,7 @@ window.mergeToolResultIntoCallItem = mergeToolResultIntoCallItem;
 window.formatToolCallTimelineTitle = formatToolCallTimelineTitle;
 window.parseToolCallArgsFromData = parseToolCallArgsFromData;
 window.getToolResultDisplayState = getToolResultDisplayState;
+window.getToolExecutionDisplayStatus = getToolExecutionDisplayStatus;
 window.getBackgroundRunningToolLabel = getBackgroundRunningToolLabel;
 window.buildToolResultSectionHtml = buildToolResultSectionHtml;
 
@@ -6344,6 +6378,9 @@ function getToolCallStatusPresentation(status) {
     if (normalized === 'failed') {
         return { status: normalized, itemClass: 'tool-call-failed', badgeClass: 'tool-status-failed', label: translate('timeline.execFailed', '执行失败'), icon: '❌ ' };
     }
+    if (normalized === 'blocked') {
+        return { status: normalized, itemClass: 'tool-call-blocked', badgeClass: 'tool-status-blocked', label: translate('timeline.blocked', '已拦截'), icon: '🛡 ' };
+    }
     if (normalized === 'cancelled' || normalized === 'canceled') {
         return { status: 'cancelled', itemClass: 'tool-call-failed', badgeClass: 'tool-status-failed', label: translate('tasks.statusCancelled', '已取消'), icon: '⛔ ' };
     }
@@ -6360,7 +6397,7 @@ function applyToolCallStatus(item, status) {
     const titleElement = item.querySelector('.timeline-item-title');
     if (!titleElement) return;
 
-    item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed', 'tool-call-incomplete');
+    item.classList.remove('tool-call-running', 'tool-call-completed', 'tool-call-failed', 'tool-call-blocked', 'tool-call-incomplete');
     const previousBadge = titleElement.querySelector('.tool-status-badge');
     if (previousBadge) previousBadge.remove();
     if (!presentation) {
@@ -6579,7 +6616,7 @@ function addTimelineItem(timeline, type, options) {
         const mergedDisplayState = merged ? getToolResultDisplayState(merged) : null;
         const mergedBackgroundRunning = mergedDisplayState && mergedDisplayState.kind === 'background_running';
         const terminalStatus = String(options.toolStatus || '').toLowerCase();
-        const forcedStatus = (terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled')
+        const forcedStatus = mergedDisplayState && mergedDisplayState.kind === 'blocked' ? 'blocked' : (terminalStatus === 'completed' || terminalStatus === 'blocked' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled')
             ? (terminalStatus === 'canceled' ? 'cancelled' : terminalStatus)
             : '';
         if (merged) {
@@ -6589,14 +6626,14 @@ function addTimelineItem(timeline, type, options) {
             if (merged.executionId != null && String(merged.executionId).trim() !== '') {
                 item.dataset.toolExecutionId = String(merged.executionId).trim();
             }
-            item.classList.add(item.dataset.toolDisplayStatus === 'background_running' ? 'tool-call-running' : (item.dataset.toolDisplayStatus === 'completed' ? 'tool-call-completed' : 'tool-call-failed'));
+            item.classList.add(getToolCallStatusPresentation(item.dataset.toolDisplayStatus).itemClass);
             if (d._mergedResultDetailId) {
                 item.dataset.toolResultDetailId = String(d._mergedResultDetailId);
             }
-        } else if (terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled') {
+        } else if (terminalStatus === 'completed' || terminalStatus === 'blocked' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled') {
             item.dataset.toolSuccess = terminalStatus === 'completed' ? '1' : '0';
             item.dataset.toolDisplayStatus = terminalStatus === 'canceled' ? 'cancelled' : terminalStatus;
-            item.classList.add(terminalStatus === 'completed' ? 'tool-call-completed' : 'tool-call-failed');
+            item.classList.add(getToolCallStatusPresentation(terminalStatus).itemClass);
         } else if (terminalStatus === 'result_missing') {
             item.dataset.toolDisplayStatus = 'result_missing';
             item.classList.add('tool-call-incomplete');
@@ -6699,16 +6736,16 @@ function addTimelineItem(timeline, type, options) {
         const mergedDisplayState = merged ? getToolResultDisplayState(merged) : null;
         const mergedBackgroundRunning = mergedDisplayState && mergedDisplayState.kind === 'background_running';
         const terminalStatus = String(options.toolStatus || '').toLowerCase();
-        const forcedStatus = (terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled')
+        const forcedStatus = mergedDisplayState && mergedDisplayState.kind === 'blocked' ? 'blocked' : (terminalStatus === 'completed' || terminalStatus === 'blocked' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled')
             ? (terminalStatus === 'canceled' ? 'cancelled' : terminalStatus)
             : '';
-        const hasTerminalStatus = terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled';
+        const hasTerminalStatus = terminalStatus === 'completed' || terminalStatus === 'blocked' || terminalStatus === 'failed' || terminalStatus === 'cancelled' || terminalStatus === 'canceled';
         const hasHistoricalStatus = hasTerminalStatus || terminalStatus === 'result_missing';
         if (merged) {
             const statusForClass = forcedStatus || toolDisplayStatusFromState(mergedDisplayState);
-            item.classList.add(statusForClass === 'background_running' ? 'tool-call-running' : (statusForClass === 'completed' ? 'tool-call-completed' : 'tool-call-failed'));
+            item.classList.add(getToolCallStatusPresentation(statusForClass).itemClass);
         } else if (hasTerminalStatus) {
-            item.classList.add(terminalStatus === 'completed' ? 'tool-call-completed' : 'tool-call-failed');
+            item.classList.add(getToolCallStatusPresentation(terminalStatus).itemClass);
         } else if (terminalStatus === 'result_missing') {
             item.classList.add('tool-call-incomplete');
         } else if (!options.skipPendingResult) {
@@ -6772,7 +6809,7 @@ function addTimelineItem(timeline, type, options) {
         if (data.executionId != null && String(data.executionId).trim() !== '') {
             item.dataset.toolExecutionId = String(data.executionId).trim();
         }
-        item.classList.add(displayState.kind === 'background_running' ? 'tool-call-running' : (displayState.isError ? 'tool-call-failed' : 'tool-call-completed'));
+        item.classList.add(getToolCallStatusPresentation(toolDisplayStatusFromState(displayState)).itemClass);
     } else if (type === 'cancelled') {
         const taskCancelledLabel = typeof window.t === 'function' ? window.t('chat.taskCancelled') : '任务已取消';
         content += `
@@ -7688,11 +7725,13 @@ function buildMonitorTotals(summary) {
     const total = s.totalCalls || 0;
     const success = s.successCalls || 0;
     const failed = s.failedCalls || 0;
+    const blocked = s.blockedCalls || 0;
     return {
         total,
         success,
         failed,
-        neutral: Math.max(0, total - success - failed),
+        blocked,
+        neutral: Math.max(0, total - success - failed - blocked),
         lastCallTime: s.lastCallTime ? new Date(s.lastCallTime) : null,
     };
 }
@@ -7721,6 +7760,7 @@ function buildMcpTimelineSvg(points, rangeKey) {
     const plotH = H - padT - padB;
     const maxVal = Math.max(1, ...points.map((p) => p.total || 0));
     const hasFailed = points.some((p) => (p.failed || 0) > 0);
+    const hasBlocked = points.some((p) => (p.blocked || 0) > 0);
     const locale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
     const barGap = points.length > 48 ? 1 : 2;
     const barW = Math.max(1.6, Math.min(8, (plotW / Math.max(1, points.length)) - barGap));
@@ -7742,6 +7782,11 @@ function buildMcpTimelineSvg(points, rangeKey) {
             return `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(2)} ${fy.toFixed(2)}`;
         }).join(' ');
     }
+
+    const blockedPath = hasBlocked ? coords.map((c, i) => {
+        const y = padT + plotH - ((c.p.blocked || 0) / maxVal) * plotH;
+        return `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(' ') : '';
 
     let peakIdx = 0;
     points.forEach((p, i) => {
@@ -7777,21 +7822,26 @@ function buildMcpTimelineSvg(points, rangeKey) {
         return `<circle class="${dotClass}" cx="${c.x.toFixed(2)}" cy="${c.y.toFixed(2)}" r="${isPeak ? 2 : 1.5}"
             data-time="${escapeAttrLocal(tipTime)}"
             data-total="${c.p.total || 0}"
-            data-failed="${c.p.failed || 0}" />`;
+            data-failed="${c.p.failed || 0}"
+            data-blocked="${c.p.blocked || 0}" />`;
     }).join('');
 
     const bars = coords.map((c) => {
         const total = c.p.total || 0;
         const failed = c.p.failed || 0;
+        const blocked = c.p.blocked || 0;
         const h = total > 0 ? Math.max(3, (total / maxVal) * plotH) : 1;
         const y = baseY - h;
-        const failedH = failed > 0 ? Math.max(2, (failed / maxVal) * plotH) : 0;
+        const failedH = total > 0 ? h * (failed / total) : 0;
+        const blockedH = total > 0 ? h * (blocked / total) : 0;
         const tipTime = formatMcpTimelineLabel(c.p.t, rangeKey, locale);
         return `<g class="mcp-stats-timeline-bar-group">
             <rect class="mcp-stats-timeline-bar${total > 0 ? ' is-active' : ''}" x="${(c.x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="1.6"
-                data-time="${escapeAttrLocal(tipTime)}" data-total="${total}" data-failed="${failed}" />
+                data-time="${escapeAttrLocal(tipTime)}" data-total="${total}" data-failed="${failed}" data-blocked="${blocked}" />
             ${failedH > 0 ? `<rect class="mcp-stats-timeline-bar-fail" x="${(c.x - barW / 2).toFixed(2)}" y="${(baseY - failedH).toFixed(2)}" width="${barW.toFixed(2)}" height="${failedH.toFixed(2)}" rx="1.6"
-                data-time="${escapeAttrLocal(tipTime)}" data-total="${total}" data-failed="${failed}" />` : ''}
+                data-time="${escapeAttrLocal(tipTime)}" data-total="${total}" data-failed="${failed}" data-blocked="${blocked}" />` : ''}
+            ${blockedH > 0 ? `<rect class="mcp-stats-timeline-bar-blocked" x="${(c.x - barW / 2).toFixed(2)}" y="${(baseY - failedH - blockedH).toFixed(2)}" width="${barW.toFixed(2)}" height="${blockedH.toFixed(2)}" rx="1.6"
+                data-time="${escapeAttrLocal(tipTime)}" data-total="${total}" data-failed="${failed}" data-blocked="${blocked}" />` : ''}
         </g>`;
     }).join('');
 
@@ -7819,6 +7869,7 @@ function buildMcpTimelineSvg(points, rangeKey) {
         ${peakMarker}
         <path class="mcp-stats-timeline-line" d="${linePath}" stroke="url(#mcpTimelineLineStroke)" />
         ${hasFailed ? `<path class="mcp-stats-timeline-line mcp-stats-timeline-line--fail" d="${failPath}" />` : ''}
+        ${hasBlocked ? `<path class="mcp-stats-timeline-line mcp-stats-timeline-line--blocked" d="${blockedPath}" />` : ''}
         ${dots}
         ${xLabels}
     </svg>`;
@@ -7847,22 +7898,23 @@ function bindMcpStatsTimelineEvents() {
     }
 
     root.addEventListener('mousemove', function (e) {
-        const dot = e.target.closest('.mcp-stats-timeline-dot, .mcp-stats-timeline-bar, .mcp-stats-timeline-bar-fail');
+        const dot = e.target.closest('.mcp-stats-timeline-dot, .mcp-stats-timeline-bar, .mcp-stats-timeline-bar-fail, .mcp-stats-timeline-bar-blocked');
         if (!dot || !mcpTimelineTooltipEl) {
             root.querySelectorAll('.mcp-stats-timeline-dot.is-active').forEach((d) => d.classList.remove('is-active'));
-            root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover').forEach((d) => d.classList.remove('is-hover'));
+            root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover, .mcp-stats-timeline-bar-blocked.is-hover').forEach((d) => d.classList.remove('is-hover'));
             mcpTimelineTooltipEl.style.display = 'none';
             return;
         }
         root.querySelectorAll('.mcp-stats-timeline-dot.is-active').forEach((d) => d.classList.remove('is-active'));
-        root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover').forEach((d) => d.classList.remove('is-hover'));
+        root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover, .mcp-stats-timeline-bar-blocked.is-hover').forEach((d) => d.classList.remove('is-hover'));
         dot.classList.add('is-active');
         dot.classList.add('is-hover');
         const time = dot.getAttribute('data-time') || '';
         const total = dot.getAttribute('data-total') || '0';
         const failed = dot.getAttribute('data-failed') || '0';
-        const tip = mcpMonitorT('timelineTooltip', { time, total, failed })
-            || `${time}：${total} 次（失败 ${failed}）`;
+        const blocked = dot.getAttribute('data-blocked') || '0';
+        const tip = mcpMonitorT('timelineTooltip', { time, total, failed, blocked })
+            || monitorFallback(`${time}：${total} 次（失败 ${failed}，安全拦截 ${blocked}）`, `${time}: ${total} calls (${failed} failed, ${blocked} blocked)`);
         mcpTimelineTooltipEl.textContent = tip;
         mcpTimelineTooltipEl.style.display = 'block';
         mcpTimelineTooltipEl.style.left = `${e.clientX}px`;
@@ -7873,7 +7925,7 @@ function bindMcpStatsTimelineEvents() {
         if (!e.target.closest || !e.target.closest('.mcp-stats-combined__timeline, .mcp-stats-timeline')) return;
         if (e.relatedTarget && root.contains(e.relatedTarget)) return;
         root.querySelectorAll('.mcp-stats-timeline-dot.is-active').forEach((d) => d.classList.remove('is-active'));
-        root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover').forEach((d) => d.classList.remove('is-hover'));
+        root.querySelectorAll('.mcp-stats-timeline-bar.is-hover, .mcp-stats-timeline-bar-fail.is-hover, .mcp-stats-timeline-bar-blocked.is-hover').forEach((d) => d.classList.remove('is-hover'));
         if (mcpTimelineTooltipEl) mcpTimelineTooltipEl.style.display = 'none';
     });
 
@@ -7951,10 +8003,13 @@ function renderMcpTimelineActiveMoments(points, rangeKey) {
         const time = formatMcpTimelineLabel(p.t, rangeKey, locale);
         const failed = p.failed || 0;
         const failedLabel = mcpMonitorT('failedCount', { n: failed }) || `失败 ${failed}`;
+        const blocked = p.blocked || 0;
+        const blockedLabel = mcpMonitorT('blockedCount', { n: blocked }) || monitorFallback(`安全拦截 ${blocked}`, `Blocked ${blocked}`);
         return `<span class="mcp-stats-timeline-moment" title="${escapeHtml(time)}">
             <span class="mcp-stats-timeline-moment__time">${escapeHtml(time)}</span>
             <span class="mcp-stats-timeline-moment__count">${p.total || 0}</span>
             ${failed > 0 ? `<span class="mcp-stats-timeline-moment__fail">${escapeHtml(failedLabel)}</span>` : ''}
+            ${blocked > 0 ? `<span class="mcp-stats-timeline-moment__blocked">${escapeHtml(blockedLabel)}</span>` : ''}
         </span>`;
     }).join('');
     const moreChip = hiddenCount > 0
@@ -8034,7 +8089,9 @@ function renderMcpStatsTimelineBody(timeline, timelineError, compactEmpty, loadi
     const chartSvg = buildMcpTimelineSvg(points, rangeKey);
     const totalLegend = mcpMonitorT('timelineTotalLegend') || '总调用';
     const failLegend = mcpMonitorT('timelineFailedLegend') || '失败';
+    const blockedLegend = mcpMonitorT('timelineBlockedLegend') || monitorFallback('安全拦截', 'Blocked');
     const hasFailed = points.some((p) => (p.failed || 0) > 0);
+    const hasBlocked = points.some((p) => (p.blocked || 0) > 0);
     const sparseHint = buildTimelineSparseHint(points, timeline);
     const momentsHtml = renderMcpTimelineActiveMoments(points, rangeKey);
     const sparseHtml = sparseHint
@@ -8049,6 +8106,7 @@ function renderMcpStatsTimelineBody(timeline, timelineError, compactEmpty, loadi
         <div class="mcp-stats-timeline__legend">
             <span class="mcp-stats-timeline__legend-item">${escapeHtml(totalLegend)}</span>
             ${hasFailed ? `<span class="mcp-stats-timeline__legend-item mcp-stats-timeline__legend-item--fail">${escapeHtml(failLegend)}</span>` : ''}
+            ${hasBlocked ? `<span class="mcp-stats-timeline__legend-item mcp-stats-timeline__legend-item--blocked">${escapeHtml(blockedLegend)}</span>` : ''}
         </div>`;
 }
 
@@ -8589,8 +8647,13 @@ function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, la
     const lastCallLabel = mcpMonitorT('lastCall') || monitorFallback('最近一次调用', 'Last call');
     const successPill = mcpMonitorT('successCount', { n: totals.success }) || monitorFallback(`成功 ${totals.success}`, `Success ${totals.success}`);
     const failedPill = mcpMonitorT('failedCount', { n: totals.failed }) || monitorFallback(`失败 ${totals.failed}`, `Failed ${totals.failed}`);
+    const blockedPill = mcpMonitorT('blockedCount', { n: totals.blocked }) || monitorFallback(`安全拦截 ${totals.blocked}`, `Blocked ${totals.blocked}`);
     const neutralPill = mcpMonitorT('neutralCount', { n: totals.neutral }) || monitorFallback(`终止 ${totals.neutral}`, `Stopped ${totals.neutral}`);
+    const rateHint = mcpMonitorT('rateExcludesBlocked') || monitorFallback('成功率仅统计成功和失败的调用，不包含安全拦截和终止', 'Success rate includes only successful and failed calls; blocked and stopped calls are excluded');
     const rateValue = hasCalls ? `${successRate}%` : successRate;
+    const blockedChip = totals.blocked > 0
+        ? `<span class="mcp-stats-kpi__chip is-blocked">${escapeHtml(blockedPill)}</span>`
+        : '';
     const neutralChip = totals.neutral > 0
         ? `<span class="mcp-stats-kpi__chip is-neutral">${escapeHtml(neutralPill)}</span>`
         : '';
@@ -8605,6 +8668,7 @@ function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, la
                     <div class="mcp-stats-kpi__meta">
                         <span class="mcp-stats-kpi__chip is-ok">${escapeHtml(successPill)}</span>
                         <span class="mcp-stats-kpi__chip is-fail">${escapeHtml(failedPill)}</span>
+                        ${blockedChip}
                         ${neutralChip}
                     </div>
                 </div>
@@ -8612,7 +8676,7 @@ function renderMcpStatsMetricsBar(totals, successRate, rateTone, rateSubText, la
             <article class="mcp-stats-kpi__item mcp-stats-kpi__item--rate">
                 <span class="mcp-stats-kpi__accent" aria-hidden="true"></span>
                 <div class="mcp-stats-kpi__content">
-                    <span class="mcp-stats-kpi__label">${escapeHtml(successRateLabel)}</span>
+                    <span class="mcp-stats-kpi__label" title="${escapeAttrLocal(rateHint)}">${escapeHtml(successRateLabel)}</span>
                     <span class="mcp-stats-kpi__value mcp-stats-kpi__value--rate ${rateTone}">${rateValue}</span>
                     <span class="mcp-stats-kpi__status ${rateTone}">${escapeHtml(rateSubText)}</span>
                 </div>
@@ -8641,16 +8705,21 @@ function renderMcpStatsToolTable(topTools, totals, activeToolFilter = '') {
         const total = tool.totalCalls || 0;
         const success = tool.successCalls || 0;
         const failed = tool.failedCalls || 0;
+        const blocked = tool.blockedCalls || 0;
         const effectiveTotal = success + failed;
         const toolRateNum = effectiveTotal > 0 ? (success / effectiveTotal) * 100 : 0;
         const toolRate = toolRateNum.toFixed(1);
+        const rateText = effectiveTotal > 0 ? `${toolRate}%` : '-';
         const sharePct = totals.total > 0 ? ((total / totals.total) * 100).toFixed(1) : '0.0';
         const dotColor = MCP_STATS_DIST_COLORS[index % MCP_STATS_DIST_COLORS.length];
         const isActive = activeToolFilter && monitorToolNamesEqual(activeToolFilter, rawName);
-        const rateClass = getMcpToolRateClass(toolRateNum);
+        const rateClass = effectiveTotal > 0 ? getMcpToolRateClass(toolRateNum) : 'is-muted';
         const rankClass = index === 0 ? ' rank-1' : index === 1 ? ' rank-2' : index === 2 ? ' rank-3' : '';
-        const rowAria = mcpMonitorT('toolRowAriaLabel', { name, total, rate: toolRate })
-            || `${name}，${total} 次调用，成功率 ${toolRate}%`;
+        const blockedLabel = mcpMonitorT('blockedCount', { n: blocked }) || monitorFallback(`安全拦截 ${blocked}`, `Blocked ${blocked}`);
+        const rowAria = (effectiveTotal > 0
+            ? (mcpMonitorT('toolRowAriaLabel', { name, total, rate: toolRate }) || `${name}，${total} 次调用，成功率 ${toolRate}%`)
+            : (mcpMonitorT('toolRowNoCompletedAriaLabel', { name, total }) || monitorFallback(`${name}，${total} 次调用，暂无完成结果，点击查看执行记录`, `${name}, ${total} calls, no completed outcomes, click to view records`)))
+            + (blocked > 0 ? ` · ${blockedLabel}` : '');
         rowsHtml += `
             <tr class="mcp-stats-tool-row${isActive ? ' is-active' : ''}"
                 data-tool-name="${escapeAttrLocal(rawName)}"
@@ -8666,8 +8735,9 @@ function renderMcpStatsToolTable(topTools, totals, activeToolFilter = '') {
                 <td class="col-num">${total}</td>
                 <td class="col-share">${sharePct}%</td>
                 <td class="col-rate">
-                    <span class="mcp-stats-rate ${rateClass}">${toolRate}%</span>
+                    <span class="mcp-stats-rate ${rateClass}">${rateText}</span>
                     ${failed > 0 ? `<span class="mcp-stats-fail-note">${escapeHtml(mcpMonitorT('failedCount', { n: failed }) || `失败 ${failed}`)}</span>` : ''}
+                    ${blocked > 0 ? `<span class="mcp-stats-blocked-note">${escapeHtml(blockedLabel)}</span>` : ''}
                 </td>
             </tr>`;
     });
@@ -8720,17 +8790,22 @@ function renderMcpStatsToolsPanel(topTools, totals, activeToolFilter = '') {
         const total = tool.totalCalls || 0;
         const success = tool.successCalls || 0;
         const failed = tool.failedCalls || 0;
+        const blocked = tool.blockedCalls || 0;
         const effectiveTotal = success + failed;
         const toolRateNum = effectiveTotal > 0 ? (success / effectiveTotal) * 100 : 0;
         const toolRate = toolRateNum.toFixed(1);
+        const rateText = effectiveTotal > 0 ? `${toolRate}%` : '-';
         const sharePct = totals.total > 0 ? ((total / totals.total) * 100).toFixed(1) : '0.0';
         const color = MCP_STATS_DIST_COLORS[index % MCP_STATS_DIST_COLORS.length];
         const barPct = maxCalls > 0 ? ((total / maxCalls) * 100).toFixed(1) : '0';
         const isActive = activeToolFilter && monitorToolNamesEqual(activeToolFilter, rawName);
-        const rateClass = getMcpToolRateClass(toolRateNum);
+        const rateClass = effectiveTotal > 0 ? getMcpToolRateClass(toolRateNum) : 'is-muted';
         const rankClass = index === 0 ? ' rank-1' : index === 1 ? ' rank-2' : index === 2 ? ' rank-3' : '';
-        const rowAria = mcpMonitorT('toolRowAriaLabel', { name, total, rate: toolRate })
-            || `${name}，${total} 次，成功率 ${toolRate}%`;
+        const blockedLabel = mcpMonitorT('blockedCount', { n: blocked }) || monitorFallback(`安全拦截 ${blocked}`, `Blocked ${blocked}`);
+        const rowAria = (effectiveTotal > 0
+            ? (mcpMonitorT('toolRowAriaLabel', { name, total, rate: toolRate }) || `${name}，${total} 次，成功率 ${toolRate}%`)
+            : (mcpMonitorT('toolRowNoCompletedAriaLabel', { name, total }) || monitorFallback(`${name}，${total} 次调用，暂无完成结果，点击查看执行记录`, `${name}, ${total} calls, no completed outcomes, click to view records`)))
+            + (blocked > 0 ? ` · ${blockedLabel}` : '');
         const failNote = failed > 0
             ? `<span class="mcp-stats-tool-item__fail">${escapeHtml(mcpMonitorT('failedCount', { n: failed }) || `失败 ${failed}`)}</span>`
             : '';
@@ -8755,7 +8830,8 @@ function renderMcpStatsToolsPanel(topTools, totals, activeToolFilter = '') {
             <div class="mcp-stats-tool-item__bottom">
                 <span class="mcp-stats-tool-item__pill is-success">${escapeHtml(successLabel)}</span>
                 <span class="mcp-stats-tool-item__pill${failed > 0 ? ' is-danger' : ''}">${escapeHtml(failedLabel)}</span>
-                <span class="mcp-stats-tool-item__rate ${rateClass}">${toolRate}%${failNote}</span>
+                ${blocked > 0 ? `<span class="mcp-stats-tool-item__pill is-blocked">${escapeHtml(blockedLabel)}</span>` : ''}
+                <span class="mcp-stats-tool-item__rate ${rateClass}">${rateText}${failNote}</span>
             </div>
         </li>`;
     }).join('');
@@ -8949,6 +9025,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
         running: 'statusRunning',
         completed: 'statusCompleted',
         failed: 'statusFailed',
+        blocked: 'statusBlocked',
         cancelled: 'statusCancelled',
         hard_timeout: 'statusHardTimeout',
         orphaned: 'statusOrphaned'
@@ -8956,7 +9033,7 @@ function renderMonitorExecutions(executions = [], statusFilter = 'all') {
     const locale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : undefined;
     const rowEntries = executions
         .map(exec => {
-            const status = (exec.status || 'unknown').toLowerCase();
+            const status = getToolExecutionDisplayStatus(exec);
             const statusClass = `monitor-status-chip ${status}`;
             const statusKey = statusKeyMap[status];
             const statusLabel = (typeof window.t === 'function' && statusKey) ? window.t('mcpMonitor.' + statusKey) : getStatusText(status);
@@ -9496,8 +9573,8 @@ function refreshProgressAndTimelineI18n() {
             const displayStatus = item.dataset.toolDisplayStatus || '';
             const backgroundRunning = displayStatus === 'background_running';
             const success = item.dataset.toolSuccess === '1';
-            const icon = backgroundRunning ? '\u23F3 ' : (success ? '\u2705 ' : '\u274C ');
-            titleSpan.textContent = ap + icon + (backgroundRunning ? (getBackgroundRunningToolLabel() + ': ' + name) : (success ? _t('chat.toolExecComplete', { name: name }) : _t('chat.toolExecFailed', { name: name })));
+            const icon = displayStatus === 'blocked' ? '🛡 ' : (backgroundRunning ? '\u23F3 ' : (success ? '\u2705 ' : '\u274C '));
+            titleSpan.textContent = ap + icon + (displayStatus === 'blocked' ? _t('chat.toolExecBlocked', { name: name }) : backgroundRunning ? (getBackgroundRunningToolLabel() + ': ' + name) : (success ? _t('chat.toolExecComplete', { name: name }) : _t('chat.toolExecFailed', { name: name })));
         } else if (type === 'eino_agent_reply') {
             titleSpan.textContent = ap + '\uD83D\uDCAC ' + _t('chat.einoAgentReplyTitle');
         } else if (type === 'eino_usage_summary') {

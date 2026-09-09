@@ -34,6 +34,7 @@ import (
 	"cyberstrike-ai/internal/robot"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -79,6 +80,10 @@ type App struct {
 
 // New 创建新应用
 func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error) {
+	toolGuard, err := toolguard.NewManager(cfg.EffectiveToolGuard())
+	if err != nil {
+		return nil, fmt.Errorf("初始化调用拦截规则: %w", err)
+	}
 	if err := multiagent.InitADK(); err != nil {
 		return nil, fmt.Errorf("初始化 Eino ADK: %w", err)
 	}
@@ -147,6 +152,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 创建MCP服务器（带数据库持久化）
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
 	mcpServer.SetToolAuthorizer(mcpToolAuthorizer(db))
+	mcpServer.SetToolGuard(toolGuard)
 	mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(cfg.Agent.ToolTimeoutMinutes)
 	mcpServer.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
 	mcpServer.ConfigureToolResultMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
@@ -172,6 +178,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 创建外部MCP管理器（使用与内部MCP服务器相同的存储）
 	externalMCPMgr := mcp.NewExternalMCPManagerWithStorage(log.Logger, db)
 	externalMCPMgr.SetToolAuthorizer(externalMCPToolAuthorizer())
+	externalMCPMgr.SetToolGuard(toolGuard)
 	externalMCPMgr.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
 	externalMCPMgr.ConfigureToolResultMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
 	externalMCPMgr.ConfigureToolResultSpillRoot(cfg.MultiAgent.EinoMiddleware.ReductionRootDir)
@@ -404,7 +411,6 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	monitorHandler.SetTaskManager(agentHandler.TaskManager())
 	monitorHandler.SetAgentHandler(agentHandler)
 	notificationHandler := handler.NewNotificationHandler(db, agentHandler, log.Logger)
-	groupHandler := handler.NewGroupHandler(db, log.Logger)
 	authHandler := handler.NewAuthHandler(authManager, cfg, configPath, log.Logger)
 	authHandler.SetAudit(auditSvc)
 	attackChainHandler := handler.NewAttackChainHandler(db, &cfg.OpenAI, log.Logger)
@@ -426,6 +432,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	registerWebshellManagementTools(mcpServer, db, webshellHandler, log.Logger)
 	configHandler := handler.NewConfigHandler(configPath, cfg, mcpServer, executor, agent, attackChainHandler, externalMCPMgr, log.Logger)
 	configHandler.SetDB(db)
+	configHandler.SetToolGuard(toolGuard)
 	configHandler.SetAudit(auditSvc)
 	approvalHandler.SetGlobalRuntime(approvalGlobalRuntime, configHandler)
 	externalMCPHandler := handler.NewExternalMCPHandler(externalMCPMgr, cfg, configPath, log.Logger)
@@ -583,7 +590,6 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		conversationHandler,
 		robotHandler,
 		wechatRobotHandler,
-		groupHandler,
 		configHandler,
 		externalMCPHandler,
 		attackChainHandler,
@@ -889,7 +895,6 @@ func setupRoutes(
 	conversationHandler *handler.ConversationHandler,
 	robotHandler *handler.RobotHandler,
 	wechatRobotHandler *handler.WechatRobotHandler,
-	groupHandler *handler.GroupHandler,
 	configHandler *handler.ConfigHandler,
 	externalMCPHandler *handler.ExternalMCPHandler,
 	attackChainHandler *handler.AttackChainHandler,
@@ -1045,20 +1050,7 @@ func setupRoutes(
 		protected.PUT("/conversations/:id/project", conversationHandler.SetConversationProject)
 		protected.DELETE("/conversations/:id", conversationHandler.DeleteConversation)
 		protected.POST("/conversations/:id/delete-turn", conversationHandler.DeleteConversationTurn)
-		protected.PUT("/conversations/:id/pinned", groupHandler.UpdateConversationPinned)
-
-		// 对话分组
-		protected.POST("/groups", groupHandler.CreateGroup)
-		protected.GET("/groups", groupHandler.ListGroups)
-		protected.GET("/groups/:id", groupHandler.GetGroup)
-		protected.PUT("/groups/:id", groupHandler.UpdateGroup)
-		protected.DELETE("/groups/:id", groupHandler.DeleteGroup)
-		protected.PUT("/groups/:id/pinned", groupHandler.UpdateGroupPinned)
-		protected.GET("/groups/:id/conversations", groupHandler.GetGroupConversations)
-		protected.GET("/groups/mappings", groupHandler.GetAllMappings)
-		protected.POST("/groups/conversations", groupHandler.AddConversationToGroup)
-		protected.DELETE("/groups/:id/conversations/:conversationId", groupHandler.RemoveConversationFromGroup)
-		protected.PUT("/groups/:id/conversations/:conversationId/pinned", groupHandler.UpdateConversationPinnedInGroup)
+		protected.PUT("/conversations/:id/pinned", conversationHandler.UpdateConversationPinned)
 
 		// 监控
 		protected.GET("/monitor", monitorHandler.Monitor)
@@ -1074,6 +1066,9 @@ func setupRoutes(
 
 		// 配置管理
 		protected.GET("/config", configHandler.GetConfig)
+		protected.GET("/tool-guard", configHandler.GetToolGuard)
+		protected.PUT("/tool-guard", configHandler.UpdateToolGuard)
+		protected.POST("/tool-guard/test", configHandler.TestToolGuard)
 		protected.GET("/config/tools", configHandler.GetTools)
 		protected.GET("/config/tools/:name/schema", configHandler.GetToolSchema)
 		protected.PUT("/config", configHandler.UpdateConfig)

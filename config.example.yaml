@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.7.17-src"
+version: "v1.7.18-src"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
@@ -36,6 +36,9 @@ auth:
 log:
   level: info # 日志级别: debug(调试), info(信息), warn(警告), error(错误)
   output: stdout # 日志输出位置: stdout(标准输出), stderr(标准错误), 或文件路径
+  diagnostic_dir: log # 额外保存 warn 及以上诊断日志，按本地日期拆分；相对于进程工作目录
+  diagnostic_retention_days: 14 # 保留天数（含当天）；省略或 <= 0 使用 14 天
+  diagnostic_disabled: false # true 关闭额外诊断日志；修改后需重启
 # 平台操作审计（系统设置 -> 日志审计；不记录对话正文与每次工具调用）
 audit:
   enabled: true
@@ -164,6 +167,20 @@ approval:
   dangerous_action:
     enabled: true
 # 审批 Agent 模型与提示词；审批行为以上方 approval 为唯一权威配置。
+
+# 调用拦截：在「安全防护 → 调用拦截」编辑并保存后立即生效；与 HITL 审批白名单独立。
+# 旧配置省略 tool_guard 时也默认启用政府域名保护。手动修改 YAML 后需重启。
+tool_guard:
+  enabled: true
+  rules:
+    - id: government-domains
+      name: 政府网站保护
+      enabled: true
+      # Go/RE2 正则；命名捕获组 match 用于提醒中的 {match}。
+      pattern: '(?i)(?:^|[^\p{L}\p{M}\p{N}_.-])(?P<match>(?:(?:[\p{L}\p{M}\p{N}_*-]+\.)+gov(?:\.[\p{L}\p{M}\p{N}_*-]+)*|gov(?:\.[\p{L}\p{M}\p{N}_*-]+)+|\.gov(?:\.[\p{L}\p{M}\p{N}_*-]+)*)\.?)(?:$|[^\p{L}\p{M}\p{N}_.-])'
+      # 支持 {match}、{tool}、{rule}；留空使用通用提醒。
+      message: '识别到 {match}，禁止攻击政府网站。请检查目标与授权范围，并更换为已获授权的非政府目标。'
+
 hitl:
   # 审计 Agent 专用模型；字段留空则复用上方 openai 配置。建议 model 填小模型，用于降低审批成本。
   audit_model:

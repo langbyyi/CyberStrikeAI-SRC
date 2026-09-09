@@ -72,7 +72,9 @@ func TestExternalMCPManager_CallToolBoundedWaitThenContinue(t *testing.T) {
 	manager.ConfigureToolWaitTimeoutSeconds(1)
 	manager.toolWaitTimeout = 10 * time.Millisecond
 	client := newBlockingExternalMCPClient("slow result ready")
+	manager.mu.Lock()
 	manager.clients["lab"] = client
+	manager.mu.Unlock()
 
 	callCtx, callCancel := context.WithCancel(context.Background())
 	result, executionID, err := manager.CallTool(callCtx, "lab::slow_tool", map[string]interface{}{"target": "example"})
@@ -117,7 +119,9 @@ func TestExecutionControlWaitToolReturnsCompletedResult(t *testing.T) {
 	manager := NewExternalMCPManager(zap.NewNop())
 	manager.toolWaitTimeout = 10 * time.Millisecond
 	client := newBlockingExternalMCPClient("control wait result")
+	manager.mu.Lock()
 	manager.clients["lab"] = client
+	manager.mu.Unlock()
 
 	result, executionID, err := manager.CallTool(context.Background(), "lab::slow_tool", nil)
 	if err != nil {
@@ -157,7 +161,9 @@ func TestExternalMCPManager_PerServerConcurrencyLimitsWorkers(t *testing.T) {
 		CircuitCooldown:         time.Second,
 	})
 	client := newBlockingExternalMCPClient("ok")
+	manager.mu.Lock()
 	manager.clients["lab"] = client
+	manager.mu.Unlock()
 
 	done1 := make(chan struct{})
 	go func() {
@@ -217,7 +223,9 @@ func TestExternalMCPManager_CircuitBreakerOpensAfterFailures(t *testing.T) {
 		CircuitFailureThreshold: 1,
 		CircuitCooldown:         time.Minute,
 	})
+	manager.mu.Lock()
 	manager.clients["lab"] = &failingExternalMCPClient{}
+	manager.mu.Unlock()
 
 	_, _, err := manager.CallTool(context.Background(), "lab::fail_tool", nil)
 	if err == nil || !strings.Contains(err.Error(), "boom") {

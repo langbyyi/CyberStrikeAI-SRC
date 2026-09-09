@@ -2240,8 +2240,10 @@ function buildWebshellTimelineItemFromDetail(detail) {
             : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
         var wsBackgroundRunning = wsDisplayState.kind === 'background_running';
         var success = !wsDisplayState.isError && !wsBackgroundRunning;
-        var wsIcon = wsBackgroundRunning ? '⏳ ' : (success ? '✅ ' : '❌ ');
-        var wsLabel = wsBackgroundRunning
+        var wsIcon = wsDisplayState.kind === 'blocked' ? '🛡 ' : (wsBackgroundRunning ? '⏳ ' : (success ? '✅ ' : '❌ '));
+        var wsLabel = wsDisplayState.kind === 'blocked'
+            ? ((typeof window.t === 'function') ? window.t('chat.toolExecBlocked', { name: tname }) : tname + ' 已拦截')
+            : wsBackgroundRunning
             ? (((typeof window.getBackgroundRunningToolLabel === 'function') ? window.getBackgroundRunningToolLabel() : '后台执行中') + ': ' + tname)
             : ((typeof window.t === 'function') ? (success ? window.t('chat.toolExecComplete', { name: tname }) : window.t('chat.toolExecFailed', { name: tname })) : (tname + (success ? ' 执行完成' : ' 执行失败')));
         title = ap + wsIcon + wsLabel;
@@ -2286,7 +2288,7 @@ function buildWebshellTimelineItemFromDetail(detail) {
             : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
         var execResultLabel = (typeof window.t === 'function') ? window.t('timeline.executionResult') : '执行结果:';
         var execIdLabel = (typeof window.t === 'function') ? window.t('timeline.executionId') : '执行ID:';
-        var sectionClass = displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success');
+        var sectionClass = displayState.kind === 'blocked' ? 'blocked' : (displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success'));
         html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' + sectionClass + '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' + escapeHtml(resultStr) + '</pre>' + (data.executionId ? '<div class="tool-execution-id"><span>' + escapeHtml(execIdLabel) + '</span> <code>' + escapeHtml(String(data.executionId)) + '</code></div>' : '') + '</div></div>';
     } else if (eventType !== 'eino_usage_summary' && detail.message && detail.message !== title) {
         html += '<div class="webshell-ai-timeline-msg">' + escapeHtml(detail.message) + '</div>';
@@ -2557,7 +2559,7 @@ function selectWebshell(id, stateReady) {
         '<svg class="role-selector-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
         '</button>' +
         '<div id="ws-role-selection-panel" class="role-selection-panel" style="display:none;">' +
-        '<div class="role-selection-panel-header"><h3 class="role-selection-panel-title">' + (wsT('chatGroup.rolePanelTitle') || '选择角色') + '</h3>' +
+        '<div class="role-selection-panel-header"><h3 class="role-selection-panel-title">' + (wsT('chat.rolePanelTitle') || '选择角色') + '</h3>' +
         '<button type="button" class="role-selection-panel-close" onclick="wsCloseRolePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
         '</div><div id="ws-role-selection-list" class="role-selection-list-main"></div></div>' +
         '</div>' +
@@ -3454,7 +3456,7 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                 : { kind: ((data.isError || data.success === false) ? 'error' : 'success'), isError: (data.isError || data.success === false) };
             var execResultLabel = (typeof window.t === 'function') ? window.t('timeline.executionResult') : '执行结果:';
             var execIdLabel = (typeof window.t === 'function') ? window.t('timeline.executionId') : '执行ID:';
-            var sectionClass = displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success');
+            var sectionClass = displayState.kind === 'blocked' ? 'blocked' : (displayState.kind === 'background_running' ? 'pending' : (displayState.isError ? 'error' : 'success'));
             html += '<div class="webshell-ai-timeline-msg"><div class="tool-result-section ' +
                 sectionClass +
                 '"><strong>' + escapeHtml(execResultLabel) + '</strong><pre class="tool-result">' +
@@ -3758,7 +3760,9 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
 
                     // ─── Tool result (final) ───
                     } else if (_et === 'tool_result' && _ed) {
-                        var success = _ed.success !== false;
+                        var wsLiveState = typeof window.getToolResultDisplayState === 'function' ? window.getToolResultDisplayState(_ed) : { success: _ed.success !== false };
+                        var blocked = wsLiveState.kind === 'blocked';
+                        var success = wsLiveState.success;
                         var tname = _ed.toolName || '工具';
                         var merged = false;
                         if (_ed.toolCallId) {
@@ -3772,12 +3776,12 @@ function runWebshellAiSend(conn, inputEl, sendBtn, messagesContainer) {
                             }
                         }
                         if (!merged) {
-                            var titleText = wsTOr(success ? 'chat.toolExecComplete' : 'chat.toolExecFailed', '') ||
-                                (tname + (success ? ' 执行完成' : ' 执行失败'));
+                            var titleText = wsTOr(blocked ? 'chat.toolExecBlocked' : (success ? 'chat.toolExecComplete' : 'chat.toolExecFailed'), '') ||
+                                (tname + (blocked ? ' 已拦截' : (success ? ' 执行完成' : ' 执行失败')));
                             if (typeof window.t === 'function') {
-                                try { titleText = window.t(success ? 'chat.toolExecComplete' : 'chat.toolExecFailed', { name: tname }); } catch (e) { /* */ }
+                                try { titleText = window.t(blocked ? 'chat.toolExecBlocked' : (success ? 'chat.toolExecComplete' : 'chat.toolExecFailed'), { name: tname }); } catch (e) { /* */ }
                             }
-                            var title = webshellAgentPx(_ed) + (success ? '✅ ' : '❌ ') + titleText;
+                            var title = webshellAgentPx(_ed) + (blocked ? '🛡 ' : (success ? '✅ ' : '❌ ')) + titleText;
                             var sub = _em || (_ed.result ? String(_ed.result).slice(0, 300) : '');
                             appendTimelineItem('tool_result', title, sub, _ed);
                         }

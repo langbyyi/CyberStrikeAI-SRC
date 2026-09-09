@@ -124,8 +124,6 @@ func permissionForRequest(method, fullPath string) string {
 		return "dashboard:read"
 	case strings.HasPrefix(path, "/conversations"), strings.HasPrefix(path, "/messages"), strings.HasPrefix(path, "/process-details"):
 		return crudPermission(method, "chat")
-	case strings.HasPrefix(path, "/groups"):
-		return crudPermission(method, "group")
 	case strings.HasPrefix(path, "/monitor"):
 		return crudPermission(method, "monitor")
 	case strings.HasPrefix(path, "/notifications"):
@@ -133,6 +131,10 @@ func permissionForRequest(method, fullPath string) string {
 			return "notification:read"
 		}
 		return "notification:write"
+	case path == "/tool-guard/test" && method == http.MethodPost:
+		return "config:read"
+	case path == "/tool-guard":
+		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/config"):
 		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/terminal"):
@@ -212,6 +214,8 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 	}
 	path := strings.TrimPrefix(c.FullPath(), "/api")
 	switch {
+	case path == "/tool-guard" && isMutationMethod(c.Request.Method):
+		return session.Scope == database.RBACScopeAll
 	case path == "/monitor/stats", path == "/monitor/calls-timeline":
 		// These APIs currently operate on process-global state. Until every MCP
 		// invocation and persisted execution record carries an immutable owner,

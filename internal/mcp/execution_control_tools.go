@@ -190,6 +190,9 @@ func formatExecutionForModel(exec *ToolExecution, opts executionFormatOptions) s
 	if exec.Result != nil {
 		payload["result"] = ToolResultPlainText(exec.Result)
 		payload["is_error"] = exec.Result.IsError
+		if exec.Result.Blocked {
+			payload["blocked"] = true
+		}
 	}
 	if opts.includePartialOutput && exec.PartialOutput != "" {
 		partial := tailStringBytes(exec.PartialOutput, opts.partialMaxBytes)

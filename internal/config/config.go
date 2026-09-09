@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"cyberstrike-ai/internal/termout"
+	"cyberstrike-ai/internal/toolguard"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +33,7 @@ type Config struct {
 	Agent       AgentConfig           `yaml:"agent"`
 	Hitl        HitlConfig            `yaml:"hitl,omitempty" json:"hitl,omitempty"`
 	Approval    ApprovalConfig        `yaml:"approval,omitempty" json:"approval,omitempty"`
+	ToolGuard   *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
 	Security    SecurityConfig        `yaml:"security"`
 	Database    DatabaseConfig        `yaml:"database"`
 	Auth        AuthConfig            `yaml:"auth"`
@@ -806,8 +809,11 @@ type ServerConfig struct {
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`
-	Output string `yaml:"output"`
+	Level                   string `yaml:"level"`
+	Output                  string `yaml:"output"`
+	DiagnosticDir           string `yaml:"diagnostic_dir"`
+	DiagnosticDisabled      bool   `yaml:"diagnostic_disabled"`
+	DiagnosticRetentionDays int    `yaml:"diagnostic_retention_days"`
 }
 
 type MCPConfig struct {
@@ -948,10 +954,12 @@ func (c *Config) ApplyDefaultAIChannel() {
 	if c == nil {
 		return
 	}
+	c.NormalizeAIProviderProfiles()
 	c.AI.EnsureDefaultFromOpenAI(c.OpenAI)
 	if oa, _, ok := c.AI.ResolveChannel(c.AI.DefaultChannel); ok {
 		c.OpenAI = oa
 	}
+	c.NormalizeAIProviderProfiles()
 }
 
 func (c OpenAIConfig) MaxCompletionTokensEffective() int {
@@ -968,6 +976,50 @@ func (c OpenAIConfig) MaxCompletionTokensEffective() int {
 func (c OpenAIConfig) IsDeepSeekEndpointOrModel() bool {
 	baseURL := strings.ToLower(strings.TrimSpace(c.BaseURL))
 	return strings.Contains(baseURL, "deepseek")
+}
+
+func (c OpenAIConfig) IsDeepSeekOfficialEndpoint() bool {
+	host := normalizedURLHost(c.BaseURL)
+	return host == "api.deepseek.com"
+}
+
+func normalizedURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		parsed, err = url.Parse("https://" + strings.TrimLeft(raw, "/"))
+		if err != nil {
+			return ""
+		}
+	}
+	return strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+}
+
+func NormalizeOpenAIProviderProfile(oa *OpenAIConfig) {
+	if oa == nil {
+		return
+	}
+	if oa.IsDeepSeekOfficialEndpoint() {
+		oa.Reasoning.Profile = "deepseek"
+	}
+}
+
+func (c *Config) NormalizeAIProviderProfiles() {
+	if c == nil {
+		return
+	}
+	NormalizeOpenAIProviderProfile(&c.OpenAI)
+	if c.AI.Channels != nil {
+		for id, ch := range c.AI.Channels {
+			oa := ch.ToOpenAIConfig()
+			NormalizeOpenAIProviderProfile(&oa)
+			ch.Reasoning = oa.Reasoning
+			c.AI.Channels[id] = ch
+		}
+	}
 }
 
 // OpenAIReasoningConfig 全局默认与网关 profile（对话页可通过 ChatRequest.reasoning 覆盖，受 AllowClientReasoning 约束）。
@@ -1399,6 +1451,14 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
+	if cfg.ToolGuard != nil {
+		if err := validateToolGuardYAML(data); err != nil {
+			return nil, fmt.Errorf("调用拦截配置无效: %w", err)
+		}
+	}
+	if _, err := toolguard.Compile(cfg.EffectiveToolGuard()); err != nil {
+		return nil, fmt.Errorf("调用拦截配置无效: %w", err)
+	}
 
 	if cfg.Auth.SessionDurationHours <= 0 {
 		cfg.Auth.SessionDurationHours = 12
@@ -1406,6 +1466,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Audit.MaxDetailBytes <= 0 {
 		cfg.Audit.MaxDetailBytes = 8192
 	}
+	cfg.NormalizeAIProviderProfiles()
 	cfg.ApplyDefaultAIChannel()
 	if err := validateOpenAIOutputLimits(cfg.OpenAI); err != nil {
 		return nil, err

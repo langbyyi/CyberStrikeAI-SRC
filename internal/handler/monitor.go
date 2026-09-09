@@ -76,6 +76,7 @@ type MonitorStatsSummary struct {
 	TotalCalls   int        `json:"totalCalls"`
 	SuccessCalls int        `json:"successCalls"`
 	FailedCalls  int        `json:"failedCalls"`
+	BlockedCalls int        `json:"blockedCalls"`
 	LastCallTime *time.Time `json:"lastCallTime,omitempty"`
 	ToolCount    int        `json:"toolCount"`
 }
@@ -171,6 +172,8 @@ func summarizeAccessibleExecutionPage(executions []*mcp.ToolExecution, topN int)
 			stat.FailedCalls++
 		} else if exec.Status == "completed" {
 			stat.SuccessCalls++
+		} else if exec.Status == mcp.ToolExecutionStatusBlocked {
+			stat.BlockedCalls++
 		}
 		started := exec.StartTime
 		if stat.LastCallTime == nil || started.After(*stat.LastCallTime) {
@@ -448,6 +451,7 @@ func dbStatsSummaryToMonitor(result *database.ToolStatsSummaryResult) *MonitorSt
 		TotalCalls:   result.Summary.TotalCalls,
 		SuccessCalls: result.Summary.SuccessCalls,
 		FailedCalls:  result.Summary.FailedCalls,
+		BlockedCalls: result.Summary.BlockedCalls,
 		ToolCount:    result.Summary.ToolCount,
 	}
 	if result.Summary.LastCallTime != nil {
@@ -472,6 +476,7 @@ func summarizeToolStats(stats map[string]*mcp.ToolStats, topN int) (*MonitorStat
 		summary.TotalCalls += stat.TotalCalls
 		summary.SuccessCalls += stat.SuccessCalls
 		summary.FailedCalls += stat.FailedCalls
+		summary.BlockedCalls += stat.BlockedCalls
 		if stat.LastCallTime != nil && (summary.LastCallTime == nil || stat.LastCallTime.After(*summary.LastCallTime)) {
 			t := *stat.LastCallTime
 			summary.LastCallTime = &t
@@ -528,6 +533,7 @@ func (h *MonitorHandler) loadStatsMap() map[string]*mcp.ToolStats {
 				existing.TotalCalls += v.TotalCalls
 				existing.SuccessCalls += v.SuccessCalls
 				existing.FailedCalls += v.FailedCalls
+				existing.BlockedCalls += v.BlockedCalls
 				// 使用最新的调用时间
 				if v.LastCallTime != nil && (existing.LastCallTime == nil || v.LastCallTime.After(*existing.LastCallTime)) {
 					existing.LastCallTime = v.LastCallTime
@@ -734,9 +740,10 @@ func (h *MonitorHandler) GetStats(c *gin.Context) {
 
 // CallsTimelinePoint 调用趋势数据点
 type CallsTimelinePoint struct {
-	T      time.Time `json:"t"`
-	Total  int       `json:"total"`
-	Failed int       `json:"failed"`
+	T       time.Time `json:"t"`
+	Total   int       `json:"total"`
+	Failed  int       `json:"failed"`
+	Blocked int       `json:"blocked"`
 }
 
 // CallsTimelineSummary 调用趋势汇总
@@ -778,7 +785,7 @@ func truncateToBucket(t time.Time, bucketSize time.Duration, dailyBuckets bool) 
 	return t.Truncate(bucketSize)
 }
 
-func buildCallsTimelinePoints(cfg callsTimelineConfig, buckets map[time.Time]struct{ total, failed int }) []CallsTimelinePoint {
+func buildCallsTimelinePoints(cfg callsTimelineConfig, buckets map[time.Time]struct{ total, failed, blocked int }) []CallsTimelinePoint {
 	now := time.Now()
 	start := truncateToBucket(now.Add(-cfg.duration), cfg.bucketSize, cfg.dailyBuckets)
 	end := truncateToBucket(now, cfg.bucketSize, cfg.dailyBuckets)
@@ -787,9 +794,10 @@ func buildCallsTimelinePoints(cfg callsTimelineConfig, buckets map[time.Time]str
 	for current := start; !current.After(end); current = current.Add(cfg.bucketSize) {
 		val := buckets[current]
 		points = append(points, CallsTimelinePoint{
-			T:      current,
-			Total:  val.total,
-			Failed: val.failed,
+			T:       current,
+			Total:   val.total,
+			Failed:  val.failed,
+			Blocked: val.blocked,
 		})
 	}
 	return points
@@ -797,7 +805,7 @@ func buildCallsTimelinePoints(cfg callsTimelineConfig, buckets map[time.Time]str
 
 func (h *MonitorHandler) loadCallsTimeline(cfg callsTimelineConfig) []CallsTimelinePoint {
 	since := time.Now().Add(-cfg.duration)
-	bucketMap := make(map[time.Time]struct{ total, failed int })
+	bucketMap := make(map[time.Time]struct{ total, failed, blocked int })
 
 	if h.db != nil {
 		dbBuckets, err := h.db.LoadCallsTimeline(since, cfg.dailyBuckets)
@@ -809,6 +817,7 @@ func (h *MonitorHandler) loadCallsTimeline(cfg callsTimelineConfig) []CallsTimel
 				entry := bucketMap[key]
 				entry.total += b.Total
 				entry.failed += b.Failed
+				entry.blocked += b.Blocked
 				bucketMap[key] = entry
 			}
 			return buildCallsTimelinePoints(cfg, bucketMap)
@@ -824,6 +833,8 @@ func (h *MonitorHandler) loadCallsTimeline(cfg callsTimelineConfig) []CallsTimel
 		entry.total++
 		if monitorStatusCountsAsFailed(exec.Status) {
 			entry.failed++
+		} else if exec.Status == mcp.ToolExecutionStatusBlocked {
+			entry.blocked++
 		}
 		bucketMap[key] = entry
 	}

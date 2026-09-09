@@ -11,6 +11,7 @@ import (
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/toolguard"
 
 	"go.uber.org/zap"
 )
@@ -75,6 +76,7 @@ type ExternalMCPManager struct {
 	reconnectAttempts  map[string]int
 	toolAuthorizer     func(context.Context, string, map[string]interface{}) error
 	invocationGuard    InvocationGuard
+	toolGuard          *toolguard.Manager
 	executionService   *ExecutionService
 	toolWaitTimeout    time.Duration
 	toolResultMaxBytes int
@@ -104,6 +106,23 @@ func (m *ExternalMCPManager) SetInvocationGuard(guard InvocationGuard) {
 	m.mu.Lock()
 	m.invocationGuard = guard
 	m.mu.Unlock()
+}
+
+// SetToolGuard installs safety rules evaluated before dispatch to external MCPs.
+func (m *ExternalMCPManager) SetToolGuard(guard *toolguard.Manager) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.toolGuard = guard
+	m.mu.Unlock()
+}
+
+func (m *ExternalMCPManager) checkToolGuard(toolName string, args map[string]interface{}) *ToolResult {
+	m.mu.RLock()
+	guard := m.toolGuard
+	m.mu.RUnlock()
+	return toolGuardBlockedResult(guard, toolName, args)
 }
 
 // NewExternalMCPManagerWithStorage 创建外部MCP管理器（带持久化存储）
@@ -697,6 +716,7 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 	var client ExternalMCPClient
 	var guardedCtx context.Context
 	var frozenArgs map[string]interface{}
+	var blockedByGuard bool
 	handle, err := m.executionService.Submit(ctx, ExecutionRequest{
 		ToolName:       toolName,
 		Arguments:      args,
@@ -716,6 +736,10 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 				return nil, fmt.Errorf("external tool authorization policy is not configured")
 			}
 			guardedCtx, frozenArgs = runCtx, args
+			if blocked := m.checkToolGuard(toolName, args); blocked != nil {
+				blockedByGuard = true
+				return nil, &toolGuardBlockError{result: blocked}
+			}
 			if guard != nil {
 				var guardErr error
 				guardedCtx, frozenArgs, guardErr = guard(runCtx, toolName, args)
@@ -768,6 +792,16 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			if guardedCtx == nil {
 				guardedCtx = runCtx
 			}
+			// Rules may have changed while this execution waited for a slot;
+			// 审批（review_edit）也可能改写参数，用最终参数再拦一次。
+			checkArgs := frozenArgs
+			if checkArgs == nil {
+				checkArgs = args
+			}
+			if blocked := m.checkToolGuard(toolName, checkArgs); blocked != nil {
+				blockedByGuard = true
+				return blocked, nil
+			}
 			result, callErr := client.CallTool(guardedCtx, actualToolName, frozenArgs)
 			completeInvocation(guardedCtx, toolName, frozenArgs, result, callErr)
 			if callErr != nil {
@@ -776,11 +810,13 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			return result, callErr
 		},
 		OnDone: func(exec *ToolExecution) {
-			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled
-			if mcpName != "" {
+			failed := exec != nil && executionStatusCountsAsFailed(exec.Status)
+			if mcpName != "" && !blockedByGuard && (exec == nil || exec.Status != ToolExecutionStatusBlocked) {
 				m.recordExternalMCPResult(mcpName, failed)
 			}
-			m.updateStats(toolName, failed)
+			if exec != nil {
+				m.updateStats(toolName, exec.Status)
+			}
 		},
 	})
 	if err != nil {
@@ -969,6 +1005,9 @@ func (m *ExternalMCPManager) applyAbortUserNoteToCancelledToolResult(executionID
 	}
 	hasErr := err != nil && *err != nil
 	hasRes := result != nil && *result != nil
+	if hasRes && (*result).Blocked {
+		return false
+	}
 	if !hasErr && !hasRes {
 		return false
 	}
@@ -1126,15 +1165,15 @@ func (m *ExternalMCPManager) ActiveRunningExecutionIDs() map[string]struct{} {
 }
 
 // updateStats 更新统计信息
-func (m *ExternalMCPManager) updateStats(toolName string, failed bool) {
+func (m *ExternalMCPManager) updateStats(toolName string, status string) {
 	now := time.Now()
 	if m.storage != nil {
 		totalCalls := 1
 		successCalls := 0
 		failedCalls := 0
-		if failed {
+		if executionStatusCountsAsFailed(status) {
 			failedCalls = 1
-		} else {
+		} else if status == ToolExecutionStatusCompleted {
 			successCalls = 1
 		}
 		if err := m.storage.UpdateToolStats(toolName, totalCalls, successCalls, failedCalls, &now); err != nil {
@@ -1156,10 +1195,12 @@ func (m *ExternalMCPManager) updateStats(toolName string, failed bool) {
 	stats.TotalCalls++
 	stats.LastCallTime = &now
 
-	if failed {
+	if executionStatusCountsAsFailed(status) {
 		stats.FailedCalls++
-	} else {
+	} else if status == ToolExecutionStatusCompleted {
 		stats.SuccessCalls++
+	} else if status == ToolExecutionStatusBlocked {
+		stats.BlockedCalls++
 	}
 }
 

@@ -308,9 +308,11 @@ func sdkCallToolResultToOurs(res *mcp.CallToolResult) *ToolResult {
 		return &ToolResult{Content: []Content{}}
 	}
 	content := sdkContentToOurs(res.Content)
+	blocked, _ := res.Meta[toolGuardBlockedMetaKey].(bool)
 	return &ToolResult{
 		Content: content,
 		IsError: res.IsError,
+		Blocked: blocked,
 	}
 }
 

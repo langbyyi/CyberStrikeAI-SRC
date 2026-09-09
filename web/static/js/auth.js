@@ -47,6 +47,7 @@ function clearAuthStorage() {
     authRoles = [];
     authPermissions = new Set();
     authScope = '';
+    applyRBACToUI();
     try {
         localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch (error) {
@@ -368,6 +369,7 @@ const PAGE_PERMISSION_MAP = {
     dashboard: 'dashboard:read',
     chat: 'chat:read',
     hitl: 'approval:read',
+    'tool-guard': 'config:read',
     'info-collect': 'fofa:execute',
     assets: 'asset:read',
     'asset-overview': 'asset:read',
@@ -504,6 +506,12 @@ function installPermissionClickGuard() {
 function applyRBACToUI(root) {
     installPermissionClickGuard();
     document.querySelectorAll('[data-page]').forEach((el) => {
+        // Navigation permissions must also be refreshed during scoped renders.
+        // Explicit rules take precedence over the fallback page permission map.
+        if (el.hasAttribute('data-require-permission') || el.hasAttribute('data-require-permission-any')) {
+            applyPermissionElement(el);
+            return;
+        }
         const page = el.getAttribute('data-page');
         const permission = PAGE_PERMISSION_MAP[page];
         if (!permission) return;
@@ -613,10 +621,10 @@ function setUserMenuOpen(open) {
 function getStatusText(status) {
     const s = (status && String(status).toLowerCase()) || '';
     if (typeof window.t !== 'function') {
-        const fallback = { pending: '等待中', queued: '排队中', running: '执行中', background_running: '后台执行中', completed: '已完成', failed: '失败', cancelled: '已终止', hard_timeout: '硬超时', orphaned: '孤儿记录' };
+        const fallback = { pending: '等待中', queued: '排队中', running: '执行中', background_running: '后台执行中', completed: '已完成', failed: '失败', blocked: '已拦截', cancelled: '已终止', hard_timeout: '硬超时', orphaned: '孤儿记录' };
         return fallback[s] || status;
     }
-    const keyMap = { pending: 'mcpDetailModal.statusPending', queued: 'mcpDetailModal.statusQueued', running: 'mcpDetailModal.statusRunning', background_running: 'timeline.backgroundRunning', completed: 'mcpDetailModal.statusCompleted', failed: 'mcpDetailModal.statusFailed', cancelled: 'mcpDetailModal.statusCancelled', hard_timeout: 'mcpMonitor.statusHardTimeout', orphaned: 'mcpMonitor.statusOrphaned' };
+    const keyMap = { pending: 'mcpDetailModal.statusPending', queued: 'mcpDetailModal.statusQueued', running: 'mcpDetailModal.statusRunning', background_running: 'timeline.backgroundRunning', completed: 'mcpDetailModal.statusCompleted', failed: 'mcpDetailModal.statusFailed', blocked: 'mcpMonitor.statusBlocked', cancelled: 'mcpDetailModal.statusCancelled', hard_timeout: 'mcpMonitor.statusHardTimeout', orphaned: 'mcpMonitor.statusOrphaned' };
     const key = keyMap[s];
     return key ? window.t(key) : status;
 }

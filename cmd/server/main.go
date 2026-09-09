@@ -101,7 +101,12 @@ func main() {
 	}
 
 	// 初始化日志
-	log := logger.New(cfg.Log.Level, cfg.Log.Output)
+	log := logger.New(cfg.Log.Level, cfg.Log.Output, logger.DiagnosticOptions{
+		Dir:           cfg.Log.DiagnosticDir,
+		Disabled:      cfg.Log.DiagnosticDisabled,
+		RetentionDays: cfg.Log.DiagnosticRetentionDays,
+	})
+	defer log.Sync()
 
 	// 创建可取消的根 context，用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
