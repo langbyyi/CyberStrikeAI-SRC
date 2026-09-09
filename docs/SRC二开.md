@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.17-src**
+> 当前分支：**v1.7.18-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -11,7 +11,7 @@
 | 2 | SRC 漏洞报告 | 9 个 SRC 字段 + 3 套导出模板 | `internal/handler/vulnerability_report.go` |
 | 3 | FOFA 多引擎 | fofa/quake/shodan/zoomeye 原生协议 + 双通道 | `internal/fofaruntime/` |
 | 4 | 漏洞全生命周期 | record/list/get/update/delete 五工具 | `internal/app/vulnerability_tools.go` |
-| 5 | Skills / Roles | 64 Skill + 18 角色 | `skills/` `roles/` |
+| 5 | Skills / Roles | 79 Skill + 18 角色 | `skills/` `roles/` |
 | 6 | ddddocr | 验证码/滑块 OCR | `tools/ddddocr.yaml` |
 | 7 | issue#2 修复 | 孤儿 tool 消息规范化防网关 400 | `internal/multiagent/orphan_tool_pruner_middleware.go` |
 | 8 | Tavily 联网搜索 | Agent 可用的 web_search 工具 | `internal/app/web_search_tool.go` |
@@ -48,8 +48,8 @@
 - 测试：`TestVulnerabilityLifecycle`（record 成功 / 无证据拒 / 缺必填拒 / update / delete）
 
 ### 5. Skills / Roles
-- **64 个 Skill**（官方 v1.7.17 为 23 个）：新增 SRC 细分漏洞方法 playbook 包（sqli / xss / ssrf / idor / jwt / 命令注入 / 越权 / 业务逻辑 / OAuth 等 OWASP 全类型，部分含 SCENARIOS.md 与 references/），`unlimited-attack-scope` 改写为 `authorized-attack-scope`，移除官方 demo 包
-- **18 个角色**（官方 v1.7.17 为 13 个）：渗透 / CTF / API / Web 应用扫描 / 信息收集 / 后渗透 / EDUSRC / 企业 SRC 等，含完整 `user_prompt` + 工具白名单（已清死工具引用、补齐 web_search）
+- **79 个 Skill**（官方 v1.7.18 为 23 个）：新增 SRC 细分漏洞方法 playbook 包（sqli / xss / ssrf / idor / jwt / 命令注入 / 越权 / 业务逻辑 / OAuth 等 OWASP 全类型，部分含 SCENARIOS.md 与 references/），v1.7.18-src 又新增 CI/CD、云、容器、fastjson / shiro / spring、应急响应、内网、log4shell、移动、网络渗透、安全代码审计、安全自动化、安全意识、漏洞评估等 15 个方向包并扩写注入三件套，`unlimited-attack-scope` 改写为 `authorized-attack-scope`
+- **18 个角色**（官方 v1.7.18 为 13 个）：渗透 / CTF / API / Web 应用扫描 / 信息收集 / 后渗透 / EDUSRC / 企业 SRC 等，含完整 `user_prompt` + 工具白名单（已清死工具引用、补齐 web_search）
 
 ### 6. ddddocr 验证码识别
 `tools/ddddocr.yaml`（自动发现）：OCR 文字验证码 / 点选检测 / 滑块缺口定位，用于登录爆破、密码重置、注册绕过等场景。内联 Python 实现，运行时依赖 venv 中安装 `ddddocr`。
@@ -66,19 +66,31 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 
 ## 与官方版本及本仓库历史的关系（对照核实）
 
-**对比基准与结论均经代码检索核实**（2026-08-30 复核，`git diff v1.7.17` 工作区全量对比）：
+**对比基准与结论均经代码检索核实**（2026-09-09 复核，`git diff v1.7.18` 工作区全量对比）：
 
-1. **官方 v1.7.17**（Ed1s0nZ/CyberStrikeAI，tag `v1.7.17`）：官方不含本分支的二开层组件（`internal/fofaruntime/`、`web_search_tool.go`、`vulnerability_report.go`、`sensitive_http_gate.go` 等对官方代码 0 命中）。本分支以官方为基座叠加二开增强。
+1. **官方 v1.7.18**（Ed1s0nZ/CyberStrikeAI，tag `v1.7.18`）：官方不含本分支的二开层组件（`internal/fofaruntime/`、`web_search_tool.go`、`vulnerability_report.go`、`sensitive_http_gate.go` 等对官方代码 0 命中）。本分支以官方为基座叠加二开增强。
 
 2. **本仓库 v1.6.48-51-src 历史**：曾引入治理层 `execution_controller` / `skill_router` / `session_intent` / `depth_force` / `evidence_policy` / `semantic_outcome` / `tool_exec_governor` 等。**v1.7.11-src 将其全部移除**，回归官方精简形态；后续 `fofa.icu` 硬编码代理、启动注入 FOFA 环境变量、batch-delete 路由补注册、漏洞表缺失列补全等历史修复，也已被官方 v1.7.13~v1.7.16 同步吸收或由更通用的实现取代（多端点 `FofaConfig.Endpoints[]`、运行时直读 `FOFA_API_KEY` 等），不再构成现存差异。
 
-**与官方 v1.7.17 的全量差异**（实测）：468 个文件变更——新增 154、修改 221、删除 77、重命名 16（+45,115/-16,362 行；工作区口径，数字随未提交改动微幅漂移）。要点：
+**与官方 v1.7.18 的全量差异**（实测）：513 个文件变更——新增 180、修改 242、删除 72、重命名 19（+63,595/-18,191 行；工作区口径，数字随未提交改动微幅漂移）。要点：
 - 新增 `internal/fofaruntime/` 四引擎 Go 原生运行时（fofa/quake/shodan/zoomeye，1315 行含测试）与旧域名自动迁移容错
 - 新增 `web_search_tool.go`（Tavily）、`vulnerability_report.go`（SRC 报告导出 +3 测试）、`sensitive_http_gate.go`（硬闸）
 - 漏洞链路强化：三要素/PoC prompt 重写、可复现门禁 host 边界匹配、转义归一化判定开关、SRC 扩展 DB 列
 - multiagent：中断续跑携带模型可见轨迹、tool_search 常驻/非常驻分组注入、运行中摘要修正
-- skills 新增 43 包（新增 62 个文件）、移除 demo / unlimited-attack-scope 2 包，现共 64 个；工具 YAML 官方 90 个 → 现 116 个（累计新增 33 个红队/信息收集向，其中 mimikatz / apktool / ettercap / medusa / proxychains / recon-ng / strace 7 个已移除）、5 个新角色（roles 补 web_search 17 处）
+- skills 新增 43 包（新增 62 个文件）、移除 demo / unlimited-attack-scope 2 包，现共 80 个；工具 YAML 官方 90 个 → 现 116 个（累计新增 33 个红队/信息收集向，其中 mimikatz / apktool / ettercap / medusa / proxychains / recon-ng / strace 7 个已移除）、5 个新角色（roles 补 web_search 17 处）
 - 删除：官方宣传图、README_CN.md、SECURITY.md、英文文档目录 `docs/en-US/`（zh-CN 全量保留）、插件 dist 二进制、demo/unlimited-attack-scope 技能包、mcp-servers 与插件的冗余中英文 README
+
+### v1.7.18 同步说明（2026-09-09）
+
+官方 v1.7.17→v1.7.18 共 12 个提交：**11 个按提交语义镜像，1 个跳过**。
+
+- **新增官方能力**：
+  - `internal/toolguard/` 调用拦截（可配置规则，出厂内置政府域名保护，默认开启）：MCP 内置/外部两条调度路径均接入，与统一审批叠加——**先拦截后审批**（被规则禁止的调用不再进入审批队列），审批改参（review_edit）后按最终参数二次拦截；监控页新增「已拦截」状态与统计（`web/tests/tool-guard*.test.cjs`）
+  - 诊断日志按日轮转 + 保留天数清理（`internal/logger/daily_writer.go`，`Logger.Close()` 为 SRC 补充以支持 Windows 句柄释放）
+  - DeepSeek 配置归一/自动识别、AI 通道 reasoning 下拉刷新、Claude 模型摘要 token 上限、摘要模型错误透出、登录前与局部渲染刷新导航权限
+- **跟随官方移除会话分组**：`group:*` 权限、分组 UI/后端（`handler/group.go` 等）、i18n 分组键全部清除，对话管理保留置顶/重命名/批量
+- **跳过 `feat: persist hitl default config`**（21c6ad9b）：其目标是官方旧 `handler/hitl.go` 体系；本分支的统一审批（`internal/approval/`）已以 `approval:` 配置段持久化 reviewer/timeout/触发器，语义被取代
+- 官方 v1.7.18 的 roles / tools 数量与 v1.7.17 一致（13 / 90），二开层 18 角色 / 116 工具 YAML 保持；skills 扩至 79 包（新增 15 方向包 + 扩写注入三件套，官方 demo 包继续不收录）
 
 **本分支的硬门**：可复现强制（#1）+ 敏感接口硬闸（`sensitive_http_gate`，防不可逆写操作）。
 

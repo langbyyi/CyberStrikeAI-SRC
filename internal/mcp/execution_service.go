@@ -18,6 +18,7 @@ const (
 	ToolExecutionStatusQueued      = "queued"
 	ToolExecutionStatusRunning     = "running"
 	ToolExecutionStatusCompleted   = "completed"
+	ToolExecutionStatusBlocked     = "blocked"
 	ToolExecutionStatusFailed      = "failed"
 	ToolExecutionStatusCancelled   = "cancelled"
 	ToolExecutionStatusHardTimeout = "hard_timeout"
@@ -224,6 +225,10 @@ func (s *ExecutionService) markEntryRunning(entry *executionEntry) {
 
 func (s *ExecutionService) finishEntry(ctx context.Context, entry *executionEntry, result *ToolResult, err error, onDone ExecutionDoneFunc) {
 	id := entry.exec.ID
+	var blockedErr *toolGuardBlockError
+	if errors.As(err, &blockedErr) {
+		result, err = blockedErr.result, nil
+	}
 	cancelledWithUserNote := s.applyAbortUserNoteToCancelledToolResult(id, &result, &err)
 
 	now := time.Now()
@@ -258,6 +263,10 @@ func (s *ExecutionService) finishEntry(ctx context.Context, entry *executionEntr
 			entry.exec.Status = ToolExecutionStatusFailed
 			entry.exec.Error = err.Error()
 		}
+	} else if result != nil && result.Blocked {
+		entry.exec.Status = ToolExecutionStatusBlocked
+		entry.exec.Error = firstToolResultText(result, "工具调用已被安全规则拦截")
+		entry.exec.Result = result
 	} else if result != nil && result.IsError {
 		if cancelledWithUserNote {
 			entry.exec.Status = ToolExecutionStatusCancelled
@@ -318,10 +327,11 @@ func (s *ExecutionService) Wait(ctx context.Context, executionID string, timeout
 	if entry == nil {
 		return s.getPersistedSnapshot(executionID)
 	}
-	if isExecutionTerminal(entry.exec.Status) {
-		return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}, nil
+	select {
+	case <-entry.done:
+		return s.snapshotEntry(entry), nil
+	default:
 	}
-
 	var timeoutCh <-chan time.Time
 	var timer *time.Timer
 	if timeout > 0 {
@@ -332,18 +342,26 @@ func (s *ExecutionService) Wait(ctx context.Context, executionID string, timeout
 
 	select {
 	case <-entry.done:
-		return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}, nil
+		return s.snapshotEntry(entry), nil
 	case <-timeoutCh:
-		return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}, ErrExecutionWaitTimeout
+		return s.snapshotEntry(entry), ErrExecutionWaitTimeout
 	case <-ctxDone(ctx):
-		return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}, ctx.Err()
+		return s.snapshotEntry(entry), ctx.Err()
 	}
+}
+
+// snapshotEntry synchronizes snapshots with worker state and partial output
+// updates. Wait uses done to also observe persistence and completion callbacks.
+func (s *ExecutionService) snapshotEntry(entry *executionEntry) *ExecutionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}
 }
 
 func (s *ExecutionService) Get(executionID string) (*ExecutionSnapshot, error) {
 	entry := s.getEntry(executionID)
 	if entry != nil {
-		return &ExecutionSnapshot{Execution: cloneToolExecution(entry.exec)}, nil
+		return s.snapshotEntry(entry), nil
 	}
 	return s.getPersistedSnapshot(executionID)
 }
@@ -464,6 +482,9 @@ func (s *ExecutionService) applyAbortUserNoteToCancelledToolResult(executionID s
 	}
 	hasErr := err != nil && *err != nil
 	hasRes := result != nil && *result != nil
+	if hasRes && (*result).Blocked {
+		return false
+	}
 	if !hasErr && !hasRes {
 		return false
 	}
@@ -549,7 +570,16 @@ func isBackgroundWaitToolResult(result *ToolResult) bool {
 
 func isExecutionTerminal(status string) bool {
 	switch strings.TrimSpace(strings.ToLower(status)) {
-	case ToolExecutionStatusCompleted, ToolExecutionStatusFailed, ToolExecutionStatusCancelled, ToolExecutionStatusHardTimeout, ToolExecutionStatusOrphaned:
+	case ToolExecutionStatusCompleted, ToolExecutionStatusBlocked, ToolExecutionStatusFailed, ToolExecutionStatusCancelled, ToolExecutionStatusHardTimeout, ToolExecutionStatusOrphaned:
+		return true
+	default:
+		return false
+	}
+}
+
+func executionStatusCountsAsFailed(status string) bool {
+	switch status {
+	case ToolExecutionStatusFailed, ToolExecutionStatusHardTimeout, ToolExecutionStatusOrphaned:
 		return true
 	default:
 		return false

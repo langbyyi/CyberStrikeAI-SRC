@@ -158,7 +158,7 @@ test('登录成功后重新加载曾因未授权失败的项目侧栏', () => {
     assert.notEqual(conversationsIndex, -1);
     assert.ok(projectRetryIndex > conversationsIndex);
     assert.match(refreshSource, /typeof window\.refreshChatProjectSelector === 'function'/);
-    assert.match(html, /\/static\/js\/auth\.js\?v=20260813-1/);
+    assert.match(html, /\/static\/js\/auth\.js\?v=20260907-blocked-1/);
 });
 
 test('用户真正滑到底部后恢复自动跟随且不会提前强制跳底', () => {
@@ -341,7 +341,7 @@ test('消息气泡内部流式增高时仅在跟随模式继续粘底', () => {
 
 test('页面在任务补流脚本之前加载智能滚动控制器', () => {
     const scrollIndex = html.indexOf('/static/js/chat-scroll.js?v=20260815-1');
-    const monitorIndex = html.indexOf('/static/js/monitor.js?v=20260819-3');
+    const monitorIndex = html.indexOf('/static/js/monitor.js?v=20260907-blocked-1');
 
     assert.notEqual(scrollIndex, -1);
     assert.notEqual(monitorIndex, -1);
@@ -468,8 +468,8 @@ test('刷新指定对话时立即恢复且加载完成前不闪出无项目状�
     assert.match(loadSource, /finally \{[\s\S]*?finishChatConversationRestore\(conversationId\)/);
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-messages/);
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-input-container/);
-    assert.match(html, /router\.js\?v=20260819-3/);
-    assert.match(html, /chat\.js\?v=20260819-5/);
+    assert.match(html, /router\.js\?v=20260907-1/);
+    assert.match(html, /chat\.js\?v=20260907-blocked-1/);
 });
 
 test('刷新运行中回复会复用已持久化 planning 并继续追加未来增量', () => {
@@ -533,5 +533,5 @@ test('暗色模式对话三点悬浮不会触发浅色父行背景', () => {
     const css = fs.readFileSync('web/static/css/style.css', 'utf8');
     assert.match(css, /html\[data-theme="dark"\] \.project-conversation-row:hover \.project-conversation-item/);
     assert.match(css, /html\[data-theme="dark"\] \.project-folder-action:hover,[\s\S]*?background: rgba\(71, 85, 105, 0\.28\);[\s\S]*?box-shadow: none;/);
-    assert.match(html, /style\.css\?v=\d{8}-\d+/);
+    assert.match(html, /style\.css\?v=\d{8}-[\w-]+/);
 });

@@ -379,6 +379,8 @@ func (h *ExternalMCPHandler) isEnabled(cfg config.ExternalMCPServerConfig) bool 
 
 // saveConfig 保存配置到文件
 func (h *ExternalMCPHandler) saveConfig() error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
 	data, err := os.ReadFile(h.configPath)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)

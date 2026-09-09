@@ -468,6 +468,34 @@ U+02B9 ʹ (modifier letter prime) → '
 
 ---
 
+## 14. SQLMAP TAMPER 组合速查（WAF 分层选型）
+
+精选 tamper：`space2comment`(空格→/**/,通用弱WAF)、`space2mysqlblank`/`space2mssqlblank`(随机空白)、`randomcase`(随机大小写)、`randomcomments`(关键字内插注释)、`between`/`greatest`(拦截比较符)、`equaltolike`(拦截等号)、`charencode`/`chardoubleencode`/`charunicodeencode`(编码层)、`percentage`(ASP/IIS)、`versionedmorekeywords`/`modsecurityversioned`(版本注释,ModSecurity)、`sleep2getlock`(拦截SLEEP)、`unmagicquotes`(宽字节绕魔术引号)、`apostrophemask`(UTF-8全角撇号)、`overlongutf8more`(超长编码)、`commalesslimit`(拦截逗号)、`0eunion`/`dunion`(UNION变体)、`luanginx`(Nginx+Lua WAF)、`symboliclogical`(AND/OR→&&/||)。
+
+按 WAF 强度选组合：
+
+```bash
+# 基础WAF（阿里云/腾讯云基础版）
+--tamper=space2comment,randomcase,between
+# 中等防护（ModSecurity/云WAF标准版）
+--tamper=space2comment,randomcase,between,modsecurityversioned,charencode
+# 强防护（安全狗/D盾/云锁）
+--tamper=space2comment,space2randomblank,randomcomments,randomcase,versionedmorekeywords,between,equaltolike,charencode
+# MySQL强WAF（阿里云企业版/长亭雷池）
+--tamper=space2mysqlblank,randomcomments,versionedmorekeywords,halfversionedmorekeywords,if2casewhenisnull,sleep2getlock,between,greatest,concat2concatws,chardoubleencode
+# MSSQL强WAF
+--tamper=space2mssqlblank,randomcase,randomcomments,percentage,charunicodeencode,equaltolike,appendnullbyte
+# Oracle
+--tamper=space2comment,randomcase,between,commentbeforeparentheses,greatest,least
+# 宽字节（GBK 场景）
+--tamper=unmagicquotes,space2comment,randomcase
+# BlueCoat / Varnish
+--tamper=bluecoat,space2mssqlhash,charunicodeencode    # BlueCoat
+--tamper=varnish,space2comment,randomcase             # Varnish
+```
+
+选型原则：单 tamper 失败后**逐个叠加**而不是整组替换，每次只改一个变量以定位触发规则；tamper 组合改变 payload 形态后必须回到第 0.5 节差分验证铁律重新确认注入点仍成立。
+
 ## Related Routing
 
 - NoSQL variant (JSON/$ne operators) → [nosql-injection](../nosql-injection/SKILL.md)

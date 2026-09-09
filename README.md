@@ -18,10 +18,10 @@
 - **170+ 可用工具**（116 个 YAML 声明工具 + 55 个内置 MCP 工具）：覆盖完整 kill chain（nmap、masscan、sqlmap、nuclei、subfinder、fofa_search 等）
 - **智能编排（CloudWeGo Eino ADK）**：单代理模式，支持上下文摘要、跨轮轨迹软续跑、瞬态重试
 - **角色化测试**：18 个预设角色（官方 13 个 + 本分支新增 EDUSRC / 企业 SRC / 小程序 / 移动 / IoT 五个场景角色），按场景定制提示与工具集
-- **Skills 技能库**：64 个技能包（官方 23 个），覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型与侦察方法论
+- **Skills 技能库**：79 个技能包（官方 23 个），覆盖注入 / 上传 / 越权 / IDOR / 业务逻辑 / OAuth 等 OWASP 全类型与侦察方法论
 - **漏洞全生命周期**：record / list / get / update / delete，5 工具齐全
 - **知识库（RAG）**：向量检索 + 自动索引
-- **Web UI、审计日志、SQLite 持久化**；批量任务、会话分组、人机协同（HITL）
+- **Web UI、审计日志、SQLite 持久化**；批量任务、人机协同（HITL）
 
 > 界面预览、插件、完整配置与工具清单请参阅官方仓库；本 README 侧重本分支的**差异与 SRC 定位**。
 
@@ -42,7 +42,7 @@
 
 ## 版本同步
 
-当前基线 **v1.7.17-src**（已含官方 v1.7.17 及此前全部更新；SRC 方向增强完整保留）。
+当前基线 **v1.7.18-src**（已含官方 v1.7.18 及此前全部更新；SRC 方向增强完整保留）。
 
 每次跟进官方版本一个 `vX.Y.Z-src` 提交 + 标签，完整变更清单见 `git log --oneline`；官方各版本说明见[官方 Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases)。个别官方默认值会按 SRC 场景调整（如 HITL 白名单未纳入红队向的 `c2_event` / `c2_file` / `manage_webshell_list`），差异均在同步提交的 commit message 中注明。
 

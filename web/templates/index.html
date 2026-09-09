@@ -31,11 +31,12 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260831-3">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260907-blocked-1">
+    <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
     <link rel="stylesheet" href="/static/vendor/xterm.css">
-    <script src="/static/js/router.js?v=20260819-3"></script>
+    <script src="/static/js/router.js?v=20260907-1"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -210,14 +211,18 @@
                             <span data-i18n="nav.chat">对话</span>
                         </div>
                     </div>
-                    <div class="nav-item" data-page="hitl">
-                        <div class="nav-item-content" data-title="人机协同" onclick="switchPage('hitl')">
+                    <div class="nav-item nav-item-has-submenu" data-page="security" data-require-permission-any="hitl:read config:read">
+                        <div class="nav-item-content" data-title="安全防护" onclick="window.toggleSubmenu('security')" data-i18n="nav.security" data-i18n-attr="data-title" data-i18n-skip-text="true">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
-                                <circle cx="9" cy="7" r="4"></circle>
-                                <path d="m16 11 2 2 4-4"></path>
+                                <rect x="4" y="10" width="16" height="11" rx="2"></rect>
+                                <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"></path>
                             </svg>
-                            <span data-i18n="nav.hitl">人机协同</span>
+                            <span data-i18n="nav.security">安全防护</span>
+                            <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m9 18 6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div class="nav-submenu">
+                            <div class="nav-submenu-item" data-page="hitl" data-require-permission="hitl:read" onclick="switchPage('hitl')" data-i18n="nav.hitl">人机协同</div>
+                            <div class="nav-submenu-item" data-page="tool-guard" data-require-permission="config:read" onclick="switchPage('tool-guard')" data-i18n="nav.toolGuard">调用拦截</div>
                         </div>
                     </div>
                     <div class="nav-section-label" role="presentation">
@@ -1016,51 +1021,6 @@
                             <div id="conversations-pagination" class="sidebar-list-pagination conversation-sidebar-pagination"></div>
 	                        </aside>
                         
-                        <!-- 分组详情页面 -->
-                        <div id="group-detail-page" class="group-detail-page" style="display: none;">
-                            <div class="group-detail-header">
-                                <button class="back-btn" onclick="exitGroupDetail()">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M19 12H5M12 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                    </svg>
-                                </button>
-                                <h2 id="group-detail-title" class="group-detail-title"></h2>
-                                <div class="group-detail-actions">
-                                    <button class="group-action-btn" onclick="toggleGroupSearch()" data-i18n="chatGroup.search" data-i18n-attr="title" title="搜索" id="group-search-toggle-btn">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
-                                            <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                        </svg>
-                                    </button>
-                                    <button class="group-action-btn" data-require-permission="group:write" onclick="editGroup()" data-i18n="chatGroup.edit" data-i18n-attr="title" title="编辑">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                    <button class="group-action-btn delete-btn" data-require-permission="group:delete" onclick="deleteGroup()" data-i18n="chatGroup.delete" data-i18n-attr="title" title="删除">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="group-search-container" class="group-search-container" style="display: none;">
-                                <div class="group-search-input-wrapper">
-                                    <input type="text" id="group-search-input" class="group-search-input" data-i18n="chat.searchInGroup" data-i18n-attr="placeholder" placeholder="搜索分组中的对话..." onkeyup="handleGroupSearchInput(event)" oninput="handleGroupSearchInput(event)">
-                                    <button class="group-search-clear-btn" onclick="clearGroupSearch()" data-i18n="common.clearSearch" data-i18n-attr="title" title="清除搜索" id="group-search-clear-btn" style="display: none;">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
-                                            <path d="m8 8 8 8M16 8l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="group-detail-content">
-                                <div id="group-conversations-list" class="group-conversations-list"></div>
-                            </div>
-                        </div>
-
                         <!-- 对话界面 -->
                         <div class="chat-container">
                             <!-- 会话顶部栏（只在有会话选中时显示） -->
@@ -1142,7 +1102,7 @@
                                     <!-- 角色选择下拉面板 -->
                                     <div id="role-selection-panel" class="role-selection-panel" style="display: none;">
                                         <div class="role-selection-panel-header">
-                                            <h3 class="role-selection-panel-title" data-i18n="chatGroup.rolePanelTitle">选择角色</h3>
+                                            <h3 class="role-selection-panel-title" data-i18n="chat.rolePanelTitle">选择角色</h3>
                                             <button class="role-selection-panel-close" onclick="closeRoleSelectionPanel()" data-i18n="common.close" data-i18n-attr="title" title="关闭">
                                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                     <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1317,6 +1277,93 @@
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <div id="page-tool-guard" class="page tool-guard-page">
+                    <div class="page-header">
+                        <h2 data-i18n="toolGuard.title">调用拦截</h2>
+                        <div class="page-header-actions">
+                            <span id="tool-guard-save-state" class="tool-guard-save-state" aria-live="polite"></span>
+                            <button type="button" id="tool-guard-open-test" class="btn-secondary" data-require-permission="config:read" onclick="openToolGuardTest()" data-i18n="toolGuard.testEntry" disabled>全部规则验证</button>
+                            <button type="button" id="tool-guard-reset" class="btn-secondary" data-require-permission="config:write" onclick="resetToolGuardConfig()" data-i18n="toolGuard.reset" disabled>撤销修改</button>
+                            <button type="button" id="tool-guard-save" class="btn-primary" data-require-permission="config:write" onclick="saveToolGuardConfig()" data-i18n="toolGuard.save" disabled>保存并生效</button>
+                        </div>
+                    </div>
+                    <div class="page-content tool-guard-content">
+                        <div id="tool-guard-feedback" class="tool-guard-feedback" role="status" aria-live="polite" hidden></div>
+                        <section class="tool-guard-card tool-guard-policy" aria-labelledby="tool-guard-protection-status">
+                            <div class="tool-guard-policy-info">
+                                <span class="tool-guard-policy-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 4 6v6c0 4 5 7 8 9 3-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg></span>
+                                <div class="tool-guard-policy-copy">
+                                    <h3 id="tool-guard-protection-status" data-i18n="toolGuard.policyTitle">拦截策略</h3>
+                                    <p data-i18n="toolGuard.enableHint">保存后立即作用于后续工具调用，已开始的调用不受影响。</p>
+                                </div>
+                            </div>
+                            <label class="tool-guard-toggle tool-guard-switch"><input id="tool-guard-enabled" type="checkbox" onchange="changeToolGuardEnabled(this.checked)" disabled><span data-i18n="toolGuard.enabled">启用调用拦截</span></label>
+                        </section>
+                        <section class="tool-guard-card tool-guard-rules-card" aria-labelledby="tool-guard-rules-title">
+                            <div class="tool-guard-section-header">
+                                <div>
+                                    <div class="tool-guard-heading-line"><h3 id="tool-guard-rules-title" data-i18n="toolGuard.rulesTitle">拦截规则</h3><span id="tool-guard-rule-count" class="tool-guard-rule-count" aria-live="polite"></span></div>
+                                    <p data-i18n="toolGuard.listHint">点击规则查看和编辑，按列表顺序匹配。</p>
+                                </div>
+                                <button type="button" id="tool-guard-add" class="btn-secondary tool-guard-add" data-require-permission="config:write" onclick="addToolGuardRule()" disabled><span aria-hidden="true">＋</span><span data-i18n="toolGuard.addRule">添加规则</span></button>
+                            </div>
+                            <div id="tool-guard-rules" class="tool-guard-rules"></div>
+                            <details class="tool-guard-help">
+                                <summary><span data-i18n="toolGuard.helpTitle">规则说明与匹配范围</span><span class="tool-guard-chevron" aria-hidden="true">›</span></summary>
+                                <div class="tool-guard-help-body">
+                                    <p data-i18n="toolGuard.rulesHint">按顺序匹配已启用的规则，使用首条命中规则的提醒。正则采用 RE2 语法，保存和试运行时由服务端校验。</p>
+                                    <p data-i18n="toolGuard.messageHint">拦截提醒可使用 {match}（匹配文本）、{tool}（工具名称）、{rule}（规则名称）。</p>
+                                    <p data-i18n="toolGuard.description">在 MCP 工具执行前检查工具名称和参数，命中规则立即阻止调用。人机协同审批和工具白名单不会跳过此检查。</p>
+                                    <p data-i18n="toolGuard.scopeHint">正则仅检查调用中可见的文本；不会解析 IP 归属、重定向目标或工具读取的文件内容。域名规则不能保证覆盖所有间接访问。</p>
+                                </div>
+                            </details>
+                        </section>
+                        <details id="tool-guard-test-panel" class="tool-guard-card tool-guard-test-panel">
+                            <summary>
+                                <span class="tool-guard-test-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 3h6M10 3v6l-6 9a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3l-6-9V3M7 15h10"/></svg></span>
+                                <span class="tool-guard-disclosure-copy"><strong id="tool-guard-test-title" data-i18n="toolGuard.testTitle">全部规则验证</strong><span id="tool-guard-test-scope-summary" data-i18n="toolGuard.testSummary">按规则顺序和启停状态，检查整体拦截效果</span></span>
+                                <span class="tool-guard-chevron" aria-hidden="true">›</span>
+                            </summary>
+                            <div class="tool-guard-test-body">
+                                <p class="tool-guard-test-hint" data-i18n="toolGuard.testHint">使用页面上的当前配置（包括未保存修改），仅检查匹配结果，不执行任何工具。</p>
+                                <div class="tool-guard-field">
+                                    <label for="tool-guard-test-tool" data-i18n="toolGuard.testTool">工具名称</label>
+                                    <input id="tool-guard-test-tool" type="text" value="http_request" maxlength="512" oninput="invalidateToolGuardTest()" autocomplete="off" spellcheck="false">
+                                </div>
+                                <div class="tool-guard-field">
+                                    <label for="tool-guard-test-arguments" data-i18n="toolGuard.testArguments">工具参数（JSON 对象）</label>
+                                    <textarea id="tool-guard-test-arguments" rows="3" oninput="invalidateToolGuardTest()" spellcheck="false">{"url": "https://example.gov.cn"}</textarea>
+                                </div>
+                                <div class="tool-guard-test-actions"><button type="button" id="tool-guard-test" class="btn-secondary" data-require-permission="config:read" onclick="testToolGuardConfig()" data-i18n="toolGuard.test" disabled>测试匹配</button></div>
+                                <div id="tool-guard-test-result" class="tool-guard-test-result" role="status" aria-live="polite" hidden></div>
+                            </div>
+                        </details>
+                    </div>
+                    <dialog id="tool-guard-add-dialog" class="tool-guard-add-dialog" aria-labelledby="tool-guard-add-title" aria-describedby="tool-guard-add-description">
+                        <form novalidate onsubmit="event.preventDefault();commitToolGuardRule()">
+                            <header class="tool-guard-add-header">
+                                <div>
+                                    <h3 id="tool-guard-add-title" data-i18n="toolGuard.addDialogTitle">添加拦截规则</h3>
+                                    <p id="tool-guard-add-description" class="tool-guard-hint" data-i18n="toolGuard.addDialogHint">先配置规则，再用示例参数验证效果，确认后添加到列表。</p>
+                                </div>
+                                <button type="button" class="tool-guard-dialog-close" onclick="closeToolGuardRuleDialog()" data-i18n="toolGuard.closeDialog" data-i18n-attr="aria-label,title" data-i18n-skip-text="true" aria-label="关闭添加规则" title="关闭添加规则"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+                            </header>
+                            <div id="tool-guard-add-body" class="tool-guard-add-body">
+                                <div id="tool-guard-add-fields" class="tool-guard-add-fields"></div>
+                                <aside id="tool-guard-add-test" class="tool-guard-add-test"></aside>
+                                <div id="tool-guard-add-feedback" class="tool-guard-feedback" role="status" aria-live="polite" hidden></div>
+                            </div>
+                            <footer class="tool-guard-add-footer">
+                                <p class="tool-guard-hint" data-i18n="toolGuard.addToListHint">添加到列表后，点击页面顶部「保存并生效」应用规则。</p>
+                                <div class="tool-guard-dialog-actions">
+                                    <button type="button" class="btn-secondary" onclick="closeToolGuardRuleDialog()" data-i18n="toolGuard.cancelAdd">取消</button>
+                                    <button type="submit" id="tool-guard-add-confirm" class="btn-primary" data-require-permission="config:write" data-i18n="toolGuard.addToList">添加到列表</button>
+                                </div>
+                            </footer>
+                        </form>
+                    </dialog>
                 </div>
 
                 <div id="page-hitl" class="page">
@@ -1597,6 +1644,7 @@
                                                 <option value="running" data-i18n="mcpMonitor.statusRunning">执行中</option>
                                                 <option value="queued" data-i18n="mcpMonitor.statusQueued">排队中</option>
                                                 <option value="failed" data-i18n="mcpMonitor.statusFailed">失败</option>
+                                                <option value="blocked" data-i18n="mcpMonitor.statusBlocked">已拦截</option>
                                                 <option value="hard_timeout" data-i18n="mcpMonitor.statusHardTimeout">执行超时</option>
                                                 <option value="cancelled" data-i18n="mcpMonitor.statusCancelled">已终止</option>
                                                 <option value="orphaned" data-i18n="mcpMonitor.statusOrphaned">孤儿任务</option>
@@ -3685,6 +3733,7 @@
                                                                 <label for="openai-reasoning-profile" data-i18n="settingsBasic.openaiReasoningProfile">线路</label>
                                                                 <select id="openai-reasoning-profile">
                                                                     <option value="auto">auto</option>
+                                                                    <option value="deepseek">deepseek</option>
                                                                     <option value="deepseek_compat">deepseek_compat</option>
                                                                     <option value="openai_compat">openai_compat</option>
                                                                     <option value="output_config_effort">output_config_effort</option>
@@ -5921,10 +5970,6 @@
                         <option value="" data-i18n="chat.filterAllProjects">全部项目</option>
                         <option value="__none__" data-i18n="chat.filterUnboundProjects">未绑定项目</option>
                     </select>
-                    <select id="batch-group-filter" class="conversation-project-filter-native" onchange="applyBatchConversationFilters()" data-i18n="batchManageModal.filterByGroup" data-i18n-attr="title" title="按分组筛选">
-                        <option value="" data-i18n="batchManageModal.filterAllGroups">全部分组</option>
-                        <option value="__none__" data-i18n="batchManageModal.filterUngrouped">无分组</option>
-                    </select>
                     <div class="batch-search-box">
                         <input type="text" id="batch-search-input" data-i18n="batchManageModal.searchPlaceholder" data-i18n-attr="placeholder" placeholder="搜索历史记录" oninput="filterBatchConversations(this.value)" />
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -5943,7 +5988,6 @@
                         </div>
                         <div class="batch-table-col-name" data-i18n="batchManageModal.conversationName">对话名称</div>
                         <div class="batch-table-col-project" data-i18n="batchManageModal.project">项目</div>
-                        <div class="batch-table-col-group" data-i18n="batchManageModal.group">对话分组</div>
                         <div class="batch-table-col-time" data-i18n="batchManageModal.lastTime">最近一次对话时间</div>
                         <div class="batch-table-col-action" data-i18n="batchManageModal.action">操作</div>
                     </div>
@@ -5951,79 +5995,10 @@
                 </div>
             </div>
             <div class="modal-footer batch-manage-footer">
-                <div class="batch-footer-move">
-                    <select id="batch-move-group-select" class="batch-move-group-select conversation-project-filter-native" data-i18n="batchManageModal.setGroup" data-i18n-attr="title" title="设置分组">
-                        <option value="__none__" data-i18n="batchManageModal.noGroupOption">无分组</option>
-                    </select>
-                    <button type="button" class="btn-secondary" onclick="applyBatchGroupChange()" data-i18n="batchManageModal.setGroup">设置分组</button>
-                </div>
                 <div class="batch-footer-actions">
                     <button class="btn-secondary" onclick="closeBatchManageModal()" data-i18n="common.cancel">取消</button>
                     <button class="btn-primary" data-require-permission="chat:delete" onclick="deleteSelectedConversations()" data-i18n="batchManageModal.deleteSelected">删除所选</button>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 创建分组模态框 -->
-    <div id="create-group-modal" class="modal">
-        <div class="modal-content create-group-modal-content">
-            <div class="modal-header">
-                <h2 data-i18n="createGroupModal.title">创建分组</h2>
-                <span class="modal-close" onclick="closeCreateGroupModal()">&times;</span>
-            </div>
-            <div class="modal-body create-group-body">
-                <p class="create-group-description" data-i18n="createGroupModal.description">分组功能可将对话集中归类管理，让对话更加井然有序。</p>
-                <div class="create-group-input-wrapper">
-                    <button type="button" class="group-icon-input" id="create-group-icon-btn" onclick="toggleGroupIconPicker()" data-i18n="createGroupModal.selectIcon" data-i18n-attr="title" title="点击选择图标">📁</button>
-                    <input type="text" id="create-group-name-input" data-i18n="createGroupModal.groupNamePlaceholder" data-i18n-attr="placeholder" placeholder="请输入分组名称" />
-                    <!-- Emoji选择器面板 -->
-                    <div id="group-icon-picker" class="group-icon-picker" style="display: none;">
-                        <div class="icon-picker-header">
-                            <span data-i18n="createGroupModal.pickIcon">选择图标</span>
-                            <div class="icon-picker-custom">
-                                <input type="text" id="custom-icon-input" class="custom-icon-input" data-i18n="createGroupModal.customIcon" data-i18n-attr="placeholder" placeholder="自定义" maxlength="2" />
-                                <button type="button" class="custom-icon-btn" onclick="applyCustomIcon()" data-i18n="createGroupModal.confirmIcon">确定</button>
-                            </div>
-                        </div>
-                        <div class="icon-picker-grid">
-                            <span class="icon-option" onclick="selectGroupIcon('📁')">📁</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🔒')">🔒</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🛡️')">🛡️</span>
-                            <span class="icon-option" onclick="selectGroupIcon('⚔️')">⚔️</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🎯')">🎯</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🔍')">🔍</span>
-                            <span class="icon-option" onclick="selectGroupIcon('💻')">💻</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🐛')">🐛</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🚀')">🚀</span>
-                            <span class="icon-option" onclick="selectGroupIcon('⚡')">⚡</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🔥')">🔥</span>
-                            <span class="icon-option" onclick="selectGroupIcon('💡')">💡</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🎮')">🎮</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🏴‍☠️')">🏴‍☠️</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🕵️')">🕵️</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🔑')">🔑</span>
-                            <span class="icon-option" onclick="selectGroupIcon('📡')">📡</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🌐')">🌐</span>
-                            <span class="icon-option" onclick="selectGroupIcon('📊')">📊</span>
-                            <span class="icon-option" onclick="selectGroupIcon('📝')">📝</span>
-                            <span class="icon-option" onclick="selectGroupIcon('🗂️')">🗂️</span>
-                            <span class="icon-option" onclick="selectGroupIcon('📌')">📌</span>
-                            <span class="icon-option" onclick="selectGroupIcon('⭐')">⭐</span>
-                            <span class="icon-option" onclick="selectGroupIcon('💎')">💎</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="create-group-suggestions">
-                    <div class="suggestion-tag" data-i18n="createGroupModal.suggestionPenetrationTest" onclick="selectSuggestionByKey('createGroupModal.suggestionPenetrationTest')">渗透测试</div>
-                    <div class="suggestion-tag" data-i18n="createGroupModal.suggestionCtf" onclick="selectSuggestionByKey('createGroupModal.suggestionCtf')">CTF</div>
-                    <div class="suggestion-tag" data-i18n="createGroupModal.suggestionRedTeam" onclick="selectSuggestionByKey('createGroupModal.suggestionRedTeam')">红队</div>
-                    <div class="suggestion-tag" data-i18n="createGroupModal.suggestionVulnerabilityMining" onclick="selectSuggestionByKey('createGroupModal.suggestionVulnerabilityMining')">漏洞挖掘</div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-secondary" onclick="closeCreateGroupModal()" data-i18n="createGroupModal.cancel">取消</button>
-                <button class="btn-primary" data-require-permission="group:write" onclick="createGroup(event)" data-i18n="createGroupModal.create">创建</button>
             </div>
         </div>
     </div>
@@ -6086,45 +6061,12 @@
             </svg>
             <span data-i18n="contextMenu.batchManage">批量管理</span>
         </div>
-        <div class="context-menu-item context-menu-item-has-submenu" onmouseenter="handleMoveToGroupSubmenuEnter()" onmouseleave="handleMoveToGroupSubmenuLeave(event)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span data-i18n="contextMenu.moveToGroup">移动到分组</span>
-            <svg class="submenu-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <div id="move-to-group-submenu" class="context-submenu" style="display: none;" onmouseenter="clearSubmenuHideTimeout()" onmouseleave="hideMoveToGroupSubmenu()"></div>
-        </div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item context-menu-item-danger" data-require-permission="chat:delete" onclick="deleteConversationFromContext()">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span data-i18n="contextMenu.deleteConversation">删除此对话</span>
-        </div>
-    </div>
-
-    <!-- 分组上下文菜单 -->
-    <div id="group-context-menu" class="context-menu" style="display: none;">
-        <div class="context-menu-item" onclick="renameGroupFromContext()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span data-i18n="contextMenu.rename">重命名</span>
-        </div>
-        <div class="context-menu-item" onclick="pinGroupFromContext()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 17v5M5 17h14l-1-7H6l-1 7zM9 10V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span id="pin-group-menu-text" data-i18n="contextMenu.pinGroup">置顶此分组</span>
-        </div>
-        <div class="context-menu-item context-menu-item-danger" data-require-permission="group:delete" onclick="deleteGroupFromContext()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span data-i18n="contextMenu.deleteGroup">删除此分组</span>
         </div>
     </div>
 
@@ -6441,7 +6383,7 @@
     <div id="role-select-modal" class="modal">
         <div class="modal-content role-select-modal-content">
             <div class="modal-header">
-                <h2 data-i18n="chatGroup.rolePanelTitle">选择角色</h2>
+                <h2 data-i18n="chat.rolePanelTitle">选择角色</h2>
                 <span class="modal-close" onclick="closeRoleSelectModal()">&times;</span>
             </div>
             <div class="modal-body role-select-body">
@@ -6845,7 +6787,7 @@
     <script src="/static/js/i18n.js"></script>
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/builtin-tools.js"></script>
-    <script src="/static/js/auth.js?v=20260813-1"></script>
+    <script src="/static/js/auth.js?v=20260907-blocked-1"></script>
     <script src="/static/js/modal.js"></script>
     <script src="/static/js/notifications.js"></script>
     <script src="/static/js/info-collect.js?v=20260717-1"></script>
@@ -6853,12 +6795,13 @@
     <script src="/static/js/agents.js"></script>
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
-    <script src="/static/js/monitor.js?v=20260819-3"></script>
-    <script src="/static/js/chat.js?v=20260819-5"></script>
+    <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
+    <script src="/static/js/chat.js?v=20260907-blocked-1"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>
     <script src="/static/js/hitl.js?v=20260828-1"></script>
+    <script src="/static/js/tool-guard.js?v=20260907-7"></script>
     <script src="/static/js/settings.js?v=20260717-1"></script>
     <script src="/static/js/audit-datetime-picker.js"></script>
     <script src="/static/js/audit.js"></script>
@@ -6871,7 +6814,7 @@
     <script src="/static/js/fact-graph.js"></script>
     <script src="/static/js/projects.js?v=20260819-1"></script>
     <script src="/static/js/vulnerability.js?v=16"></script>
-    <script src="/static/js/webshell.js"></script>
+    <script src="/static/js/webshell.js?v=20260907-blocked-1"></script>
     <script src="/static/js/chat-files.js"></script>
     <script src="/static/js/tasks.js"></script>
     <script src="/static/js/workflow-package-client.js"></script>
@@ -6879,6 +6822,6 @@
     <script src="/static/js/roles.js"></script>
     <script src="/static/js/rbac.js"></script>
     <script src="/static/js/c2.js"></script>
-    <script src="/static/js/rbac-guards.js?v=20260717-1"></script>
+    <script src="/static/js/rbac-guards.js?v=20260907-1"></script>
 </body>
 </html>

@@ -45,6 +45,7 @@ docs/superpowers/
 .worktrees/
 
 # Logs and temporary files
+/log/
 *.log
 *.bak
 *~

@@ -24,6 +24,7 @@ import (
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
@@ -96,6 +97,7 @@ type ConfigHandler struct {
 	db                         *database.DB
 	logger                     *zap.Logger
 	mu                         sync.RWMutex
+	toolGuard                  *toolguard.Manager
 	lastEmbeddingConfig        *config.EmbeddingConfig // 上一次的嵌入模型配置（用于检测变更）
 }
 
@@ -350,13 +352,13 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		subAgentCount = len(agents.MergeYAMLAndMarkdown(h.config.MultiAgent.SubAgents, load.SubAgents))
 	}
 	multiPub := config.MultiAgentPublic{
-		Enabled:                                    h.config.MultiAgent.Enabled,
-		RobotDefaultAgentMode:                      config.NormalizeRobotAgentMode(h.config.MultiAgent),
-		BatchUseMultiAgent:                         h.config.MultiAgent.BatchUseMultiAgent,
-		SubAgentCount:                              subAgentCount,
-		Orchestration:                              config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
-		PlanExecuteLoopMaxIterations:               h.config.MultiAgent.PlanExecuteLoopMaxIterations,
-		SummarizationUserIntentLedgerMaxRunes:      h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective(),
+		Enabled:                               h.config.MultiAgent.Enabled,
+		RobotDefaultAgentMode:                 config.NormalizeRobotAgentMode(h.config.MultiAgent),
+		BatchUseMultiAgent:                    h.config.MultiAgent.BatchUseMultiAgent,
+		SubAgentCount:                         subAgentCount,
+		Orchestration:                         config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
+		PlanExecuteLoopMaxIterations:          h.config.MultiAgent.PlanExecuteLoopMaxIterations,
+		SummarizationUserIntentLedgerMaxRunes: h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective(),
 		SummarizationUserIntentLedgerEntryMaxRunes: h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunesEffective(),
 		LatestUserMessageMaxRunes:                  h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunesEffective(),
 		LatestUserMessageHeadRunes:                 h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunesEffective(),
@@ -1226,6 +1228,8 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		}
 	}
 
+	h.config.NormalizeAIProviderProfiles()
+
 	// 保存配置到文件
 	if err := h.saveConfig(); err != nil {
 		h.logger.Error("保存配置失败", zap.Error(err))
@@ -1801,6 +1805,10 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 
 // saveConfig 保存配置到文件
 func (h *ConfigHandler) saveConfig() error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	h.config.NormalizeAIProviderProfiles()
+
 	// 读取现有配置文件并创建备份
 	data, err := os.ReadFile(h.configPath)
 	if err != nil {

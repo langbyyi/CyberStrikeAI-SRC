@@ -27,7 +27,11 @@ log:
 - Chromium 浏览器插件的合法 `chrome-extension://<32位插件ID>` Origin 会被自动识别，无需配置。插件仍需按域授权，并使用密码登录与 Bearer Token 调用 API。
 - `server.cors_allowed_origins`：仅供其他可信 Web 集成使用的额外 Origin 精确白名单；不支持 `*`，修改后需重启服务。
 - `auth.session_duration_hours`：登录会话有效期（小时）。登录密码由 RBAC 用户管理，首次启动时在控制台输出 `admin` 初始密码。
-- `log.output`：可以是 `stdout`、`stderr` 或文件路径。
+- `log.output`：可以是 `stdout`、`stderr` 或文件路径，由 `log.level` 控制级别。
+- 额外诊断日志默认开启，仅记录 `warn` 及以上（包括重试、连接异常和错误），独立于 `log.level`，不保存普通 `info` / `debug` 日志。保留原有结构化字段、时间、代码位置和 Error 及以上堆栈，不额外采集请求正文或工具输出。
+- `log.diagnostic_dir`：默认 `log`，相对于进程工作目录，文件名为 `diagnostic-YYYY-MM-DD.log`（JSON Lines，按服务器本地日期拆分）。只有出现诊断日志时才创建目录和文件；跨天后首次写入切换文件。
+- `log.diagnostic_retention_days`：默认 14 天（含当天）；省略或小于等于 0 时使用默认值。每天首次写入时清理此目录内过期的 `diagnostic-日期.log`，不删除其他文件；没有新诊断日志时不执行清理。
+- `log.diagnostic_disabled: true`：关闭额外诊断落盘。以上日志配置修改后需重启；目录无法写入时保留原输出，并由 Zap 向 stderr 报告写入失败。
 
 ## AI 通道与模型配置
 

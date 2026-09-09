@@ -6,7 +6,7 @@
     'use strict';
 
     const GLOBAL_WRITE_HANDLER_PERMISSIONS = {
-        // 对话 / 分组
+        // 对话
         sendMessage: 'chat:write',
         startNewConversation: 'chat:write',
         deleteConversation: 'chat:delete',
@@ -16,15 +16,6 @@
         deleteSelectedConversations: 'chat:delete',
         renameConversation: 'chat:write',
         pinConversation: 'chat:write',
-        showCreateGroupModal: 'group:write',
-        createGroup: 'group:write',
-        editGroup: 'group:write',
-        deleteGroup: 'group:delete',
-        deleteGroupFromContext: 'group:delete',
-        pinGroupFromContext: 'group:write',
-        renameGroupFromContext: 'group:write',
-        applyBatchGroupChange: 'group:write',
-        applyCustomIcon: 'group:write',
 
         // 人机协同
         submitHitlDecision: 'approval:decide',
@@ -92,6 +83,10 @@
         deleteRetrievalLog: 'knowledge:delete',
 
         // 设置 / MCP
+        saveToolGuardConfig: 'config:write',
+        addToolGuardRule: 'config:write',
+        resetToolGuardConfig: 'config:write',
+        changeToolGuardEnabled: 'config:write',
         applySettings: 'config:write',
         saveToolsConfig: 'config:write',
         saveExternalMCP: 'mcp:write',

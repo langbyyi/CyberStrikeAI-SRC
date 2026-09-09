@@ -16,6 +16,7 @@ import (
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -54,6 +55,7 @@ type Server struct {
 	httpToolTimeoutMu      sync.RWMutex
 	toolAuthorizer         func(context.Context, string, map[string]interface{}) error
 	invocationGuard        InvocationGuard
+	toolGuard              *toolguard.Manager
 	executionService       *ExecutionService
 	toolWaitTimeout        time.Duration
 	toolResultMaxBytes     int
@@ -85,6 +87,23 @@ func (s *Server) SetInvocationGuard(guard InvocationGuard) {
 	s.mu.Lock()
 	s.invocationGuard = guard
 	s.mu.Unlock()
+}
+
+// SetToolGuard installs the runtime safety rules shared by HTTP and internal calls.
+func (s *Server) SetToolGuard(guard *toolguard.Manager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.toolGuard = guard
+	s.mu.Unlock()
+}
+
+func (s *Server) checkToolGuard(toolName string, args map[string]interface{}) *ToolResult {
+	s.mu.RLock()
+	guard := s.toolGuard
+	s.mu.RUnlock()
+	return toolGuardBlockedResult(guard, toolName, args)
 }
 
 type sseClient struct {
@@ -595,7 +614,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 			s.mu.Unlock()
 		}
 
-		s.updateStats(req.Name, true)
+		s.updateStats(req.Name, ToolExecutionStatusFailed)
 
 		return &Message{
 			ID:      msg.ID,
@@ -619,11 +638,14 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		zap.Any("arguments", req.Arguments),
 	)
 
-	result, err := handler(execCtx, req.Arguments)
+	result := s.checkToolGuard(req.Name, req.Arguments)
+	var err error
+	if result == nil {
+		result, err = handler(execCtx, req.Arguments)
+	}
 	completeInvocation(execCtx, req.Name, req.Arguments, result, err)
 	cancelledWithUserNote := s.applyAbortUserNoteToCancelledToolResult(executionID, &result, &err)
 	now := time.Now()
-	var failed bool
 	var finalResult *ToolResult
 
 	s.mu.Lock()
@@ -634,13 +656,15 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		st, msg := executionStatusAndMessage(err)
 		execution.Status = st
 		execution.Error = msg
-		failed = st != "cancelled"
+	} else if result != nil && result.Blocked {
+		execution.Status = ToolExecutionStatusBlocked
+		execution.Error = firstToolResultText(result, toolGuardBlockedPrefix)
+		execution.Result = result
 	} else if result != nil && result.IsError {
 		if cancelledWithUserNote {
 			execution.Status = "cancelled"
 			execution.Error = ""
 			execution.Result = result
-			failed = false
 		} else {
 			execution.Status = "failed"
 			if len(result.Content) > 0 {
@@ -649,7 +673,6 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 				execution.Error = "工具执行返回错误结果"
 			}
 			execution.Result = result
-			failed = true
 		}
 	} else {
 		execution.Status = "completed"
@@ -661,7 +684,6 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 			}
 		}
 		execution.Result = result
-		failed = false
 	}
 
 	finalResult = execution.Result
@@ -673,7 +695,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		}
 	}
 
-	s.updateStats(req.Name, failed)
+	s.updateStats(req.Name, execution.Status)
 
 	if s.storage != nil {
 		s.mu.Lock()
@@ -713,6 +735,8 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		errorResult, _ := json.Marshal(CallToolResponse{
 			Content: finalResult.Content,
 			IsError: true,
+			Blocked: finalResult.Blocked,
+			Meta:    toolResultProtocolMeta(finalResult),
 		})
 		return &Message{
 			ID:      msg.ID,
@@ -749,15 +773,15 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 }
 
 // updateStats 更新统计信息
-func (s *Server) updateStats(toolName string, failed bool) {
+func (s *Server) updateStats(toolName string, status string) {
 	now := time.Now()
 	if s.storage != nil {
 		totalCalls := 1
 		successCalls := 0
 		failedCalls := 0
-		if failed {
+		if executionStatusCountsAsFailed(status) {
 			failedCalls = 1
-		} else {
+		} else if status == ToolExecutionStatusCompleted {
 			successCalls = 1
 		}
 		if err := s.storage.UpdateToolStats(toolName, totalCalls, successCalls, failedCalls, &now); err != nil {
@@ -779,10 +803,12 @@ func (s *Server) updateStats(toolName string, failed bool) {
 	stats.TotalCalls++
 	stats.LastCallTime = &now
 
-	if failed {
+	if executionStatusCountsAsFailed(status) {
 		stats.FailedCalls++
-	} else {
+	} else if status == ToolExecutionStatusCompleted {
 		stats.SuccessCalls++
+	} else if status == ToolExecutionStatusBlocked {
+		stats.BlockedCalls++
 	}
 }
 
@@ -956,6 +982,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			if !exists {
 				return nil, fmt.Errorf("工具 %s 未找到", toolName)
 			}
+			if blocked := s.checkToolGuard(toolName, args); blocked != nil {
+				return blocked, nil
+			}
 			guardedCtx, frozenArgs := runCtx, args
 			if guard != nil {
 				var guardErr error
@@ -972,8 +1001,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			return result, runErr
 		},
 		OnDone: func(exec *ToolExecution) {
-			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled
-			s.updateStats(toolName, failed)
+			if exec != nil {
+				s.updateStats(toolName, exec.Status)
+			}
 		},
 	})
 	if err != nil {
@@ -1155,7 +1185,7 @@ func (s *Server) FinishToolExecution(ctx context.Context, executionID, toolName 
 		}
 	}
 
-	s.updateStats(exec.ToolName, failed)
+	s.updateStats(exec.ToolName, exec.Status)
 
 	if s.storage != nil {
 		s.mu.Lock()
@@ -1198,6 +1228,11 @@ func (s *Server) UpdateToolExecutionResult(executionID string, result *ToolResul
 	executionID = strings.TrimSpace(executionID)
 	if executionID == "" || result == nil {
 		return nil
+	}
+	if previous, ok := s.GetExecution(executionID); ok && previous != nil &&
+		(previous.Status == ToolExecutionStatusBlocked || previous.Result != nil && previous.Result.Blocked) {
+		result = cloneToolResult(result)
+		result.Blocked, result.IsError = true, true
 	}
 	s.mu.Lock()
 	spill := ToolResultSpillConfig{
@@ -1314,6 +1349,9 @@ func (s *Server) applyAbortUserNoteToCancelledToolResult(executionID string, res
 	}
 	hasErr := err != nil && *err != nil
 	hasRes := result != nil && *result != nil
+	if hasRes && (*result).Blocked {
+		return false
+	}
 	if !hasErr && !hasRes {
 		return false
 	}
