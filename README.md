@@ -35,7 +35,7 @@
 - **orphan tool 消息规范化**：修复工具返回后偶发网关 400（移植自 v1.6.52-src）。
 - **剔除治理层**：移除 execution_controller / skill_router / session_intent / coverage / finalization / depth_force / evidence_policy 等 ~20 个控制层，释放 agent 链式挖掘自主性。保留可复现 + 敏感接口两道硬门。
 - **浏览器交互式挖洞**：`browser-assisted-hunting` skill 提供双账号越权对比 / DOM XSS 渲染取证 / 验证码登录 / 前端隐藏功能绕过打法，`external_mcp` 一段配置接入 Playwright 官方 MCP（示例见 config.example.yaml），浏览器工具调用同样计入可复现证据链。
-- **弱模型报告净化**：双重转义的字面换行写库前统一还原（已含真实换行的字段跳过、Windows 路径与凭据字段保护），导出文件名分类前缀去重，复现步骤强制 Step 1 起步。
+- **弱模型报告净化**：双重转义的字面换行写库前统一还原（已含真实换行的字段跳过、Windows 路径与凭据字段保护），导出文件名=漏洞标题+短 ID，复现步骤强制有序列表连续编号。
 - **通用联网搜索**：`web_search` MCP 工具（Tavily 驱动），Agent 可检索实时资讯、历史 CVE 与漏洞情报；`websearch` 配置段或 `TAVILY_API_KEY` 环境变量接入。
 - **Eino 显式完成协议**：仅当根 Agent 的 `exit(final_result=...)` 真实执行后才允许最终化，过程说明不再被误判为最终回复；缺失完成信号时自动续跑兜底。
 - **红队工具箱扩展**：新增 msfconsole / frida / evil-winrm / aircrack-ng / wfuzz / searchsploit / theHarvester 等一批红队与信息收集向工具 YAML，覆盖内网 / 无线 / 移动 / OSINT 场景。
