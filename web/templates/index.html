@@ -211,7 +211,7 @@
                             <span data-i18n="nav.chat">对话</span>
                         </div>
                     </div>
-                    <div class="nav-item nav-item-has-submenu" data-page="security" data-require-permission-any="hitl:read config:read">
+                    <div class="nav-item nav-item-has-submenu" data-page="security" data-require-permission-any="approval:read config:read">
                         <div class="nav-item-content" data-title="安全防护" onclick="window.toggleSubmenu('security')" data-i18n="nav.security" data-i18n-attr="data-title" data-i18n-skip-text="true">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                 <rect x="4" y="10" width="16" height="11" rx="2"></rect>
@@ -221,7 +221,7 @@
                             <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m9 18 6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </div>
                         <div class="nav-submenu">
-                            <div class="nav-submenu-item" data-page="hitl" data-require-permission="hitl:read" onclick="switchPage('hitl')" data-i18n="nav.hitl">人机协同</div>
+                            <div class="nav-submenu-item" data-page="hitl" data-require-permission="approval:read" onclick="switchPage('hitl')" data-i18n="nav.hitl">人机协同</div>
                             <div class="nav-submenu-item" data-page="tool-guard" data-require-permission="config:read" onclick="switchPage('tool-guard')" data-i18n="nav.toolGuard">调用拦截</div>
                         </div>
                     </div>
