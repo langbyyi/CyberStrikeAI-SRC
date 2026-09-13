@@ -48,6 +48,9 @@ test('统一审批裁决入口只接受 approval decide 权限且不保留旧守
 test('人机协同页面只以统一审批读取权限作为入口权限', () => {
     assert.match(auth, /hitl:\s*'approval:read'/);
     assert.doesNotMatch(auth, /hitl:\s*\[[^\]]*hitl:read/);
+    // 导航显式权限优先于 PAGE_PERMISSION_MAP，模板不得残留 catalog 之外的 hitl:read。
+    assert.doesNotMatch(template, /hitl:read/);
+    assert.match(template, /data-require-permission="approval:read"/);
 });
 
 test('统一审批配置控件与说明全部使用中英文资源', () => {
