@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.18-src**
+> 当前分支：**v1.7.19-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -93,6 +93,24 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **跟随官方移除会话分组**：`group:*` 权限、分组 UI/后端（`handler/group.go` 等）、i18n 分组键全部清除，对话管理保留置顶/重命名/批量
 - **跳过 `feat: persist hitl default config`**（21c6ad9b）：其目标是官方旧 `handler/hitl.go` 体系；本分支的统一审批（`internal/approval/`）已以 `approval:` 配置段持久化 reviewer/timeout/触发器，语义被取代
 - 官方 v1.7.18 的 roles / tools 数量与 v1.7.17 一致（13 / 90），二开层 18 角色 / 116 工具 YAML 保持；skills 扩至 79 包（新增 15 方向包 + 扩写注入三件套，官方 demo 包继续不收录）
+
+### v1.7.19 同步说明（2026-09-18）
+
+官方 v1.7.18→v1.7.19 共 11 个提交：**9 个语义合并（含 2 个适配）+ 1 个 sudo 测试增强直接合入 + 2 个裁剪项官方动作已达成**。逐提交与本地二开层比对后按语义合并，非直接 merge。
+
+- **新增官方能力（整体采纳）**：
+  - `internal/processguard/` 进程隔离（Linux cgroup v2 / Windows Job Object）：`config.yaml` 新增 `security.process_isolation` 段，MCP 执行服务、外部管理器接入；配套 `.github/workflows/process-isolation.yml` CI
+  - 任务进程生命周期（`internal/handler/task_lifecycle.go` + runlease）：任务启动/结束登记进程范围，任务取消时清理遗留子进程（`task_process_cleanup_test.go`）
+  - Eino 跨中断轮次记忆（`internal/multiagent/eino_turn_history.go`）：TurnLoop GenInput 在纯提示词续跑时前置历史轮消息（官方修复 issue #121）；与本分支 `PushInterruptContinueWithTrace` 轨迹前置机制通过 `einoItemsCarryInterruptTrace` 守卫协调——轨迹已随 item 携带时跳过 history 前置，两套机制互不重复
+  - SSE 错误规范化（`internal/openai/eino_sse_error.go`）：流式响应错误事件统一转结构化错误
+  - 摘要模型守卫增强（`eino_summarize_model_guard.go`）
+  - supervisor 退出优先 final_result（`eino_exit_fallback_test.go` 跟进）
+- **适配合并**：
+  - 启动 banner 多地址（官方 #307）：本分支 bannerHosts 为其超集（含优选出口 IPv4 + IPv6 括号），保留二开实现，官方测试并入 `startup_test.go`；`PrintStartupWebUI` 拆出 `printStartupWebUI(out, opts)` 可测缝
+  - **批量任务审批策略（ac101d84）移植到统一审批**：官方基于已废弃的旧 `handler/hitl.go` 体系（HITLRequest / hitlManager / WithHITLToolInterceptor），本分支已替换为 `internal/approval/` 统一审批，直接合并产生 8 处编译错误。移植方案：新增 `approval.TaskPolicyOverride` 上下文覆盖（`internal/approval/context.go`）——`Disabled`（off 直通不落单）/ `RequireApproval`（human / audit_agent 强制审批）/ `Reviewer` 覆盖审批人，仅随请求 context 生效，**不修改 GlobalRuntime 全局快照**（守卫测试 `task_policy_override_test.go` 锁定该不变量）；`batch_queue_executor.go` 在任务级 context 注入 override 后挂接既有 `withApprovalToolInterceptor`。**review_edit 选项剔除**：统一审批架构中该概念已显式移除（前端守卫测试禁止该字符串），批量策略仅支持 inherit / off / human / audit_agent
+- **sudo 测试增强（4d53717c）直接合入**：`shell_execute_stream_test.go` 以 mock sudo 替代对主机 sudo 策略的依赖（精确匹配 `sudo: a password is required` + exit code 校验 + 后续命令不得执行），fork 侧保留 `//go:build !windows` 构建标签与 NOPASSWD skip 前置；`.gitignore` 补 `/vendor/`（569513f3）已并入
+- **裁剪策略已达成**：微信二维码更新（7f5c092e）与赞助内容移除（eca26f0e）——本分支更早已删除宣传 QR 图与 `README_CN.md`，官方动作与本分支现状一致，无需变更
+- **文档/前端**：批量 HITL 策略下拉移除 review_edit 选项（`index.html` / `tasks.js` / 中英 i18n）；`config.example.yaml` 版本号 → `v1.7.19-src`；README 基线更新；裁剪策略继续执行（官方宣传 QR 图、`docs/en-US/tool-execution-governance.md` 等不入库）
 
 **本分支的硬门**：可复现强制（#1）+ 敏感接口硬闸（`sensitive_http_gate`，防不可逆写操作）。
 

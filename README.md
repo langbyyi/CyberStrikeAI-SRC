@@ -42,7 +42,7 @@
 
 ## 版本同步
 
-当前基线 **v1.7.18-src**（已含官方 v1.7.18 及此前全部更新；SRC 方向增强完整保留）。
+当前基线 **v1.7.19-src**（已含官方 v1.7.19 及此前全部更新；SRC 方向增强完整保留）。
 
 每次跟进官方版本一个 `vX.Y.Z-src` 提交 + 标签，完整变更清单见 `git log --oneline`；官方各版本说明见[官方 Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases)。个别官方默认值会按 SRC 场景调整（如 HITL 白名单未纳入红队向的 `c2_event` / `c2_file` / `manage_webshell_list`），差异均在同步提交的 commit message 中注明。
 

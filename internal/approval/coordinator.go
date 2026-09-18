@@ -64,6 +64,23 @@ func (c *Coordinator) Authorize(ctx context.Context, invocation Invocation) (Gra
 	if err := validateInvocation(invocation); err != nil {
 		return Grant{}, err
 	}
+	// 任务作用域策略（如批量队列）叠加于全局快照之上：off 直接放行；
+	// human / audit_agent 强制进入审批并覆盖审批人。不修改全局快照。
+	taskOverride, hasTaskOverride := TaskPolicyOverrideFromContext(ctx)
+	if hasTaskOverride && taskOverride.Disabled {
+		arguments, err := cloneArguments(invocation.Arguments)
+		if err != nil {
+			return Grant{}, err
+		}
+		hash := InvocationHash(invocation, nil)
+		grant := newGrant(GrantSpec{
+			InvocationID: invocation.ID, InvocationHash: hash, ToolName: invocation.ToolName,
+			Arguments: arguments,
+		})
+		c.appendDecisionEvent(ctx, invocation, Assessment{RiskLevel: RiskNone, TriggerSources: []string{"task_policy"}},
+			hash, "", EnforcementAllow, "system", "coordinator", "task policy off")
+		return grant, nil
+	}
 	var assessment Assessment
 	var err error
 	if c.evaluator == nil {
@@ -72,6 +89,10 @@ func (c *Coordinator) Authorize(ctx context.Context, invocation Invocation) (Gra
 	assessment, err = c.evaluator.Evaluate(ctx, invocation)
 	if err != nil {
 		return Grant{}, fmt.Errorf("evaluate approval policies: %w", err)
+	}
+	if hasTaskOverride && taskOverride.RequireApproval && !assessment.RequiresApproval {
+		assessment.RequiresApproval = true
+		assessment.TriggerSources = append(assessment.TriggerSources, "task_policy")
 	}
 	hash := InvocationHash(invocation, assessment.PolicyIDs)
 	arguments, err := cloneArguments(invocation.Arguments)
@@ -93,6 +114,9 @@ func (c *Coordinator) Authorize(ctx context.Context, invocation Invocation) (Gra
 	now := c.now().UTC()
 	expiresAt := now.Add(c.currentTimeout())
 	reviewer := c.currentConfig().Reviewer
+	if hasTaskOverride && taskOverride.Reviewer != "" {
+		reviewer = taskOverride.Reviewer
+	}
 	status, stage := initialReviewState(reviewer)
 	request := &Request{
 		ID: "apr_" + uuid.NewString(), InvocationID: invocation.ID, InvocationHash: hash,

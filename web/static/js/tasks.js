@@ -187,7 +187,7 @@ function updateCompletedTasksHistory(currentTasks) {
         const exists = tasksState.completedTasksHistory.some(t => t.conversationId === task.conversationId);
         if (!exists) {
             // 如果任务状态不是最终状态，标记为completed
-            const finalStatus = ['completed', 'failed', 'timeout', 'cancelled'].includes(task.status) 
+            const finalStatus = ['completed', 'failed', 'timeout', 'cancelled', 'cleanup_unconfirmed'].includes(task.status)
                 ? task.status 
                 : 'completed';
             
@@ -309,7 +309,7 @@ function updateTaskStats(tasks) {
     tasks.forEach(task => {
         if (task.status === 'running') {
             stats.running++;
-        } else if (task.status === 'cancelling') {
+        } else if (['cancelling', 'cleaning', 'cleanup_failed'].includes(task.status)) {
             stats.cancelling++;
         } else if (task.status === 'completed') {
             stats.completed++;
@@ -364,7 +364,7 @@ function filterAndSortTasks() {
     if (statusFilter === 'active') {
         // 仅运行中的任务（不包括历史）
         filtered = tasksState.allTasks.filter(task => 
-            task.status === 'running' || task.status === 'cancelling'
+            ['running', 'cancelling', 'cleaning', 'cleanup_failed'].includes(task.status)
         );
     } else if (statusFilter === 'history') {
         // 仅历史记录
@@ -445,7 +445,7 @@ function updateTaskDurations() {
         const status = item.dataset.status;
         const durationEl = item.querySelector('.task-duration');
         
-        if (durationEl && startedAt && (status === 'running' || status === 'cancelling')) {
+        if (durationEl && startedAt && (['running', 'cancelling', 'cleaning', 'cleanup_failed'].includes(status))) {
             durationEl.textContent = calculateDuration(startedAt);
         }
     });
@@ -470,6 +470,9 @@ function renderTasks(tasks) {
     // 状态映射
     const statusMap = {
         'running': { text: _t('tasks.statusRunning'), class: 'task-status-running' },
+        'cleaning': { text: _t('tasks.statusCleaning'), class: 'task-status-cancelling' },
+        'cleanup_unconfirmed': { text: _t('tasks.statusCleanupUnconfirmed'), class: 'task-status-failed' },
+        'cleanup_failed': { text: _t('tasks.statusCleanupFailed'), class: 'task-status-failed' },
         'cancelling': { text: _t('tasks.statusCancelling'), class: 'task-status-cancelling' },
         'failed': { text: _t('tasks.statusFailed'), class: 'task-status-failed' },
         'timeout': { text: _t('tasks.statusTimeout'), class: 'task-status-timeout' },
@@ -530,10 +533,10 @@ function renderTaskItem(task, statusMap, isHistory = false) {
         : '';
 
     const status = statusMap[task.status] || { text: task.status, class: 'task-status-unknown' };
-    const isFinalStatus = ['failed', 'timeout', 'cancelled', 'completed'].includes(task.status);
-    const canCancel = !isFinalStatus && task.status !== 'cancelling' && !isHistory;
+    const isFinalStatus = ['failed', 'timeout', 'cancelled', 'completed', 'cleanup_unconfirmed'].includes(task.status);
+    const canCancel = !isFinalStatus && !['cancelling', 'cleaning'].includes(task.status) && !isHistory;
     const isSelected = tasksState.selectedTasks.has(task.conversationId);
-    const duration = (task.status === 'running' || task.status === 'cancelling') 
+    const duration = (['running', 'cancelling', 'cleaning', 'cleanup_failed'].includes(task.status))
         ? calculateDuration(task.startedAt) 
         : '';
 
@@ -561,6 +564,7 @@ function renderTaskItem(task, statusMap, isHistory = false) {
                     ${task.conversationId ? `<button class="btn-secondary btn-small" onclick="viewConversation(${escapeJsStringAttr(task.conversationId)})">` + _t('tasks.viewConversation') + `</button>` : ''}
                 </div>
             </div>
+            ${task.cleanupError ? `<div class="task-details">${escapeHtml(task.cleanupError)}</div>` : ''}
             ${task.conversationId ? `
                 <div class="task-details">
                     <span class="task-id-label">` + _t('tasks.conversationIdLabel') + `:</span>
@@ -894,6 +898,8 @@ async function showBatchImportModal() {
         if (titleInput) {
             titleInput.value = '';
         }
+        const hitlSelect = document.getElementById('batch-queue-hitl-policy');
+        if (hitlSelect) hitlSelect.value = '';
         // 重置角色选择为默认
         if (roleSelect) {
             roleSelect.value = '';
@@ -1059,6 +1065,7 @@ async function createBatchQueue() {
                 tasks,
                 role,
                 agentMode,
+                hitlPolicy: document.getElementById('batch-queue-hitl-policy')?.value || '',
                 scheduleMode,
                 cronExpr,
                 executeNow,
@@ -1318,6 +1325,7 @@ const BATCH_IMPORT_FORM_SELECT_IDS = [
     'batch-queue-role',
     'batch-queue-project-id',
     'batch-queue-agent-mode',
+    'batch-queue-hitl-policy',
     'batch-queue-schedule-mode',
 ];
 const batchFormSelectMap = {};
@@ -1331,6 +1339,21 @@ function closeAllBatchFormSelects() {
         reg.wrapper.classList.remove('open');
         if (reg.trigger) reg.trigger.setAttribute('aria-expanded', 'false');
     });
+}
+
+// Keep the menu inside the modal scrollport without changing the modal's overflow.
+function positionBatchFormDropdown(wrapper, trigger, dropdown) {
+    const body = wrapper.closest('.modal-body');
+    const bounds = body ? body.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+    const rect = trigger.getBoundingClientRect();
+    const above = Math.max(0, rect.top - Math.max(0, bounds.top) - 8);
+    const below = Math.max(0, Math.min(window.innerHeight, bounds.bottom) - rect.bottom - 8);
+    const desired = Math.min(280, dropdown.scrollHeight + 2);
+    const openAbove = below < desired && above > below;
+    dropdown.style.top = openAbove ? 'auto' : 'calc(100% + 4px)';
+    dropdown.style.bottom = openAbove ? 'calc(100% + 4px)' : 'auto';
+    dropdown.style.maxHeight = Math.min(280, openAbove ? above : below) + 'px';
+    dropdown.style.boxSizing = 'border-box';
 }
 
 function syncBatchFormSelect(selectId) {
@@ -1457,6 +1480,7 @@ function enhanceBatchFormSelect(selectId, options) {
         if (!open) {
             wrapper.classList.add('open');
             trigger.setAttribute('aria-expanded', 'true');
+            positionBatchFormDropdown(wrapper, trigger, dropdown);
         }
     });
 
@@ -1857,6 +1881,7 @@ async function showBatchQueueDetail(queueId) {
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchQueueDetailModal.queueTitle'))}</span><span class="bq-kv__v" id="bq-title-val">${allowSubtaskMutation ? `<span class="bq-inline-editable" onclick="startInlineEditTitle()" title="${escapeHtml(_t('common.edit'))}">${escapeHtml(queue.title || _t('tasks.batchQueueUntitled'))}</span>` : escapeHtml(queue.title || _t('tasks.batchQueueUntitled'))}</span></div>
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchQueueDetailModal.role'))}</span><span class="bq-kv__v" id="bq-role-val">${allowSubtaskMutation ? `<span class="bq-inline-editable" onclick="startInlineEditRole()" title="${escapeHtml(_t('common.edit'))}">${roleLineVal}</span>` : roleLineVal}</span></div>
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchImportModal.agentMode'))}</span><span class="bq-kv__v" id="bq-agentmode-val">${allowSubtaskMutation ? `<span class="bq-inline-editable" onclick="startInlineEditAgentMode()" title="${escapeHtml(_t('common.edit'))}">${escapeHtml(agentModeText)}</span>` : escapeHtml(agentModeText)}</span></div>
+                <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchImportModal.hitlPolicy'))}</span><span class="bq-kv__v" id="bq-hitl-val">${allowSubtaskMutation ? `<button type="button" class="btn-link" onclick="startInlineEditHITLPolicy()" title="${escapeAttr(_t('common.edit'))}">${escapeHtml(batchHITLPolicyLabel(queue.hitlPolicy))}</button>` : escapeHtml(batchHITLPolicyLabel(queue.hitlPolicy))}</span></div>
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchImportModal.scheduleMode'))}</span><span class="bq-kv__v" id="bq-schedule-val">${allowSubtaskMutation ? `<span class="bq-inline-editable" onclick="startInlineEditSchedule()" title="${escapeHtml(_t('common.edit'))}">${scheduleDetail}</span>` : scheduleDetail}</span></div>
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchQueueDetailModal.concurrency'))}</span><span class="bq-kv__v" id="bq-concurrency-val">${allowSubtaskMutation ? `<span class="bq-inline-editable" onclick="startInlineEditConcurrency()" title="${escapeHtml(_t('common.edit'))}">${escapeHtml(String(queue.concurrency && queue.concurrency > 0 ? queue.concurrency : 1))}</span>` : escapeHtml(String(queue.concurrency && queue.concurrency > 0 ? queue.concurrency : 1))}</span></div>
                 <div class="bq-kv"><span class="bq-kv__k">${escapeHtml(_t('batchQueueDetailModal.taskTotal'))}</span><span class="bq-kv__v">${queue.tasks.length}</span></div>
@@ -2920,3 +2945,54 @@ document.addEventListener('DOMContentLoaded', function () {
     initBatchQueuesFilterSelects();
     initBatchFormSelects();
 });
+
+
+const BATCH_HITL_POLICIES = {
+    '': 'hitlInherit', off: 'hitlOff', human: 'hitlHuman',
+    audit_agent: 'hitlAgent'
+};
+
+function batchHITLPolicyLabel(policy) {
+    return _t('batchImportModal.' + (BATCH_HITL_POLICIES[policy || ''] || 'hitlInherit'));
+}
+
+async function startInlineEditHITLPolicy() {
+    if (typeof requirePermission === 'function' && !requirePermission('tasks:write')) return;
+    const queueId = batchQueuesState.currentQueueId;
+    const container = document.getElementById('bq-hitl-val');
+    if (!queueId || !container) return;
+    try {
+        const response = await apiFetch(`/api/batch-tasks/${queueId}`);
+        if (!response.ok) throw new Error(_t('tasks.loadTaskListFailed'));
+        const { queue } = await response.json();
+        if (batchQueuesState.currentQueueId !== queueId || !batchQueueAllowsSubtaskMutation(queue)) return;
+        container.innerHTML = `<select id="bq-edit-hitl" aria-label="${escapeAttr(_t('batchImportModal.hitlPolicy'))}">${Object.keys(BATCH_HITL_POLICIES).map(policy => `<option value="${policy}" ${policy === (queue.hitlPolicy || '') ? 'selected' : ''}>${escapeHtml(batchHITLPolicyLabel(policy))}</option>`).join('')}</select>`;
+        const select = document.getElementById('bq-edit-hitl');
+        select.focus();
+        select.addEventListener('keydown', e => {
+            if (e.key === 'Escape') showBatchQueueDetail(queueId);
+        });
+        select.addEventListener('change', async () => {
+            select.disabled = true;
+            try {
+                const result = await apiFetch(`/api/batch-tasks/${queueId}/metadata`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: queue.title || '', role: queue.role || '',
+                        hitlPolicy: select.value
+                    })
+                });
+                if (!result.ok) {
+                    const error = await result.json().catch(() => ({}));
+                    throw new Error(error.error || _t('tasks.updateTaskFailed'));
+                }
+                if (batchQueuesState.currentQueueId === queueId) showBatchQueueDetail(queueId);
+                refreshBatchQueues();
+            } catch (error) {
+                select.disabled = false;
+                alert(error.message);
+            }
+        });
+    } catch (error) { alert(error.message); }
+}
+window.startInlineEditHITLPolicy = startInlineEditHITLPolicy;

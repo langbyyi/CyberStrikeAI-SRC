@@ -79,3 +79,33 @@ func ExecutionOwnershipTransferred(ctx context.Context) bool {
 	defer state.mu.RUnlock()
 	return state.transferred
 }
+
+type taskPolicyOverrideContextKey struct{}
+
+// TaskPolicyOverride 是任务作用域的临时审批策略（如批量任务队列），
+// 只随 context 传播、在 Authorize 时叠加于全局快照之上，不修改快照本身：
+// 全局运行时仍然唯一，项目/会话值永远不选择或改写它。
+type TaskPolicyOverride struct {
+	Disabled        bool   // off：本次任务跳过全部审批（直通，不落审批单）
+	RequireApproval bool   // human / audit_agent：无论全局触发开关状态，一律进入审批
+	Reviewer        string // 覆盖审批人：ReviewerHuman / ReviewerAgent
+}
+
+func (o TaskPolicyOverride) active() bool {
+	return o.Disabled || o.RequireApproval || o.Reviewer != ""
+}
+
+func WithTaskPolicyOverride(ctx context.Context, override TaskPolicyOverride) context.Context {
+	if !override.active() {
+		return ctx
+	}
+	return context.WithValue(ctx, taskPolicyOverrideContextKey{}, override)
+}
+
+func TaskPolicyOverrideFromContext(ctx context.Context) (TaskPolicyOverride, bool) {
+	if ctx == nil {
+		return TaskPolicyOverride{}, false
+	}
+	override, ok := ctx.Value(taskPolicyOverrideContextKey{}).(TaskPolicyOverride)
+	return override, ok && override.active()
+}
