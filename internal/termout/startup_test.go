@@ -1,9 +1,68 @@
 package termout
 
 import (
+	"bytes"
+	"net"
 	"strings"
 	"testing"
 )
+
+func TestPrintStartupWebUIReflectsConfiguredHost(t *testing.T) {
+	var buf bytes.Buffer
+	printStartupWebUI(&buf, StartupWebUIOptions{
+		Scheme: "http",
+		Host:   "192.168.1.5",
+		Port:   8080,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "http://192.168.1.5:8080/") {
+		t.Fatalf("banner should show configured host, got:\n%s", out)
+	}
+	if strings.Contains(out, "127.0.0.1") {
+		t.Fatalf("banner should not fall back to 127.0.0.1 for explicit host, got:\n%s", out)
+	}
+}
+
+func TestPrintStartupWebUIWildcardShowsAllBannerHosts(t *testing.T) {
+	var buf bytes.Buffer
+	printStartupWebUI(&buf, StartupWebUIOptions{
+		Scheme: "https",
+		Host:   "0.0.0.0",
+		Port:   8443,
+	})
+	out := buf.String()
+	for _, h := range bannerHosts("0.0.0.0") {
+		if !strings.Contains(out, "https://"+hostForURL(h)+":8443/") {
+			t.Fatalf("wildcard banner should include URL for %s, got:\n%s", h, out)
+		}
+	}
+}
+
+func TestPrintStartupWebUIIPv6HostBracketed(t *testing.T) {
+	var buf bytes.Buffer
+	printStartupWebUI(&buf, StartupWebUIOptions{
+		Scheme: "http",
+		Host:   "::1",
+		Port:   8080,
+	})
+	if !strings.Contains(buf.String(), "http://[::1]:8080/") {
+		t.Fatalf("IPv6 host should be bracketed in URL, got:\n%s", buf.String())
+	}
+}
+
+func TestPrintStartupWebUIRedirectUsesConfiguredHost(t *testing.T) {
+	var buf bytes.Buffer
+	printStartupWebUI(&buf, StartupWebUIOptions{
+		Scheme:       "https",
+		Host:         "10.1.2.3",
+		Port:         8080,
+		HTTPRedirect: true,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "http://10.1.2.3:8080/") || !strings.Contains(out, "https://10.1.2.3:8080/") {
+		t.Fatalf("redirect line should use configured host, got:\n%s", out)
+	}
+}
 
 func TestDisplayWidthEmoji(t *testing.T) {
 	if got := displayWidth("🚀"); got != 2 {
@@ -94,7 +153,15 @@ func TestBannerHosts(t *testing.T) {
 		if got[len(got)-1] != "127.0.0.1" {
 			t.Errorf("全接口监听(%q)应包含 127.0.0.1 兜底: %v", wildcard, got)
 		}
+		seen := map[string]bool{}
 		for _, h := range got {
+			if seen[h] {
+				t.Errorf("全接口监听(%q)地址列表重复: %q in %v", wildcard, h, got)
+			}
+			seen[h] = true
+			if net.ParseIP(h) == nil {
+				t.Errorf("banner 地址应为合法 IP: %q in %v", h, got)
+			}
 			if h != "127.0.0.1" && strings.Contains(h, ":") {
 				t.Errorf("banner 不应包含 IPv6/异常地址: %q in %v", h, got)
 			}

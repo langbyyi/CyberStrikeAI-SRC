@@ -225,13 +225,19 @@ func (h *AgentHandler) CancelRunningTaskForConversation(conversationID string) {
 	if h == nil || conversationID == "" || h.tasks == nil {
 		return
 	}
-	h.cancelRunningMCPToolsForConversation(conversationID)
-	h.tasks.AbortActiveEinoExecute(conversationID, "")
-	if ok, err := h.tasks.CancelTask(conversationID, ErrTaskCancelled); ok {
-		h.logger.Info("已取消会话运行中任务", zap.String("conversationId", conversationID))
-	} else if err != nil {
-		h.logger.Warn("取消会话运行中任务失败", zap.String("conversationId", conversationID), zap.Error(err))
+	ok, err := h.tasks.CancelTask(conversationID, ErrTaskCancelled)
+	if !ok {
+		h.cancelRunningMCPToolsForConversation(conversationID)
+		h.tasks.AbortActiveEinoExecute(conversationID, "")
 	}
+	if h.logger != nil {
+		if err != nil {
+			h.logger.Warn("取消会话运行中任务失败", zap.String("conversationId", conversationID), zap.Error(err))
+		} else if ok {
+			h.logger.Info("已取消会话运行中任务", zap.String("conversationId", conversationID))
+		}
+	}
+
 }
 
 // ConversationTaskRuntimeState exposes the authoritative live state and start
@@ -851,15 +857,24 @@ func (h *AgentHandler) ProcessMessageForRobot(ctx context.Context, platform stri
 	taskCtx, cancelWithCause := context.WithCancelCause(ctx)
 	defer cancelWithCause(nil)
 	taskStatus := "completed"
+	var taskRunID string
 	defer func() {
-		h.tasks.FinishTask(conversationID, taskStatus)
+		if taskRunID == "" {
+			return
+		}
+		if cleanupErr := h.tasks.FinishTaskRun(conversationID, taskRunID, taskStatus); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 	}()
-	if _, err := h.tasks.StartTask(conversationID, message, cancelWithCause); err != nil {
+	if startedTask, err := h.tasks.StartTask(conversationID, message, cancelWithCause); err != nil {
 		if errors.Is(err, ErrTaskAlreadyRunning) {
 			return "", conversationID, fmt.Errorf("当前会话已有任务正在执行中，请稍后再试")
 		}
 		return "", conversationID, fmt.Errorf("无法启动任务: %w", err)
+	} else {
+		taskRunID = startedTask.RunID
 	}
+	taskCtx = h.tasks.BindProcessScope(taskCtx, conversationID, taskRunID)
 	progressCallback := h.createProgressCallback(taskCtx, cancelWithCause, conversationID, assistantMessageID, nil)
 
 	robotMode := config.NormalizeAgentMode(agentMode)
@@ -1779,6 +1794,7 @@ func filterSlice[T any](items []T, keep func(T) bool) []T {
 
 // BatchTaskRequest 批量任务请求
 type BatchTaskRequest struct {
+	HITLPolicy   string   `json:"hitlPolicy"`
 	Title        string   `json:"title"`                    // 任务标题（可选）
 	Tasks        []string `json:"tasks" binding:"required"` // 任务列表，每行一个任务
 	Role         string   `json:"role,omitempty"`           // 角色名称（可选，空字符串表示默认角色）
@@ -1853,7 +1869,7 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 		nextRunAt = &next
 	}
 
-	queue, createErr := h.batchTaskManager.CreateBatchQueue(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks)
+	queue, createErr := h.batchTaskManager.CreateBatchQueue(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks, req.HITLPolicy)
 	if createErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": createErr.Error()})
 		return
@@ -2048,16 +2064,21 @@ func (h *AgentHandler) PauseBatchQueue(c *gin.Context) {
 func (h *AgentHandler) UpdateBatchQueueMetadata(c *gin.Context) {
 	queueID := c.Param("queueId")
 	var req struct {
-		Title       string `json:"title"`
-		Role        string `json:"role"`
-		AgentMode   string `json:"agentMode"`
-		Concurrency *int   `json:"concurrency"`
+		HITLPolicy  *string `json:"hitlPolicy"`
+		Title       string  `json:"title"`
+		Role        string  `json:"role"`
+		AgentMode   string  `json:"agentMode"`
+		Concurrency *int    `json:"concurrency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.batchTaskManager.UpdateQueueMetadata(queueID, req.Title, req.Role, req.AgentMode, req.Concurrency); err != nil {
+	var policies []string
+	if req.HITLPolicy != nil {
+		policies = append(policies, *req.HITLPolicy)
+	}
+	if err := h.batchTaskManager.UpdateQueueMetadata(queueID, req.Title, req.Role, req.AgentMode, req.Concurrency, policies...); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

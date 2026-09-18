@@ -2,6 +2,7 @@ package termout
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -27,7 +28,11 @@ func PrintConfigCreated() {
 
 // PrintStartupWebUI prints a colored startup banner for the Web UI.
 func PrintStartupWebUI(opts StartupWebUIOptions) {
-	s := New(os.Stdout)
+	printStartupWebUI(os.Stdout, opts)
+}
+
+func printStartupWebUI(out io.Writer, opts StartupWebUIOptions) {
+	s := New(out)
 	scheme := opts.Scheme
 	if scheme == "" {
 		scheme = "http"

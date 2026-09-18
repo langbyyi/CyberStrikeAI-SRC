@@ -49,6 +49,7 @@ func NewEinoTurnLoopRuntime(cfg EinoTurnLoopRuntimeConfig) *EinoTurnLoopRuntime 
 	}
 	enableStreaming := cfg.EnableStreaming
 	prepareAgent := cfg.PrepareAgent
+	history := &einoTurnHistory{}
 	if prepareAgent == nil {
 		prepareAgent = func(context.Context, *adk.TurnLoop[EinoTurnLoopItem, *schema.Message], []EinoTurnLoopItem) (adk.Agent, error) {
 			return cfg.Agent, nil
@@ -59,8 +60,16 @@ func NewEinoTurnLoopRuntime(cfg EinoTurnLoopRuntimeConfig) *EinoTurnLoopRuntime 
 		CheckpointID: cfg.CheckpointID,
 		GenInput: func(ctx context.Context, _ *adk.TurnLoop[EinoTurnLoopItem, *schema.Message], items []EinoTurnLoopItem) (*adk.GenInputResult[EinoTurnLoopItem, *schema.Message], error) {
 			msgs := mergeEinoTurnLoopMessages(items)
+			// 二开的中断续跑（interrupt_continue）已把被中断轮的 model-facing
+			// 轨迹前置进 item 消息，此时 history 再前置会造成同一进度重复输入；
+			// 仅纯提示词续跑等无轨迹场景用 history 找回跨轮记忆。
+			if !einoItemsCarryInterruptTrace(items) {
+				msgs = append(history.nextInput(), msgs...)
+			}
+			history = &einoTurnHistory{}
+			history.begin(msgs)
 			return &adk.GenInputResult[EinoTurnLoopItem, *schema.Message]{
-				RunCtx: ctx,
+				RunCtx: context.WithValue(ctx, einoTurnHistoryKey{}, history),
 				Input: &adk.AgentInput{
 					Messages:        msgs,
 					EnableStreaming: enableStreaming,
@@ -74,13 +83,15 @@ func NewEinoTurnLoopRuntime(cfg EinoTurnLoopRuntimeConfig) *EinoTurnLoopRuntime 
 			consumed = append(consumed, newItems...)
 			remaining := append([]EinoTurnLoopItem(nil), unhandledItems...)
 			return &adk.GenResumeResult[EinoTurnLoopItem, *schema.Message]{
-				RunCtx:    ctx,
+				RunCtx:    context.WithValue(ctx, einoTurnHistoryKey{}, history),
 				Consumed:  consumed,
 				Remaining: remaining,
 			}, nil
 		},
-		PrepareAgent:  prepareAgent,
-		OnAgentEvents: cfg.OnAgentEvents,
+		PrepareAgent: prepareAgent,
+		OnAgentEvents: func(ctx context.Context, tc *adk.TurnContext[EinoTurnLoopItem, *schema.Message], events *adk.AsyncIterator[*adk.AgentEvent]) error {
+			return history.wrapEvents(cfg.OnAgentEvents)(ctx, tc, events)
+		},
 	})
 	if len(cfg.InitialMessages) > 0 {
 		loop.Push(EinoTurnLoopItem{Kind: "initial", Messages: cloneSchemaMessages(cfg.InitialMessages)})
@@ -150,6 +161,17 @@ func mergeEinoTurnLoopMessages(items []EinoTurnLoopItem) []*schema.Message {
 		msgs = append(msgs, cloneSchemaMessages(item.Messages)...)
 	}
 	return msgs
+}
+
+// einoItemsCarryInterruptTrace 报告 items 中是否有已携带被中断轮轨迹前缀的
+// interrupt_continue 消息（轨迹前置 + 提示词 > 1 条）；纯提示词续跑为 1 条。
+func einoItemsCarryInterruptTrace(items []EinoTurnLoopItem) bool {
+	for _, item := range items {
+		if item.Kind == "interrupt_continue" && len(item.Messages) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // interruptContinueRecoverHint 中断续跑的上下文找回引导。

@@ -11,6 +11,7 @@ import (
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/agentfinalizer"
+	"cyberstrike-ai/internal/approval"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
@@ -172,19 +173,14 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 	taskCtx, timeoutCancel := context.WithTimeout(baseCtx, 6*time.Hour)
 
 	registered := false
+	var taskRunID string
 	finishStatus := "completed"
 
 	defer func() {
 		h.batchTaskManager.SetTaskCancel(queueID, task.ID, nil)
 		timeoutCancel()
 		if registered {
-			if h.taskEventBus != nil {
-				ev := StreamEvent{Type: "done", Message: "", Data: map[string]interface{}{"conversationId": conversationID}}
-				if b, err := json.Marshal(ev); err == nil {
-					h.taskEventBus.Publish(conversationID, append(append([]byte("data: "), b...), '\n', '\n'))
-				}
-			}
-			h.tasks.FinishTask(conversationID, finishStatus)
+			h.tasks.FinishTaskRun(conversationID, taskRunID, finishStatus)
 		}
 		cancelWithCause(nil)
 	}()
@@ -205,7 +201,7 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 		h.taskEventBus.Publish(conversationID, line)
 	}
 
-	if _, err := h.tasks.StartTask(conversationID, task.Message, cancelWithCause); err != nil {
+	if startedTask, err := h.tasks.StartTask(conversationID, task.Message, cancelWithCause); err != nil {
 		h.logger.Warn("批量队列子任务注册会话运行状态失败",
 			zap.String("queueId", queueID),
 			zap.String("taskId", task.ID),
@@ -217,9 +213,25 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 		}
 		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", failMsg)
 		return
+	} else {
+		taskRunID = startedTask.RunID
 	}
+	baseCtx = h.tasks.BindProcessScope(baseCtx, conversationID, taskRunID)
+	taskCtx = h.tasks.BindProcessScope(taskCtx, conversationID, taskRunID)
 	registered = true
 	h.batchTaskManager.SetTaskCancel(queueID, task.ID, timeoutCancel)
+
+	if err := validateBatchHITLPolicy(queue.HITLPolicy); err != nil {
+		finishStatus = "failed"
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", err.Error())
+		return
+	}
+	// 队列审批策略以任务作用域覆盖叠加于统一审批之上（不修改全局快照），
+	// 空策略沿用全局配置；拦截器与 HTTP 会话路径共用同一套统一审批中间件。
+	if override, ok := batchTaskPolicyOverride(queue.HITLPolicy); ok {
+		taskCtx = approval.WithTaskPolicyOverride(taskCtx, override)
+	}
+	taskCtx = h.withApprovalToolInterceptor(taskCtx, conversationID, assistantMessageID)
 
 	progressCallback := h.createProgressCallback(taskCtx, cancelWithCause, conversationID, assistantMessageID, sendEvent)
 	taskCtx = mcp.WithMCPConversationID(taskCtx, conversationID)
@@ -332,6 +344,10 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 		}
 	}
 
+	if cleanupErr := h.tasks.FinishTaskRun(conversationID, taskRunID, finishStatus); cleanupErr != nil {
+		h.batchTaskManager.UpdateTaskStatusWithConversationID(queueID, task.ID, BatchTaskStatusFailed, resText, cleanupErr.Error(), conversationID)
+		return
+	}
 	if !decision.Finalizable {
 		h.batchTaskManager.UpdateTaskStatusWithConversationID(queueID, task.ID, BatchTaskStatusFailed, resText, finalizationCheckMessage(decision), conversationID)
 		return
