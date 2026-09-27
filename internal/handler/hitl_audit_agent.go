@@ -9,16 +9,24 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/hitl"
 	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/typesafe"
 
 	"go.uber.org/zap"
 )
+
+// hitlAuditMode 本分支只有统一审批一种模式（官方审查编辑模式不在收录范围）。
+const hitlAuditMode = "approval"
 
 // auditAgentReview 在 reviewer=audit_agent 时由 LLM 代行审批。
 // 白名单工具在 shouldInterrupt 阶段已跳过，到达此处的一律需要裁决。
 func (h *AgentHandler) auditAgentReview(ctx context.Context, toolName string, payload map[string]interface{}) hitlDecision {
 	if h == nil {
 		return hitlDecision{Decision: "reject", Comment: "audit agent: handler unavailable"}
+	}
+	if h.config != nil && h.config.Hitl.EffectiveAuditBackend() == config.HitlAuditBackendTypeSafe {
+		return h.auditAgentReviewTypeSafe(ctx, toolName, payload)
 	}
 	prompt := config.DefaultHitlAuditAgentPrompt()
 	if h.config != nil {
@@ -104,6 +112,58 @@ func (h *AgentHandler) auditLLMConfig() config.OpenAIConfig {
 		return h.config.Hitl.AuditModelEffective(h.config.OpenAI)
 	}
 	return config.OpenAIConfig{}
+}
+
+// hitlAuditEngineInfo 返回当前生效的审批引擎与模型名，供前端展示与决定记录标注。
+func (h *AgentHandler) hitlAuditEngineInfo() (backend, model string) {
+	backend = config.HitlAuditBackendOpenAI
+	if h == nil || h.config == nil {
+		return backend, ""
+	}
+	backend = h.config.Hitl.EffectiveAuditBackend()
+	if backend == config.HitlAuditBackendTypeSafe {
+		_, _, model = h.config.Hitl.TypeSafeConfigEffective()
+		return backend, model
+	}
+	return backend, strings.TrimSpace(h.config.Hitl.AuditModelEffective(h.config.OpenAI).Model)
+}
+
+// AuditEngineInfo 暴露当前审批引擎（后端 + 模型名），
+// 供审批策略页在 approval:read 授权下展示，无需放开 config:read。
+func (h *AgentHandler) AuditEngineInfo() (backend, model string) {
+	return h.hitlAuditEngineInfo()
+}
+
+// auditAgentReviewTypeSafe 走 TypeSafe Jev（System One）结构化裁决：
+// 一次请求回答内置破坏性问题 + 组织策略，放通/拦截由 DecideJev 在代码侧裁定。
+func (h *AgentHandler) auditAgentReviewTypeSafe(ctx context.Context, toolName string, payload map[string]interface{}) hitlDecision {
+	if h == nil || h.config == nil {
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 未配置"}
+	}
+	baseURL, apiKey, model := h.config.Hitl.TypeSafeConfigEffective()
+	if apiKey == "" {
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe API Key 未配置"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	client := typesafe.NewClient(baseURL, apiKey, model, nil)
+	policy := h.config.Hitl.JevOperatorPolicy()
+	result, err := client.SystemOne(callCtx, hitl.BuildJevState(hitlAuditMode, toolName, payload, policy), hitl.JevAuditQuestions(policy))
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("审计 Agent TypeSafe 调用失败", zap.Error(err), zap.String("tool", toolName))
+		}
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 调用失败，保守拒绝"}
+	}
+	decision, comment := hitl.DecideJev(result)
+	if comment == "" {
+		comment = "audit agent: " + decision
+	}
+	return hitlDecision{Decision: decision, Comment: comment}
 }
 
 func buildAuditAgentReviewInput(toolName string, payload map[string]interface{}) string {

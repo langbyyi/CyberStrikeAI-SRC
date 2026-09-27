@@ -122,3 +122,39 @@ test('toRuleView normalizes a rule object returned directly by the API', () => {
     assert.equal(empty.enabled, true);
     assert.equal(empty.matcherJson, '');
 });
+
+test('审批引擎优先取决定记录 metadata，缺失时回退到备注特征', () => {
+    const fromMetadata = ApprovalUIModel.auditEngineFromDecision({
+        actorType: 'agent', comment: 'audit agent: 通过',
+        metadata: { auditBackend: 'typesafe', auditModel: 'jev-latest' }
+    });
+    assert.deepEqual(fromMetadata, { backend: 'typesafe', model: 'jev-latest' });
+
+    const fromComment = ApprovalUIModel.auditEngineFromDecision({
+        actorType: 'agent',
+        comment: 'audit agent: 未命中破坏性规则，默认放行；最高破坏分=破坏业务可用性 0.12；choice=approve(0.90)'
+    });
+    assert.equal(fromComment.backend, 'typesafe');
+    assert.equal(fromComment.model, 'jev-latest');
+
+    const openAIFromComment = ApprovalUIModel.auditEngineFromDecision({
+        actorType: 'agent', comment: 'audit agent: 实际操作：读取 /etc/passwd；命中规则：A3'
+    });
+    assert.deepEqual(openAIFromComment, { backend: 'openai', model: '' });
+
+    const agentNoComment = ApprovalUIModel.auditEngineFromDecision({ actorType: 'agent' });
+    assert.equal(agentNoComment.backend, 'openai');
+});
+
+test('人工与系统决定不标注审批引擎，且未知后端归一为空', () => {
+    assert.deepEqual(ApprovalUIModel.auditEngineFromDecision({ actorType: 'human', comment: '人工通过' }),
+        { backend: '', model: '' });
+    assert.deepEqual(ApprovalUIModel.auditEngineFromDecision({ actorType: 'system', comment: '' }),
+        { backend: '', model: '' });
+    assert.equal(ApprovalUIModel.auditEngineFromDecision(null).backend, '');
+
+    assert.equal(ApprovalUIModel.normalizeAuditBackend('Jev'), 'typesafe');
+    assert.equal(ApprovalUIModel.normalizeAuditBackend('openai_compatible'), 'openai');
+    assert.equal(ApprovalUIModel.normalizeAuditBackend('  '), '');
+    assert.equal(ApprovalUIModel.normalizeAuditBackend('claude'), '');
+});

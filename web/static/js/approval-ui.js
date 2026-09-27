@@ -179,6 +179,19 @@ function applyApprovalPolicies(effective) {
     updateReviewerHint(reviewer && reviewer.value === 'agent' ? 'agent' : 'human');
 }
 
+// 审批策略接口顺带返回当前审批引擎：人机协同页只需 approval:read 即可展示，
+// 不依赖 /api/config（config:read）。
+function applyAuditEngineFromApprovalConfig(data) {
+    const source = data && typeof data === 'object' ? data : {};
+    const backend = ApprovalUIModel.normalizeAuditBackend(source.auditBackend || source.audit_backend);
+    if (!backend) return;
+    if (typeof window !== 'undefined') {
+        window.csaiHitlAuditBackend = backend;
+        window.csaiHitlAuditModel = String(source.auditModel || source.audit_model || '').trim();
+    }
+    renderHitlPageAuditEngine();
+}
+
 function updateReviewerHint(mode) {
     const human = document.getElementById('approval-reviewer-hint-human');
     const agent = document.getElementById('approval-reviewer-hint-agent');
@@ -210,6 +223,7 @@ async function loadApprovalPolicies() {
         const data = await response.json();
         if (sequence !== approvalPolicyLoadSequence) return false;
         applyApprovalPolicies(data);
+        applyAuditEngineFromApprovalConfig(data);
         refreshDangerRuleCount();
         setApprovalPolicySaveEnabled(true);
         return true;
@@ -683,6 +697,54 @@ function approvalActorLabel(actorType) {
     return keys[value] ? hitlT(keys[value], value) : (value || hitlT('notAvailable', 'Not available'));
 }
 
+// 审批引擎展示名：OpenAI 协议模型 / TypeSafe Jev，附带模型名。
+function hitlAuditEngineLabel(backend, model) {
+    const b = ApprovalUIModel.normalizeAuditBackend(backend);
+    if (!b) return '';
+    const name = b === 'typesafe'
+        ? hitlT('auditEngineJev', 'TypeSafe Jev')
+        : hitlT('auditEngineOpenAI', 'OpenAI protocol');
+    const m = String(model || '').trim();
+    return m ? (name + ' · ' + m) : name;
+}
+
+// 当前生效的审批引擎来自 /api/config（chat.js / settings.js）或 /api/approval-config；
+// 未知时返回空后端，由调用方隐藏该行，避免默认值把 typesafe 环境误标成 OpenAI。
+function hitlCurrentAuditEngine() {
+    const backend = ApprovalUIModel.normalizeAuditBackend(
+        typeof window !== 'undefined' ? window.csaiHitlAuditBackend : '');
+    let model = String((typeof window !== 'undefined' && window.csaiHitlAuditModel) || '').trim();
+    if (backend === 'typesafe' && !model) model = 'jev-latest';
+    return { backend: backend, model: model };
+}
+
+function ensureHitlPageAuditEngineEl() {
+    let el = document.getElementById('hitl-page-audit-engine');
+    if (el) return el;
+    const tabs = document.querySelector('#page-hitl .hitl-page-tabs');
+    if (!tabs || !tabs.parentNode) return null;
+    el = document.createElement('p');
+    el.className = 'hitl-page-audit-engine';
+    el.id = 'hitl-page-audit-engine';
+    el.hidden = true;
+    tabs.parentNode.insertBefore(el, tabs);
+    return el;
+}
+
+function renderHitlPageAuditEngine() {
+    const el = ensureHitlPageAuditEngineEl();
+    if (!el) return;
+    const info = hitlCurrentAuditEngine();
+    const engine = hitlAuditEngineLabel(info.backend, info.model);
+    if (!engine) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+    el.hidden = false;
+    el.textContent = hitlT('auditEngineLabel', 'Approval engine') + ': ' + engine;
+}
+
 function approvalDecisionTag(decision) {
     const value = String(decision || '').trim().toLowerCase();
     const className = value === 'approve' ? ' hitl-decision--approve' : (value === 'reject' ? ' hitl-decision--reject' : '');
@@ -710,7 +772,12 @@ function renderHitlLogsTable(items) {
             '<td class="hitl-logs-cell-mono">' + escapeHtml(String(request.conversationId || '-')) + '</td>' +
             '<td>' + approvalDecisionTag(view.reviewDecision) + '</td>' +
             '<td><span class="approval-execution-status approval-execution-status--' + escapeHtml(view.executionStatus) + '">' + escapeHtml(approvalStatusLabel(view.executionStatus)) + '</span></td>' +
-            '<td>' + escapeHtml(lastDecision ? approvalActorLabel(lastDecision.actorType) : hitlT('notAvailable', 'Not available')) + '</td>' +
+            '<td>' + escapeHtml(lastDecision ? approvalActorLabel(lastDecision.actorType) : hitlT('notAvailable', 'Not available')) + (function () {
+                if (!lastDecision) return '';
+                const engine = ApprovalUIModel.auditEngineFromDecision(lastDecision);
+                const label = hitlAuditEngineLabel(engine.backend, engine.model);
+                return label ? '<div class="hitl-log-engine">' + escapeHtml(label) + '</div>' : '';
+            }()) + '</td>' +
             '<td class="hitl-logs-summary" title="' + escapeHtml(summary).replace(/"/g, '&quot;') + '">' + escapeHtml(summary) + '</td>' +
             '<td>' + escapeHtml(approvalFormatTime(lastDecision ? lastDecision.createdAt : request.updatedAt || request.createdAt)) + '</td>' +
             '<td class="hitl-logs-actions"><button type="button" class="btn-link" onclick="openHitlLogModal(' + quotedId + ')">' + escapeHtml(hitlT('viewDetail', 'Detail')) + '</button></td></tr>';
@@ -825,6 +892,14 @@ async function openHitlLogModal(idOption) {
         const decisionElement = document.getElementById('hitl-log-detail-decision');
         if (decisionElement) decisionElement.innerHTML = approvalDecisionTag(view.reviewDecision);
         setApprovalDetailText('hitl-log-detail-decided-by', lastDecision ? approvalActorLabel(lastDecision.actorType) + (lastDecision.actorId ? ' · ' + lastDecision.actorId : '') : hitlT('notAvailable', 'Not available'));
+        const engineRow = document.getElementById('hitl-log-detail-engine-row');
+        const engineElement = document.getElementById('hitl-log-detail-engine');
+        if (engineRow && engineElement) {
+            const engine = lastDecision ? ApprovalUIModel.auditEngineFromDecision(lastDecision) : { backend: '', model: '' };
+            const engineLabel = hitlAuditEngineLabel(engine.backend, engine.model);
+            engineElement.textContent = engineLabel || '—';
+            engineRow.hidden = !engineLabel;
+        }
         setApprovalDetailText('hitl-log-detail-time', approvalFormatTime(lastDecision ? lastDecision.createdAt : request.updatedAt || request.createdAt));
         setApprovalDetailText('hitl-log-detail-risk', approvalRiskLabel(request.riskLevel));
         setApprovalDetailText('hitl-log-detail-triggers', (Array.isArray(request.triggerSources) ? request.triggerSources : []).map(approvalTriggerLabel).join(', '));
@@ -1073,7 +1148,20 @@ function switchHitlPageTab(tab) {
     refreshHitlActivePanel();
 }
 
+// 引擎信息是展示增强：懒加载一次，失败不显示该行并在下次刷新时重试。
+let approvalAuditEngineLoaded = false;
+async function loadAuditEngineInfo() {
+    if (approvalAuditEngineLoaded) return;
+    try {
+        const response = await hitlApiFetch('/api/approval-config', { credentials: 'same-origin' });
+        if (!response.ok) return;
+        applyAuditEngineFromApprovalConfig(await response.json());
+        approvalAuditEngineLoaded = true;
+    } catch (e) { /* 展示增强，失败不阻塞页面 */ }
+}
+
 function refreshHitlActivePanel() {
+    loadAuditEngineInfo();
     if (hitlActiveTab === 'logs') refreshHitlLogs();
     else if (hitlActiveTab === 'policy') loadApprovalPolicies();
     else if (hitlActiveTab === 'rules') loadApprovalRules();
@@ -1091,12 +1179,14 @@ function refreshApprovalUII18n() {
     syncAllApprovalLogFilterSelects();
     renderHitlLogsPagination();
     renderHitlPendingPagination();
+    renderHitlPageAuditEngine();
 }
 
 window.refreshHitlPending = refreshHitlPending;
 window.fetchAllPendingApprovals = fetchAllPendingApprovals;
 window.refreshHitlLogs = refreshHitlLogs;
 window.refreshHitlActivePanel = refreshHitlActivePanel;
+window.renderHitlPageAuditEngine = renderHitlPageAuditEngine;
 window.switchHitlPageTab = switchHitlPageTab;
 window.hitlLogsGoPage = hitlLogsGoPage;
 window.hitlPendingGoPage = hitlPendingGoPage;

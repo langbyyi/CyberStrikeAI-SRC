@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"cyberstrike-ai/internal/config"
 )
 
 func TestParseAuditAgentLLMContentApprove(t *testing.T) {
@@ -74,5 +77,44 @@ func TestBuildAuditAgentReviewInput(t *testing.T) {
 	}
 	if !strings.Contains(s, "nmap") || !strings.Contains(s, "10.0.0.1") || !strings.Contains(s, "扫描内网") {
 		t.Fatalf("unexpected input: %s", s)
+	}
+}
+
+func TestAuditAgentReviewTypeSafeMissingAPIKey(t *testing.T) {
+	h := &AgentHandler{config: &config.Config{Hitl: config.HitlConfig{AuditBackend: "typesafe"}}}
+	d := h.auditAgentReview(context.Background(), "exec", nil)
+	if d.Decision != "reject" {
+		t.Fatalf("decision=%s", d.Decision)
+	}
+	if !strings.Contains(d.Comment, "TypeSafe API Key") {
+		t.Fatalf("comment=%s", d.Comment)
+	}
+}
+
+func TestHitlAuditEngineInfoTypeSafe(t *testing.T) {
+	h := &AgentHandler{config: &config.Config{
+		OpenAI: config.OpenAIConfig{Model: "gpt-4o"},
+		Hitl:   config.HitlConfig{AuditBackend: "typesafe"},
+	}}
+	backend, model := h.hitlAuditEngineInfo()
+	if backend != config.HitlAuditBackendTypeSafe {
+		t.Fatalf("backend=%q", backend)
+	}
+	if model != config.TypeSafeDefaultModel {
+		t.Fatalf("model=%q, want %s", model, config.TypeSafeDefaultModel)
+	}
+}
+
+func TestHitlAuditEngineInfoOpenAIInheritsMainModel(t *testing.T) {
+	h := &AgentHandler{config: &config.Config{
+		OpenAI: config.OpenAIConfig{Model: "gpt-4o-mini"},
+		Hitl:   config.HitlConfig{AuditBackend: "openai"},
+	}}
+	backend, model := h.hitlAuditEngineInfo()
+	if backend != config.HitlAuditBackendOpenAI {
+		t.Fatalf("backend=%q", backend)
+	}
+	if model != "gpt-4o-mini" {
+		t.Fatalf("model=%q", model)
 	}
 }

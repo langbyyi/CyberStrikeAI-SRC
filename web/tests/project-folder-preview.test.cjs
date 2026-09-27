@@ -129,6 +129,14 @@ test('对话悬浮预览显示本地年月日时分', () => {
     assert.match(en, /"conversationPreviewDateTime": "\{\{year\}\}-\{\{month\}\}-\{\{day\}\} \{\{hour\}\}:\{\{minute\}\}"/);
 });
 
+test('项目预览任务统计使用闭合圆环，避免刷新箭头在小尺寸下变成毛刺', () => {
+    const source = functionSource(projects, 'ensureProjectFolderPreview', 'positionProjectFolderPreview');
+
+    assert.match(source, /class="project-folder-preview-stats"/);
+    assert.match(source, /<circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1\.5"\/>/);
+    assert.doesNotMatch(source, /H21v5l-2-2/);
+    assert.match(styles, /\.project-folder-preview-stats svg \{\s*width: 16px;\s*height: 16px;\s*overflow: visible;/);
+});
 test('对话悬浮预览标题与时间分行显示并保留更多标题内容', () => {
     const titleStyles = cssBlock(styles, '.project-conversation-preview-title');
 

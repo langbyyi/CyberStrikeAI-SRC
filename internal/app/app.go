@@ -435,6 +435,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	configHandler.SetToolGuard(toolGuard)
 	configHandler.SetAudit(auditSvc)
 	approvalHandler.SetGlobalRuntime(approvalGlobalRuntime, configHandler)
+	approvalHandler.SetAuditEngineInfo(agentHandler.AuditEngineInfo)
 	externalMCPHandler := handler.NewExternalMCPHandler(externalMCPMgr, cfg, configPath, log.Logger)
 	externalMCPHandler.SetAudit(auditSvc)
 	roleHandler := handler.NewRoleHandler(cfg, configPath, log.Logger)
@@ -1077,6 +1078,7 @@ func setupRoutes(
 		protected.PUT("/config", configHandler.UpdateConfig)
 		protected.POST("/config/apply", configHandler.ApplyConfig)
 		protected.POST("/config/test-openai", configHandler.TestOpenAI)
+		protected.POST("/config/test-typesafe", configHandler.TestTypeSafe)
 		protected.POST("/config/test-vision", configHandler.TestVision)
 		protected.POST("/config/list-models", configHandler.ListModels)
 

@@ -154,6 +154,46 @@ func TestHitlAuditModelEffectiveFallsBackToMainConfig(t *testing.T) {
 	}
 }
 
+func TestHitlEffectiveAuditBackend(t *testing.T) {
+	if got := (HitlConfig{}).EffectiveAuditBackend(); got != HitlAuditBackendOpenAI {
+		t.Fatalf("empty backend = %q, want openai", got)
+	}
+	if got := (HitlConfig{AuditBackend: "Jev"}).EffectiveAuditBackend(); got != HitlAuditBackendTypeSafe {
+		t.Fatalf("jev alias = %q, want typesafe", got)
+	}
+	if got := (HitlConfig{AuditBackend: "claude"}).EffectiveAuditBackend(); got != HitlAuditBackendOpenAI {
+		t.Fatalf("unknown backend = %q, want openai", got)
+	}
+}
+
+func TestHitlTypeSafeConfigEffectiveDoesNotInheritMainKey(t *testing.T) {
+	gotURL, gotKey, gotModel := (HitlConfig{
+		AuditBackend: "typesafe",
+		AuditModel:   OpenAIConfig{APIKey: "ts-key"},
+	}).TypeSafeConfigEffective()
+	if gotURL != TypeSafeDefaultBaseURL {
+		t.Fatalf("base url = %q, want default", gotURL)
+	}
+	if gotKey != "ts-key" {
+		t.Fatalf("api key = %q, want ts-key", gotKey)
+	}
+	if gotModel != TypeSafeDefaultModel {
+		t.Fatalf("model = %q, want default", gotModel)
+	}
+}
+
+func TestJevOperatorPolicySkipsDefaultPrompt(t *testing.T) {
+	if got := (HitlConfig{}).JevOperatorPolicy(); got != "" {
+		t.Fatalf("empty config should not send default prompt to Jev, got %q", got)
+	}
+	if got := (HitlConfig{AuditAgentPrompt: DefaultHitlAuditAgentPrompt()}).JevOperatorPolicy(); got != "" {
+		t.Fatalf("default prompt should not be sent to Jev, got %q", got)
+	}
+	if got := (HitlConfig{AuditAgentPrompt: "拦截所有命令执行"}).JevOperatorPolicy(); got != "拦截所有命令执行" {
+		t.Fatalf("custom prompt=%q", got)
+	}
+}
+
 func TestLoadUsesAIDefaultChannelAsRuntimeOpenAI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

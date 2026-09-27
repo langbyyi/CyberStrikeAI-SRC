@@ -547,7 +547,7 @@ func RunDeepAgent(
 			Instruction:         supInstr,
 			GenModelInput:       literalAgenticInstructionGenModelInput,
 			Model:               mainModel,
-			ToolsConfig:         mainToolsCfg,
+			ToolsConfig:         withEinoAgenticTransferTool(mainToolsCfg),
 			MaxIterations:       deepMaxIter,
 			Handlers:            supHandlers,
 			Exit:                &einoAgenticExitTool{},
@@ -557,9 +557,19 @@ func RunDeepAgent(
 		if deepAgenticOutKey != "" {
 			supCfg.OutputKey = deepAgenticOutKey
 		}
-		superChat, serr := newEinoAgenticChatModelAgentAdapter(ctx, supCfg)
+		// 先按 typed 接口把子代理注册进监督者（transfer 工具 + 交接指令），
+		// 再包成 classic Agent 交给 supervisor.New：后者只负责流程层的路由，
+		// 不经过 classic 适配层转发子代理注册（见 bindAgenticSupervisorSubAgents）。
+		supTyped, serr := newEinoAgenticChatModelAgent(ctx, supCfg)
 		if serr != nil {
 			return nil, fmt.Errorf("supervisor agentic 主代理: %w", serr)
+		}
+		if serr = bindAgenticSupervisorSubAgents(ctx, logger, supTyped, subAgents); serr != nil {
+			return nil, serr
+		}
+		superChat := newEinoAgenticMessageAgentAdapter(supTyped)
+		if superChat == nil {
+			return nil, fmt.Errorf("supervisor agentic 主代理: adapter is nil")
 		}
 		supRoot, serr := supervisor.New(ctx, &supervisor.Config{
 			Supervisor: superChat,

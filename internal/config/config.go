@@ -1160,9 +1160,12 @@ type AgentConfig struct {
 // HitlConfig contains supporting Audit Agent model, prompt, and retention settings.
 // Approval behavior itself is configured exclusively by ApprovalConfig.
 type HitlConfig struct {
-	// AuditModel 审计 Agent 专用模型；字段留空时继承 OpenAI 主配置，便于用小模型做审批。
+	// AuditBackend 审计 Agent 后端：openai（兼容协议聊天模型）或 typesafe（Jev 结构化裁决）。空值视为 openai。
+	AuditBackend string `yaml:"audit_backend,omitempty" json:"audit_backend,omitempty"`
+	// AuditModel 审计 Agent 专用模型。openai 后端字段留空时继承 OpenAI 主配置，便于用小模型做审批；
+	// typesafe 后端仅用 api_key/base_url/model，且不继承主模型密钥。
 	AuditModel OpenAIConfig `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
-	// AuditAgentPrompt 审批模式（approval）下审计 Agent 系统提示词。
+	// AuditAgentPrompt 审批模式下审计 Agent 策略文本：openai 后端是系统提示词，typesafe 后端是 Jev 组织策略（operatorPolicy）。
 	AuditAgentPrompt string `yaml:"audit_agent_prompt,omitempty" json:"audit_agent_prompt,omitempty"`
 	// RetentionDays 已结束统一审批记录的保留天数；省略时默认 90；0 表示不自动清理。
 	RetentionDays *int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
@@ -1214,6 +1217,37 @@ func (h HitlConfig) RetentionDaysEffective() int {
 		return 0
 	}
 	return *h.RetentionDays
+}
+
+const (
+	HitlAuditBackendOpenAI   = "openai"
+	HitlAuditBackendTypeSafe = "typesafe"
+	TypeSafeDefaultBaseURL   = "https://api.typesafe.ai"
+	TypeSafeDefaultModel     = "jev-latest"
+)
+
+// EffectiveAuditBackend returns openai or typesafe. Omitted or unknown values default to openai.
+func (h HitlConfig) EffectiveAuditBackend() string {
+	switch strings.ToLower(strings.TrimSpace(h.AuditBackend)) {
+	case HitlAuditBackendTypeSafe, "jev", "type-safe", "typesafe-ai":
+		return HitlAuditBackendTypeSafe
+	default:
+		return HitlAuditBackendOpenAI
+	}
+}
+
+// TypeSafeConfigEffective returns TypeSafe endpoint settings. Empty base_url/model use defaults; API key is never inherited from the main OpenAI channel.
+func (h HitlConfig) TypeSafeConfigEffective() (baseURL, apiKey, model string) {
+	baseURL = strings.TrimSpace(h.AuditModel.BaseURL)
+	if baseURL == "" {
+		baseURL = TypeSafeDefaultBaseURL
+	}
+	apiKey = strings.TrimSpace(h.AuditModel.APIKey)
+	model = strings.TrimSpace(h.AuditModel.Model)
+	if model == "" {
+		model = TypeSafeDefaultModel
+	}
+	return strings.TrimSuffix(baseURL, "/"), apiKey, model
 }
 
 // AuditModelEffective returns the audit-agent model config with empty fields inherited from the main model config.
@@ -1305,6 +1339,16 @@ func (c HitlConfig) EffectiveAuditAgentPrompt() string {
 		return s
 	}
 	return DefaultHitlAuditAgentPrompt()
+}
+
+// JevOperatorPolicy 返回 TypeSafe Jev 的组织审批策略文本。
+// 内置默认提示词与 Jev 结构化问题语义重复，返回空串表示不写入 state。
+func (c HitlConfig) JevOperatorPolicy() string {
+	effective := strings.TrimSpace(c.EffectiveAuditAgentPrompt())
+	if effective == "" || effective == strings.TrimSpace(DefaultHitlAuditAgentPrompt()) {
+		return ""
+	}
+	return effective
 }
 
 type AuthConfig struct {

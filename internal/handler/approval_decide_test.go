@@ -220,3 +220,57 @@ func TestDecideRequiresApprovalPermission(t *testing.T) {
 		t.Fatalf("status=%d body=%s, want 403", recorder.Code, recorder.Body.String())
 	}
 }
+
+// 人机协同页在 approval:read 下即可拿到当前审批引擎（无需 config:read）；
+// 策略字段仍按扁平结构返回，不能被 view 包装破坏。
+func TestApprovalConfigExposesAuditEngine(t *testing.T) {
+	runtime, err := approval.NewGlobalRuntime(approval.Config{Reviewer: approval.ReviewerAgent, TimeoutSeconds: 120}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewApprovalHandler(&orphanApprovalStore{}, approval.NewHumanReviewBroker(), zap.NewNop())
+	h.SetGlobalRuntime(runtime, &approvalSettingsSaverStub{})
+	h.SetAuditEngineInfo(func() (string, string) {
+		return config.HitlAuditBackendTypeSafe, config.TypeSafeDefaultModel
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(security.ContextSessionKey, security.Session{Permissions: map[string]bool{"approval:read": true}})
+	h.GetGlobalConfig(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["auditBackend"] != config.HitlAuditBackendTypeSafe {
+		t.Fatalf("auditBackend=%v", body["auditBackend"])
+	}
+	if body["auditModel"] != config.TypeSafeDefaultModel {
+		t.Fatalf("auditModel=%v", body["auditModel"])
+	}
+	if body["reviewer"] != approval.ReviewerAgent || body["timeoutSeconds"] != float64(120) {
+		t.Fatalf("策略字段未保持扁平返回: %v", body)
+	}
+}
+
+func TestApprovalConfigWithoutAuditEngineProvider(t *testing.T) {
+	runtime, err := approval.NewGlobalRuntime(approval.Config{Reviewer: approval.ReviewerHuman}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewApprovalHandler(&orphanApprovalStore{}, approval.NewHumanReviewBroker(), zap.NewNop())
+	h.SetGlobalRuntime(runtime, &approvalSettingsSaverStub{})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(security.ContextSessionKey, security.Session{Permissions: map[string]bool{"approval:read": true}})
+	h.GetGlobalConfig(c)
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["auditBackend"] != "" || body["auditModel"] != "" {
+		t.Fatalf("未注入来源时应返回空引擎: %v", body)
+	}
+}

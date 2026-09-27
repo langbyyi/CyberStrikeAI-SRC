@@ -796,6 +796,11 @@ async function loadConfig(loadTools = true, options = {}) {
         // 填充人机协同配置
         const hitl = currentConfig.hitl || {};
         const hitlAuditModel = hitl.audit_model || {};
+        const hitlAuditBackendEl = document.getElementById('hitl-audit-backend');
+        if (hitlAuditBackendEl) {
+            hitlAuditBackendEl.value = String(hitl.audit_backend || '').trim().toLowerCase() === 'typesafe'
+                ? 'typesafe' : 'openai';
+        }
         const hitlAuditProviderEl = document.getElementById('hitl-audit-model-provider');
         if (hitlAuditProviderEl) {
             const provider = String(hitlAuditModel.provider || '').trim().toLowerCase();
@@ -814,6 +819,15 @@ async function loadConfig(loadTools = true, options = {}) {
         const hitlApprovalPromptEl = document.getElementById('hitl-audit-agent-prompt-settings');
         if (hitlApprovalPromptEl) {
             hitlApprovalPromptEl.value = hitl.audit_agent_prompt || '';
+        }
+        syncHitlAuditBackendUI();
+        if (typeof window !== 'undefined') {
+            // 当前审批引擎以配置为准（与 chat.js 同一来源），供人机协同页与审计日志展示。
+            window.csaiHitlAuditBackend = hitlAuditBackendEl ? hitlAuditBackendEl.value : '';
+            window.csaiHitlAuditModel = String(hitlAuditModel.model || '').trim();
+            if (typeof window.renderHitlPageAuditEngine === 'function') {
+                window.renderHitlPageAuditEngine();
+            }
         }
         
         // 填充Agent配置
@@ -2018,6 +2032,7 @@ async function applySettings() {
             },
             hitl: {
                 ...prevHitl,
+                audit_backend: document.getElementById('hitl-audit-backend')?.value === 'typesafe' ? 'typesafe' : 'openai',
                 audit_model: {
                     ...(prevHitl.audit_model || {}),
                     provider: document.getElementById('hitl-audit-model-provider')?.value || '',
@@ -3282,6 +3297,15 @@ function initModelListControls() {
         hitlAuditProv.dataset.modelListBound = '1';
         hitlAuditProv.addEventListener('change', syncModelListFetchButtons);
     }
+    const hitlAuditBackend = document.getElementById('hitl-audit-backend');
+    if (hitlAuditBackend && !hitlAuditBackend.dataset.backendBound) {
+        hitlAuditBackend.dataset.backendBound = '1';
+        hitlAuditBackend.addEventListener('change', function () {
+            syncHitlAuditBackendUI();
+            syncModelListFetchButtons();
+        });
+    }
+    syncHitlAuditBackendUI();
     const knowledgeEmbeddingProv = document.getElementById('knowledge-embedding-provider');
     if (knowledgeEmbeddingProv && !knowledgeEmbeddingProv.dataset.modelListBound) {
         knowledgeEmbeddingProv.dataset.modelListBound = '1';
@@ -3648,12 +3672,70 @@ function collectHitlAuditModelEffectiveConfig() {
     };
 }
 
+function isHitlAuditTypeSafe() {
+    const v = (document.getElementById('hitl-audit-backend')?.value || '').trim().toLowerCase();
+    return v === 'typesafe' || v === 'jev';
+}
+
+// 按审批引擎切换表单：Jev 隐藏 OpenAI 提供商/取模型按钮，并替换占位提示。
+function syncHitlAuditBackendUI() {
+    const ts = isHitlAuditTypeSafe();
+    const providerGroup = document.getElementById('hitl-audit-openai-provider-group');
+    if (providerGroup) providerGroup.style.display = ts ? 'none' : '';
+    const fetchBtn = document.getElementById('fetch-hitl-audit-models-btn');
+    if (fetchBtn) fetchBtn.style.display = ts ? 'none' : '';
+    const openaiHint = document.getElementById('hitl-audit-model-openai-hint');
+    const tsHint = document.getElementById('hitl-audit-model-typesafe-hint');
+    if (openaiHint) openaiHint.hidden = ts;
+    if (tsHint) tsHint.hidden = !ts;
+    const promptHint = document.getElementById('hitl-audit-prompt-typesafe-hint');
+    if (promptHint) promptHint.hidden = !ts;
+
+    const baseUrlEl = document.getElementById('hitl-audit-model-base-url');
+    const apiKeyEl = document.getElementById('hitl-audit-model-api-key');
+    const modelEl = document.getElementById('hitl-audit-model-name');
+    if (baseUrlEl) {
+        baseUrlEl.placeholder = ts
+            ? settingsT('settings.hitl.auditModelTypeSafeBaseUrlPlaceholder', '留空使用 https://api.typesafe.ai')
+            : settingsT('settings.hitl.auditModelBaseUrlPlaceholder', '留空则复用主模型 Base URL');
+    }
+    if (apiKeyEl) {
+        apiKeyEl.placeholder = ts
+            ? settingsT('settings.hitl.auditModelTypeSafeApiKeyPlaceholder', 'TypeSafe API Key（必填，不复用主模型）')
+            : settingsT('settings.hitl.auditModelApiKeyPlaceholder', '留空则复用主模型 API Key');
+    }
+    if (modelEl) {
+        modelEl.placeholder = ts
+            ? settingsT('settings.hitl.auditModelTypeSafeNamePlaceholder', '留空使用 jev-latest')
+            : settingsT('settings.hitl.auditModelNamePlaceholder', '留空则复用主模型；建议填写小模型');
+    }
+}
+window.syncHitlAuditBackendUI = syncHitlAuditBackendUI;
+
 async function testHitlAuditModelConnection() {
     const btn = document.getElementById('test-hitl-audit-model-btn');
     const resultEl = document.getElementById('test-hitl-audit-model-result');
+    const typeSafe = isHitlAuditTypeSafe();
     const cfg = collectHitlAuditModelEffectiveConfig();
+    const apiKey = typeSafe
+        ? (document.getElementById('hitl-audit-model-api-key')?.value.trim() || '')
+        : cfg.api_key;
+    const baseUrl = typeSafe
+        ? (document.getElementById('hitl-audit-model-base-url')?.value.trim() || '')
+        : cfg.base_url;
+    const model = typeSafe
+        ? (document.getElementById('hitl-audit-model-name')?.value.trim() || 'jev-latest')
+        : cfg.model;
 
-    if (!cfg.base_url || !cfg.api_key || !cfg.model) {
+    if (typeSafe) {
+        if (!apiKey) {
+            if (resultEl) {
+                resultEl.style.color = 'var(--danger-color, #e53e3e)';
+                resultEl.textContent = settingsT('settings.hitl.testTypeSafeFillRequired', '请先填写 TypeSafe API Key');
+            }
+            return;
+        }
+    } else if (!cfg.base_url || !cfg.api_key || !cfg.model) {
         if (resultEl) {
             resultEl.style.color = 'var(--danger-color, #e53e3e)';
             resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 Base URL、API Key 和模型';
@@ -3671,10 +3753,14 @@ async function testHitlAuditModelConnection() {
     }
 
     try {
-        const response = await apiFetch('/api/config/test-openai', {
+        const endpoint = typeSafe ? '/api/config/test-typesafe' : '/api/config/test-openai';
+        const payload = typeSafe
+            ? { base_url: baseUrl, api_key: apiKey, model: model }
+            : cfg;
+        const response = await apiFetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cfg)
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
 

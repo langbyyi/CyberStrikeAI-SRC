@@ -2,12 +2,16 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const ApprovalUIModel = require('../static/js/approval-ui-model.js');
 
 const monitor = fs.readFileSync('web/static/js/monitor.js', 'utf8');
 const chatScroll = fs.readFileSync('web/static/js/chat-scroll.js', 'utf8');
 const projects = fs.readFileSync('web/static/js/projects.js', 'utf8');
 const chat = fs.readFileSync('web/static/js/chat.js', 'utf8');
 const approvalUI = fs.readFileSync('web/static/js/approval-ui.js', 'utf8');
+const settings = fs.readFileSync('web/static/js/settings.js', 'utf8');
+const approvalAdapters = fs.readFileSync('internal/handler/approval_adapters.go', 'utf8');
+const approvalHandler = fs.readFileSync('internal/handler/approval.go', 'utf8');
 const styles = fs.readFileSync('web/static/css/style.css', 'utf8');
 const template = fs.readFileSync('web/templates/index.html', 'utf8');
 const handler = fs.existsSync('internal/handler/hitl.go') ? fs.readFileSync('internal/handler/hitl.go', 'utf8') : '';
@@ -312,6 +316,99 @@ test('审批状态主动轮询并在服务不可用时立即关闭旧审批', ()
     assert.match(template, /projects\.js\?v=20260819-1/);
 });
 
+test('人机协同页与审计日志展示 Jev / OpenAI 审批引擎', () => {
+    assert.match(template, /id="hitl-page-audit-engine"/);
+    assert.match(template, /id="hitl-log-detail-engine"/);
+    assert.match(template, /id="hitl-audit-backend"/);
+    assert.match(approvalUI, /function hitlAuditEngineLabel\(backend, model\)/);
+    assert.match(approvalUI, /function renderHitlPageAuditEngine\(\)/);
+    assert.match(approvalUI, /function applyAuditEngineFromApprovalConfig\(data\)/);
+    // 首屏任意页签都要能显示当前引擎：一次性懒加载挂在 refreshHitlActivePanel 上
+    assert.match(approvalUI, /function loadAuditEngineInfo\(\)/);
+    assert.match(approvalUI, /function refreshHitlActivePanel\(+\) {\s*loadAuditEngineInfo\(\);/);
+    assert.match(approvalUI, /applyAuditEngineFromApprovalConfig\(data\);/);
+    assert.match(approvalUI, /ApprovalUIModel\.auditEngineFromDecision/);
+    assert.match(approvalUI, /hitl-log-engine/);
+    assert.equal(zh.hitl.auditEngineJev, 'TypeSafe Jev');
+    assert.equal(en.hitl.auditEngineJev, 'TypeSafe Jev');
+    assert.equal(zh.hitl.auditEngineOpenAI, 'OpenAI 协议');
+    assert.equal(en.hitl.auditEngineOpenAI, 'OpenAI protocol');
+    assert.match(styles, /\.hitl-page-audit-engine \{/);
+    assert.match(styles, /\.hitl-log-engine \{/);
+});
+
+test('审批引擎可切换 TypeSafe Jev 并标注裁决来源', () => {
+    assert.match(template, /id="hitl-audit-openai-provider-group"/);
+    assert.match(template, /id="hitl-audit-model-typesafe-hint"/);
+    assert.match(template, /id="hitl-audit-prompt-typesafe-hint"/);
+    assert.match(settings, /function syncHitlAuditBackendUI\(\)/);
+    assert.match(settings, /function isHitlAuditTypeSafe\(\)/);
+    assert.match(settings, /\/api\/config\/test-typesafe/);
+    assert.match(settings, /audit_backend: document\.getElementById\('hitl-audit-backend'\)/);
+    assert.equal(zh.settings.hitl.auditBackendTypeSafe, 'TypeSafe Jev');
+    assert.equal(en.settings.hitl.auditBackendTypeSafe, 'TypeSafe Jev');
+    assert.equal(zh.settings.hitl.testTypeSafeFillRequired.includes('TypeSafe'), true);
+    assert.equal(en.settings.hitl.testTypeSafeFillRequired.includes('TypeSafe'), true);
+    assert.match(approvalAdapters, /auditBackend/);
+    assert.match(approvalAdapters, /hitlAuditEngineInfo\(\)/);
+    // 人机协同页在 approval:read 下即可拿到当前引擎（无需 config:read）
+    assert.match(approvalHandler, /SetAuditEngineInfo/);
+    assert.match(approvalHandler, /json:"auditBackend"/);
+});
+// 运行时渲染校验：日志行的引擎标注靠手写字符串拼接，必须真跑一遍确认列结构没被破坏。
+test('审计日志行渲染按裁决方标注引擎且列数不变', () => {
+    function extractFunction(name) {
+        const start = approvalUI.indexOf('function ' + name + '(');
+        assert.notEqual(start, -1, '应可找到 ' + name);
+        const end = approvalUI.indexOf('\n}', start);
+        assert.notEqual(end, -1, '应可闭合 ' + name);
+        return approvalUI.slice(start, end + 2);
+    }
+    const wrap = { innerHTML: '' };
+    const context = {
+        document: { getElementById: (id) => (id === 'hitl-logs-table-wrap' ? wrap : null) },
+        escapeHtml: (value) => String(value === null || value === undefined ? '' : value),
+        hitlT: (key, fallback) => (fallback === undefined || fallback === null ? key : fallback),
+        ApprovalUIModel,
+        approvalDecisionTag: (decision) => '<span>' + decision + '</span>',
+        approvalStatusLabel: (status) => status || '-',
+        approvalActorLabel: (actor) => actor || '-',
+        buildApprovalSummary: () => 'summary',
+        approvalFormatTime: () => 'time',
+        renderHitlLogsPagination: () => {},
+        console
+    };
+    vm.createContext(context);
+    vm.runInContext(extractFunction('hitlAuditEngineLabel') + '\n' + extractFunction('renderHitlLogsTable'), context);
+
+    const agentDecision = {
+        id: 'd1', approvalId: 'a1', stage: 'agent_review', actorType: 'agent', actorId: 'audit-model',
+        decision: 'approve', comment: 'audit agent: 通过', createdAt: '2026-09-27T10:00:00Z',
+        metadata: { auditBackend: 'typesafe', auditModel: 'jev-latest' }
+    };
+    const base = { id: 'a1', toolName: 'execute', conversationId: 'c1', status: 'approved', arguments: { command: 'id' } };
+    context.renderHitlLogsTable([Object.assign({}, base, { decisions: [agentDecision] })]);
+    const agentRow = wrap.innerHTML;
+    assert.match(agentRow, /class="hitl-log-engine">TypeSafe Jev · jev-latest</);
+    assert.equal((agentRow.match(/<td/g) || []).length, 9, '日志行仍是 9 列');
+
+    // 旧记录没有 metadata：按备注特征识别为 OpenAI 协议
+    context.renderHitlLogsTable([Object.assign({}, base, {
+        decisions: [Object.assign({}, agentDecision, { metadata: undefined, comment: 'audit agent: 命中规则 A3' })]
+    })]);
+    assert.match(wrap.innerHTML, /class="hitl-log-engine">OpenAI protocol</);
+
+    // 人工决定不标注引擎
+    context.renderHitlLogsTable([Object.assign({}, base, {
+        decisions: [Object.assign({}, agentDecision, { actorType: 'human', metadata: undefined, comment: '人工通过' })]
+    })]);
+    assert.doesNotMatch(wrap.innerHTML, /hitl-log-engine/);
+
+    // 无决定（待审）时不标注，也不影响列数
+    context.renderHitlLogsTable([Object.assign({}, base, { status: 'pending_human' })]);
+    assert.doesNotMatch(wrap.innerHTML, /hitl-log-engine/);
+    assert.equal((wrap.innerHTML.match(/<td/g) || []).length, 9);
+});
 test('审批体验文案具有完整中英文资源', () => {
     const hitlKeys = [
         'waitingApprovalShort',

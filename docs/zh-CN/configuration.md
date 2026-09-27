@@ -114,6 +114,7 @@ approval:
   dangerous_action:
     enabled: true
 hitl:
+  audit_backend: openai
   retention_days: 90
   audit_model:
     provider: ""
@@ -126,8 +127,9 @@ hitl:
 - `approval.timeout_seconds`：单张审批单有效期（秒，必须大于 0）；到期自动拒绝，已过期审批不能补批准。
 - `approval.tool_approval` 和 `approval.dangerous_action`：独立触发开关，共用一个审批方。
 - `approval.tool_approval.tool_whitelist`：普通工具审批的全局免审批列表。
-- `hitl.audit_model`：审计 Agent 独立模型；留空复用主模型。
-- `hitl.audit_agent_prompt`：可覆盖 Agent 审批提示词。
+- `hitl.audit_backend`：`openai`（默认，兼容协议聊天模型按提示词输出 JSON）或 `typesafe`（TypeSafe Jev 结构化放通/拦截）。
+- `hitl.audit_model`：openai 后端留空复用主模型；typesafe 后端只用 api_key/base_url/model，密钥不继承主模型（留空时 base_url 用 `https://api.typesafe.ai`、model 用 `jev-latest`）。
+- `hitl.audit_agent_prompt`：可覆盖 Agent 审批提示词；openai 后端作聊天提示词，typesafe 后端作 Jev 组织策略（内置默认提示词不写入 state）。
 
 更多策略见 [人机协同最佳实践](hitl-best-practices.md)。
 
@@ -297,6 +299,7 @@ project:
 | `agent.max_iterations` | 新 Agent 任务生效 | 已运行任务按启动时状态继续 |
 | `security.tool_description_mode` | 工具重新暴露时生效 | 模型已有上下文不会回滚 |
 | `approval` | 新工具调用立即使用新的全局快照 | 已创建审批单继续使用创建时冻结的审批方和参数 |
+| `hitl`（`audit_backend` / `audit_model` / `audit_agent_prompt` / `retention_days`） | 保存即写入 `config.yaml`；审批引擎、审计模型与策略在下一次裁决使用新值，保留天数影响后续清理 | 切到 `typesafe` 必须先填 TypeSafe API Key（不继承主模型密钥），否则裁决一律保守拒绝 |
 | `knowledge.enabled` | 会尝试初始化/更新组件 | 启用后仍需扫描和索引 |
 | `knowledge.embedding` | 检索器/索引器配置更新 | 已有向量通常需要重建索引 |
 | `robots` | 会触发连接重启 | 平台回调配置仍需在平台侧正确 |
@@ -308,7 +311,7 @@ project:
 几个字段有“留空复用”的关系：
 
 - `vision.api_key/base_url/provider` 留空时复用 `openai`。
-- `hitl.audit_model` 留空时复用默认 AI 通道解析后的 `openai`。
+- `hitl.audit_model` 在 `audit_backend=openai` 时留空复用默认 AI 通道解析后的 `openai`；typesafe 后端不继承主模型密钥。
 - `knowledge.embedding.base_url/api_key` 留空时复用主模型或 embedding 默认配置。
 - `knowledge.retrieval.rerank.base_url/api_key` 留空时复用 embedding/openai。
 - `database.knowledge_db_path` 留空时可以复用主会话数据库，但独立文件更利于备份。

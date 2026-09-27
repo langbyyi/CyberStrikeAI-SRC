@@ -1310,6 +1310,15 @@ async function initChatAgentModeFromConfig() {
             if (Array.isArray(tw)) {
                 window.csaiHitlGlobalToolWhitelist = tw.slice();
             }
+            // 当前审批引擎（openai / typesafe），供人机协同页与审计日志展示。
+            const hitlCfg = cfg.hitl || {};
+            window.csaiHitlAuditBackend = typeof hitlCfg.audit_backend === 'string'
+                ? hitlCfg.audit_backend.trim().toLowerCase() : '';
+            window.csaiHitlAuditModel = hitlCfg.audit_model && typeof hitlCfg.audit_model.model === 'string'
+                ? hitlCfg.audit_model.model.trim() : '';
+            if (typeof window.renderHitlPageAuditEngine === 'function') {
+                window.renderHitlPageAuditEngine();
+            }
         }
         if (typeof window.refreshHitlPageWhitelist === 'function') {
             window.refreshHitlPageWhitelist();

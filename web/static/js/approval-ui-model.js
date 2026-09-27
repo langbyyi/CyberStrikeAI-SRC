@@ -77,6 +77,39 @@
         };
     }
 
+    // 审批引擎（openai / typesafe）归一化：未知或空值返回空串，由调用方决定默认。
+    function normalizeAuditBackend(value) {
+        const s = text(value).toLowerCase();
+        if (s === 'typesafe' || s === 'jev' || s === 'type-safe' || s === 'typesafe-ai') return 'typesafe';
+        if (s === 'openai' || s === 'openai_compatible' || s === 'llm') return 'openai';
+        return '';
+    }
+
+    // 历史决定记录没有 metadata 时，回退到审计 Agent 备注里的引擎特征。
+    function inferAuditBackendFromComment(comment) {
+        const raw = typeof comment === 'string' ? comment : '';
+        if (!raw.trim()) return '';
+        if (/TypeSafe|破坏分|choice=|Jev/i.test(raw)) return 'typesafe';
+        return 'openai';
+    }
+
+    // 从一条决定记录里取审批引擎。引擎只属于审计 Agent 的决定：
+    // metadata 是权威来源（裁决时落库），老记录回退到备注特征。
+    function auditEngineFromDecision(decision) {
+        const d = decision && typeof decision === 'object' ? decision : {};
+        const metadata = d.metadata && typeof d.metadata === 'object' ? d.metadata : {};
+        let backend = normalizeAuditBackend(metadata.auditBackend || metadata.audit_backend);
+        let model = text(metadata.auditModel || metadata.audit_model);
+        if (!backend) {
+            const actor = text(d.actorType).toLowerCase();
+            if (actor === 'agent' || actor === 'audit_agent') {
+                backend = inferAuditBackendFromComment(d.comment) || 'openai';
+            }
+        }
+        if (backend === 'typesafe' && !model) model = 'jev-latest';
+        return { backend: backend, model: model };
+    }
+
     // 规则只读详情视图：规则对象由 /api/approval-rules 直接返回（无包装层）。
     function toRuleView(item) {
         const rule = item && typeof item === 'object' ? item : {};
@@ -98,6 +131,8 @@
         buildApprovalQuery: buildApprovalQuery,
         createLatestRequestGate: createLatestRequestGate,
         toAuditView: toAuditView,
+        normalizeAuditBackend: normalizeAuditBackend,
+        auditEngineFromDecision: auditEngineFromDecision,
         toRuleView: toRuleView
     };
 }));

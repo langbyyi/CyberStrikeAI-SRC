@@ -317,7 +317,10 @@ Content-Type: application/json
 - `GET /api/config/tools/:name/schema`
 - `POST /api/config/test-openai`
 - `POST /api/config/test-vision`
+- `POST /api/config/test-typesafe`
 - `POST /api/config/list-models`
+
+三个 `test-*` 接口都是「点一下验证连通性」：请求体带 `base_url` / `api_key` / `model`，`api_key` 必填（`test-openai` / `test-vision` 另需 `model`）；上游失败时仍返回 HTTP 200，用响应里的 `success: false` + `error`（TypeSafe 场景另带 `status_code`）表达，成功时返回 `{success: true, model, latency_ms}`。`test-typesafe` 走 TypeSafe System One（`base_url` 留空用 `https://api.typesafe.ai`，`model` 留空用 `jev-latest`）。
 
 MCP：
 

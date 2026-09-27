@@ -55,6 +55,7 @@ type ApprovalHandler struct {
 	globalConfigSaver GlobalApprovalConfigSaver
 	resourceAccess    func(userID, scope, resourceType, resourceID string) bool
 	audit             approvalAuditSink
+	auditEngineInfo   func() (backend, model string)
 	logger            *zap.Logger
 }
 
@@ -93,6 +94,13 @@ func (h *ApprovalHandler) SetAudit(service *audit.Service) {
 	h.audit = service
 }
 
+// SetAuditEngineInfo 注入当前审批引擎来源（后端 + 模型名）。
+// 引擎不属于审批策略，但人机协同页需要展示谁在裁决；
+// 挂在审批策略响应上可复用同一条 approval:read 授权。
+func (h *ApprovalHandler) SetAuditEngineInfo(provider func() (backend, model string)) {
+	h.auditEngineInfo = provider
+}
+
 func registerApprovalRoutes(group *gin.RouterGroup, handler *ApprovalHandler) {
 	group.GET("/approvals", handler.List)
 	group.GET("/approvals/ledger", handler.ListLedger)
@@ -105,6 +113,14 @@ func registerApprovalRoutes(group *gin.RouterGroup, handler *ApprovalHandler) {
 	group.DELETE("/approval-rules", handler.DeleteRule)
 }
 
+// approvalGlobalConfigView 是审批策略响应体：策略字段来自 approval.Config，
+// 另附 auditBackend / auditModel 供人机协同页展示当前审批引擎。
+type approvalGlobalConfigView struct {
+	approval.Config
+	AuditBackend string `json:"auditBackend"`
+	AuditModel   string `json:"auditModel"`
+}
+
 func (h *ApprovalHandler) GetGlobalConfig(c *gin.Context) {
 	if !security.SessionHasPermission(c, "approval:read") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "approval read permission is required", "permission": "approval:read"})
@@ -114,7 +130,15 @@ func (h *ApprovalHandler) GetGlobalConfig(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "approval runtime is unavailable"})
 		return
 	}
-	c.JSON(http.StatusOK, h.globalRuntime.Config())
+	backend, model := "", ""
+	if h.auditEngineInfo != nil {
+		backend, model = h.auditEngineInfo()
+	}
+	c.JSON(http.StatusOK, approvalGlobalConfigView{
+		Config:       h.globalRuntime.Config(),
+		AuditBackend: backend,
+		AuditModel:   model,
+	})
 }
 
 func (h *ApprovalHandler) UpdateGlobalConfig(c *gin.Context) {

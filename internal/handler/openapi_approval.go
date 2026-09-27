@@ -39,6 +39,9 @@ func unifiedApprovalSchemas() map[string]interface{} {
 				"timeoutSeconds":  map[string]interface{}{"type": "integer", "minimum": 1},
 				"toolApproval":    refSchema("ApprovalTriggerConfig"),
 				"dangerousAction": refSchema("ApprovalTriggerConfig"),
+				// 仅出现在 GET 响应（审批页展示当前引擎）；PUT 不接受这两个字段。
+				"auditBackend": map[string]interface{}{"type": "string", "enum": []string{"openai", "typesafe"}, "readOnly": true, "description": "当前审批引擎；不属于审批策略，随请求写入无效"},
+				"auditModel":   map[string]interface{}{"type": "string", "readOnly": true, "description": "当前审批引擎使用的模型名"},
 			},
 		},
 		"ApprovalDecision": map[string]interface{}{

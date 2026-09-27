@@ -110,6 +110,13 @@
         } catch (e) {
             // ignore
         }
+
+        // 审批引擎相关的占位提示按当前引擎重新生成
+        try {
+            if (typeof window.syncHitlAuditBackendUI === 'function') {
+                window.syncHitlAuditBackendUI();
+            }
+        } catch (e) { /* ignore */ }
     }
 
     function updateLangLabel() {

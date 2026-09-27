@@ -31,10 +31,16 @@ func (r *approvalAgentReviewer) Review(ctx context.Context, request approval.Rev
 		r.handler.enrichHitlApprovalPayload(request.Invocation.ConversationID, request.Invocation.AssistantMessageID, payload)
 	}
 	decision := r.handler.auditAgentReview(ctx, request.Invocation.ToolName, payload)
-	return approval.ReviewDecision{
+	out := approval.ReviewDecision{
 		Decision: decision.Decision, Comment: decision.Comment,
 		ActorType: "agent", ActorID: "audit-model",
-	}, nil
+	}
+	// 审批引擎随决定落库（approval_decisions.metadata_json），
+	// 供人机协同页与审计日志展示“谁裁决的 + 用哪个引擎”。
+	if backend, model := r.handler.hitlAuditEngineInfo(); backend != "" {
+		out.Metadata = map[string]any{"auditBackend": backend, "auditModel": model}
+	}
+	return out, nil
 }
 
 func approvalReviewPayload(request approval.ReviewRequest) map[string]interface{} {

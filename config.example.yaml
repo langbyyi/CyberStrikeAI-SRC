@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.7.19-src"
+version: "v1.7.20-src"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
@@ -182,15 +182,19 @@ tool_guard:
       message: '识别到 {match}，禁止攻击政府网站。请检查目标与授权范围，并更换为已获授权的非政府目标。'
 
 hitl:
-  # 审计 Agent 专用模型；字段留空则复用上方 openai 配置。建议 model 填小模型，用于降低审批成本。
+  # 审计 Agent 后端二选一：openai=兼容协议聊天模型（提示词 JSON）；typesafe=TypeSafe Jev 结构化放通/拦截。
+  audit_backend: openai
+  # 审计 Agent 专用模型。openai 后端字段留空则复用上方 openai 配置（建议 model 填小模型降低审批成本）；
+  # typesafe 后端只用 api_key/base_url/model，api_key 必填且不继承主模型密钥。
   audit_model:
-    provider: "" # openai / claude；留空跟随 openai.provider
-    base_url: "" # 留空跟随 openai.base_url
-    api_key: "" # 留空跟随 openai.api_key
-    model: "" # 留空跟随 openai.model，例如可填 gpt-4o-mini / qwen-turbo / deepseek-chat
+    provider: "" # openai / claude；仅 openai 后端生效，留空跟随 openai.provider
+    base_url: "" # openai 后端留空跟随主模型；typesafe 后端留空使用 https://api.typesafe.ai
+    api_key: "" # openai 后端留空跟随主模型；typesafe 后端填写 TypeSafe API Key
+    model: "" # openai 后端建议填小模型；typesafe 后端留空使用 jev-latest
   # 已决策审计日志保留天数（与 MCP 监控一致；省略默认 90；0 表示不自动清理）
   retention_days: 90
   # 留空使用内置默认；在「系统设置 → 审计 Agent 策略」填写后才覆盖默认提示词。
+  # openai 后端作聊天提示词；typesafe 后端作为 Jev 组织策略，内置默认不写入 state。
   audit_agent_prompt: ""
 multi_agent:
   enabled: true

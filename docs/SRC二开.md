@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.19-src**
+> 当前分支：**v1.7.20-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -112,6 +112,38 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **裁剪策略已达成**：微信二维码更新（7f5c092e）与赞助内容移除（eca26f0e）——本分支更早已删除宣传 QR 图与 `README_CN.md`，官方动作与本分支现状一致，无需变更
 - **文档/前端**：批量 HITL 策略下拉移除 review_edit 选项（`index.html` / `tasks.js` / 中英 i18n）；`config.example.yaml` 版本号 → `v1.7.19-src`；README 基线更新；裁剪策略继续执行（官方宣传 QR 图、`docs/en-US/tool-execution-governance.md` 等不入库）
 
+### v1.7.20 同步说明（2026-09-27）
+
+官方 v1.7.19→v1.7.20 共 4 个提交：**2 个直接合入（含 1 个版本号）+ 1 个适配合并 + 1 个语义合并到统一审批**；另顺带收口一处官方同源的 supervisor 委派失效。逐提交与本地二开层比对后按语义合并，非直接 merge。
+
+- **项目预览任务统计图标（8da3c8c5）直接合入**：`projects.js` 的刷新箭头 path 换成闭合圆环（`<circle r=8>`），`.project-folder-preview-stats svg` 由 15px 改 16px 并加 `overflow: visible`，官方断言并入 `web/tests/project-folder-preview.test.cjs`。
+- **Eino exit/transfer 在 AgenticMessage state 上工作（3aa92746）适配合并**：
+  - 官方问题：Eino v0.9.14 的 `adk.ExitTool` / `transfer_to_agent` 通过 `SendToolGenAction` 写 `typedState[*schema.Message]`，Agentic 主路径的 state 是 `typedState[*schema.AgenticMessage]`，`compose.ProcessState[*adk.State]` 取不到而失效。官方方案是新增反射式状态访问 + `agenticCompatibleExitTool` + 拦截 exit/transfer 的工具中间件。
+  - **本分支不替换 exit 实现**：二开层早已用自有 `einoAgenticExitTool`（ReturnDirectly + 显式完成协议，见 `eino_completion_contract.go` 注释）解决同一问题，替换会改动已验证的完成协议与 `einoCompletionTracker` 判定，风险大于收益。
+  - **采纳反射式 helper**（`internal/multiagent/eino_agentic_react_state.go`）：`mutateADKReactState` 以 `ProcessState[any]` 取最内层 react state，`clearADKReturnDirectly` 借反射清 `ReturnDirectlyToolCallID` / `HasReturnDirectly` / `ReturnDirectlyEvent`。本分支 `hitlClearReturnDirectlyIfTransfer` 原先直接 `compose.ProcessState[*adk.State]`，在 Agentic 主路径上类型不匹配、错误被 `_ =` 吞掉——即该守卫一直是静默 no-op；改后经典与 Agentic 两种 state 都真正生效（`eino_agentic_react_state_test.go` 两种形状各一条断言）。注意 `transfer_to_agent` 属 HITL 内置免审批元工具（`HitlExemptMetaTools`），该守卫当前是防御性路径而非必经路径。
+  - **修复 supervisor 委派失效（官方同源既有缺陷，本次一并收口）**：官方 transfer 拦截中间件的前提是 `transfer_to_agent` 已在 tools 索引里，而上游 supervisor 走 `supervisor.New → adk.SetSubAgents`（classic `[]adk.Agent` 接口），本分支监督者是经 classic 适配层包装的 `TypedChatModelAgent[*schema.AgenticMessage]`，命不中 `adk.OnSubAgents`，子代理从未注册进 ChatModelAgent —— transfer 工具与交接指令都不存在，委派整体失效（实测报 `tool transfer_to_agent not found in toolsNode indexes`，子代理 0 次调用）。修法：`bindAgenticSupervisorSubAgents`（`eino_agentic_builtin_action.go`）在包装成 classic 前按 typed 接口 `OnSetSubAgents` 补注册；同一文件新增 `agenticTransferToolMiddleware`（挂在工具中间件链最内侧、审批之后）接管 `transfer_to_agent`，用反射写当前实时 state（`sendADKToolGenAction`），替代只会写经典 Message state 的官方实现。只注册子代理、不给子代理挂 parent transfer，返回路径继续由 `supervisor.New` 的 `AgentWithDeterministicTransferTo` 负责。回归测试 `eino_supervisor_transfer_test.go` 覆盖去程/回程动作事件、子代理真实被调用、完成信号与边界（未注册时不委派）。
+  - 该修复带来的一处提示词叠加：Eino 在注册子代理后会自行追加官方交接指令（含子代理名 + 描述，并要求“移交时只输出函数调用”），与本分支 supervisor 提示里“在助手正文写交接包”的要求并存；本分支提示原样保留（路由策略与交接包要求仍以它为准），实际委派质量建议在真实任务里观察。
+- **TypeSafe Jev 作为 HITL 审计后端（38b96ec6）语义合并到统一审批**：
+  - 新增 `internal/typesafe/client.go`（TypeSafe System One 客户端：noul/choice 问题、答案解析、APIError）与 `internal/hitl/jev.go`（内置破坏性问题集 + 组织策略 overlay、state 裁剪、`DecideJev` 代码侧裁定：破坏性 noul 与组织策略 noul 优先于渗透 payload noul，破坏分阈值 0.55），官方测试原样入库。
+  - `HitlConfig.AuditBackend` + `EffectiveAuditBackend` / `TypeSafeConfigEffective` / `JevOperatorPolicy`：本分支只有统一审批一种模式，故 `JevOperatorPolicy` 不带 mode 参数；内置默认提示词与 Jev 问题语义重复，返回空串不写入 state。
+  - `auditAgentReview` 顶部按后端分派，新增 `auditAgentReviewTypeSafe`（Key 必填且不继承主模型密钥、90s 超时、失败保守拒绝）。
+  - **引擎信息的落库方式适配**：官方把 `auditBackend` / `auditModel` 塞进旧 `handler/hitl.go` 的 pending interrupt payload，本分支统一审批没有该字段。改用决定记录自带的 `metadata`（`approval_decisions.metadata_json` 已存在）：`approvalAgentReviewer.Review` 在裁决时写入 `{auditBackend, auditModel}`，`/api/approvals` 原样返回 `decisions[].metadata`，前端 `ApprovalUIModel.auditEngineFromDecision` 优先读 metadata、无 metadata 的老记录回退备注特征（`破坏分` / `choice=` / `TypeSafe`）识别。**无数据库结构变更**。
+  - 配置读写：`/api/config` 暴露并归一化 `hitl.audit_backend`，配置回写 yaml 同步该键；新增 `POST /api/config/test-typesafe`（最小 Noul 连通性验证）与对应 OpenAPI 条目、路由注册。
+  - 前端：设置页新增「审批引擎」下拉——选 Jev 时隐藏 OpenAI 提供商与「获取列表」，替换三个占位提示并显示 Jev/策略提示；人机协同页顶部显示当前引擎，审计日志在「审批方」列下与详情里标注该次裁决引擎；中英 i18n 与亮/暗主题样式齐备。
+  - **裁剪**：官方审查编辑模式（review_edit）相关文案与键不收录（统一审批无该概念，`web/tests/approval-policy-ui.test.cjs` 守卫禁止该字符串出现在审批运行时文件）；官方 `hitl.strategyHintJev` 对应的人机协同页「审计策略」页签本分支已不存在，等价提示落在设置页策略框下方（`settings.hitl.auditPromptTypeSafeHint`）。
+- **版本号（a89f21b4）**：`config.example.yaml` → `v1.7.20-src`，README 基线与本文件同步更新。
+- **官方文件级映射与裁剪（39 个文件逐项核对：下列为需适配/裁剪项，末尾为可直接落地项）**：
+  - 官方 `internal/handler/hitl.go`（pending payload 附 auditBackend/auditModel + `hitlDefaultConfigResponse`）、`hitl_logs.go`（日志行附引擎）在本分支不存在：统一审批的待审/日志数据来自 `/api/approvals`，引擎改由**决定记录 metadata**（日志）与 `/api/approval-config` 新增字段（当前引擎，复用 `approval:read`，不额外放开 `config:read`）提供，页面级引擎行因此对纯审批人也可用；官方“待审条目自带引擎”差异点已由页面级引擎行覆盖。
+  - 官方 `internal/handler/hitl_audit_backend.go` / `hitl_audit_backend_test.go`：`hitlAuditEngineInfo` 并入 `hitl_audit_agent.go`（并导出 `AuditEngineInfo` 供审批页注入）；`stringifyHitlJSON` / `inferHitlAuditBackendFromComment` / `hitlAuditBackendFromRecord` 属展示逻辑，落到前端纯模块 `approval-ui-model.js`（`auditEngineFromDecision`）并由 `web/tests/approval-ui-model.test.cjs` 覆盖。
+  - 官方 `internal/config/hitl_prompt_test.go` 的 `TestJevOperatorPolicySkipsDefaultPrompt` 并入本分支 `internal/config/config_test.go`。
+  - 官方 `web/static/js/chat.js` 的改动含输入框侧栏审计模型标签（`currentHitlAuditEngineLabel()`）；本分支聊天侧栏已无该入口，故只保留 `/api/config` → `window.csaiHitlAuditBackend/Model` 的桥接（供人机协同页与日志展示）。
+  - 官方 `docs/en-US/*`（configuration / hitl-best-practices）改动不跟进：本分支不收录英文文档目录，等价内容分别落在 `docs/zh-CN/configuration.md` 与 `docs/zh-CN/hitl-best-practices.md`。
+  - 官方 `docs/zh-CN/MULTI_AGENT_EINO.md` 的变更行已补入（2026-09-27 两行：状态对齐 + supervisor 委派修复）。
+  - 官方 `internal/multiagent/eino_agentic_chat_model_agent.go`（`replaceClassicExitTool` + 全局挂载内置动作中间件）**不跟进**：本分支不替换 exit、中间件只在 supervisor 分支挂载（见上条「本分支不替换 exit 实现」）。
+  - 官方新文件 `internal/multiagent/eino_agentic_builtin_action_test.go` **不逐字跟进**：其 `ExitTool` / `agenticCompatibleExitTool` 用例建立在本分支不采用的 exit 实现上；等价行为由本分支 `eino_agentic_react_state_test.go`（反射状态读写）与 `eino_supervisor_transfer_test.go`（中间件接管 + 委派 e2e）覆盖。
+  - 官方 `web/static/js/hitl.js` 中的人机协同页逻辑在本分支分居两处：页面/待审/日志在 `web/static/js/approval-ui.js`（纯逻辑在 `approval-ui-model.js`），i18n 与 API 辅助留在 `hitl.js`；对应断言并入 `web/tests/hitl-approval-ui.test.cjs`。
+  - **可直接落地项**（无适配分歧）：`internal/app/app.go`（test-typesafe 路由）、`internal/config/config.go`、`internal/config/config_test.go`、`internal/handler/config.go`（TestTypeSafe / UpdateConfig / yaml 回写）、`internal/handler/hitl_audit_agent.go`、`internal/handler/hitl_audit_agent_test.go`、`internal/handler/openapi.go`、`internal/hitl/jev.go` 与 `jev_test.go`、`internal/typesafe/client.go` 与 `client_test.go`、`internal/multiagent/eino_agentic_react_state.go`、`internal/multiagent/hitl_middleware.go`、`internal/multiagent/runner.go`、`web/static/css/style.css`、`web/static/i18n/zh-CN.json` 与 `en-US.json`、`web/static/js/i18n.js`、`web/static/js/projects.js` 与其测试、`web/static/js/settings.js`、`web/templates/index.html`。
+- 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞全生命周期、bannerHosts、统一审批（工作流 / 批量任务 / MCP 双路径接入）、18 角色 / 116 工具 YAML / 79 Skills 均未改动；本次新增 `internal/typesafe/`、`internal/hitl/jev.go`，以及 multiagent 侧的 `eino_agentic_react_state.go`、`eino_agentic_builtin_action.go`（含各自测试与 `eino_supervisor_transfer_test.go`），并修正 `clearADKReturnDirectly` 的 Agentic 路径；`internal/handler/approval_decide_test.go` 另补两条引擎字段测试。
 **本分支的硬门**：可复现强制（#1）+ 敏感接口硬闸（`sensitive_http_gate`，防不可逆写操作）。
 
 ## 部署
