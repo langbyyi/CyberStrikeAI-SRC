@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.20-src**
+> 当前分支：**v1.7.21-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -111,6 +111,21 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **sudo 测试增强（4d53717c）直接合入**：`shell_execute_stream_test.go` 以 mock sudo 替代对主机 sudo 策略的依赖（精确匹配 `sudo: a password is required` + exit code 校验 + 后续命令不得执行），fork 侧保留 `//go:build !windows` 构建标签与 NOPASSWD skip 前置；`.gitignore` 补 `/vendor/`（569513f3）已并入
 - **裁剪策略已达成**：微信二维码更新（7f5c092e）与赞助内容移除（eca26f0e）——本分支更早已删除宣传 QR 图与 `README_CN.md`，官方动作与本分支现状一致，无需变更
 - **文档/前端**：批量 HITL 策略下拉移除 review_edit 选项（`index.html` / `tasks.js` / 中英 i18n）；`config.example.yaml` 版本号 → `v1.7.19-src`；README 基线更新；裁剪策略继续执行（官方宣传 QR 图、`docs/en-US/tool-execution-governance.md` 等不入库）
+
+### v1.7.21 同步说明（2026-10-07）
+
+官方 v1.7.20→v1.7.21 共 5 个提交：**2 个直接合入（含 1 个版本号）+ 2 个整体采纳（存储清理含 3 处适配 + 俄语语言包含 1 处适配）+ 1 个裁剪项已达成**。逐提交与本地二开层比对后按语义合并，非直接 merge。
+
+- **summarization token 上限重复修复（bbfcb871）直接合入**：`newEinoSummarizationModelOptions` 原先同时设置 `model.WithMaxTokens` 与 `einoopenai.WithMaxCompletionTokens`，部分网关会同时收到 `max_tokens` + `max_completion_tokens` 重复上限而拒绝；改为 Claude provider（Agentic）走 `model.WithMaxTokens`、其余仅 `WithMaxCompletionTokens`。默认 `summarization_output_reserve_tokens` 8192→40960（`config.example.yaml` 与 `DefaultSummarizationOutputReserveTokens` 同步）。涉及 5 个文件本地与官方 v1.7.20 零分歧，cherry-pick 干净落地；`eino_summarize_payload_test.go` 新增 wire 级断言（请求体只含 `max_completion_tokens`）。
+- **运行时存储清理（470eb5ea）整体采纳（28 文件 +3356 行）**：新增 `internal/storage/` 分类保留策略清理器——agent 工作区 / 工具输出溢写 / C2 产物 / 对话上传件 / 工作流检查点 / 诊断日志七类运行时产物按保留天数清扫；设置页新增「存储清理」页签（预览默认、真删需 `dry_run=false` + `confirm=true` 双确认、活跃会话保护期、孤儿目录宽限回收、符号链接不跟随、删除先改名为 `.tmp-for-deletion` 可恢复残渣）；`storage:read/write` 权限仅授予管理员；`config.yaml` 新增 `storage` 段（`auto_clean` 默认关闭，升级不删既有数据）。顺带修复两个泄漏：DeleteConversation 磁盘残留 chat_uploads 文件（行已 ON DELETE CASCADE）、工作流检查点此前无任何删除路径。适配点：
+  - `internal/security/rbac.go` 权限目录：本地是统一审批 `approval:*`（无官方 `hitl:read/write`），保留本地目录并在 `config:write` 后插入 `storage:read/write` 两项；`grantSystemRolePermissions` 将 `storage:` 前缀与 rbac/config/terminal/audit 一并排除在 operator 默认授权之外（管理员专属）。
+  - `internal/handler/config.go`：`updateStorageConfig` yaml 回写与 `PUT /api/config` 的 storage 段合并逻辑直接合入；官方 `UpdateHitlDefaultConfig`（写 hitl 默认模式/审批人/超时）只被官方旧 `handler/hitl.go` 的 `/hitl/default-config` 路由调用，本分支统一审批由 `/api/approval-config`（`SaveGlobalApprovalConfig`）取代，**裁掉不收录**。
+  - `internal/app/app.go`：App 结构体与构造字面量保留本地 approvalCoordinator / approvalHumanReviewer 字段，插入 `storageHandler`；清理器根目录复用本地既有的 `workspaceRoot` / `reductionRoot` / `plantaskBase` / `dbPath` 推导，与实际写入目录同源。
+  - 前端 `web/static/js/storage.js`、`settings.js` 页签钩子、`index.html` 页签与面板、`style.css`、中英 i18n、`docs/zh-CN/configuration.md` 均直接落地；官方 `docs/en-US/configuration.md` 变更不跟进（本分支不收录英文文档目录）。顺带清掉 `style.css` 中 v1.7.18 同步误入库的一行孤立 `>>>>>>> 6ad9ea2d` 冲突标记残留。
+- **俄语 UI 语言包（78973e84）整体采纳**：新增 `web/static/i18n/ru-RU.json`（4899 行）+ 语言切换器「Русский」项（`index.html` / `api-docs.html`）；`i18n.js` 增加 ru 浏览器语言探测、`ru-RU → [en-US, zh-CN]` 回退链（ru 激活时预载 en-US 资源）与 `window.uiLocale()` 统一 BCP 47 助手；`chat.js` / `monitor.js` / `vulnerability.js` / `audit.js` / `audit-datetime-picker.js` 的时间与日期格式化改走 `uiLocale()`（ru-RU 24 小时制）。适配点：官方 `hitl.js` 的 `hitlLocale()` 改造在本分支落不到原处——本地 hitl.js 已瘦身为 i18n/API 辅助（人机协同页逻辑分居 `approval-ui.js` / `approval-ui-model.js`），等价改动语义合并到 `approval-ui.js` 的 `approvalLocale()`（uiLocale 优先 + ru 分支）。ru-RU.json 基于官方键集，本分支二开键（审批页 / FOFA / websearch 等）未翻译，按回退链显示英文，与官方「未翻译回退英文」行为一致。
+- **微信群二维码更新（e9b6e0d8）裁剪已达成**：本地早已删除宣传 QR 图与 `README_CN.md`，官方动作与本分支现状一致，无需变更。
+- **版本号（82b0af10）**：`config.example.yaml` → `v1.7.21-src`，README 基线与本文件同步更新。
+- 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞全生命周期、bannerHosts、统一审批（`approval:*` 权限体系未动，存储清理权限独立成段）均未改动；本次新增 `internal/storage/` 七文件、`internal/handler/storage.go`、`internal/database/storage_activity.go`、`web/static/js/storage.js`、`web/static/i18n/ru-RU.json`，RBAC 目录净增 `storage:read/write` 两项权限。
 
 ### v1.7.20 同步说明（2026-09-27）
 
