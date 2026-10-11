@@ -347,6 +347,7 @@ func (m *ExternalMCPManager) startClient(name string, autoReconnect bool) error 
 			if !autoReconnect {
 				m.mu.Lock()
 				serverCfg.ExternalMCPEnable = true
+				serverCfg.Disabled = false
 				m.configs[name] = serverCfg
 				m.mu.Unlock()
 			}
@@ -372,6 +373,7 @@ func (m *ExternalMCPManager) startClient(name string, autoReconnect bool) error 
 	// 更新配置为启用
 	m.mu.Lock()
 	serverCfg.ExternalMCPEnable = true
+	serverCfg.Disabled = false
 	m.configs[name] = serverCfg
 	// 清除之前的错误信息（重新启动时）
 	delete(m.errors, name)
@@ -453,6 +455,7 @@ func (m *ExternalMCPManager) StopClient(name string) error {
 
 	// 更新配置为禁用
 	serverCfg.ExternalMCPEnable = false
+	serverCfg.Disabled = true
 	m.configs[name] = serverCfg
 
 	m.clearReconnectState(name)

@@ -27,7 +27,14 @@ func main() {
 	var httpBootstrap = flag.Bool("http", false, "Force plain HTTP for the main site, overriding TLS settings in the configuration file")
 	var resetAdminPassword = flag.Bool("reset-admin-password", false, "Interactively reset the built-in admin password and exit")
 	checkIsolation := flag.Bool("check-process-isolation", false, "Probe task containment and cleanup, then exit without starting services")
+	checkUpdate := flag.Bool("check-update", false, "Report whether this installation's own repository has anything newer, then exit")
+	applyUpdate := flag.Bool("update", false, "Fast-forward this installation to its own remote, rebuild the binary, and exit")
+	updateRollback := flag.Bool("update-rollback", false, "Undo the last --update: back to the commit and binary kept before it")
 	flag.Parse()
+
+	if handled, code := updateCommandIfNeeded(strings.TrimSpace(*configPath), *checkUpdate, *applyUpdate, *updateRollback); handled {
+		os.Exit(code)
+	}
 
 	// 环境变量兼容（便于 systemd/docker 等不传参场景）
 	if *httpsBootstrap && *httpBootstrap {

@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.22-src**
+> 当前分支：**v1.7.23-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -142,6 +142,19 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **版本号（762f798a）**：`config.example.yaml` → `v1.7.22-src`，README 基线与本文件同步更新。
 - 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞全生命周期、统一审批、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills 均未改动；`finalizationBlockedMessage` 新增官方 `workflow_rejected` 直出分支，与分支既有缺完成信号分支共存（生产端 `workflow_integration.go` 随 C 类文件落地）。
 
+### v1.7.23 同步说明（2026-10-11）
+
+官方 v1.7.22→v1.7.23 共 41 个提交：**应用内自更新（PR #346 + #347 恢复修复）整体采纳（默认源改指本仓库）+ 漏洞复测（PR #348）整体采纳（审批继承适配统一审批）+ 登录密码可见切换 + MCP 修复两处**；裁剪官方 CHANGELOG / README_CN / docs/feature 过程文档 / docs/en-US。34 个分歧文件三方合并，15 个含冲突逐处语义消解，非直接 merge。
+
+- **应用内自更新（cb8bc6b8…e80668b2 + a3edab47 恢复修复）整体采纳**：新增 `internal/update/`（20 文件：adopt/apply/build/binary/lock（Unix flock + Windows）/paths/recovery_evidence/replace/rollback_pending/update/version）+ `internal/handler/update.go` + `cmd/server/update_cli.go` + `web/static/js/update.js`（设置页「系统更新」控制台：状态/预览/采纳/重启看门狗/中断回滚恢复）+ `update:read/update:apply` 权限与 `/system/update` 路由（进程级变更，assigned/own 会话不可触发）+ `.github/workflows/self-update.yml`。**适配点（安全关键）**：`DefaultRepoURL` 官方默认 `AIPentest/CyberStrikeAI.git` → **`https://github.com/langbyyi/CyberStrikeAI-SRC.git`**（官方注释明示 fork 改这一个值；不改则用户一键更新会拉官方主线、丢失整个 SRC 二开层），守卫测试同步；`upgrade.sh` 官方重构（resolve_repo：git 工作区同步 / `--repo` / 环境变量 / 内置兜底）落地，内置兜底 `DEFAULT_GITHUB_REPO` 同改本仓库；`.gitignore` 补 `.update-*` 运行时产物；run.sh 自动生成 config.yaml 行为随官方落地（README 契约测试 `TestReadmeQuickStartDocumentsAutomaticConfigCreation` 本分支 README 原文已覆盖）。
+- **漏洞复测（6a673649 PR #348）整体采纳**：漏洞列表一键创建独立复测对话——`internal/database/vulnerability_retest.go`（快照式复制消息、`vulnerability_retests` 分支表、占位符 `{{vulnerability_id}}/{{conversation_id}}/{{source_conversation_id}}` 解析）、`internal/handler/vulnerability_retest.go`（权限链：漏洞读写 + 源对话读 + 项目范围 + 源运行中 409）、`update_vulnerability_status` MCP 工具（fixed/confirmed 状态 + 复测证据 append-only 落 `retest_log` 列）、`Vulnerability.RetestLog` 字段与 SELECT/Scan 全链补列、复测会话的 MCP `get_vulnerability` 授权走 `canAccessVulnerabilityForRetest`（源记录 + 项目边界）。**审批继承适配**：官方 `CreateVulnerabilityRetest` 的 `hitl_conversation_configs` 行复制带 sqlite_master 守卫，本分支无该表时空转——统一审批为全局 `approval:*` 配置，策略天然生效；官方 handler 测试剔除 `NewHITLManager` 依赖段（源会话配置预置与继承断言），保留权限流 403/409、占位符解析、PendingPrompt 持久化、GetConversation 恢复覆盖。
+- **登录密码可见切换（d590cdd7）**：登录输入框内可达性切换按钮（`auth.js`/`index.html`/i18n/`password-feedback.test.cjs` 迁移副本并入官方新增断言）。
+- **MCP 修复**：外部 MCP start/stop 激活标志一致（ff50af02）、stop 状态保留 + 恢复证据先验证后变更（fab7e603）。
+- **官方测试落位适配**：4 个新前端测试迁 `web/tests/`；`permission-gate-state`/`router-hash-form` 的 `__dirname` 路径对齐（后者 docs 断言剔除 en-US 条目）；`update-ui` 构建时间日期断言放宽为 M/D/Y 与 Y/M/D 两序皆可（官方按 en-US CI 写死 M/D/YYYY，zh-CN 环境 `toLocaleDateString` 输出 Y/M/D——测试侧放宽，运行时零改动）；3 个 X 类官方测试（chat-scroll-refresh / hitl-approval-ui / hitl-conversation-isolation）的官方修改并入本分支迁移副本——缓存版本号断言泛化采纳，hitl.js 默认配置流新契约断言不采纳（本分支 hitl.js 已瘦身，流程由统一审批取代）。
+- **裁剪**：`CHANGELOG.md`（官方版本账本，本分支以 git log + SRC二开.md 记录）、`README_CN.md`（更早已裁）、`docs/feature/login-password-eye.md` / `docs/feature/self-update-recovery-fixes.md`（官方过程文档）、`docs/en-US/{deployment,developer-guide,rbac}.md`（英文文档目录更早已裁）；`README.md` 保留本分支版本（官方对 README 的自更新描述不入库）。
+- **版本号（8ce62813）**：`config.example.yaml` → `v1.7.23-src`（并采纳官方对 version 字段的「一键更新后同步 config.yaml 版本号」注释）。
+- 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞五工具生命周期（与官方 `update_vulnerability_status` 并存）、统一审批（`approval:*` 目录未动，仅新增 `update:read/apply`）、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills 均未改动。
+
 ### v1.7.20 同步说明（2026-09-27）
 
 官方 v1.7.19→v1.7.20 共 4 个提交：**2 个直接合入（含 1 个版本号）+ 1 个适配合并 + 1 个语义合并到统一审批**；另顺带收口一处官方同源的 supervisor 委派失效。逐提交与本地二开层比对后按语义合并，非直接 merge。
@@ -180,7 +193,7 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 
 ```bash
 ./run.sh                                    # 官方启动脚本（Go 1.25+）
-cp config.example.yaml config.yaml          # 填入模型/API 配置后运行
+# 首次启动服务端会自动从 config.example.yaml 生成 config.yaml，填入模型/API 配置后重启即可
 ```
 
 - 空间测绘：`fofa/zoomeye/quake/shodan` 段填 `api_key`（高级字段见 `config.example.yaml` 的 `fofa` 段）

@@ -82,8 +82,40 @@ func mcpToolAuthorizer(db *database.DB) func(context.Context, string, map[string
 				return fmt.Errorf("no access to conversation %s", conversationID)
 			}
 			return nil
-		case builtin.ToolGetVulnerability:
-			return resource("vulnerability:read", "vulnerability", "id")
+		case builtin.ToolGetVulnerability, builtin.ToolUpdateVulnerabilityStatus:
+			permission := "vulnerability:read"
+			if toolName == builtin.ToolUpdateVulnerabilityStatus {
+				permission = "vulnerability:write"
+			}
+			if err := require(permission); err != nil {
+				return err
+			}
+			id := mcpAuthorizationString(args, "id")
+			if db == nil || id == "" || !db.UserCanAccessResource(principal.UserID, principal.ScopeFor(permission), "vulnerability", id) {
+				return fmt.Errorf("no access to vulnerability %s", id)
+			}
+			convID := mcpAuthorizationConversationID(ctx)
+			if r, err := db.GetVulnerabilityRetest(convID); err != nil {
+				return err
+			} else if r != nil {
+				if r.VulnerabilityID != id || !db.UserCanAccessResource(principal.UserID, principal.ScopeFor(permission), "conversation", convID) {
+					return fmt.Errorf("no access to retest vulnerability %s", id)
+				}
+				filter := mcpEffectiveProjectFilter(ctx, db)
+				if (filter == database.ProjectFilterUnbound && r.SourceProjectID != "") || (filter != "" && filter != database.ProjectFilterUnbound && filter != r.SourceProjectID) {
+					return fmt.Errorf("retest conversation conflicts with current project scope")
+				}
+				v, err := db.GetVulnerability(id)
+				if err != nil {
+					return err
+				}
+				projectID, err := db.GetConversationProjectID(convID)
+				if err != nil || !canAccessVulnerabilityForRetest(db, v, convID, projectID) {
+					return fmt.Errorf("retest conversation project no longer matches vulnerability %s", id)
+				}
+				return nil
+			}
+			return authorizeMCPProjectResourceBoundary(ctx, db, "vulnerability", id)
 		case builtin.ToolUpdateVulnerability:
 			return resource("vulnerability:write", "vulnerability", "id")
 		case builtin.ToolDeleteVulnerability:

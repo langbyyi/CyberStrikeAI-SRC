@@ -81,6 +81,7 @@ AI 测试角色不是安全授权边界。即使选择了“渗透测试”角�
 | WebShell | `webshell:read`、`webshell:write`、`webshell:delete` |
 | C2 | `c2:read`、`c2:write`、`c2:delete` |
 | MCP | `mcp:read`、`mcp:execute`、`mcp:write`、`mcp:external:execute` |
+| 一键更新（本机源码） | `update:read`、`update:apply` |
 | 知识库 | `knowledge:read`、`knowledge:write`、`knowledge:delete` |
 | Skills | `skills:read`、`skills:write`、`skills:delete` |
 | Markdown Agents | `agents:read`、`agents:write`、`agents:delete` |
@@ -107,6 +108,8 @@ AI 测试角色不是安全授权边界。即使选择了“渗透测试”角�
 - `mcp:execute` 用于访问认证后的 MCP HTTP 入口。
 - `mcp:external:execute` 用于 Agent 调用外部 MCP 工具，当前还要求该权限的 Scope 为 `all`。
 - 管理外部 MCP 配置使用 `mcp:write`，与执行外部工具是两项权限。
+- 一键更新是**两项**：`update:read` 看本机安装的版本与更新源差集；`update:apply` 拉取更新源仓库（默认官方仓库）
+  的默认分支、重编译并换掉平台二进制。写侧还要求会话是 `all` scope——一台机器一份源码，`assigned`/`own` 不该能移动别人正在跑的代码。
 - `robot:write` 管理机器人配置和测试入口；机器人聊天本身使用绑定用户或服务账号的业务权限。
 
 ---
@@ -152,6 +155,7 @@ project:write → own
 - 知识库写操作（搜索除外）。
 - 统一审批全局配置与审批规则。
 - C2 Profile 写操作。
+- 一键更新的写操作（`check`/`apply`/`rollback`，即 `update:apply`）。
 - 部分全局监控统计。
 
 ---

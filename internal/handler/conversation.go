@@ -239,6 +239,11 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 		return
 	}
 
+	conv.Retest, err = h.db.GetVulnerabilityRetest(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取复测分支失败"})
+		return
+	}
 	c.JSON(http.StatusOK, conv)
 }
 

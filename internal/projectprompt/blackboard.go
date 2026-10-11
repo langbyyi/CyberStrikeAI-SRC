@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	factRhythmCore = "勿等会话结束或收尾再批量写入。每**确认**一条新认知（开放端口/服务版本、入口路径、认证态或凭据特征、可利用点或攻击面变化）后，**立即**调用 `upsert_project_fact`（同 fact_key 覆盖更新）。每**验证**出一条可复现漏洞（含 POC/影响）后，**立即**调用 `record_vulnerability`；与事实可各记一次。继续下一步工作前优先落库，避免上下文压缩后细节丢失。未绑项目时说明无法写黑板，仍在本轮保留证据摘要。"
+	factRhythmCore              = "勿等会话结束或收尾再批量写入。每**确认**一条新认知（开放端口/服务版本、入口路径、认证态或凭据特征、可利用点或攻击面变化）后，**立即**调用 `upsert_project_fact`（同 fact_key 覆盖更新）。每**验证**出一条可复现漏洞（含 POC/影响）后，**立即**调用 `record_vulnerability`；与事实可各记一次。继续下一步工作前优先落库，避免上下文压缩后细节丢失。未绑项目时说明无法写黑板，仍在本轮保留证据摘要。"
 	factRhythmCoordinatorSuffix = "委派/子任务返回新认知或漏洞时，由协调者及时写入，勿假定子代理已记。"
 	factRhythmSubAgentSuffix    = "若工具集中无上述工具，须在交付物末尾给出「待落库」结构化条目（fact_key 建议、summary、body/POC 要点），供协调者**立即**写入。"
 )
@@ -85,7 +85,7 @@ func FactRecordingBlackboardSection(coordinatorDelegate bool) string {
 	b.WriteString(builtin.ToolListVulnerabilities)
 	b.WriteString(" 查重，详情用 ")
 	b.WriteString(builtin.ToolGetVulnerability)
-	b.WriteString("(id)（默认仅当前项目/会话）。\n")
+	b.WriteString("(id)（默认仅当前项目/会话）。复测已有漏洞后用 update_vulnerability_status(id, status, retest_notes) 更新状态并追加证据，勿重复记录；无法验证时保留原状态。\n")
 	b.WriteString("- 同一发现可能需**各记一次**（事实记**完整攻击链与 exploit 细节**供复现，漏洞记正式 findings）。误报用 ")
 	b.WriteString(builtin.ToolDeprecateProjectFact)
 	b.WriteString(" 或漏洞状态 false_positive。\n")

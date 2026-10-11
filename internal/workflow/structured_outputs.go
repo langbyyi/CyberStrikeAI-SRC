@@ -107,8 +107,12 @@ func endOutputMap(node graphNode, value any) map[string]any {
 }
 
 func toolOutputMap(node graphNode, output string, toolName string, args map[string]any, executionID string, isError bool) map[string]any {
+	status := "completed"
+	if isError {
+		status = "failed"
+	}
 	typed := ToolOutput{
-		NodeOutputEnvelope: envelope("tool", node.ID, node.Type, "completed", output),
+		NodeOutputEnvelope: envelope("tool", node.ID, node.Type, status, output),
 		ToolName:           toolName,
 		Arguments:          args,
 		ExecutionID:        executionID,

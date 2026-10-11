@@ -1453,7 +1453,7 @@ function adjustTextareaHeight(textarea) {
 }
 
 // 发送消息
-async function sendMessage() {
+async function sendMessage(options = {}) {
     const input = document.getElementById('chat-input');
     let message = input.value.trim();
     const hasAttachments = chatAttachments && chatAttachments.length > 0;
@@ -1628,6 +1628,8 @@ async function sendMessage() {
         if (!response.ok) {
             throw new Error('请求失败: ' + response.status);
         }
+
+        if (typeof options.onRequestAccepted === 'function') options.onRequestAccepted();
 
         liveStreamState.conversationId = streamConversationId || null;
         try {
@@ -5837,6 +5839,16 @@ async function loadConversation(conversationId) {
             if (currentConversationId === conversationId && typeof window.restoreHitlInlineForConversation === 'function') {
                 await window.restoreHitlInlineForConversation(conversationId);
             }
+        }
+
+        // A branch may have been created while the network or navigation
+        // interrupted its automatic send. Restore its own persisted prompt.
+        const pendingRetestPrompt = conversation.retest && conversation.retest.pending_prompt;
+        const retestInput = document.getElementById('chat-input');
+        if (seq === loadConversationRequestSeq && currentConversationId === conversationId && pendingRetestPrompt && retestInput &&
+            (previousConversationId !== conversationId || !retestInput.value.trim())) {
+            retestInput.value = pendingRetestPrompt;
+            adjustTextareaHeight(retestInput);
         }
 
         // 页面刷新后主流式连接会中断；若该会话仍在后端运行，自动挂载 task-events 补流继续更新前端迭代进度。

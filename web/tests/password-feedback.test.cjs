@@ -42,10 +42,18 @@ test('password preview toggles accessibly and can be reset without changing the 
  h.ctx.toggleLoginPasswordVisibility();
  assert.equal(h.fields['login-password'].type,'text');
  assert.equal(h.fields['login-password-toggle'].getAttribute('aria-pressed'),'true');
+ assert.equal(h.fields['login-password-toggle'].getAttribute('aria-label'),'login.hidePassword');
+ assert.equal(h.fields['login-password-toggle'].getAttribute('title'),'login.hidePassword');
  h.ctx.setLoginPasswordVisible(false);
  assert.equal(h.fields['login-password'].type,'password');
  assert.equal(h.fields['login-password'].value,'test-only-password');
  assert.equal(h.fields['login-password-toggle'].getAttribute('data-i18n'),'login.showPassword');
+ assert.equal(h.fields['login-password-toggle'].getAttribute('aria-label'),'login.showPassword');
+ assert.equal(h.fields['login-password-toggle'].getAttribute('title'),'login.showPassword');
+ assert.equal(h.fields['login-password-toggle'].textContent,undefined);
+ h.ctx.window.t=undefined;
+ h.ctx.toggleLoginPasswordVisibility();
+ assert.equal(h.fields['login-password-toggle'].getAttribute('aria-label'),'隐藏密码');
 });
 test('password form has field-specific errors without requesting a save',async () => {
  const h=harness({'auth-new-password':'short','auth-confirm-password':'different'});

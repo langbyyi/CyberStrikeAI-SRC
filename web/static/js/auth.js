@@ -100,7 +100,9 @@ function setLoginPasswordVisible(visible) {
         button.setAttribute('aria-pressed', String(visible));
         const key = visible ? 'login.hidePassword' : 'login.showPassword';
         button.setAttribute('data-i18n', key);
-        button.textContent = typeof window.t === 'function' ? window.t(key) : (visible ? '隐藏密码' : '显示密码');
+        const label = typeof window.t === 'function' ? window.t(key) : (visible ? '隐藏密码' : '显示密码');
+        button.setAttribute('aria-label', label);
+        button.setAttribute('title', label);
     }
 }
 
@@ -519,11 +521,18 @@ function applyPermissionElement(el) {
     const allowed = permissionAllowedForElement(el);
     el.hidden = !allowed;
     el.classList.toggle('rbac-permission-denied', !allowed);
+    // Permission decides whether this user may ever use the control; it does not decide
+    // whether the control is ready. A page that disables one for a reason of its own marks
+    // it with data-state-disabled, because writing el.disabled = !allowed here otherwise
+    // re-enables it for exactly the users who are allowed - and a button whose preconditions
+    // are unmet is then pressed, and fails.
+    const blockedByState = el.dataset && el.dataset.stateDisabled === 'true';
+    const disabled = !allowed || blockedByState;
     if ('disabled' in el) {
-        el.disabled = !allowed;
+        el.disabled = disabled;
     }
     el.setAttribute('aria-hidden', allowed ? 'false' : 'true');
-    el.setAttribute('aria-disabled', allowed ? 'false' : 'true');
+    el.setAttribute('aria-disabled', disabled ? 'true' : 'false');
 }
 
 let permissionClickGuardInstalled = false;

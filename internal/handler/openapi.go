@@ -608,6 +608,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"description": "修复建议",
 						},
 						"retest_notes": map[string]interface{}{"type": "string", "description": "复测方式"},
+						"retest_log":   map[string]interface{}{"type": "string", "description": "复测记录（只读，由复测流程追加）"},
 					},
 				},
 				"UpdateVulnerabilityRequest": map[string]interface{}{
@@ -3415,6 +3416,59 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"401": map[string]interface{}{
 							"description": "未授权",
 						},
+					},
+				},
+			},
+			"/api/system/update/source": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "配置更新源（本安装从哪个仓库更新）",
+					"description": "把更新源写进 config.yaml 的 update 段：单个 repo 字段（仓库地址），更新跟随该仓库的默认分支。留空（或写空串）= 回到官方仓库 https://github.com/AIPentest/CyberStrikeAI.git。地址白名单为 https/http/ssh/git/file:// 与本机绝对路径（git 的 ext:: 传输会执行命令，一律拒绝）。",
+					"operationId": "saveUpdateSource",
+					"requestBody": map[string]interface{}{
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"repo": map[string]interface{}{"type": "string", "description": "更新源仓库地址；留空 = 官方仓库"},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "已保存（返回配置值与官方默认地址）"},
+						"400": map[string]interface{}{"description": "仓库地址不合法"},
+						"401": map[string]interface{}{"description": "未授权"},
+					},
+				},
+			},
+			"/api/system/update/adopt": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "把非 git 目录接入更新源",
+					"description": "解压/打包安装所在的目录接入配置好的更新源（未配置 = 官方仓库）：不带 confirm 做无副作用预览（在临时仓库里 fetch，列出会被目标版本替换的文件与会保留的运维者内容）；confirm=true 时异步执行（202 + job_id，用 /api/system/update/job 轮询）：git init、添加 origin、落地更新源默认分支的内容，运维者内容先暂存再放回，被替换的文件全部留底到 .update-backup/<时间戳>/overwritten/。已是 git 工作树时返回 409（用一键更新而不是接入）。",
+					"operationId": "adoptUpdateSource",
+					"requestBody": map[string]interface{}{
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"confirm": map[string]interface{}{"type": "boolean", "description": "false/缺省=只预览；true=确认执行"},
+										"restart": map[string]interface{}{"type": "boolean", "description": "接入成功后退出进程交给外部守护拉起，默认 false"},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "预览结果（plan：将被替换/保留的文件清单与总数）"},
+						"202": map[string]interface{}{"description": "接入任务已受理，返回 job_id"},
+						"400": map[string]interface{}{"description": "更新源地址不合法，或要求重启但没有重启钩子"},
+						"409": map[string]interface{}{"description": "目录已是 git 工作树；或有任务在进行中"},
+						"401": map[string]interface{}{"description": "未授权"},
 					},
 				},
 			},
@@ -6447,6 +6501,110 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 						"405": map[string]interface{}{
 							"description": "方法不允许（仅支持POST请求）",
+						},
+					},
+				},
+			},
+			"/api/system/update": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "查看本安装的源码版本",
+					"description": "读取安装目录自己的 git 工作树（分支、远端、当前提交、本地改动、是否有 Go 工具链、是否有可回滚点），不发起任何网络请求",
+					"operationId": "getUpdateStatus",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "安装状态与最近一次更新任务",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
+						},
+					},
+				},
+			},
+			"/api/system/update/check": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "检查本安装的更新源有无新提交",
+					"description": "对配置的更新源仓库（未配置 = 官方仓库 https://github.com/AIPentest/CyberStrikeAI.git）的默认分支执行 fetch，报告落后/领先提交数与新提交列表。检查失败返回 200 且带 checkError，不把「查不了」说成「已是最新」",
+					"operationId": "checkUpdate",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "检查结果（含 checkError 时为检查未成功）",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
+						},
+					},
+				},
+			},
+			"/api/system/update/apply": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "一键更新源码并重编译",
+					"description": "快进到更新源仓库默认分支的最新提交、重新编译二进制并原子换入（旧二进制留作 .prev 以便回滚）。本机改过源码文件或分支已分叉时拒绝执行并点名；roles/skills/tools/agents/bundles/knowledge_base/data/config.yaml 等运维者内容在合并前暂存、合并后放回，被保留的文件列在 keptContent。请求立即返回 job_id，进度用 GET /api/system/update/job 轮询；已有任务在跑时返回 409",
+					"operationId": "applyUpdate",
+					"requestBody": map[string]interface{}{
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"restart": map[string]interface{}{
+											"type":        "boolean",
+											"description": "更新成功后优雅关闭并退出进程；只在有外部守护时才会被拉起，默认 false",
+										},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"202": map[string]interface{}{
+							"description": "任务已受理，返回 job_id",
+						},
+						"400": map[string]interface{}{
+							"description": "请求体不合法，或要求重启但本次启动没有装配重启钩子",
+						},
+						"409": map[string]interface{}{
+							"description": "已有一次更新在进行中",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
+						},
+					},
+				},
+			},
+			"/api/system/update/job": map[string]interface{}{
+				"get": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "查看更新任务进度",
+					"description": "返回正在运行或最近一次更新任务的状态、逐行进度 steps、结果 result 与失败 failure；从未更新过时 job 为 null",
+					"operationId": "getUpdateJob",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "任务状态",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
+						},
+					},
+				},
+			},
+			"/api/system/update/rollback": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"系统更新"},
+					"summary":     "回滚到本次更新之前",
+					"description": "撤到上一次更新记录里的旧提交，并换回换入前保留的旧二进制。自那次更新之后 HEAD 已经变化、或本机有源码改动时返回 409 拒绝，而不是丢弃更新之后的工作",
+					"operationId": "rollbackUpdate",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "已回滚",
+						},
+						"409": map[string]interface{}{
+							"description": "没有可回滚的记录、更新进行中、或更新之后 HEAD 已被移动",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
 						},
 					},
 				},

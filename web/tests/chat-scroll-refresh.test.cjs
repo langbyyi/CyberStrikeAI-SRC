@@ -158,7 +158,7 @@ test('登录成功后重新加载曾因未授权失败的项目侧栏', () => {
     assert.notEqual(conversationsIndex, -1);
     assert.ok(projectRetryIndex > conversationsIndex);
     assert.match(refreshSource, /typeof window\.refreshChatProjectSelector === 'function'/);
-    assert.match(html, /\/static\/js\/auth\.js\?v=20260907-blocked-1/);
+    assert.match(html, /\/static\/js\/auth\.js\?v=[A-Za-z0-9._-]+/);
 });
 
 test('用户真正滑到底部后恢复自动跟随且不会提前强制跳底', () => {
@@ -468,8 +468,8 @@ test('刷新指定对话时立即恢复且加载完成前不闪出无项目状�
     assert.match(loadSource, /finally \{[\s\S]*?finishChatConversationRestore\(conversationId\)/);
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-messages/);
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-input-container/);
-    assert.match(html, /router\.js\?v=20260907-1/);
-    assert.match(html, /chat\.js\?v=20260907-blocked-1/);
+    assert.match(html, /router\.js\?v=[A-Za-z0-9._-]+/);
+    assert.match(html, /chat\.js\?v=[A-Za-z0-9._-]+/);
 });
 
 test('刷新运行中回复会复用已持久化 planning 并继续追加未来增量', () => {

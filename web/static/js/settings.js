@@ -691,6 +691,14 @@ function switchSettingsSection(section) {
     if (section === 'storage' && typeof initStorageSection === 'function') {
         setTimeout(initStorageSection, 0);
     }
+    if (section === 'update') {
+        if (typeof loadUpdateConsole === 'function') {
+            loadUpdateConsole();
+        }
+    } else if (typeof stopUpdatePolling === 'function') {
+        // 离开更新分区就停掉进度轮询；服务端的任务照跑，回来时 loadUpdateConsole 会接着读。
+        stopUpdatePolling();
+    }
 }
 
 // 打开设置

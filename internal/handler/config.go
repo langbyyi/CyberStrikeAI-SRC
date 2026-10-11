@@ -1972,6 +1972,27 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 	})
 }
 
+// SetUpdateSource 记录一键更新的更新源（单个仓库地址；空 = 回到官方仓库）。
+// 走与其他设置相同的写入路径：备份旧文件、按 YAML 文档只改 update 段、原子落盘。
+func (h *ConfigHandler) SetUpdateSource(repo string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	previous := h.config.Update
+	h.config.Update = config.UpdateConfig{Repo: strings.TrimSpace(repo)}
+	if err := h.saveConfig(); err != nil {
+		h.config.Update = previous
+		return err
+	}
+	return nil
+}
+
+// UpdateSource 读当前配置的更新源地址（加读锁；更新处理器每次请求现读，保存后立即生效）。
+func (h *ConfigHandler) UpdateSource() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.config.Update.Repo
+}
+
 // saveConfig 保存配置到文件
 func (h *ConfigHandler) saveConfig() error {
 	configFileMu.Lock()
@@ -1998,6 +2019,7 @@ func (h *ConfigHandler) saveConfig() error {
 	updateAIConfig(root, h.config.AI)
 	removeKeyFromMap(root.Content[0], "openai")
 	updateVisionConfig(root, h.config.Vision)
+	updateUpdateSourceConfig(root, h.config.Update)
 	updateFOFAConfig(root, h.config.FOFA)
 	updateWebSearchConfig(root, h.config.WebSearch)
 	updateSpaceSearchConfig(root, "zoomeye", h.config.ZoomEye)
@@ -2125,6 +2147,20 @@ func updateMCPConfig(doc *yaml.Node, cfg config.MCPConfig) {
 	setBoolInMap(mcpNode, "enabled", cfg.Enabled)
 	setStringInMap(mcpNode, "host", cfg.Host)
 	setIntInMap(mcpNode, "port", cfg.Port)
+}
+
+// updateUpdateSourceConfig 写入一键更新的更新源（update 段的单个 repo 字段）。
+// 留空时把整段删掉，而不是留下一个空的 update: 块——"没有配置"应当就是文件里没有这一段，
+// 运行时按官方仓库处理。
+func updateUpdateSourceConfig(doc *yaml.Node, cfg config.UpdateConfig) {
+	root := doc.Content[0]
+	repo := strings.TrimSpace(cfg.Repo)
+	if repo == "" {
+		removeKeyFromMap(root, "update")
+		return
+	}
+	node := ensureMap(root, "update")
+	setStringInMap(node, "repo", repo)
 }
 
 func updateVisionConfig(doc *yaml.Node, cfg config.VisionConfig) {

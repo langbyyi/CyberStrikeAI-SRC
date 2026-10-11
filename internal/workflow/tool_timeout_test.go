@@ -88,3 +88,14 @@ func TestRunToolNodeAppliesTimeoutToActualMCPExecution(t *testing.T) {
 		t.Fatal("actual MCP handler was not executed")
 	}
 }
+
+func TestFailedToolOutputDoesNotClaimCompletedStatus(t *testing.T) {
+	out := toolOutputMap(graphNode{ID: "tool-1", Type: "tool"}, "tool failed", "lookup", nil, "exec-1", true)
+	if out["status"] != "failed" {
+		t.Fatalf("failed output claimed success: %#v", out)
+	}
+	typed, ok := out["typed"].(ToolOutput)
+	if !ok || typed.Status != "failed" || !typed.IsError {
+		t.Fatalf("typed output disagrees with failure: %#v", out["typed"])
+	}
+}

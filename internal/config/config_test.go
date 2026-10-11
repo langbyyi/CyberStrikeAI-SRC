@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -424,5 +425,278 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("default audit prompt missing %q", want)
 		}
+	}
+}
+func TestLoadUpdateRepoReadsOnlyTheSourceField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// The rest of the file may be broken or unvalidatable; the CLI only asks for the
+	// update source, and a full config load must not be a precondition for updating.
+	if err := os.WriteFile(path, []byte("update:\n  repo: https://github.com/Sycun/CyberStrikeAI.git\nserver:\n  port: 8088\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := LoadUpdateRepo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo != "https://github.com/Sycun/CyberStrikeAI.git" {
+		t.Fatalf("repo = %q, want the configured address", repo)
+	}
+
+	// Unset and missing files both mean "the official repository is the default".
+	if err := os.WriteFile(path, []byte("server:\n  port: 8088\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if repo, err := LoadUpdateRepo(path); err != nil || repo != "" {
+		t.Fatalf("repo = %q err = %v, want empty with no error", repo, err)
+	}
+	if repo, err := LoadUpdateRepo(filepath.Join(dir, "missing.yaml")); err != nil || repo != "" {
+		t.Fatalf("a missing config is not an error: repo = %q err = %v", repo, err)
+	}
+
+	// A file that is not YAML at all must fail loudly rather than silently fall back to
+	// the official repository (that would be an update from the wrong place).
+	if err := os.WriteFile(path, []byte("update: [not: a: map\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUpdateRepo(path); err == nil {
+		t.Fatal("a malformed config must be an error, not a silent default")
+	}
+}
+
+func TestFileVersionAndWriteVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// Missing file reads as "unknown", not an error.
+	if v, err := FileVersion(filepath.Join(dir, "missing.yaml")); err != nil || v != "" {
+		t.Fatalf("missing file: %q %v", v, err)
+	}
+
+	original := "version: \"v1.0.0\"\nserver:\n  port: 8088\n  # a nested word: version: should stay put\nnotes:\n  version: nested-untouched\n"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := FileVersion(path); err != nil || v != "v1.0.0" {
+		t.Fatalf("version = %q err = %v", v, err)
+	}
+
+	changed, err := WriteVersion(path, "v1.1.0")
+	if err != nil || !changed {
+		t.Fatalf("write: changed=%v err=%v", changed, err)
+	}
+	got := readTestFile(t, path)
+	want := "version: \"v1.1.0\"\nserver:\n  port: 8088\n  # a nested word: version: should stay put\nnotes:\n  version: nested-untouched\n"
+	if got != want {
+		t.Fatalf("file after write:\n%q\nwant:\n%q", got, want)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("mode = %v err = %v, want 0640 preserved", info.Mode(), err)
+	}
+
+	// Idempotent: the same value is not rewritten.
+	if changed, err := WriteVersion(path, "v1.1.0"); err != nil || changed {
+		t.Fatalf("rewriting the same value: changed=%v err=%v", changed, err)
+	}
+
+	// No top-level field: insert at the top, nested keys stay untouched.
+	if err := os.WriteFile(path, []byte("server:\n  port: 8088\nnotes:\n  version: nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := WriteVersion(path, "v1.2.0"); err != nil || !changed {
+		t.Fatalf("insert: changed=%v err=%v", changed, err)
+	}
+	got = readTestFile(t, path)
+	if !strings.HasPrefix(got, "version: \"v1.2.0\"\n") || !strings.Contains(got, "  version: nested") {
+		t.Fatalf("file after insert:\n%q", got)
+	}
+
+	// A value that would write malformed YAML is refused rather than written.
+	if _, err := WriteVersion(path, "v1.0.0\"\nserver: hijacked"); err == nil {
+		t.Fatal("a version containing a quote/newline must be refused")
+	}
+}
+
+func TestWriteVersionPreservesYAMLDocumentStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := "---\nserver:\n  port: 8088\n"
+	const originalMode = os.FileMode(0o600)
+	if err := os.WriteFile(path, []byte(original), originalMode); err != nil {
+		t.Fatal(err)
+	}
+
+	originalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := WriteVersion(path, "v1.2.3")
+	if err != nil || !changed {
+		t.Fatalf("WriteVersion: changed=%v err=%v", changed, err)
+	}
+	got := readTestFile(t, path)
+	want := "---\nversion: \"v1.2.3\"\nserver:\n  port: 8088\n"
+	if got != want {
+		t.Fatalf("file after write:\n%q\nwant:\n%q", got, want)
+	}
+	if !strings.HasPrefix(got, "---\n") {
+		t.Fatalf("YAML document start must remain first: %q", got)
+	}
+	if version, err := FileVersion(path); err != nil || version != "v1.2.3" {
+		t.Fatalf("FileVersion = %q, %v; want v1.2.3", version, err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after WriteVersion: %v", err)
+	}
+	if cfg.Server.Port != 8088 {
+		t.Fatalf("server.port = %d, want 8088", cfg.Server.Port)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("mode = %v, want %v preserved", info.Mode().Perm(), originalMode)
+	}
+}
+
+// FileVersion 用 YAML 解析（引号键认得出），WriteVersion 若只认顶格裸键，合法配置就会被追加
+// 出第二个 version 键、整个文件随后 Load 失败。这条测试钉死两者口径一致，以及"改不了就拒绝写"。
+func TestWriteVersionRewritesQuotedKeysAndRefusesWhatItCannot(t *testing.T) {
+	dir := t.TempDir()
+
+	// Legal spellings of the same top-level key: replaced in place, exactly one key left.
+	for _, original := range []string{
+		"\"version\": \"v1.0.0\"\nserver:\n  port: 8088\n",
+		"'version': v1.0.0\nserver:\n  port: 8088\n",
+		"\"version\":   v1.0.0\nserver:\n  port: 8088\n",
+	} {
+		path := filepath.Join(dir, "quoted.yaml")
+		if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if v, err := FileVersion(path); err != nil || v != "v1.0.0" {
+			t.Fatalf("FileVersion(%q) = %q, %v", original, v, err)
+		}
+		changed, err := WriteVersion(path, "v1.7.22")
+		if err != nil || !changed {
+			t.Fatalf("WriteVersion(%q): changed=%v err=%v", original, changed, err)
+		}
+		got := readTestFile(t, path)
+		if strings.Count(got, "version") != 1 {
+			t.Fatalf("writing %q left %d version keys:\n%q", original, strings.Count(got, "version"), got)
+		}
+		if v, err := FileVersion(path); err != nil || v != "v1.7.22" {
+			t.Fatalf("after writing %q: FileVersion = %q, %v (file %q)", original, v, err, got)
+		}
+		if !strings.Contains(got, "port: 8088") {
+			t.Fatalf("the rest of the file must stay: %q", got)
+		}
+	}
+
+	// Forms a line-based replacement cannot rewrite: refused with the file untouched. A
+	// stale version number is a display artifact; a config that no longer loads is an
+	// installation that no longer starts.
+	for _, original := range []string{
+		"{\"version\": \"v1.0.0\", \"server\": {\"port\": 8088}}\n",
+		"version: >-\n  v1.0.0\nserver:\n  port: 8088\n",
+		"\"version\": \"v9.9.9\"\n\"version\": \"v1.0.0\"\n",
+	} {
+		path := filepath.Join(dir, "unwritable.yaml")
+		if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := WriteVersion(path, "v1.7.22")
+		if err == nil {
+			t.Fatalf("WriteVersion(%q) must refuse instead of writing: changed=%v file=%q", original, changed, readTestFile(t, path))
+		}
+		if got := readTestFile(t, path); got != original {
+			t.Fatalf("a refused write must not touch the file:\nbefore %q\nafter  %q", original, got)
+		}
+	}
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestWriteVersionAfterCommentedDocumentStart(t *testing.T) {
+	for _, prefix := range []string{"# local settings\n---\n", "\n# local settings\n--- # config\n", "%YAML 1.1\n---\n"} {
+		t.Run(prefix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			original := prefix + "server:\n  port: 8088\n"
+			if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := WriteVersion(path, "v1.2.3"); err != nil || !changed {
+				t.Fatalf("write: %v %v", changed, err)
+			}
+			cfg, err := Load(path)
+			if err != nil || cfg.Server.Port != 8088 {
+				t.Fatalf("settings lost after version write: cfg=%+v err=%v", cfg, err)
+			}
+			if got := readTestFile(t, path); got != prefix+"version: \"v1.2.3\"\nserver:\n  port: 8088\n" {
+				t.Fatalf("unexpected rewrite: %q", got)
+			}
+		})
+	}
+}
+
+func TestWriteVersionRefusesToHideAnInlineYAMLDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	original := "--- {server: {port: 8088}}\n"
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := WriteVersion(path, "v1.2.3"); err == nil || changed {
+		t.Fatalf("must refuse document loss: changed=%v err=%v", changed, err)
+	}
+	if got := readTestFile(t, path); got != original {
+		t.Fatal("refusal modified config")
+	}
+}
+
+func TestVersionWritePreservesConfigSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "actual.yaml")
+	link := filepath.Join(dir, "config.yaml")
+	original := "server:\n  port: 8088\n"
+	if err := os.WriteFile(target, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteVersion(link, "v1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("version write replaced config symlink")
+	}
+	if version, err := FileVersion(target); err != nil || version != "v1.2.3" {
+		t.Fatal("version did not reach symlink target")
+	}
+	if _, err := RemoveVersion(link); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTestFile(t, target); got != original {
+		t.Fatal("version removal changed original settings")
 	}
 }

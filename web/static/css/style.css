@@ -6286,19 +6286,59 @@ html[data-theme="dark"] .chat-input-container .send-btn:disabled::before {
 }
 
 .login-password-field {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    position: relative;
 }
 
-.login-password-field input {
+.login-form .login-password-field input[type="password"],
+.login-form .login-password-field input[type="text"] {
     min-width: 0;
-    flex: 1;
+    width: 100%;
+    padding-inline-end: 52px;
 }
 
-.login-password-field button {
-    flex: 0 0 auto;
-    white-space: nowrap;
+.login-password-toggle {
+    position: absolute;
+    inset-inline-end: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.login-password-toggle:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.login-password-toggle:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -2px;
+}
+
+.login-password-icon {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    pointer-events: none;
+}
+
+.login-password-icon--hide,
+.login-password-toggle[aria-pressed="true"] .login-password-icon--show {
+    display: none;
+}
+
+.login-password-toggle[aria-pressed="true"] .login-password-icon--hide {
+    display: block;
 }
 
 .password-field-error {
@@ -6322,6 +6362,7 @@ html[data-theme="dark"] .chat-input-container .send-btn:disabled::before {
 
 .login-form input[type="text"],
 .login-form input[type="password"] {
+    min-height: 48px;
     width: 100%;
     padding: 12px 14px;
     font-size: 0.9375rem;
@@ -46351,4 +46392,409 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     text-overflow: ellipsis;
     white-space: nowrap;
     line-height: 1.5;
+}
+
+
+/* ---------------------------------------------------------------------------
+   一键更新控制台（系统设置页的 settings-section-update 分区）：这里说的每一句状态都要能被眼睛分区——
+   本机事实、远端比较、能不能点、正在跑的进度、以及跑完的结论。
+   ok/warn/danger 三色是给"说谎"留的对照组：查不了必须是 warn/danger，不能长得像 ok。
+   --------------------------------------------------------------------------- */
+.update-console {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* 分区标题行：标题在左、刷新在右；窄屏放不下就换行，别把标题压扁 */
+.update-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* 待生效横幅：磁盘二进制与运行进程不一致时的常驻出口（忘勾重启也有救） */
+.update-restart-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid rgba(217, 130, 43, 0.45);
+    border-radius: 10px;
+    background: rgba(217, 130, 43, 0.12);
+}
+
+.update-restart-banner-text {
+    flex: 1 1 240px;
+    min-width: 0;
+    font-size: 13px;
+    color: #b06a17;
+}
+
+.update-restart-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* 自恢复视图：重启期间控制台让位给这一屏，新进程应答后整页刷新 */
+.update-overlay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 32px 16px;
+    text-align: center;
+}
+
+.update-overlay-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(58, 110, 197, 0.25);
+    border-top-color: #2d5bb0;
+    border-radius: 50%;
+    animation: update-spin 0.9s linear infinite;
+}
+
+@keyframes update-spin {
+    to { transform: rotate(360deg); }
+}
+
+.update-overlay-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.update-overlay-body {
+    max-width: 460px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.update-overlay-slow {
+    max-width: 460px;
+    font-size: 13px;
+    color: #b06a17;
+}
+
+.update-overlay-actions {
+    margin-top: 4px;
+}
+
+.update-intro {
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+}
+
+.update-section-title {
+    font-size: 15px;
+    margin: 0 0 10px;
+}
+
+.update-sub-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 14px 0 6px;
+    color: var(--text-secondary);
+}
+
+.update-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+}
+
+.update-fact {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    min-width: 0;
+    max-width: 100%;
+}
+
+.update-fact code {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 420px;
+}
+
+.update-marks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.update-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.update-chip-ok {
+    background: rgba(37, 168, 112, 0.14);
+    border-color: rgba(37, 168, 112, 0.4);
+    color: #1f8a5b;
+}
+
+.update-chip-warn {
+    background: rgba(217, 130, 43, 0.14);
+    border-color: rgba(217, 130, 43, 0.4);
+    color: #b06a17;
+    cursor: help;
+}
+
+.update-chip-danger {
+    background: rgba(192, 57, 43, 0.14);
+    border-color: rgba(192, 57, 43, 0.4);
+    color: var(--danger-color, #c0392b);
+}
+
+.update-chip-running {
+    background: rgba(58, 110, 197, 0.14);
+    border-color: rgba(58, 110, 197, 0.4);
+    color: #2d5bb0;
+}
+
+.update-ok {
+    color: #1f8a5b;
+    font-size: 13px;
+}
+
+.update-behind {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.update-hint {
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 6px 0;
+}
+
+.update-warn {
+    background: rgba(217, 130, 43, 0.12);
+    border: 1px solid rgba(217, 130, 43, 0.35);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #b06a17;
+    margin: 6px 0;
+}
+
+.update-error {
+    background: rgba(192, 57, 43, 0.1);
+    border: 1px solid rgba(192, 57, 43, 0.32);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--danger-color, #c0392b);
+    font-size: 13px;
+    margin: 6px 0;
+}
+
+/* 「检查失败」那一行是这一页最不该被看漏的字，所以它比别的错误横幅再重一档。 */
+.update-check-failed {
+    font-weight: 600;
+}
+
+/* 这三个按钮的名字既是样式钩子也是测试钩子：禁用态要看得出是禁用，而不是"点了没反应"。 */
+.update-apply-btn:disabled,
+.update-check-btn:disabled,
+.update-rollback-btn:disabled {
+    cursor: not-allowed;
+    opacity: .55;
+}
+
+.update-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 10px 0;
+}
+
+.update-restart-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+    margin: 4px 0;
+}
+
+.update-restart-choice input {
+    margin-top: 2px;
+}
+
+.update-restart-preview {
+    border-left: 3px solid var(--border-color);
+    padding-left: 10px;
+}
+
+.update-blocker-list {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    font-size: 13px;
+}
+
+.update-commit-list,
+.update-kept-list,
+.update-item-list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    line-height: 1.8;
+}
+
+.update-commit-list code,
+.update-kept-list code,
+.update-item-list code {
+    color: var(--text-primary);
+}
+
+.update-commit-subject {
+    color: var(--text-secondary);
+}
+
+.update-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.update-table th,
+.update-table td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color);
+    word-break: break-all;
+}
+
+.update-row-blocking td {
+    background: rgba(192, 57, 43, 0.06);
+}
+
+.update-row-kept td {
+    background: rgba(37, 168, 112, 0.06);
+}
+
+.update-job-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.update-job-time {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.update-step-list {
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    list-style: decimal inside;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 12.5px;
+}
+
+.update-step {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px dashed var(--border-color);
+}
+
+.update-step:last-child {
+    border-bottom: none;
+}
+
+.update-step-phase {
+    color: #2d5bb0;
+    flex: 0 0 auto;
+}
+
+.update-step-message {
+    color: var(--text-primary);
+    flex: 1 1 320px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.update-step-at {
+    color: var(--text-secondary);
+    flex: 0 0 auto;
+}
+
+.update-result {
+    margin-top: 12px;
+}
+
+.update-failure-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.update-failure-message {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* 更新源区块：一行一个输入（label 上、输入下），与平台的设置表单同构。 */
+.update-source-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.update-source-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.update-source-input {
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.update-source-url,
+.update-source-remote,
+.update-source-branch {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.update-source-save-btn,
+.update-adopt-preview-btn,
+.update-adopt-confirm-btn {
+    align-self: flex-start;
 }

@@ -99,6 +99,13 @@ func permissionForRequest(method, fullPath string) string {
 			return "rbac:read"
 		}
 		return "rbac:write"
+	case strings.HasPrefix(path, "/system/update"):
+		// Reading the version of the installation is a read. Applying an update replaces the
+		// program that is answering the request, so it is not a flavour of write.
+		if method == http.MethodGet || method == http.MethodHead {
+			return "update:read"
+		}
+		return "update:apply"
 	case strings.HasPrefix(path, "/robot/wechat/status"):
 		return "robot:read"
 	case strings.HasPrefix(path, "/robot"):
@@ -269,6 +276,11 @@ func isMutationMethod(method string) bool {
 }
 
 func isProcessGlobalMutationPath(path string) bool {
+	if strings.HasPrefix(path, "/system/update") {
+		// One installation, one source tree: an assigned/own-scoped session must not be able to
+		// move the code every other user is running.
+		return true
+	}
 	if strings.HasPrefix(path, "/roles") || strings.HasPrefix(path, "/skills") ||
 		strings.HasPrefix(path, "/external-mcp") || strings.HasPrefix(path, "/robot") {
 		return true

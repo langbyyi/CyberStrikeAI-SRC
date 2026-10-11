@@ -39,14 +39,14 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260907-blocked-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261008-password-eye-1">
     <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
     <link rel="stylesheet" href="/static/vendor/xterm.css">
     <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
     <link rel="stylesheet" href="/static/css/mobile.css?v=20261007-glass-1">
-    <script src="/static/js/router.js?v=20260907-1"></script>
+    <script src="/static/js/router.js?v=20261009-retest-1"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -69,7 +69,15 @@
                     <label for="login-password" data-i18n="login.passwordLabel">密码</label>
                     <div class="login-password-field">
                         <input type="password" id="login-password" placeholder="输入登录密码" required autocomplete="current-password" aria-describedby="login-error" data-i18n="login.passwordPlaceholder" data-i18n-attr="placeholder" />
-                        <button type="button" id="login-password-toggle" class="btn-secondary" aria-controls="login-password" aria-pressed="false" onclick="toggleLoginPasswordVisibility()" data-i18n="login.showPassword">显示密码</button>
+                        <button type="button" id="login-password-toggle" class="login-password-toggle" aria-label="显示密码" title="显示密码" aria-controls="login-password" aria-pressed="false" onclick="toggleLoginPasswordVisibility()" data-i18n="login.showPassword" data-i18n-attr="aria-label,title" data-i18n-skip-text="true">
+                            <svg class="login-password-icon login-password-icon--show" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                                <circle cx="12" cy="12" r="3" />
+                            </svg>
+                            <svg class="login-password-icon login-password-icon--hide" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3 4M6.2 6.2A18 18 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.8-1.8M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                            </svg>
+                        </button>
                     </div>
                 </div>
                 <div id="login-error" class="login-error" role="alert" style="display: none;"></div>
@@ -3610,6 +3618,9 @@
                                 <div class="settings-nav-item" data-section="storage" onclick="switchSettingsSection('storage')">
                                     <span data-i18n="settings.nav.storage">存储清理</span>
                                 </div>
+                                <div class="settings-nav-item" data-section="update" data-require-permission="update:read" onclick="switchSettingsSection('update')">
+                                    <span data-i18n="settings.nav.update">一键更新</span>
+                                </div>
                             </nav>
                         </aside>
                         
@@ -5188,6 +5199,16 @@
                                 </div>
                             </div>
 
+                            <!-- 一键更新 -->
+                            <div id="settings-section-update" class="settings-section-content" data-require-permission="update:read">
+                                <div class="settings-section-header update-section-head">
+                                    <h3 data-i18n="update.title">一键更新</h3>
+                                    <button class="btn-secondary" type="button" onclick="loadUpdateConsole()" data-i18n="common.refresh">刷新</button>
+                                </div>
+                                <p class="update-intro" data-i18n="update.intro">这一页改的就是当前正在应答请求的这套安装：拉取它自己跟踪的远端、重新编译、换掉二进制。你本机维护的 roles/skills/tools 与配置不会被覆盖。</p>
+                                <div id="update-console" class="update-console"></div>
+                            </div>
+
                         </div>
                     </div>
                 </div>
@@ -6362,6 +6383,29 @@
         </div>
     </div>
 
+    <div id="vulnerability-retest-modal" class="modal">
+        <div class="modal-content" style="max-width: 720px;">
+            <div class="modal-header">
+                <h2 data-i18n="vulnerabilityRetest.title">复测漏洞</h2>
+                <button type="button" class="modal-close" onclick="closeAppModal('vulnerability-retest-modal')" aria-label="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="vulnerability-retest-title"></p>
+                <p class="form-hint" data-i18n="vulnerabilityRetest.hint">每次确认都会从原始对话创建独立分支，继承原项目和历史，可继续多轮验证。</p>
+                <div class="form-group">
+                    <label for="vulnerability-retest-prompt" data-i18n="vulnerabilityRetest.promptLabel">复测提示词</label>
+                    <textarea id="vulnerability-retest-prompt" rows="8" class="form-input"></textarea>
+                    <p class="form-hint" data-i18n="vulnerabilityRetest.placeholderHint">占位符发送时自动替换，也支持在后续对话中手动输入。</p>
+                </div>
+                <p id="vulnerability-retest-error" role="alert"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeAppModal('vulnerability-retest-modal')" data-i18n="common.cancel">取消</button>
+                <button type="button" id="vulnerability-retest-confirm" class="btn-primary" onclick="confirmVulnerabilityRetest()" data-i18n="vulnerabilityRetest.confirm">确认并开始复测</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 漏洞编辑模态框 -->
     <div id="vulnerability-modal" class="modal">
         <div class="modal-content" style="max-width: 900px;">
@@ -6943,7 +6987,7 @@
     <script src="/static/js/i18n.js"></script>
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/builtin-tools.js"></script>
-    <script src="/static/js/auth.js?v=20260907-blocked-1"></script>
+    <script src="/static/js/auth.js?v=20261008-password-eye-1"></script>
     <script src="/static/js/modal.js"></script>
     <script src="/static/js/notifications.js"></script>
     <script src="/static/js/info-collect.js?v=20260717-1"></script>
@@ -6952,7 +6996,7 @@
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
     <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
-    <script src="/static/js/chat.js?v=20260907-blocked-1"></script>
+    <script src="/static/js/chat.js?v=20261009-retest-1"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>
@@ -6970,12 +7014,13 @@
     <script src="/static/js/skills.js"></script>
     <script src="/static/js/fact-graph.js"></script>
     <script src="/static/js/projects.js?v=20260819-1"></script>
-    <script src="/static/js/vulnerability.js?v=16"></script>
+    <script src="/static/js/vulnerability.js?v=20261010-retest-2"></script>
     <script src="/static/js/webshell.js?v=20260907-blocked-1"></script>
     <script src="/static/js/chat-files.js"></script>
     <script src="/static/js/tasks.js"></script>
     <script src="/static/js/workflow-package-client.js"></script>
     <script src="/static/js/workflows.js"></script>
+    <script src="/static/js/update.js?v={{.Version}}"></script>
     <script src="/static/js/roles.js"></script>
     <script src="/static/js/rbac.js"></script>
     <script src="/static/js/c2.js"></script>

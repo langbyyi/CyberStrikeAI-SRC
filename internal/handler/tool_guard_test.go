@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +50,10 @@ func toolGuardRequest(t *testing.T, handler gin.HandlerFunc, body interface{}) *
 
 func TestToolGuardSavePersistsAndAppliesWithoutChangingHITL(t *testing.T) {
 	h := newToolGuardTestHandler(t)
+	before, err := os.Stat(h.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := toolguard.DefaultConfig()
 	cfg.Rules[0].Message = "识别到 {match}，禁止攻击政府网站，请检查目标。"
 	w := toolGuardRequest(t, h.UpdateToolGuard, cfg)
@@ -69,11 +72,8 @@ func TestToolGuardSavePersistsAndAppliesWithoutChangingHITL(t *testing.T) {
 	}
 	info, _ := os.Stat(h.configPath)
 	data, _ := os.ReadFile(h.configPath)
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
-		t.Fatal("file permissions were lost")
-	}
-	if !strings.Contains(string(data), "# keep this comment") {
-		t.Fatal("comments were lost")
+	if info.Mode().Perm() != before.Mode().Perm() || !strings.Contains(string(data), "# keep this comment") {
+		t.Fatal("file permissions or comments were lost")
 	}
 	match := h.toolGuard.Check("scan", map[string]interface{}{"target": "agency.gov.cn"})
 	if match == nil || !strings.Contains(match.Message, "agency.gov.cn") {

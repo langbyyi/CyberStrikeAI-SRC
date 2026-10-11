@@ -432,6 +432,7 @@ func (db *DB) initTables() error {
 		developer TEXT,
 		poc_script TEXT,
 		tool_call_id TEXT,
+		retest_log TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -826,6 +827,16 @@ func (db *DB) initTables() error {
 
 	if _, err := db.Exec(createConversationsTable); err != nil {
 		return fmt.Errorf("创建conversations表失败: %w", err)
+	}
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS vulnerability_retests (
+        conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+        source_conversation_id TEXT NOT NULL,
+        vulnerability_id TEXT NOT NULL,
+        source_project_id TEXT NOT NULL DEFAULT '',
+        pending_prompt TEXT NOT NULL DEFAULT ''
+    )`); err != nil {
+		return fmt.Errorf("创建复测分支表失败: %w", err)
 	}
 
 	if _, err := db.Exec(createMessagesTable); err != nil {
@@ -1513,6 +1524,7 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 		developer TEXT,
 		poc_script TEXT,
 		tool_call_id TEXT,
+		retest_log TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		project_id TEXT,
@@ -1528,6 +1540,7 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 		severity, status, vulnerability_type, target, preconditions, reproduction_steps,
 		evidence, impact, recommendation, retest_notes,
 		category, auth_required, test_account, test_password, vuln_urls, network_segment, developer, poc_script, tool_call_id,
+		evidence, impact, recommendation, retest_notes, retest_log,
 		created_at, updated_at, project_id
 	)
 	SELECT
@@ -1538,6 +1551,7 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 		COALESCE(category, ''), COALESCE(auth_required, ''), COALESCE(test_account, ''), COALESCE(test_password, ''),
 		COALESCE(vuln_urls, ''), COALESCE(network_segment, ''), COALESCE(developer, ''),
 		COALESCE(poc_script, ''), COALESCE(tool_call_id, ''),
+		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''), COALESCE(retest_log, ''),
 		created_at, updated_at, project_id
 	FROM vulnerabilities;`
 	if _, err := tx.Exec(copyRows); err != nil {
@@ -1621,6 +1635,7 @@ func (db *DB) migrateVulnerabilitiesTable() error {
 		{name: "developer", stmt: "ALTER TABLE vulnerabilities ADD COLUMN developer TEXT"},
 		{name: "poc_script", stmt: "ALTER TABLE vulnerabilities ADD COLUMN poc_script TEXT"},
 		{name: "tool_call_id", stmt: "ALTER TABLE vulnerabilities ADD COLUMN tool_call_id TEXT"},
+		{name: "retest_log", stmt: "ALTER TABLE vulnerabilities ADD COLUMN retest_log TEXT NOT NULL DEFAULT ''"},
 	}
 
 	for _, col := range columns {

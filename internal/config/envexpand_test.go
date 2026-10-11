@@ -79,3 +79,20 @@ func TestExpandConfigEnv(t *testing.T) {
 		t.Errorf("Headers[Authorization] = %q, want %q", cfg.Headers["Authorization"], "Bearer secret123")
 	}
 }
+
+func TestExpandConfigEnvDoesNotMutateSharedConfig(t *testing.T) {
+	t.Setenv("CSAI_TEST_EXPAND", "expanded")
+	original := ExternalMCPServerConfig{
+		Args:    []string{"${CSAI_TEST_EXPAND}"},
+		Env:     map[string]string{"VALUE": "${CSAI_TEST_EXPAND}"},
+		Headers: map[string]string{"X-Value": "${CSAI_TEST_EXPAND}"},
+	}
+	copy := original
+	ExpandConfigEnv(&copy)
+	if original.Args[0] != "${CSAI_TEST_EXPAND}" || original.Env["VALUE"] != "${CSAI_TEST_EXPAND}" || original.Headers["X-Value"] != "${CSAI_TEST_EXPAND}" {
+		t.Fatal("expansion mutated a config shared with another goroutine")
+	}
+	if copy.Args[0] != "expanded" || copy.Env["VALUE"] != "expanded" || copy.Headers["X-Value"] != "expanded" {
+		t.Fatal("copied config was not expanded")
+	}
+}

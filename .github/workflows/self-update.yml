@@ -1,0 +1,33 @@
+name: Self-update
+on:
+  push:
+    paths: ['internal/update/**', 'internal/workflow/**', 'internal/config/**', 'internal/handler/**', 'internal/mcp/**', 'cmd/server/**', 'web/static/js/**', 'web/static/css/style.css', 'web/templates/index.html', 'upgrade.sh', 'run.sh', 'go.mod', 'go.sum', '.gitignore', '.github/workflows/self-update.yml']
+  pull_request:
+    paths: ['internal/update/**', 'internal/workflow/**', 'internal/config/**', 'internal/handler/**', 'internal/mcp/**', 'cmd/server/**', 'web/static/js/**', 'web/static/css/style.css', 'web/templates/index.html', 'upgrade.sh', 'run.sh', 'go.mod', 'go.sum', '.gitignore', '.github/workflows/self-update.yml']
+permissions:
+  contents: read
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Keep source line endings consistent
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: go test -race ./internal/update ./internal/config ./internal/handler ./cmd/server ./internal/workflow
+      - run: go build ./...
+      - name: Frontend regression tests
+        shell: bash
+        run: node --test web/static/js/*.test.cjs
+      - name: Shell syntax
+        shell: bash
+        run: bash -n run.sh upgrade.sh

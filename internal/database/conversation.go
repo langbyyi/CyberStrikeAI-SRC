@@ -19,15 +19,16 @@ const ProjectFilterUnbound = "__none__"
 
 // Conversation 对话
 type Conversation struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	ProjectID string    `json:"projectId,omitempty"`
-	RoleName  string    `json:"roleName,omitempty"`
-	AgentMode string    `json:"agentMode,omitempty"`
-	Pinned    bool      `json:"pinned"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Messages  []Message `json:"messages,omitempty"`
+	ID        string               `json:"id"`
+	Title     string               `json:"title"`
+	ProjectID string               `json:"projectId,omitempty"`
+	RoleName  string               `json:"roleName,omitempty"`
+	AgentMode string               `json:"agentMode,omitempty"`
+	Pinned    bool                 `json:"pinned"`
+	CreatedAt time.Time            `json:"createdAt"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+	Messages  []Message            `json:"messages,omitempty"`
+	Retest    *VulnerabilityRetest `json:"retest,omitempty"`
 }
 
 // Message 消息

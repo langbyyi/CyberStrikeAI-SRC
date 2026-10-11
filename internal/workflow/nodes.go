@@ -86,6 +86,14 @@ func runToolNode(ctx context.Context, args RunArgs, node graphNode, state *Workf
 	if err == nil && toolCtx.Err() != nil {
 		err = toolCtx.Err()
 	}
+	// The MCP worker and caller have timers for the same absolute deadline.
+	// The worker may finish first while the caller's Done notification is still
+	// waiting to run; the deadline itself is authoritative in either ordering.
+	if err == nil {
+		if deadline, ok := toolCtx.Deadline(); ok && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+	}
 	if err != nil {
 		errText := err.Error()
 		return outputMap(envelope("tool", node.ID, node.Type, "failed", ""), map[string]any{"tool_name": toolName, "arguments": toolArgs, "error": errText}), false, "failed", errText

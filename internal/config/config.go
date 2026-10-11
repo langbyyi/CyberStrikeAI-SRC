@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -51,6 +53,14 @@ type Config struct {
 	MultiAgent  MultiAgentConfig      `yaml:"multi_agent,omitempty" json:"multi_agent,omitempty"`
 	Project     ProjectConfig         `yaml:"project,omitempty" json:"project,omitempty"`
 	Vision      VisionConfig          `yaml:"vision,omitempty" json:"vision,omitempty"`
+	Update      UpdateConfig          `yaml:"update,omitempty" json:"update,omitempty"`
+}
+
+// UpdateConfig 一键更新的更新源（可选）：一个仓库地址，更新跟随该仓库的默认分支。
+// 留空即官方仓库（internal/update.DefaultRepoURL），跟随镜像或自己的二开只需改这一处。
+type UpdateConfig struct {
+	// Repo 更新源仓库地址（https/http/ssh/git/file:// 或本机绝对路径）；留空 = 官方仓库。
+	Repo string `yaml:"repo,omitempty" json:"repo,omitempty"`
 }
 
 type EnsureLocalConfigResult struct {
@@ -1719,6 +1729,227 @@ func validateOpenAIOutputLimits(openAI OpenAIConfig) error {
 		return fmt.Errorf("openai.max_completion_tokens 必须为正数")
 	}
 	return nil
+}
+
+// LoadUpdateRepo 只读 update 段的 repo 字段，不加载也不校验文件其余部分：命令行一键更新
+// 必须与页面用同一个更新源，而配置里其它段落坏掉不该拦住"把源码更新好"这条修复路径。
+// 文件不存在不是错误（未配置 = 官方仓库）；YAML 解析失败则报错，不去猜更新源。
+func LoadUpdateRepo(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	var thin struct {
+		Update struct {
+			Repo string `yaml:"repo"`
+		} `yaml:"update"`
+	}
+	if err := yaml.Unmarshal(data, &thin); err != nil {
+		return "", fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	return strings.TrimSpace(thin.Update.Repo), nil
+}
+
+// FileVersion 读一个配置文件形态 YAML 的顶层 version 字段。仓库里的 config.example.yaml
+// 载着这份代码对应的发布版本（上游随 release 提交一起改），一键更新用它把"当前跑的是什么
+// 版本"同步进运维者的 config.yaml。文件或字段不存在 = 未知，不是错误。
+func FileVersion(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	version, err := parseTopVersion(data)
+	if err != nil {
+		return "", fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	return version, nil
+}
+
+// parseTopVersion 从配置文本里取顶层 version。走 YAML 解析，version / "version" / 'version'
+// 三种写法一视同仁——读取认得的写法，写入也必须认得，否则就会在合法的引号键配置上追加出
+// 第二个 version 键（见 WriteVersion）。
+func parseTopVersion(data []byte) (string, error) {
+	var thin struct {
+		Version string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &thin); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(thin.Version), nil
+}
+
+// versionValuePattern 约束能写进配置的版本号：它来自仓库里的文件，但落到的是运维者的
+// 配置上，带引号或换行的值会把 YAML 写坏。
+var versionValuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// topVersionKey 判断一行是不是顶层的 version 键，三种 YAML 都认的写法都在内：version:、
+// "version":、'version':。缩进的同名键属于别的段落，不动。
+func topVersionKey(line string) bool {
+	for _, key := range []string{"version", `"version"`, "'version'"} {
+		if strings.HasPrefix(line, key) {
+			return strings.HasPrefix(strings.TrimSpace(line[len(key):]), ":")
+		}
+	}
+	return false
+}
+
+func yamlDocumentStart(line string) bool {
+	line = strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "\uFEFF")
+	if !strings.HasPrefix(line, "---") {
+		return false
+	}
+	rest := line[len("---"):]
+	if strings.Trim(rest, " \t") == "" {
+		return true
+	}
+	return len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t') && strings.HasPrefix(strings.TrimLeft(rest, " \t"), "#")
+}
+
+// WriteVersion 就地替换配置文件的顶层 version 字段，保留其它每一行的原样（tarball 升级
+// 路径一直这么做）；没有这个字段就插到文件开头（若文件以 YAML 文档标记开头，则插在标记后）。
+// 返回是否真的改了。写盘走临时文件 + 原子 rename——这是运维者的活配置，不能留半截。替换后先把新文本解析回验一遍：行级替换够不着的
+// 写法（JSON 单行、多行标量……）解析失败或读不回目标值就拒绝写、原文件不动。版本号停在旧值
+// 只是页头显示问题，写坏配置是起不来。
+func WriteVersion(path, version string) (bool, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return false, nil
+	}
+	if len(version) > 64 || !versionValuePattern.MatchString(version) {
+		return false, fmt.Errorf("版本号不合法：%q", version)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	path = resolved
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, line := range lines {
+		if topVersionKey(line) {
+			lines[i] = `version: "` + version + `"`
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		versionLine := `version: "` + version + `"`
+		insertAt := 0
+		for i, line := range lines {
+			if yamlDocumentStart(line) {
+				insertAt = i + 1
+				break
+			}
+			trimmed := strings.TrimSpace(strings.TrimPrefix(line, "\uFEFF"))
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(line, "%") {
+				break
+			}
+		}
+		lines = append(lines[:insertAt], append([]string{versionLine}, lines[insertAt:]...)...)
+	}
+	out := strings.Join(lines, "\n")
+	if out == string(data) {
+		return false, nil
+	}
+	if got, err := parseTopVersion([]byte(out)); err != nil || got != version {
+		return false, fmt.Errorf("version 的写法无法就地替换（改后配置解析失败或读回为 %q），已放弃写入，原文件未改动", got)
+	}
+	// Reading back version alone is insufficient: inserting before an inline
+	// document marker can create a new first document and hide every setting.
+	var originalSettings, nextSettings map[string]interface{}
+	if err := yaml.Unmarshal(data, &originalSettings); err != nil {
+		return false, err
+	}
+	if err := yaml.Unmarshal([]byte(out), &nextSettings); err != nil {
+		return false, err
+	}
+	delete(originalSettings, "version")
+	delete(nextSettings, "version")
+	if len(originalSettings) != len(nextSettings) || (len(originalSettings) > 0 && !reflect.DeepEqual(originalSettings, nextSettings)) {
+		return false, fmt.Errorf("版本号写入会改变其它配置，已放弃写入，原文件未改动")
+	}
+	if err := writeVersionFile(path, []byte(out), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
+
+}
+
+// RemoveVersion undoes a version field added by an update to an unversioned
+// configuration. All other settings and the file's permissions stay intact.
+func RemoveVersion(path string) (bool, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	path = resolved
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if !topVersionKey(line) {
+			continue
+		}
+		out := strings.Join(append(lines[:i], lines[i+1:]...), "\n")
+		var before, after map[string]interface{}
+		if err := yaml.Unmarshal(data, &before); err != nil {
+			return false, err
+		}
+		if err := yaml.Unmarshal([]byte(out), &after); err != nil {
+			return false, err
+		}
+		delete(before, "version")
+		if _, present := after["version"]; present || len(before) != len(after) || (len(before) > 0 && !reflect.DeepEqual(before, after)) {
+			return false, fmt.Errorf("无法安全移除版本号，原配置未改动")
+		}
+		if err := writeVersionFile(path, []byte(out), info.Mode().Perm()); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func writeVersionFile(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".version-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func EnsureLocalConfig(path string) (EnsureLocalConfigResult, error) {

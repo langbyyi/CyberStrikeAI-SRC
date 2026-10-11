@@ -179,6 +179,37 @@ SQLite 热备份时最好先停止服务，或至少复制 `*.db`、`*.db-wal`�
 
 ## 升级
 
+**优先用平台自带的「一键更新」**（控制台「系统设置 → 一键更新」、`POST /api/system/update/apply`、
+或键盘上的 `./cyberstrike-ai -update`）。它从**更新源仓库**（默认官方仓库
+`https://github.com/AIPentest/CyberStrikeAI.git`，可一处配置改成自己的二开或镜像）拉取该仓库默认分支的
+最新代码：fetch → 快进合并 → `go build` → 原子换二进制（旧的留作 `cyberstrike-ai.prev`），并把
+`roles/ skills/ tools/ agents/ knowledge_base/ data/ config.yaml` 等运维者内容先暂存再放回，结果里点名
+保留了哪些文件。本地源码有改动、或本地历史与更新源分叉时它会拒绝并说明原因，而不是硬来。
+构建失败或本机没有 Go 工具链时源码照样更新、二进制保持原样：欠编译会记在安装目录（`.update-build-pending`）
+并被页面标出，装好 go 后再点一次「一键更新」即补编译。
+细节见 [开发者指南](developer-guide.md) 的「一键更新」一节。
+
+检测到 systemd/launchd（环境里有对应启动标记）时，"更新完成后退出进程"默认勾选：更新成功后进程退出、
+由守护拉起新二进制，页面会在服务回来时自动刷新（会话在内存里，需要重新登录一次）。忘勾、或在命令行
+换过二进制时，控制台顶部有常驻横幅和「立即重启服务」补上这一步——不必再登录服务器手动重启。
+
+更新源是 `config.yaml` `update` 段里的**一个仓库地址**（`repo`），也可以直接在控制台「一键更新」页填写保存：
+想跟随官方仓库、自己的二开、别人的二开或镜像，改的都是这一处；不写就是官方仓库。**用 Release 包解压安装、
+目录里没有 git 的**，在同一页点「预览并接入」（不配置也能用默认的官方仓库）：预览先列出会被目标版本替换的
+文件与会保留的运维者内容，被替换的都会备份在 `.update-backup/<唯一备份目录>/overwritten/`，确认后目录成为可一键
+更新的正常安装。
+
+`upgrade.sh` 仍然可用，它现在只是这条实现的薄壳，并按安装形态分两条路：
+
+- **本目录是 git 工作树**：直接调用 `./cyberstrike-ai -update`（还没有二进制时先
+  `go build -o cyberstrike-ai ./cmd/server` 再更新；两者都没有就明确报错并说明怎么装 Go）。
+  `--check` 只检查不改动，走 `-check-update`。
+- **本目录不是 git 工作树**（Release tarball 安装）：才回落到"下载 Release 包 + `rsync --delete`"的老路径。
+  此时源码仓库取自 `--repo owner/name` 或环境变量 `GITHUB_REPO`，两者都没给才用内置默认值，
+  并且会打一行警告说明代码正从哪个仓库取。`config.yaml`、`data/`、`tools/`、`roles/`、`skills/`、
+  `agents/`、`venv/`（`--no-venv` 可关闭）以及回滚点 `.update-backup/`、`.update-state.json`、
+  `cyberstrike-ai.prev` 都在 rsync 的保留名单里，不会被 `--delete` 顺手删掉。
+
 推荐流程：
 
 1. 停止服务。
@@ -187,11 +218,18 @@ SQLite 热备份时最好先停止服务，或至少复制 `*.db`、`*.db-wal`�
 4. 保留原配置，按新版 `config.yaml` 示例补新增字段。
 5. 启动服务，检查登录、模型测试、工具列表、知识库状态。
 
-仓库提供 `upgrade.sh`，适合无兼容性问题的快速升级；生产环境仍建议先备份再运行。
+一键更新只做 3（以及需要时的换二进制），1/2/4/5 仍是运维者的判断：数据库结构变更不会因为二进制换了
+就自动兼容。`upgrade.sh` 适合无兼容性问题的快速升级；生产环境仍建议先备份再运行。
+Python 依赖方面：`venv/` 由 `run.sh` 自动创建和管理，保留它就不会被升级打掉；用 `--no-venv` 才会删除并由
+`run.sh` 重装。
 
 ## 回滚
 
-回滚时同时恢复：
+一键更新自带回滚点：`./cyberstrike-ai -update-rollback` 或页面上的回滚按钮，会撤到那次更新前的提交并把
+`cyberstrike-ai.prev` 换回原位；它只在"HEAD 仍是那次更新写下的提交"时才执行，之后的工作不会被顺手抹掉。
+被暂存过的内容也留在 `.update-backup/<唯一备份目录>/` 里。
+
+除此之外，回滚时同时恢复：
 
 - 上一版本二进制或代码。
 - 升级前的 `config.yaml`。

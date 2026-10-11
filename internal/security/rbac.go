@@ -81,6 +81,8 @@ var PermissionCatalog = map[string]string{
 	"attackchain:write":     "Regenerate attack chains",
 	"fofa:execute":          "Run FOFA searches and query parsing",
 	"openapi:read":          "Read OpenAPI aggregation results",
+	"update:read":           "View this installation's source version and whether its own repository has anything newer",
+	"update:apply":          "Pull this installation's own repository, rebuild the platform binary, and optionally stand the process down",
 	"monitor:read":          "View execution monitor",
 	"monitor:write":         "Cancel monitor executions",
 	"monitor:delete":        "Delete monitor executions",

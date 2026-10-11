@@ -273,3 +273,30 @@ func TestAssignedScopeCannotMutateProcessGlobalAssets(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateApplyIsItsOwnPermissionFromReadingTheVersion: replacing the program that is
+// answering the request is not a flavour of reading it, and it is process-global - one
+// tree, one binary, every user of this installation.
+func TestUpdateApplyIsItsOwnPermissionFromReadingTheVersion(t *testing.T) {
+	cases := []struct {
+		method, path, apiPath, want string
+	}{
+		{http.MethodGet, "/api/system/update", "/system/update", "update:read"},
+		{http.MethodGet, "/api/system/update/job", "/system/update/job", "update:read"},
+		{http.MethodPost, "/api/system/update/check", "/system/update/check", "update:apply"},
+		{http.MethodPost, "/api/system/update/apply", "/system/update/apply", "update:apply"},
+		{http.MethodPost, "/api/system/update/rollback", "/system/update/rollback", "update:apply"},
+	}
+	for _, tc := range cases {
+		got := permissionForRequest(tc.method, tc.path)
+		if got != tc.want {
+			t.Errorf("%s %s -> %q, want %q", tc.method, tc.path, got, tc.want)
+		}
+		if _, ok := PermissionCatalog[got]; !ok {
+			t.Errorf("%s %s maps to %q which is not in PermissionCatalog", tc.method, tc.path, got)
+		}
+		if tc.method != http.MethodGet && !isProcessGlobalMutationPath(tc.apiPath) {
+			t.Errorf("%s must require a global-scope session: it changes what every user runs", tc.path)
+		}
+	}
+}
