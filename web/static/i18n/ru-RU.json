@@ -4,6 +4,26 @@
     "enUS": "English",
     "ruRU": "Русский"
   },
+  "mobile": {
+    "openNav": "Открыть меню навигации",
+    "closeNav": "Закрыть меню навигации",
+    "moreActions": "Другие действия",
+    "searchMenu": "Поиск меню…",
+    "noMatch": "Совпадений нет",
+    "backToTop": "Наверх",
+    "chatList": "Список чатов",
+    "closeChatList": "Закрыть список чатов",
+    "mainNav": "Основная навигация",
+    "switchTheme": "Сменить тему",
+    "themeNow": "Тема: {{name}}",
+    "switchLanguage": "Сменить язык",
+    "refreshPage": "Обновить страницу",
+    "fullscreen": "Полный экран",
+    "fullscreenUnsupported": "Браузер не поддерживает полноэкранный режим",
+    "conversations": "Чаты",
+    "newChat": "Новый чат",
+    "chatModuleMissing": "Модуль чата ещё не загружен"
+  },
   "common": {
     "ok": "ОК",
     "cancel": "Отмена",
@@ -68,6 +88,8 @@
     "itemDefaultTitle": "Уведомление"
   },
   "login": {
+    "showPassword": "Показать пароль",
+    "hidePassword": "Скрыть пароль",
     "title": "Вход в CyberStrikeAI",
     "titlePrefix": "Вход в",
     "subtitle": "Войдите с учётной записью платформы. Администратор по умолчанию — admin.",
@@ -353,6 +375,7 @@
     "graphLegendExploits": "exploits",
     "graphLegendTentative": "Предварительно (пунктир)",
     "factLinksLabel": "Связи (откуда → этот факт)",
+    "factBodyRelationsHint": "Укажите отношения, например discovered_on, в поле связей ниже, чтобы создать рёбра графа.",
     "factLinksPlaceholder": "discovered_on: target/primary_domain\nexploits: exploit/upload-rce",
     "factLinksHint": "По одной строке: тип: source_fact_key (источник → этот факт). Частые типы: discovered_on, depends_on, leads_to, enables, exploits. При сохранении все связи заменяются.",
     "factIncomingLinksLabel": "Входящие связи (только чтение)",
@@ -1108,6 +1131,8 @@
     "toolFailed": "Ошибка"
   },
   "tasks": {
+    "statusEndedWithFailures": "Завершено (ошибок: {{count}})",
+    "finishedProgressHint": "Прогресс учитывает завершённые задачи, включая ошибки и отмены, а не долю успешных задач.",
     "title": "Управление задачами",
     "stopTask": "Остановить задачу",
     "interruptModalTitle": "Прервать текущий шаг",
@@ -1280,6 +1305,11 @@
     "parseModalApplyRun": "Подставить и выполнить"
   },
   "assets": {
+    "countryExample": "Китай",
+    "provinceExample": "Пекин",
+    "cityExample": "Пекин",
+    "exportIP": "IP-адрес",
+    "exportVulnerabilityCount": "Количество уязвимостей",
     "overviewTitle": "Обзор активов",
     "libraryTitle": "Библиотека активов",
     "viewLibrary": "Открыть библиотеку активов",
@@ -1468,6 +1498,7 @@
     "executeNow": "Запустить сразу после создания",
     "confirmSend": "Отправить",
     "confirmCreate": "Создать задачи",
+    "scanCompletionInstruction": "После достижения указанной цели прекратите проверки и сообщите полученные результаты. Вызовите complete_asset_scan(id={{asset_id}}), чтобы записать время проверки актива и связанные результаты. Эта запись не расширяет область проверки.",
     "defaultScanPrompt": "Выполните авторизованное сканирование безопасности {{target}} (ID актива: {{asset_id}}). Сохраните подтверждённые находки через record_vulnerability, затем вызовите complete_asset_scan(id={{asset_id}}), чтобы обновить время последнего сканирования и число связанных уязвимостей.",
     "selectAssetsFirst": "Сначала выберите активы",
     "promptRequired": "Введите запрос пользователя",
@@ -1978,6 +2009,7 @@
     "forbidden": "Недостаточно прав",
     "requestFailed": "Запрос не выполнен",
     "enterPassword": "Введите пароль",
+    "usernameRequired": "Введите имя пользователя длиной не более 64 символов",
     "loginFailedCheck": "Вход не выполнен, проверьте имя пользователя или пароль",
     "loginFailedRetry": "Вход не выполнен, повторите позже",
     "loggedOut": "Вы вышли"
@@ -3353,6 +3385,9 @@
     "detailSession": "Сессия"
   },
   "settingsSecurity": {
+    "currentRequired": "Введите текущий пароль",
+    "newTooShort": "Новый пароль должен содержать не менее 8 символов",
+    "confirmMismatch": "Новые пароли не совпадают",
     "changePasswordTitle": "Сменить пароль",
     "changePasswordDesc": "После смены пароля войдите снова с новым паролем.",
     "currentPassword": "Текущий пароль",
@@ -3507,6 +3542,7 @@
     "newFilePathInvalid": "Недопустимый путь (без .. и абсолютных путей)",
     "noPackageFiles": "Файлы не указаны",
     "unsavedSwitch": "Есть несохранённые изменения. Всё равно переключить файл?",
+    "saveDescriptionFirst": "Сохраните описание в SKILL.md перед переходом к другому файлу",
     "contentLabel": "Содержимое",
     "contentPlaceholder": "Измените выбранный файл…",
     "contentPlaceholderAdd": "Только тело SKILL.md (front matter создаётся автоматически)…",
@@ -3628,6 +3664,7 @@
     "completedAt": "Завершено",
     "taskTotal": "Всего задач",
     "concurrency": "Параллельность",
+    "concurrencyInvalid": "Параллелизм должен быть целым числом от 1 до 8",
     "concurrencyEditHint": "Нажмите, чтобы изменить. Нельзя менять, пока очередь выполняется.",
     "taskList": "Список задач",
     "startLabel": "Старт",
@@ -3777,7 +3814,8 @@
     "workflowPolicyAuto": "Автозапуск",
     "workflowPolicyOff": "Выкл.",
     "noWorkflowBind": "Без сценария",
-    "workflowDisabledSuffix": " (отключён)"
+    "workflowDisabledSuffix": " (отключён)",
+    "workflowMissing": "отсутствует или недоступен"
   },
   "workflows": {
     "title": "Сценарии",
@@ -3785,6 +3823,7 @@
     "processLibrary": "Сценарии",
     "nodeLibrary": "Библиотека узлов",
     "emptyList": "Сценариев пока нет",
+    "statusInvalid": "Ошибка проверки",
     "statusEnabled": "Включён",
     "statusDisabled": "Выключен",
     "metaId": "ID",
@@ -3971,6 +4010,8 @@
         "continueOverwrite": "К подтверждению перезаписи",
         "confirmRename": "Подтвердить сохранение с новым ID",
         "confirmCreate": "Подтвердить создание",
+        "confirmSkip": "Подтвердить пропуск импорта",
+        "confirmKeep": "Подтвердить сохранение локальной версии",
         "confirmComplete": "Подтвердить завершение"
       },
       "result": {
@@ -3980,6 +4021,8 @@
         "keptExisting": "Локальный сценарий оставлен без изменений.",
         "skippedIdentical": "Такое локальное содержимое уже есть; импорт пропущен.",
         "complete": "Импорт завершён.",
+        "skippedAction": "Импорт пропущен",
+        "keptAction": "Локальная версия сохранена",
         "completedAction": "Импорт завершён"
       },
       "exportSelectSaved": "Перед экспортом выберите сохранённый сценарий."
@@ -4140,6 +4183,10 @@
       "failed": "Ошибка"
     },
     "listeners": {
+      "nameRequired": "Введите имя слушателя",
+      "typeRequired": "Выберите тип слушателя",
+      "portInvalid": "Порт должен быть целым числом от 1 до 65535",
+      "saveFailed": "Не удалось сохранить слушатель",
       "title": "Управление слушателями",
       "create": "Создать слушатель",
       "name": "Имя",
@@ -4496,6 +4543,7 @@
       "hintHeaders": "Заголовки ответа HTTP, имитирующие обычный сервер",
       "toastNameRequired": "Укажите имя профиля",
       "toastInvalidHeadersJson": "Некорректный JSON в заголовках ответа",
+      "toastInvalidJitter": "Jitter должен быть целым: 0 <= минимум <= максимум",
       "toastCreated": "Профиль создан",
       "toastDeleted": "Профиль удалён",
       "confirmDelete": "Удалить этот профиль?",

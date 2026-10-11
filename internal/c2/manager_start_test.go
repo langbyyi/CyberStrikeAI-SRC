@@ -57,6 +57,7 @@ func TestStartListener_ImplantTokenSurvivesHandlerRedaction(t *testing.T) {
 	body := `{"hostname":"n","username":"u","os":"Linux","arch":"amd64","internal_ip":"10.0.0.1","pid":42}`
 	req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+"/check_in", strings.NewReader(body))
 	req.Header.Set("X-Implant-Token", token)
+	req.Header.Set("X-Session-Token", "test-only-session-credential-0123456789abcdef")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

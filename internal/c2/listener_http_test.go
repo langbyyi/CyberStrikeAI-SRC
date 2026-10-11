@@ -111,6 +111,7 @@ func TestHTTPBeaconListener_CheckInMatrix(t *testing.T) {
 		body := `{"hostname":"n","username":"u","os":"Linux","arch":"amd64","internal_ip":"10.0.0.1","pid":42}`
 		req, _ := http.NewRequest(http.MethodPost, base+"/check_in", strings.NewReader(body))
 		req.Header.Set("X-Implant-Token", token)
+		req.Header.Set("X-Session-Token", "test-only-session-credential-0123456789abcdef")
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -179,6 +180,13 @@ func TestHTTPBeaconListener_HandleFileServe(t *testing.T) {
 	t.Cleanup(func() { _ = m.StopListener(lid) })
 
 	fileID := "f_testfile123"
+	installHTTPIdentityFixture(t, db, lid, "test-only-file-uuid", "test-only-session-credential-0123456789abcdef")
+	if err := db.UpsertC2Session(&database.C2Session{ID: "test-only-file-session", ListenerID: lid, ImplantUUID: "test-only-file-uuid"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateC2Task(&database.C2Task{ID: "test-only-download-task", SessionID: "test-only-file-session", TaskType: "upload", Payload: map[string]interface{}{"file_id": fileID}, Status: "sent", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	downDir := filepath.Join(store, "downstream")
 	if err := os.MkdirAll(downDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -195,6 +203,7 @@ func TestHTTPBeaconListener_HandleFileServe(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			req, _ := http.NewRequest(http.MethodGet, base+path, nil)
 			req.Header.Set("X-Implant-Token", token)
+			req.Header.Set("X-Session-Token", "test-only-session-credential-0123456789abcdef")
 			resp, err := client.Do(req)
 			if err != nil {
 				t.Fatal(err)
@@ -230,8 +239,12 @@ func TestHTTPBeaconListener_HandleFileServe(t *testing.T) {
 }
 
 func TestHTTPBeaconListener_HandleUploadConfinesTaskID(t *testing.T) {
-	tmp := t.TempDir()
-	store := filepath.Join(tmp, "c2store")
+	m, db := terminalTestManager(t)
+	store := m.StorageDir()
+	installHTTPIdentityFixture(t, db, "listener", "test-uuid", "test-only-session-credential-0123456789abcdef")
+	if err := db.CreateC2Task(&database.C2Task{ID: "t_safe123", SessionID: "session", TaskType: "download", Status: "sent", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	keyB64, err := GenerateAESKey()
 	if err != nil {
 		t.Fatal(err)
@@ -239,10 +252,11 @@ func TestHTTPBeaconListener_HandleUploadConfinesTaskID(t *testing.T) {
 	token := "test-implant-token-upload"
 	l := &HTTPBeaconListener{
 		rec: &database.C2Listener{
+			ID:            "listener",
 			EncryptionKey: keyB64,
 			ImplantToken:  token,
 		},
-		manager: NewManager(nil, zap.NewNop(), store),
+		manager: m,
 		logger:  zap.NewNop(),
 	}
 
@@ -252,6 +266,7 @@ func TestHTTPBeaconListener_HandleUploadConfinesTaskID(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/upload?task_id=t_safe123", strings.NewReader(encrypted))
 	req.Header.Set("X-Implant-Token", token)
+	req.Header.Set("X-Session-Token", "test-only-session-credential-0123456789abcdef")
 	rr := httptest.NewRecorder()
 
 	l.handleUpload(rr, req)

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
@@ -52,6 +53,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "密码不能为空"})
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" || utf8.RuneCountInString(req.Username) > 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名不能为空，且不能超过 64 个字符"})
 		return
 	}
 

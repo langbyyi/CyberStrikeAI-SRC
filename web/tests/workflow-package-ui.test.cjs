@@ -80,3 +80,33 @@ test('每次打开导入弹窗都会开始新的导入会话', () => {
     assert.match(openHandler, /resetWorkflowPackageImport\(\);/);
     assert.doesNotMatch(openHandler, /restoreWorkflowPackageState\(\)/);
 });
+
+test('未写入的导入结果明确显示跳过或保留，不显示导入完成', () => {
+    const vm = require('node:vm');
+    const source = fs.readFileSync('web/static/js/workflows.js', 'utf8');
+    const start = source.indexOf('    function renderWorkflowPackageImportResult(');
+    const end = source.indexOf('    async function restoreWorkflowPackageState(', start);
+    for (const [result, expected] of [['skipped_identical', '已跳过导入'], ['kept_existing', '已保留本地版本'], ['created', '导入已完成'], ['overwritten', '导入已完成'], ['renamed', '导入已完成']]) {
+        const button = {};
+        const c = vm.createContext({ workflowPackageText: (_, fallback) => fallback, renderWorkflowPackageResolution() {}, workflowPackageSubmitBtn: () => button });
+        vm.runInContext(source.slice(start, end), c);
+        c.renderWorkflowPackageImportResult({ result });
+        assert.equal(button.textContent, expected);
+        assert.equal(button.disabled, true);
+    }
+});
+
+test('重复包确认明确区分跳过和保留，创建及覆盖入口保持原语义', () => {
+    const vm = require('node:vm');
+    const source = fs.readFileSync('web/static/js/workflows.js', 'utf8');
+    const start = source.indexOf('    function renderWorkflowPackageResolution(');
+    const end = source.indexOf('    function resetWorkflowPackageImport(', start);
+    for (const [state, action, expected] of [['identical', 'keep_existing', '确认跳过导入'], ['id_conflict', 'keep_existing', '确认保留本地版本'], ['none', 'create', '确认创建'], ['id_conflict', 'overwrite', '继续确认覆盖'], ['id_conflict', 'rename', '确认另存']]) {
+        const button = {};
+        const c = vm.createContext({ workflowPackageState: { inspection: { conflict: { state } }, resolutionAction: action, riskChoicesVisible: true, newWorkflowId: 'copy' }, workflowPackageResolutionEl: () => ({}), workflowPackageSubmitBtn: () => button, workflowPackageClient: () => ({ allowedActions: () => [action] }), workflowPackageText: (_, fallback) => fallback, esc: value => value, workflowPackageResolutionCard: () => '', workflowPackageSetStep() {} });
+        vm.runInContext(source.slice(start, end), c);
+        c.renderWorkflowPackageResolution();
+        assert.equal(button.textContent, expected);
+        assert.equal(button.disabled, false);
+    }
+});

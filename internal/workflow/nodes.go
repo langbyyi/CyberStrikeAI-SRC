@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/multiagent"
 )
 
@@ -74,7 +76,16 @@ func runToolNode(ctx context.Context, args RunArgs, node graphNode, state *Workf
 			"args":   toolArgs,
 		})
 	}
-	result, err := args.Agent.ExecuteMCPToolForConversation(ctx, args.ConversationID, toolName, toolArgs)
+	toolCtx, cancel, err := workflowToolContext(ctx, cfgString(node.Config, "timeout_seconds"))
+	if err != nil {
+		errText := err.Error()
+		return outputMap(envelope("tool", node.ID, node.Type, "failed", ""), map[string]any{"tool_name": toolName, "error": errText}), false, "failed", errText
+	}
+	defer cancel()
+	result, err := args.Agent.ExecuteMCPToolForConversation(toolCtx, args.ConversationID, toolName, toolArgs)
+	if err == nil && toolCtx.Err() != nil {
+		err = toolCtx.Err()
+	}
 	if err != nil {
 		errText := err.Error()
 		return outputMap(envelope("tool", node.ID, node.Type, "failed", ""), map[string]any{"tool_name": toolName, "arguments": toolArgs, "error": errText}), false, "failed", errText
@@ -128,6 +139,21 @@ func truncateWorkflowToolOutput(output string, maxBytes int, executionID string)
 		tailStart++
 	}
 	return output[:head] + marker + output[tailStart:]
+}
+
+func workflowToolContext(parent context.Context, raw string) (context.Context, context.CancelFunc, error) {
+	if strings.TrimSpace(raw) == "" {
+		ctx, cancel := context.WithCancel(parent)
+		return ctx, cancel, nil
+	}
+	seconds, err := parsePositiveInt(raw)
+	if err != nil || int64(seconds) > int64((1<<63-1)/int64(time.Second)) {
+		return nil, nil, fmt.Errorf("工具节点超时时间必须是有效正整数秒")
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds)*time.Second)
+	deadline, _ := ctx.Deadline()
+	ctx = mcp.WithToolExecutionDeadline(ctx, deadline)
+	return ctx, cancel, nil
 }
 
 func runAgentNode(ctx context.Context, args RunArgs, node graphNode, state *WorkflowLocalState) (map[string]any, bool, string, string) {

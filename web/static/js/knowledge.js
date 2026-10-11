@@ -1,3 +1,13 @@
+function knowledgeIndexErrorAdvice(error) {
+    const text = String(error || '');
+    if (/\b401\b|incorrect api key|invalid api key|unauthorized/i.test(text)) return '嵌入服务拒绝认证。请检查知识库嵌入配置的 API 密钥及服务地址，保存后重试。';
+    if (/\b403\b|forbidden/i.test(text)) return '嵌入服务拒绝访问。请检查账号权限及所选嵌入模型的访问权限。';
+    if (/\b429\b|rate limit|quota/i.test(text)) return '嵌入服务限制请求。请检查请求频率及账号可用额度，稍后重试。';
+    if (/timeout|deadline exceeded/i.test(text)) return '嵌入服务请求超时。请检查服务可用性、网络和代理配置后重试。';
+    if (/connection refused|no such host|network is unreachable/i.test(text)) return '无法连接嵌入服务。请检查服务地址、DNS、网络和代理配置。';
+    return '请根据上方错误检查嵌入模型和服务配置，修正后重试。';
+}
+
 // 知识库管理相关功能
 function _t(key, opts) {
     return typeof window.t === 'function' ? window.t(key, opts) : key;
@@ -464,7 +474,7 @@ async function updateIndexProgress() {
         // 检查是否正在重建索引（优先使用重建状态）
         const isRebuilding = status.is_rebuilding || false;
         
-        if (totalItems === 0) {
+        if (totalItems === 0 && !lastError) {
             // 没有知识项，隐藏进度条
             progressContainer.style.display = 'none';
             if (indexProgressInterval) {
@@ -495,7 +505,7 @@ async function updateIndexProgress() {
                         ${escapeHtml(lastError)}
                     </div>
                     <div style="color: #999; font-size: 12px; margin-bottom: 12px;">
-                        可能的原因：嵌入模型配置错误、API密钥无效、余额不足等。请检查配置后重试。
+                        ${escapeHtml(knowledgeIndexErrorAdvice(lastError))}
                     </div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <button onclick="buildKnowledgeIndex()" style="

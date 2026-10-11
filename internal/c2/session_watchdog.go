@@ -18,12 +18,12 @@ import (
 //   - 全局最小宽限期 minGrace 避免 sleep 配置错误的会话被误判；
 //   - 不读 implant_uuid，纯按 last_check_in 字段，与 listener 类型解耦。
 type SessionWatchdog struct {
-	manager   *Manager
-	logger    *zap.Logger
-	interval  time.Duration // 扫描周期，默认 15s
-	minGrace  time.Duration // 最小宽限期，默认 30s
-	gracePct  float64       // 心跳超时倍数，默认 3.0（即 3 倍 sleep 周期没心跳算掉线）
-	stopCh    chan struct{}
+	manager  *Manager
+	logger   *zap.Logger
+	interval time.Duration // 扫描周期，默认 15s
+	minGrace time.Duration // 最小宽限期，默认 30s
+	gracePct float64       // 心跳超时倍数，默认 3.0（即 3 倍 sleep 周期没心跳算掉线）
+	stopCh   chan struct{}
 }
 
 // NewSessionWatchdog 创建看门狗
@@ -78,6 +78,48 @@ func (w *SessionWatchdog) tick() {
 				}
 			}
 		}
+	}
+	sessions, err := w.manager.DB().ListC2Sessions(database.ListC2SessionsFilter{Status: string(SessionDead)})
+	if err != nil {
+		w.logger.Warn("离线任务查询失败", zap.Error(err))
+		return
+	}
+	for _, session := range sessions {
+		w.expireOfflineCommands(session, now)
+	}
+}
+
+func (w *SessionWatchdog) expireOfflineCommands(session *database.C2Session, now time.Time) {
+	tasks, err := w.manager.DB().ListC2Tasks(database.ListC2TasksFilter{SessionID: session.ID, Status: string(TaskSent)})
+	if err != nil {
+		w.logger.Warn("离线命令查询失败", zap.Error(err))
+		return
+	}
+	for _, task := range tasks {
+		if task.TaskType != string(TaskTypeExec) && task.TaskType != string(TaskTypeShell) {
+			continue
+		}
+		if task.SentAt == nil {
+			continue
+		}
+		seconds := 60.0
+		if value, ok := task.Payload["timeout_seconds"].(float64); ok && value > 0 {
+			seconds = value
+		}
+		// Invalid huge deadlines remain unexpired rather than wrapping a duration.
+		if seconds > float64((1<<63-1)/int64(time.Second)) {
+			continue
+		}
+		if now.Sub(*task.SentAt) <= time.Duration(seconds)*time.Second+w.minGrace {
+			continue
+		}
+		status := string(TaskFailed)
+		errText := "会话已离线且任务结果超过执行期限；远端进程是否终止尚未确认"
+		if err := w.manager.DB().UpdateC2Task(task.ID, database.C2TaskUpdate{ExpectedStatus: &task.Status, Status: &status, Error: &errText, CompletedAt: &now}); err != nil {
+			w.logger.Warn("收尾离线命令失败", zap.Error(err))
+			continue
+		}
+		w.manager.publishEvent("warn", "task", session.ID, task.ID, errText, nil)
 	}
 }
 

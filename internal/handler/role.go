@@ -10,6 +10,7 @@ import (
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 
 	"gopkg.in/yaml.v3"
 
@@ -23,7 +24,10 @@ type RoleHandler struct {
 	configPath string
 	logger     *zap.Logger
 	audit      *audit.Service
+	db         *database.DB
 }
+
+func (h *RoleHandler) SetDB(db *database.DB) { h.db = db }
 
 // SetAudit wires platform audit logging.
 func (h *RoleHandler) SetAudit(s *audit.Service) {
@@ -105,6 +109,16 @@ func (h *RoleHandler) UpdateRole(c *gin.Context) {
 	// 确保角色名称与请求中的name一致
 	if req.Name == "" {
 		req.Name = roleName
+	}
+	if err := h.validateRole(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Name != roleName {
+		if _, exists := h.config.Roles[req.Name]; exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "角色已存在"})
+			return
+		}
 	}
 
 	// 初始化Roles map
@@ -198,8 +212,8 @@ func (h *RoleHandler) CreateRole(c *gin.Context) {
 		return
 	}
 
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "角色名称不能为空"})
+	if err := h.validateRole(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 

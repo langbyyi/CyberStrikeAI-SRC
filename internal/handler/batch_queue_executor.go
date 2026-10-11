@@ -305,10 +305,10 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 	lastIn := resultMA.LastAgentTraceInput
 	lastOut := resultMA.LastAgentTraceOutput
 	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(lastIn)
-	decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, true)
+	decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, false)
 	autoCancelledPendingExecutionIDs := h.cleanupPendingToolExecutionsAfterIteration(taskCtx, conversationID, decision, progressCallback)
 	if len(autoCancelledPendingExecutionIDs) > 0 {
-		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, true)
+		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, agentMode, resultMA, mcpIDs, false)
 	}
 	h.persistFinalizationDecision(conversationID, assistantMessageID, agentMode, mcpIDs, reasoningContent, decision)
 	resText := decision.FinalText

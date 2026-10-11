@@ -4,6 +4,26 @@
     "enUS": "English",
     "ruRU": "Русский"
   },
+  "mobile": {
+    "openNav": "打开导航菜单",
+    "closeNav": "关闭导航菜单",
+    "moreActions": "更多操作",
+    "searchMenu": "搜索菜单…",
+    "noMatch": "没有匹配的菜单",
+    "backToTop": "返回顶部",
+    "chatList": "会话列表",
+    "closeChatList": "关闭会话列表",
+    "mainNav": "主导航",
+    "switchTheme": "切换主题",
+    "themeNow": "当前主题：{{name}}",
+    "switchLanguage": "切换语言",
+    "refreshPage": "刷新页面",
+    "fullscreen": "全屏",
+    "fullscreenUnsupported": "当前浏览器不支持全屏",
+    "conversations": "会话",
+    "newChat": "新对话",
+    "chatModuleMissing": "对话模块尚未加载"
+  },
   "common": {
     "ok": "确定",
     "cancel": "取消",
@@ -68,6 +88,8 @@
     "itemDefaultTitle": "通知"
   },
   "login": {
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
     "title": "登录 CyberStrikeAI",
     "titlePrefix": "登录",
     "subtitle": "使用平台账号登录，默认管理员为 admin。",
@@ -329,6 +351,7 @@
     "graphLegendExploits": "exploits",
     "graphLegendTentative": "待确认（虚线）",
     "factLinksLabel": "关系边（from → 本事实）",
+    "factBodyRelationsHint": "正文中的 discovered_on 等关系请填写到下方“关系边”字段，才能生成图谱连线。",
     "factLinksPlaceholder": "discovered_on: target/primary_domain\nexploits: exploit/upload-rce",
     "factLinksHint": "每行一条：type: source_fact_key（来源 → 当前事实）。常用 type：discovered_on、depends_on、leads_to、enables、exploits。保存时替换全部关系边。",
     "factIncomingLinksLabel": "入边（只读）",
@@ -1128,6 +1151,8 @@
     "toolFailed": "失败"
   },
   "tasks": {
+    "statusEndedWithFailures": "已结束（{{count}} 项失败）",
+    "finishedProgressHint": "进度表示已结束的任务比例，包含失败和取消，不表示成功率。",
     "title": "任务管理",
     "stopTask": "停止任务",
     "interruptModalTitle": "中断当前步骤",
@@ -1300,6 +1325,11 @@
     "parseModalApplyRun": "填入并查询"
   },
   "assets": {
+    "countryExample": "中国",
+    "provinceExample": "北京",
+    "cityExample": "北京",
+    "exportIP": "IP 地址",
+    "exportVulnerabilityCount": "漏洞数量",
     "overviewTitle": "资产概览",
     "libraryTitle": "资产库",
     "viewLibrary": "查看资产库",
@@ -1488,6 +1518,7 @@
     "executeNow": "创建后立即执行",
     "confirmSend": "确认发送",
     "confirmCreate": "创建任务",
+    "scanCompletionInstruction": "达到上述任务目标后停止探测，如实报告已有结果；调用 complete_asset_scan(id={{asset_id}}) 回写本次资产扫描时间和关联结果。此记录动作不扩大上述探测范围。",
     "defaultScanPrompt": "请对资产 {{target}}（资产ID：{{asset_id}}）进行授权安全扫描，优先检查暴露服务、已知漏洞、弱口令和常见 Web 风险；通过 record_vulnerability 保存确认的漏洞，完成后调用 complete_asset_scan(id={{asset_id}}) 回写上次扫描时间和相关漏洞。",
     "selectAssetsFirst": "请先选择资产",
     "promptRequired": "请输入用户提示词",
@@ -1995,6 +2026,7 @@
     "forbidden": "权限不足",
     "requestFailed": "请求失败",
     "enterPassword": "请输入密码",
+    "usernameRequired": "用户名不能为空，且不能超过 64 个字符",
     "loginFailedCheck": "登录失败，请检查用户名或密码",
     "loginFailedRetry": "登录失败，请稍后重试",
     "loggedOut": "已退出登录"
@@ -3370,6 +3402,9 @@
     "detailSession": "会话"
   },
   "settingsSecurity": {
+    "currentRequired": "请输入当前密码",
+    "newTooShort": "新密码至少需要 8 位",
+    "confirmMismatch": "两次输入的新密码不一致",
     "changePasswordTitle": "修改密码",
     "changePasswordDesc": "修改登录密码后，需要使用新密码重新登录。",
     "currentPassword": "当前密码",
@@ -3524,6 +3559,7 @@
     "newFilePathInvalid": "路径无效（禁止 .. 与绝对路径）",
     "noPackageFiles": "未列出文件",
     "unsavedSwitch": "当前文件有未保存修改，确定切换？",
+    "saveDescriptionFirst": "请先在 SKILL.md 中保存描述，再切换到辅助文件",
     "contentLabel": "内容",
     "contentPlaceholder": "编辑当前选中的文件…",
     "contentPlaceholderAdd": "SKILL.md 正文（无需手写 YAML 头）…",
@@ -3645,6 +3681,7 @@
     "completedAt": "完成时间",
     "taskTotal": "任务总数",
     "concurrency": "并发数",
+    "concurrencyInvalid": "并发数必须为 1–8",
     "concurrencyEditHint": "点击可修改；队列运行中不可改。",
     "taskList": "任务列表",
     "startLabel": "开始",
@@ -3794,7 +3831,8 @@
     "workflowPolicyAuto": "自动触发",
     "workflowPolicyOff": "关闭",
     "noWorkflowBind": "不绑定工作流",
-    "workflowDisabledSuffix": "（已禁用）"
+    "workflowDisabledSuffix": "（已禁用）",
+    "workflowMissing": "不存在或不可用"
   },
   "workflows": {
     "title": "工作流",
@@ -3802,6 +3840,7 @@
     "processLibrary": "工作流列表",
     "nodeLibrary": "节点库",
     "emptyList": "暂无工作流",
+    "statusInvalid": "校验未通过",
     "statusEnabled": "启用",
     "statusDisabled": "禁用",
     "metaId": "ID",
@@ -3988,6 +4027,8 @@
         "continueOverwrite": "继续确认覆盖",
         "confirmRename": "确认另存",
         "confirmCreate": "确认创建",
+        "confirmSkip": "确认跳过导入",
+        "confirmKeep": "确认保留本地版本",
         "confirmComplete": "确认完成"
       },
       "result": {
@@ -3997,6 +4038,8 @@
         "keptExisting": "已保留本地工作流，未写入任何更改。",
         "skippedIdentical": "本地已存在相同内容，已跳过导入。",
         "complete": "导入已完成。",
+        "skippedAction": "已跳过导入",
+        "keptAction": "已保留本地版本",
         "completedAction": "导入已完成"
       },
       "exportSelectSaved": "请先选择已保存的工作流后再导出。"
@@ -4157,6 +4200,10 @@
       "failed": "失败"
     },
     "listeners": {
+      "nameRequired": "请输入监听器名称",
+      "typeRequired": "请选择监听器类型",
+      "portInvalid": "端口必须为 1–65535 的整数",
+      "saveFailed": "监听器保存失败",
       "title": "监听器管理",
       "create": "创建监听器",
       "name": "名称",
@@ -4513,6 +4560,7 @@
       "hintHeaders": "用于伪装为合法服务的 HTTP 响应头",
       "toastNameRequired": "请填写 Profile 名称",
       "toastInvalidHeadersJson": "响应头 JSON 无效",
+      "toastInvalidJitter": "Jitter 必须为整数，且满足 0 <= 最小值 <= 最大值",
       "toastCreated": "Profile 已创建",
       "toastDeleted": "Profile 已删除",
       "confirmDelete": "确定删除此 Profile？",

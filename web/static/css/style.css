@@ -6285,6 +6285,33 @@ html[data-theme="dark"] .chat-input-container .send-btn:disabled::before {
     margin-bottom: 0;
 }
 
+.login-password-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.login-password-field input {
+    min-width: 0;
+    flex: 1;
+}
+
+.login-password-field button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.password-field-error {
+    color: var(--error-color, #dc3545);
+    margin-top: 6px;
+    font-size: 0.8125rem;
+}
+
+.login-form input[aria-invalid="true"],
+.login-form input[aria-invalid="true"]:focus {
+    border-color: var(--error-color, #dc3545);
+}
+
 .login-form .form-group label {
     display: block;
     margin-bottom: 8px;
@@ -24555,10 +24582,9 @@ tr.mcp-stats-tool-row[data-tool-name]:focus-visible {
 }
 
 .dashboard-recent-fact-project {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+    display: block;
     width: 72px;
+    max-width: 100%;
     box-sizing: border-box;
     padding: 3px 6px;
     border-radius: 6px;
@@ -39099,6 +39125,12 @@ html[data-theme="dark"] .form-group select {
     background: var(--bg-secondary);
 }
 
+.workflow-status-toggle.is-invalid {
+    color: var(--error-color, #dc3545);
+    border-color: currentColor;
+    background: var(--bg-secondary);
+}
+
 .workflow-status-toggle:hover {
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
 }
@@ -42793,7 +42825,7 @@ input.theme-checkbox:disabled {
 .asset-target-link:hover { text-decoration: underline; }
 .asset-table td small { margin-top: 4px; color: var(--text-secondary, #64748b); }
 .asset-tag { display: inline-block; margin: 5px 4px 0 0; padding: 2px 7px; border-radius: 999px; background: rgba(37,99,235,.1); color: #2563eb; font-size: 11px; }
-.asset-project-badge { display: inline-flex; max-width: 180px; padding: 3px 8px; border-radius: 6px; background: rgba(99,102,241,.1); color: #4f46e5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-project-badge { display: block; max-width: 100%; box-sizing: border-box; padding: 3px 8px; border-radius: 6px; background: rgba(99,102,241,.1); color: #4f46e5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asset-service { display: block; max-width: 100%; overflow: hidden; color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .asset-status { display: inline-flex; padding: 3px 9px; border-radius: 999px; font-size: 12px; background: rgba(16,185,129,.12); color: #059669; }
 .asset-status--inactive { background: rgba(100,116,139,.12); color: #64748b; }
@@ -44226,6 +44258,7 @@ html[data-theme="dark"] .project-folders-load-more-count {
     color: inherit;
     font: inherit;
     cursor: pointer;
+    text-align: left;
 }
 
 .recent-conversations-toggle:hover {
@@ -46291,4 +46324,31 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     color: var(--text-secondary);
     font-size: .75rem;
     line-height: 1.6;
+}
+
+.batch-queue-status-failed {
+    color: var(--error-color, #dc2626);
+    background: rgba(220, 38, 38, 0.08);
+    border-color: rgba(220, 38, 38, 0.25);
+}
+
+#project-panel-facts .projects-fact-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    margin-top: 5px;
+    min-width: 0;
+}
+#project-panel-facts .projects-fact-meta .projects-list-item-badge {
+    margin: 0;
+    line-height: 1.5;
+}
+#project-panel-facts .projects-fact-meta .projects-fact-vuln-link {
+    margin: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.5;
 }

@@ -3200,6 +3200,7 @@ async function probeSelectedAIChannels() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     provider: ch.provider || 'openai_compatible',
+                    channel_id: id,
                     base_url: ch.base_url || '',
                     api_key: ch.api_key || '',
                     model: ch.model || ''
@@ -3528,6 +3529,12 @@ function populateModelSelect(scope, models, currentValue) {
 async function fetchModelList(scope) {
     const tFn = typeof window.t === 'function' ? window.t : (k) => k;
     const creds = resolveModelListCredentials(scope);
+    creds.credential_scope = scope;
+    if (scope === 'openai') creds.channel_id = selectedAIChannelId;
+    const keyInputByScope = {vision: 'vision-api-key', hitlAudit: 'hitl-audit-model-api-key', knowledgeEmbedding: 'knowledge-embedding-api-key'};
+    if (keyInputByScope[scope] && !document.getElementById(keyInputByScope[scope])?.value.trim()) {
+        creds.channel_id = selectedAIChannelId;
+    }
     const modelListUiIds = {
         openai: {
             btnId: 'fetch-openai-models-btn',
@@ -3642,7 +3649,7 @@ async function testVisionConnection() {
         const response = await apiFetch('/api/config/test-vision', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vision: vision, openai: openai })
+            body: JSON.stringify({ vision: vision, openai: openai, channel_id: selectedAIChannelId })
         });
         const result = await response.json();
         if (result.success) {
@@ -3760,6 +3767,8 @@ async function testHitlAuditModelConnection() {
         const payload = typeSafe
             ? { base_url: baseUrl, api_key: apiKey, model: model }
             : cfg;
+        payload.credential_scope = 'hitlAudit';
+        if (!document.getElementById('hitl-audit-model-api-key')?.value.trim()) payload.channel_id = selectedAIChannelId;
         const response = await apiFetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3883,6 +3892,7 @@ async function testOpenAIConnection() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 provider: provider,
+                channel_id: channelId,
                 base_url: baseUrl,
                 api_key: apiKey,
                 model: model
@@ -4049,6 +4059,28 @@ async function saveToolsConfig() {
     }
 }
 
+function setPasswordFieldError(input, message) {
+    if (!input) return;
+    input.classList.toggle('error', !!message);
+    input.setAttribute('aria-invalid', message ? 'true' : 'false');
+    const error = document.getElementById(input.id + '-error');
+    if (error) {
+        error.textContent = message || '';
+        error.hidden = !message;
+        input.setAttribute('aria-describedby', error.id);
+    }
+}
+
+function passwordValidationText(key, fallback) {
+    return typeof window.t === 'function' ? window.t('settingsSecurity.' + key) : fallback;
+}
+
+function clearPasswordFieldError(input) {
+    setPasswordFieldError(input, '');
+    const error = document.getElementById('password-form-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
+}
+
 function resetPasswordForm() {
     const currentInput = document.getElementById('auth-current-password');
     const newInput = document.getElementById('auth-new-password');
@@ -4057,9 +4089,11 @@ function resetPasswordForm() {
     [currentInput, newInput, confirmInput].forEach(input => {
         if (input) {
             input.value = '';
-            input.classList.remove('error');
+            setPasswordFieldError(input, '');
         }
     });
+    const error = document.getElementById('password-form-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
 }
 
 async function changePassword() {
@@ -4068,7 +4102,9 @@ async function changePassword() {
     const confirmInput = document.getElementById('auth-confirm-password');
     const submitBtn = document.querySelector('.change-password-submit');
 
-    [currentInput, newInput, confirmInput].forEach(input => input && input.classList.remove('error'));
+    [currentInput, newInput, confirmInput].forEach(input => setPasswordFieldError(input, ''));
+    const formError = document.getElementById('password-form-error');
+    if (formError) { formError.textContent = ''; formError.hidden = true; }
 
     const currentPassword = currentInput?.value.trim() || '';
     const newPassword = newInput?.value.trim() || '';
@@ -4077,22 +4113,22 @@ async function changePassword() {
     let hasError = false;
 
     if (!currentPassword) {
-        currentInput?.classList.add('error');
+        setPasswordFieldError(currentInput, passwordValidationText('currentRequired', '请输入当前密码'));
         hasError = true;
     }
 
     if (!newPassword || newPassword.length < 8) {
-        newInput?.classList.add('error');
+        setPasswordFieldError(newInput, passwordValidationText('newTooShort', '新密码至少需要 8 位'));
         hasError = true;
     }
 
     if (newPassword !== confirmPassword) {
-        confirmInput?.classList.add('error');
+        setPasswordFieldError(confirmInput, passwordValidationText('confirmMismatch', '两次输入的新密码不一致'));
         hasError = true;
     }
 
     if (hasError) {
-        alert(typeof window.t === 'function' ? window.t('settings.security.fillPasswordHint') : '请正确填写当前密码和新密码，新密码至少 8 位且需要两次输入一致。');
+        [currentInput, newInput, confirmInput].find(input => input && input.getAttribute('aria-invalid') === 'true')?.focus();
         return;
     }
 
@@ -4124,6 +4160,7 @@ async function changePassword() {
         closeSettings();
     } catch (error) {
         console.error('修改密码失败:', error);
+        if (formError) { formError.textContent = error.message; formError.hidden = false; }
         alert((typeof window.t === 'function' ? window.t('settings.security.changePasswordFailed') : '修改密码失败') + ': ' + error.message);
     } finally {
         if (submitBtn) {

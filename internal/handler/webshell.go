@@ -391,6 +391,11 @@ func (h *WebShellHandler) ListConnections(c *gin.Context) {
 	if list == nil {
 		list = []database.WebShellConnection{}
 	}
+	for i := range list {
+		if list[i].Password != "" {
+			list[i].Password = maskedSecret
+		}
+	}
 	c.JSON(http.StatusOK, list)
 }
 
@@ -457,7 +462,7 @@ func (h *WebShellHandler) CreateConnection(c *gin.Context) {
 			"host": host, "type": shellType,
 		})
 	}
-	c.JSON(http.StatusOK, conn)
+	c.JSON(http.StatusOK, publicWebshellConnection(conn))
 }
 
 // UpdateConnection 更新 WebShell 连接（PUT /api/webshell/connections/:id）
@@ -498,11 +503,20 @@ func (h *WebShellHandler) UpdateConnection(c *gin.Context) {
 	if shellType == "" {
 		shellType = "php"
 	}
+	password := strings.TrimSpace(req.Password)
+	if password == maskedSecret {
+		stored, ok := h.authorizedWebshellConnection(c, id, "")
+		if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该连接"})
+			return
+		}
+		password = stored.Password
+	}
 	conn := &database.WebShellConnection{
 		ID:        id,
 		ProjectID: projectID,
 		URL:       req.URL,
-		Password:  strings.TrimSpace(req.Password),
+		Password:  password,
 		Type:      shellType,
 		Method:    method,
 		CmdParam:  strings.TrimSpace(req.CmdParam),
@@ -520,9 +534,9 @@ func (h *WebShellHandler) UpdateConnection(c *gin.Context) {
 	}
 	updated, _ := h.db.GetWebshellConnection(id)
 	if updated != nil {
-		c.JSON(http.StatusOK, updated)
+		c.JSON(http.StatusOK, publicWebshellConnection(updated))
 	} else {
-		c.JSON(http.StatusOK, conn)
+		c.JSON(http.StatusOK, publicWebshellConnection(conn))
 	}
 }
 
@@ -749,6 +763,10 @@ func (h *WebShellHandler) Exec(c *gin.Context) {
 		req.Method, req.CmdParam, req.Encoding = conn.Method, conn.CmdParam, conn.Encoding
 	} else if !security.SessionHasPermission(c, "webshell:write") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
+		return
+	}
+	if req.Password == maskedSecret {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请使用已保存连接或填写新的连接口令"})
 		return
 	}
 

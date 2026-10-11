@@ -153,6 +153,19 @@ func (s *ExecutionService) Submit(ctx context.Context, req ExecutionRequest) (*E
 	}
 
 	runCtx := detachedExecutionContext(ctx)
+	var executionDeadline time.Time
+	if ctx != nil {
+		executionDeadline, _ = ctx.Value(toolExecutionDeadlineKey{}).(time.Time)
+	}
+	if !executionDeadline.IsZero() {
+		remaining := time.Until(executionDeadline)
+		if remaining <= 0 {
+			remaining = time.Nanosecond
+		}
+		if req.HardTimeout <= 0 || remaining < req.HardTimeout {
+			req.HardTimeout = remaining
+		}
+	}
 	var cancel context.CancelFunc
 	if req.HardTimeout > 0 {
 		runCtx, cancel = context.WithTimeout(runCtx, req.HardTimeout)
@@ -252,6 +265,11 @@ func (s *ExecutionService) markEntryRunning(entry *executionEntry) {
 
 func (s *ExecutionService) finishEntry(ctx context.Context, entry *executionEntry, result *ToolResult, err error, onDone ExecutionDoneFunc) {
 	id := entry.exec.ID
+	if err == nil && ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if deadline, ok := ctx.Value(toolExecutionDeadlineKey{}).(time.Time); ok && !deadline.IsZero() {
+			err = context.DeadlineExceeded
+		}
+	}
 	var blockedErr *toolGuardBlockError
 	if errors.As(err, &blockedErr) {
 		result, err = blockedErr.result, nil

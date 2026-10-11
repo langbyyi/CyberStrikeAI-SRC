@@ -696,9 +696,9 @@ func robotTaskStatusAfterFinalization(current string, decision agentfinalizer.De
 
 func (h *AgentHandler) finalizeRobotAgentSuccess(taskCtx context.Context, assistantMessageID, conversationID string, resultMA *multiagent.RunResult, mcpExecutionIDs []string, taskStatus *string) (string, string, error) {
 	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput)
-	decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, mcpExecutionIDs, true)
+	decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, mcpExecutionIDs, false)
 	if cancelled := h.cleanupPendingToolExecutionsAfterIteration(taskCtx, conversationID, decision, nil); len(cancelled) > 0 {
-		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, mcpExecutionIDs, true)
+		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, mcpExecutionIDs, false)
 	}
 	h.persistFinalizationDecision(conversationID, assistantMessageID, "robot", mcpExecutionIDs, reasoningContent, decision)
 	if taskStatus != nil {

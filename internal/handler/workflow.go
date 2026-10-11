@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/audit"
@@ -15,6 +17,33 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+func validWorkflowID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i, r := range id {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !(i > 0 && (r == '_' || r == '-')) {
+			return false
+		}
+	}
+	return true
+}
+
+type workflowDefinitionResponse struct {
+	*database.WorkflowDefinition
+	ValidationError string `json:"validation_error,omitempty"`
+}
+
+func workflowResponse(ctx context.Context, wf *database.WorkflowDefinition) workflowDefinitionResponse {
+	r := workflowDefinitionResponse{WorkflowDefinition: wf}
+	if wf != nil {
+		if err := workflowrunner.ValidateGraphJSON(ctx, wf.GraphJSON); err != nil {
+			r.ValidationError = err.Error()
+		}
+	}
+	return r
+}
 
 type WorkflowHandler struct {
 	db     *database.DB
@@ -61,7 +90,11 @@ func (h *WorkflowHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"workflows": items})
+	responses := make([]workflowDefinitionResponse, 0, len(items))
+	for _, item := range items {
+		responses = append(responses, workflowResponse(c.Request.Context(), item))
+	}
+	c.JSON(http.StatusOK, gin.H{"workflows": responses})
 }
 
 func (h *WorkflowHandler) Get(c *gin.Context) {
@@ -75,7 +108,7 @@ func (h *WorkflowHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "工作流不存在"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"workflow": wf})
+	c.JSON(http.StatusOK, gin.H{"workflow": workflowResponse(c.Request.Context(), wf)})
 }
 
 func (h *WorkflowHandler) Create(c *gin.Context) {
@@ -190,6 +223,25 @@ func (h *WorkflowHandler) save(c *gin.Context, pathID string) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "工作流 id 和 name 不能为空"})
 		return
 	}
+	if pathID == "" && !validWorkflowID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "工作流 ID 必须以字母或数字开头，仅含字母、数字、下划线、连字符，且不超过 128 字节"})
+		return
+	}
+	if pathID != "" {
+		if req.ID != "" && strings.TrimSpace(req.ID) != id {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "工作流 ID 不允许通过编辑更改"})
+			return
+		}
+		existing, err := h.db.GetWorkflowDefinition(id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if existing == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "工作流不存在"})
+			return
+		}
+	}
 	graph := req.Graph
 	if len(graph) == 0 {
 		graph = req.GraphJSON
@@ -222,7 +274,17 @@ func (h *WorkflowHandler) save(c *gin.Context, pathID string) {
 		GraphJSON:   string(graph),
 		Enabled:     enabled,
 	}
-	if err := h.db.UpsertWorkflowDefinition(wf); err != nil {
+	var saveErr error
+	if pathID == "" {
+		saveErr = h.db.CreateWorkflowDefinition(wf)
+	} else {
+		saveErr = h.db.UpsertWorkflowDefinition(wf)
+	}
+	if err := saveErr; err != nil {
+		if errors.Is(err, database.ErrWorkflowAlreadyExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		if h.logger != nil {
 			h.logger.Warn("保存工作流失败", zap.String("id", id), zap.Error(err))
 		}
@@ -242,6 +304,14 @@ func (h *WorkflowHandler) Delete(c *gin.Context) {
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "工作流 id 不能为空"})
 		return
+	}
+	if h.cfg != nil {
+		for _, role := range h.cfg.Roles {
+			if role.WorkflowID == id {
+				c.JSON(http.StatusConflict, gin.H{"error": "工作流仍被角色引用，请先解除绑定"})
+				return
+			}
+		}
 	}
 	if err := h.db.DeleteWorkflowDefinition(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -1,6 +1,8 @@
 package c2
 
 import (
+	"fmt"
+	"net"
 	"strings"
 
 	"cyberstrike-ai/internal/database"
@@ -36,4 +38,35 @@ func ResolveBeaconDialHost(listener *database.C2Listener, explicitOverride strin
 		}
 	}
 	return host
+}
+
+// ValidateBeaconDialHost accepts a host only, never a URL, port or command fragment.
+func ValidateBeaconDialHost(host string) error {
+	if host == "" || len(host) > 253 {
+		return fmt.Errorf("callback host must be an IP address or hostname without a scheme, path or port")
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	name := strings.TrimSuffix(host, ".")
+	numeric := true
+	for _, c := range name {
+		if c != '.' && (c < '0' || c > '9') {
+			numeric = false
+		}
+	}
+	if numeric {
+		return fmt.Errorf("callback host contains an invalid IP address")
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("callback hostname has an invalid label")
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return fmt.Errorf("callback host must be an IP address or hostname without a scheme, path or port")
+			}
+		}
+	}
+	return nil
 }

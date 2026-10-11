@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"cyberstrike-ai/internal/agents"
 	"cyberstrike-ai/internal/audit"
@@ -19,8 +20,9 @@ var markdownAgentFilenameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.m
 
 // MarkdownAgentsHandler 管理 agents 目录下子代理 Markdown（增删改查）。
 type MarkdownAgentsHandler struct {
-	dir   string
-	audit *audit.Service
+	dir     string
+	audit   *audit.Service
+	writeMu sync.Mutex
 }
 
 // NewMarkdownAgentsHandler dir 须为已解析的绝对路径。
@@ -152,6 +154,8 @@ type markdownAgentBody struct {
 
 // CreateMarkdownAgent POST /api/multi-agent/markdown-agents
 func (h *MarkdownAgentsHandler) CreateMarkdownAgent(c *gin.Context) {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	if h.dir == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "未配置 agents 目录"})
 		return
@@ -215,6 +219,10 @@ func (h *MarkdownAgentsHandler) CreateMarkdownAgent(c *gin.Context) {
 			return
 		}
 	}
+	if err := h.validateMarkdownWrite(filepath.Base(path), out); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if want := agents.WantsMarkdownOrchestrator(filepath.Base(path), body.Kind, string(out)); want {
 		other, oerr := existingOtherOrchestrator(h.dir, filepath.Base(path))
 		if oerr != nil {
@@ -230,8 +238,20 @@ func (h *MarkdownAgentsHandler) CreateMarkdownAgent(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := os.WriteFile(path, out, 0644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "文件已存在"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	_, writeErr := f.Write(out)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入智能体文件失败"})
 		return
 	}
 	if h.audit != nil {
@@ -242,10 +262,16 @@ func (h *MarkdownAgentsHandler) CreateMarkdownAgent(c *gin.Context) {
 
 // UpdateMarkdownAgent PUT /api/multi-agent/markdown-agents/:filename
 func (h *MarkdownAgentsHandler) UpdateMarkdownAgent(c *gin.Context) {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	filename := c.Param("filename")
 	path, err := h.safeJoin(filename)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在"})
 		return
 	}
 	var body markdownAgentBody
@@ -284,6 +310,10 @@ func (h *MarkdownAgentsHandler) UpdateMarkdownAgent(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+	}
+	if err := h.validateMarkdownWrite(filename, out); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 	if want := agents.WantsMarkdownOrchestrator(filename, body.Kind, string(out)); want {
 		other, oerr := existingOtherOrchestrator(h.dir, filename)

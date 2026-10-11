@@ -25,8 +25,9 @@ import (
 //   - 一个 listener 仅处理一个 WS 路径（默认 /ws），但可承载多个并发 implant。
 //
 // 帧协议（皆为加密后 base64 字符串走 TextMessage）：
-//   client → server：{"type":"checkin"|"result", "data": <ImplantCheckInRequest|TaskResultReport>}
-//   server → client：{"type":"task", "data": <TaskEnvelope>} 或 {"type":"sleep","data":{"sleep":N,"jitter":J}}
+//
+//	client → server：{"type":"checkin"|"result", "data": <ImplantCheckInRequest|TaskResultReport>}
+//	server → client：{"type":"task", "data": <TaskEnvelope>} 或 {"type":"sleep","data":{"sleep":N,"jitter":J}}
 type WebSocketListener struct {
 	rec     *database.C2Listener
 	cfg     *ListenerConfig
@@ -36,10 +37,10 @@ type WebSocketListener struct {
 	srv      *http.Server
 	upgrader websocket.Upgrader
 
-	mu       sync.Mutex
-	conns    map[string]*wsConn // session_id → 连接
-	stopped  bool
-	stopCh   chan struct{}
+	mu      sync.Mutex
+	conns   map[string]*wsConn // session_id → 连接
+	stopped bool
+	stopCh  chan struct{}
 }
 
 // wsConn 单个 WS implant 的内存状态
@@ -179,20 +180,21 @@ func (l *WebSocketListener) handleConn(ws *websocket.Conn) {
 	l.conns[session.ID] = conn
 	l.mu.Unlock()
 	defer func() {
-		l.mu.Lock()
-		delete(l.conns, session.ID)
-		l.mu.Unlock()
+		l.detachConnection(conn)
 		_ = ws.Close()
-		_ = l.manager.MarkSessionDead(session.ID)
 	}()
 
 	// 心跳 goroutine
 	pingTicker := time.NewTicker(20 * time.Second)
 	defer pingTicker.Stop()
+	connDone := make(chan struct{})
+	defer close(connDone)
 	go func() {
 		for {
 			select {
 			case <-l.stopCh:
+				return
+			case <-connDone:
 				return
 			case <-pingTicker.C:
 				conn.writeMu.Lock()
@@ -212,7 +214,7 @@ func (l *WebSocketListener) handleConn(ws *websocket.Conn) {
 		case "result":
 			var report TaskResultReport
 			if err := json.Unmarshal(body, &report); err == nil {
-				_ = l.manager.IngestTaskResult(report)
+				_ = l.manager.IngestTaskResultFromListener(l.rec.ID, conn.sessionID, report)
 			}
 		case "checkin":
 			// 心跳更新：beacon 周期性送上心跳
@@ -221,6 +223,16 @@ func (l *WebSocketListener) handleConn(ws *websocket.Conn) {
 				_ = l.manager.DB().TouchC2Session(session.ID, string(SessionActive), time.Now())
 			}
 		}
+	}
+}
+
+// detachConnection only retires the connection that still owns this session.
+func (l *WebSocketListener) detachConnection(conn *wsConn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conns[conn.sessionID] == conn {
+		delete(l.conns, conn.sessionID)
+		_ = l.manager.MarkSessionDead(conn.sessionID)
 	}
 }
 

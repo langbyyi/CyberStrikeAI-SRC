@@ -7,12 +7,32 @@ import (
 	"strings"
 	"time"
 
+	"cyberstrike-ai/internal/agentfinalizer"
 	"cyberstrike-ai/internal/config"
 	workflowrunner "cyberstrike-ai/internal/workflow"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+func (h *AgentHandler) finalizeWorkflowRunForDelivery(conversationID, messageID string, result *workflowrunner.RunResult) agentfinalizer.Decision {
+	in := agentfinalizer.Input{ConversationID: conversationID, AssistantMessageID: messageID, AgentMode: "workflow"}
+	if result == nil {
+		in.Status = agentfinalizer.StatusFailed
+		in.Response = "工作流未返回执行结果。"
+	} else {
+		in.Response = result.Response
+		in.AwaitingHITL = result.AwaitingHITL
+		in.Status = result.Status
+		if result.Status == "rejected" {
+			in.Status = agentfinalizer.StatusCancelled
+			in.CompletionReason = "workflow_rejected"
+		}
+	}
+	decision := agentfinalizer.Decide(h.db, in)
+	h.persistFinalizationDecision(conversationID, messageID, "workflow", nil, "", decision)
+	return decision
+}
 
 func (h *AgentHandler) roleForWorkflow(req *ChatRequest) (config.RoleConfig, bool) {
 	if h == nil || h.config == nil || h.config.Roles == nil || req == nil {
@@ -158,16 +178,7 @@ func (h *AgentHandler) runRoleWorkflowStreamIfBound(
 		sendEvent("done", "", map[string]interface{}{"conversationId": conversationID})
 		return true
 	}
-	decision := h.finalizeCandidateForDeliveryWithPolicy(
-		prep.ConversationID,
-		prep.AssistantMessageID,
-		"workflow",
-		result.Response,
-		nil,
-		result.AwaitingHITL,
-		"",
-		true,
-	)
+	decision := h.finalizeWorkflowRunForDelivery(prep.ConversationID, prep.AssistantMessageID, result)
 	responseText := decision.FinalText
 	if !decision.Finalizable {
 		responseText = finalizationBlockedMessage(decision)
@@ -280,16 +291,7 @@ func (h *AgentHandler) runRoleWorkflowJSONIfBound(c *gin.Context, req *ChatReque
 		respond(http.StatusInternalServerError, gin.H{"error": errMsg, "conversationId": conversationID})
 		return true
 	}
-	decision := h.finalizeCandidateForDeliveryWithPolicy(
-		prep.ConversationID,
-		prep.AssistantMessageID,
-		"workflow",
-		result.Response,
-		nil,
-		result.AwaitingHITL,
-		"",
-		true,
-	)
+	decision := h.finalizeWorkflowRunForDelivery(prep.ConversationID, prep.AssistantMessageID, result)
 	responseText := decision.FinalText
 	if !decision.Finalizable {
 		responseText = finalizationBlockedMessage(decision)

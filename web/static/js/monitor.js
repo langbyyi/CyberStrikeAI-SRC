@@ -427,6 +427,13 @@ function getToolCallMapping(progressId, toolCallId) {
     return toolCallStatusMap.get(String(toolCallId)) || null;
 }
 
+function progressDoneOutcome(data) {
+    const status = String(data && (data.status || data.workflowStatus) || '').toLowerCase();
+    if (status === 'cancelled' || status === 'canceled') return { key: 'chat.taskCancelled', fallback: '任务已取消', icon: '⛔', toolStatus: 'cancelled' };
+    if (['failed', 'timeout', 'cleanup_failed', 'cleanup_unconfirmed'].includes(status)) return { key: status === 'timeout' ? 'tasks.statusTimeout' : 'tasks.statusFailed', fallback: status === 'timeout' ? '任务超时' : '任务执行失败', icon: '❌', toolStatus: 'failed' };
+    return { key: 'chat.penetrationTestComplete', fallback: '渗透测试完成', icon: '✅', toolStatus: 'failed' };
+}
+
 function finalizeOutstandingToolCallsForProgress(progressId, finalStatus) {
     if (!progressId) return;
     const pid = String(progressId);
@@ -3868,7 +3875,7 @@ function handleStreamEvent(event, progressElement, progressId,
             // 立即刷新任务状态
             loadActiveTasks();
             // Close any remaining running tool calls for this progress.
-            finalizeOutstandingToolCallsForProgress(progressId, 'failed');
+            finalizeOutstandingToolCallsForProgress(progressId, 'cancelled');
             break;
 
         case 'response_start': {
@@ -4189,7 +4196,8 @@ function handleStreamEvent(event, progressElement, progressId,
             // 完成，更新进度标题（如果进度消息还存在）
             const doneTitle = document.querySelector(`#${progressId} .progress-stage`);
             if (doneTitle) {
-                doneTitle.textContent = '✅ ' + (typeof window.t === 'function' ? window.t('chat.penetrationTestComplete') : '渗透测试完成');
+                const outcome = progressDoneOutcome(event.data);
+                doneTitle.textContent = outcome.icon + ' ' + (typeof window.t === 'function' ? window.t(outcome.key) : outcome.fallback);
             }
             // 更新对话ID
             if (event.data && event.data.conversationId) {
@@ -4200,7 +4208,9 @@ function handleStreamEvent(event, progressElement, progressId,
                 updateProgressConversation(progressId, event.data.conversationId);
             }
             if (progressTaskState.has(progressId)) {
-                finalizeProgressTask(progressId, typeof window.t === 'function' ? window.t('tasks.statusCompleted') : '已完成');
+                const outcome = progressDoneOutcome(event.data);
+                const labelKey = outcome.icon === '✅' ? 'tasks.statusCompleted' : outcome.key;
+                finalizeProgressTask(progressId, typeof window.t === 'function' ? window.t(labelKey) : outcome.fallback);
             }
             
             // 检查时间线中是否有错误项
@@ -4209,7 +4219,7 @@ function handleStreamEvent(event, progressElement, progressId,
             // 立即刷新任务状态（确保任务状态同步）
             loadActiveTasks();
             // Close any remaining running tool calls for this progress (best-effort).
-            finalizeOutstandingToolCallsForProgress(progressId, 'failed');
+            finalizeOutstandingToolCallsForProgress(progressId, progressDoneOutcome(event.data).toolStatus);
             
             // 延迟再次刷新任务状态（确保后端已完成状态更新）
             setTimeout(() => {

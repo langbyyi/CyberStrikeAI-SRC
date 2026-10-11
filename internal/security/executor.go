@@ -598,9 +598,12 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 		if hasScanType {
 			scanTypeArgs := e.parseAdditionalArgs(scanTypeValue)
 			if len(scanTypeArgs) > 0 {
-				// 对于 nmap，scan_type 应该替换默认的扫描类型参数
-				// 由于我们已经跳过了默认的 args，现在需要将 scan_type 插入到合适位置
-				// 找到 target 参数的位置（通常是最后一个位置参数）
+				if toolName == "nmap" {
+					// Keep each option next to its value (especially --script).
+					// Nmap accepts scan options before all other arguments.
+					return append(scanTypeArgs, cmdArgs...)
+				}
+				// Preserve the existing insertion rule for other tools using scan_type.
 				insertPos := len(cmdArgs)
 				for i := len(cmdArgs) - 1; i >= 0; i-- {
 					// target 通常是最后一个非标志参数

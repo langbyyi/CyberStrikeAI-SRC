@@ -483,6 +483,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	externalMCPHandler := handler.NewExternalMCPHandler(externalMCPMgr, cfg, configPath, log.Logger)
 	externalMCPHandler.SetAudit(auditSvc)
 	roleHandler := handler.NewRoleHandler(cfg, configPath, log.Logger)
+	roleHandler.SetDB(db)
 	roleHandler.SetAudit(auditSvc)
 	skillsHandler := handler.NewSkillsHandler(cfg, configPath, log.Logger)
 	skillsHandler.SetAudit(auditSvc)

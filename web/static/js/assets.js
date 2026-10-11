@@ -100,13 +100,45 @@ const ASSET_IMPORT_HEADER_ALIASES = {
     status: ['status', '状态']
 };
 
+const ASSET_EXPORT_LABELS = {
+    target: 'target', host: 'hostUrl', ip: 'exportIP', domain: 'domain', port: 'port', protocol: 'protocol',
+    title: 'pageTitle', server: 'server', project: 'project', responsible_person: 'responsiblePerson',
+    department: 'department', business_system: 'businessSystem', environment: 'environment', criticality: 'criticality',
+    country: 'country', province: 'province', city: 'city', source: 'source', status: 'status', tags: 'tagsLabel',
+    risk_level: 'riskLevel', vulnerability_count: 'exportVulnerabilityCount', first_seen_at: 'firstSeen',
+    last_seen_at: 'lastSeen', last_scan_at: 'lastScan'
+};
+
+function assetExportHeader(key) {
+    return assetT('assets.' + ASSET_EXPORT_LABELS[key], key);
+}
+
+function assetLocalizedEnumMap(values, prefix) {
+    const result = { ...values };
+    for (const code of new Set(Object.values(values))) {
+        if (!code) continue;
+        const key = prefix + code[0].toUpperCase() + code.slice(1);
+        result[assetT('assets.' + key, code).toLowerCase()] = code;
+    }
+    return result;
+}
+
+function assetExportValue(key, value) {
+    if (['environment', 'criticality', 'status'].includes(key) && value) {
+        const codes = { environment: ['production', 'staging', 'testing', 'development', 'other'], criticality: ['critical', 'high', 'medium', 'low'], status: ['active', 'inactive'] };
+        if (codes[key].includes(value)) return assetT('assets.' + key + value[0].toUpperCase() + value.slice(1), value);
+    }
+    if (key === 'risk_level' && ['critical', 'high', 'medium', 'low', 'info', 'normal', 'unassessed'].includes(value)) return assetRiskPresentation(value).label;
+    return value;
+}
+
 function normalizeAssetImportHeader(value) {
     return String(value == null ? '' : value).replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[\s_\-/.（）()]+/g, '');
 }
 
 function assetImportColumnForHeader(value) {
     const normalized = normalizeAssetImportHeader(value);
-    return ASSET_IMPORT_COLUMNS.find(column => ASSET_IMPORT_HEADER_ALIASES[column].includes(normalized)) || '';
+    return ASSET_IMPORT_COLUMNS.find(column => (ASSET_IMPORT_HEADER_ALIASES[column].includes(normalized) || normalizeAssetImportHeader(assetExportHeader(column)) === normalized)) || '';
 }
 
 function assetImportTemplateHeaders() {
@@ -301,13 +333,13 @@ function assetImportRecord(values, rowNumber) {
     if (rawDomain && !domain) return fail(assetT('assets.domainInvalid', '域名格式无效'));
     const protocol = (values.protocol || parsed.protocol || '').toLowerCase();
     if (protocol && !/^[a-z][a-z0-9+.-]{0,31}$/.test(protocol)) return fail(assetT('assets.protocolInvalid', '协议格式无效'));
-    const statuses = { active: 'active', inactive: 'inactive', '活跃': 'active', '停用': 'inactive' };
+    const statuses = assetLocalizedEnumMap({ active: 'active', inactive: 'inactive', '活跃': 'active', '停用': 'inactive' }, 'status');
     const status = statuses[String(values.status || 'active').toLowerCase()];
     if (!status) return fail(assetT('assets.importStatusInvalid', '状态仅支持 active 或 inactive'));
-    const environments = { '': '', production: 'production', staging: 'staging', testing: 'testing', development: 'development', other: 'other', '生产': 'production', '预发布': 'staging', '测试': 'testing', '开发': 'development', '其他': 'other' };
+    const environments = assetLocalizedEnumMap({ '': '', production: 'production', staging: 'staging', testing: 'testing', development: 'development', other: 'other', '生产': 'production', '预发布': 'staging', '测试': 'testing', '开发': 'development', '其他': 'other' }, 'environment');
     const environment = environments[String(values.environment || '').toLowerCase()];
     if (environment == null) return fail('环境值无效');
-    const criticalities = { '': '', critical: 'critical', high: 'high', medium: 'medium', low: 'low', '核心': 'critical', '重要': 'high', '一般': 'medium', '低': 'low' };
+    const criticalities = assetLocalizedEnumMap({ '': '', critical: 'critical', high: 'high', medium: 'medium', low: 'low', '核心': 'critical', '重要': 'high', '一般': 'medium', '低': 'low' }, 'criticality');
     const criticality = criticalities[String(values.criticality || '').toLowerCase()];
     if (criticality == null) return fail('重要性值无效');
     let projectId = '';
@@ -780,7 +812,7 @@ function renderAssetRows() {
             <td class="asset-check-cell"><input type="checkbox" class="theme-checkbox" ${assetPageState.selected.has(asset.id) ? 'checked' : ''} onchange="toggleAssetSelection(${index},this.checked)" aria-label="${escapeHtml(assetT('assets.selectAsset', '选择资产'))}"></td>
             <td><button class="asset-target-link" title="${escapeHtml(targetHint)}" onclick="openAssetDetail(${index})">${escapeHtml(assetTargetLabel(asset))}</button></td>
             <td><span class="asset-service" title="${escapeHtml(service)}">${escapeHtml(service)}</span></td>
-            <td>${asset.project_name ? `<span class="asset-project-badge">${escapeHtml(asset.project_name)}</span>` : '<span class="muted">-</span>'}</td>
+            <td>${asset.project_name ? `<span class="asset-project-badge" title="${escapeHtml(asset.project_name)}">${escapeHtml(asset.project_name)}</span>` : '<span class="muted">-</span>'}</td>
             <td>${assetOwnershipMarkup(asset)}</td>
             <td>${escapeHtml(lastScan)}</td><td>${vulnerabilityCount > 0 ? `<button class="asset-vulnerability-link" onclick="openAssetVulnerabilities(${index})">${vulnerabilityCount}</button>` : '<span class="muted">0</span>'}</td>
             <td><span class="asset-risk asset-risk--${risk.level}">${escapeHtml(risk.label)}</span></td>
@@ -1017,13 +1049,13 @@ function exportSelectedAssets(format) {
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === 'csv') {
         const headers = Object.keys(rows[0]);
-        const csv = '\uFEFF' + [headers.join(','), ...rows.map(row => headers.map(key => assetCsvCell(row[key])).join(','))].join('\r\n');
+        const csv = '\uFEFF' + [headers.map(key => assetCsvCell(assetExportHeader(key))).join(','), ...rows.map(row => headers.map(key => assetCsvCell(assetExportValue(key, row[key]))).join(','))].join('\r\n');
         downloadAssetBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `assets-${stamp}.csv`);
         return;
     }
     if (!window.XLSX) return alert('表格组件加载失败，请刷新后重试');
     const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet(rows);
+    const sheet = XLSX.utils.aoa_to_sheet([Object.keys(rows[0]).map(assetExportHeader), ...rows.map(row => Object.keys(row).map(key => assetExportValue(key, row[key])))]);
     sheet['!autofilter'] = { ref: sheet['!ref'] };
     sheet['!cols'] = Object.keys(rows[0]).map(key => ({ wch: ['target', 'host', 'title'].includes(key) ? 30 : 16 }));
     XLSX.utils.book_append_sheet(workbook, sheet, 'Assets');
@@ -1099,7 +1131,10 @@ function renderAssetScanPrompt(template, asset) {
     const values = {
         asset_id: asset.id || '', target: assetTargetLabel(asset), host: asset.host || '', ip: asset.ip || '', domain: asset.domain || '', port: asset.port || ''
     };
-    return Object.keys(values).reduce((text, key) => text.replaceAll(`{{${key}}}`, String(values[key])), template);
+    const prompt = Object.keys(values).reduce((text, key) => text.replaceAll(`{{${key}}}`, String(values[key])), template);
+    if (!asset.id || prompt.includes('complete_asset_scan')) return prompt;
+    const completion = assetT('assets.scanCompletionInstruction', '达到上述任务目标后停止探测，如实报告已有结果；调用 complete_asset_scan(id={{asset_id}}) 回写本次资产扫描时间和关联结果。此记录动作不扩大上述探测范围。', { asset_id: String(asset.id) });
+    return `${prompt}\n\n${completion}`;
 }
 
 function commonAssetProjectId(assets) {

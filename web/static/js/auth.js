@@ -92,7 +92,25 @@ function resolveAuthPromises(success) {
     authPromise = null;
 }
 
+function setLoginPasswordVisible(visible) {
+    const input = document.getElementById('login-password');
+    const button = document.getElementById('login-password-toggle');
+    if (input) input.type = visible ? 'text' : 'password';
+    if (button) {
+        button.setAttribute('aria-pressed', String(visible));
+        const key = visible ? 'login.hidePassword' : 'login.showPassword';
+        button.setAttribute('data-i18n', key);
+        button.textContent = typeof window.t === 'function' ? window.t(key) : (visible ? '隐藏密码' : '显示密码');
+    }
+}
+
+function toggleLoginPasswordVisibility() {
+    const input = document.getElementById('login-password');
+    setLoginPasswordVisible(input && input.type === 'password');
+}
+
 function showLoginOverlay(message = '') {
+    setLoginPasswordVisible(false);
     const overlay = document.getElementById('login-overlay');
     const errorBox = document.getElementById('login-error');
     const usernameInput = document.getElementById('login-username');
@@ -120,6 +138,7 @@ function showLoginOverlay(message = '') {
 }
 
 function hideLoginOverlay() {
+    setLoginPasswordVisible(false);
     const overlay = document.getElementById('login-overlay');
     const errorBox = document.getElementById('login-error');
     const usernameInput = document.getElementById('login-username');
@@ -131,7 +150,9 @@ function hideLoginOverlay() {
     }
     if (passwordInput) {
         passwordInput.value = '';
+        passwordInput.setAttribute('aria-invalid', 'false');
     }
+    if (usernameInput) usernameInput.setAttribute('aria-invalid', 'false');
     if (usernameInput && !authUser) {
         usernameInput.value = '';
     }
@@ -244,6 +265,14 @@ async function apiUploadWithProgress(url, formData, options = {}) {
     });
 }
 
+function clearLoginFormError(event) {
+    const input = event.target;
+    if (!input || (input.id !== 'login-username' && input.id !== 'login-password')) return;
+    input.setAttribute('aria-invalid', 'false');
+    const error = document.getElementById('login-error');
+    if (error) { error.textContent = ''; error.style.display = 'none'; }
+}
+
 async function submitLogin(event) {
     event.preventDefault();
     const usernameInput = document.getElementById('login-username');
@@ -251,13 +280,25 @@ async function submitLogin(event) {
     const errorBox = document.getElementById('login-error');
     const submitBtn = document.querySelector('.login-submit');
 
+    [usernameInput, passwordInput].forEach(input => input && input.setAttribute('aria-invalid', 'false'));
+
     if (!passwordInput) {
         return;
     }
 
     const username = usernameInput ? usernameInput.value.trim() : '';
     const password = passwordInput.value.trim();
+    if (!username || Array.from(username).length > 64) {
+        if (usernameInput) usernameInput.setAttribute('aria-invalid', 'true');
+        if (errorBox) {
+            errorBox.textContent = typeof window.t === 'function' ? window.t('auth.usernameRequired') : '用户名不能为空，且不能超过 64 个字符';
+            errorBox.style.display = 'block';
+        }
+        if (usernameInput) usernameInput.focus();
+        return;
+    }
     if (!password) {
+        passwordInput.setAttribute('aria-invalid', 'true');
         if (errorBox) {
             const msgEmpty = (typeof window !== 'undefined' && typeof window.t === 'function')
                 ? window.t('auth.enterPassword')
@@ -265,6 +306,7 @@ async function submitLogin(event) {
             errorBox.textContent = msgEmpty;
             errorBox.style.display = 'block';
         }
+        passwordInput.focus();
         return;
     }
 
@@ -675,6 +717,7 @@ function setupLoginUI() {
     const loginForm = document.getElementById('login-form');
     if (loginForm) {
         loginForm.addEventListener('submit', submitLogin);
+        loginForm.addEventListener('input', clearLoginFormError);
     }
 }
 
@@ -951,6 +994,7 @@ window.generateRobotBindingCode = generateRobotBindingCode;
 window.copyRobotBindingCode = copyRobotBindingCode;
 window.deleteRobotAccountBinding = deleteRobotAccountBinding;
 window.logout = logout;
+window.toggleLoginPasswordVisibility = toggleLoginPasswordVisibility;
 window.hasPermission = hasPermission;
 window.hasAnyPermission = hasAnyPermission;
 window.readApiError = readApiError;

@@ -757,6 +757,9 @@ func batchQueueConcurrencyFromRow(row *database.BatchTaskQueueRow) int {
 
 // UpdateQueueMetadata 更新队列标题、角色、代理模式和并发数（非 running 时可用）
 func (m *BatchTaskManager) UpdateQueueMetadata(queueID, title, role, agentMode string, concurrency *int, hitlPolicies ...string) error {
+	if concurrency != nil && (*concurrency < 1 || *concurrency > MaxBatchQueueConcurrency) {
+		return fmt.Errorf("并发数必须为 1–%d", MaxBatchQueueConcurrency)
+	}
 	if utf8.RuneCountInString(title) > MaxBatchQueueTitleLen {
 		return fmt.Errorf("标题不能超过 %d 个字符", MaxBatchQueueTitleLen)
 	}

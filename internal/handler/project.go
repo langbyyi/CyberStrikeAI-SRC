@@ -198,9 +198,12 @@ func (h *ProjectHandler) UpdateProject(c *gin.Context) {
 		return
 	}
 	if req.Name != nil {
-		if s := strings.TrimSpace(*req.Name); s != "" {
-			p.Name = s
+		s := strings.TrimSpace(*req.Name)
+		if s == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "项目名称不能为空"})
+			return
 		}
+		p.Name = s
 	}
 	if req.Description != nil {
 		p.Description = clampProjectDescription(*req.Description)

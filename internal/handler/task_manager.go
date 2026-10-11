@@ -37,6 +37,7 @@ type AgentTask struct {
 	IsolationBackend string `json:"isolationBackend,omitempty"`
 	finishing        chan struct{}
 	stopping         chan struct{}
+	cancelRequested  bool
 	finalStatus      string
 	ConversationID   string    `json:"conversationId"`
 	Title            string    `json:"title,omitempty"`
@@ -493,6 +494,11 @@ func (m *AgentTaskManager) CancelTask(conversationID string, cause error) (bool,
 		return true, nil
 	}
 
+	if cause == nil || errors.Is(cause, ErrTaskCancelled) {
+		task.cancelRequested = true
+		task.finalStatus = "cancelled"
+	}
+
 	// ErrInterruptContinue：仅掐断当前推理步骤，随后由处理器续跑，不进入长时间「取消中」态。
 	if cause != nil && errors.Is(cause, multiagent.ErrInterruptContinue) {
 		task.Status = "running"
@@ -568,6 +574,9 @@ func (m *AgentTaskManager) UpdateTaskStatus(conversationID string, status string
 	if task.finishing != nil || task.Status == "cleanup_failed" {
 		return
 	}
+	if task.cancelRequested {
+		status = "cancelled"
+	}
 	switch status {
 	case "completed", "cancelled", "failed", "timeout":
 		task.finalStatus = status
@@ -636,6 +645,9 @@ func (m *AgentTaskManager) FinishTaskRun(conversationID, runID, finalStatus stri
 			return errors.New(cleanupError)
 		}
 		return nil
+	}
+	if task.cancelRequested {
+		finalStatus = "cancelled"
 	}
 	done := make(chan struct{})
 	task.finishing = done

@@ -447,3 +447,25 @@ func TestAssetListFlexibleFiltersAndOldestScanPagination(t *testing.T) {
 		t.Fatalf("structured filters: total=%d assets=%#v err=%v", total, filtered, err)
 	}
 }
+
+func TestAssetIPURLWithPrefilledIPDoesNotBecomeDomain(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "ip-url.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cases := []*Asset{
+		{Host: "http://192.168.200.100:18081", IP: "192.168.200.100", Port: 18081, Protocol: "http"},
+		{Host: "http://[2001:db8::1]:18081", IP: "2001:db8::1", Port: 18081, Protocol: "http"},
+		{Host: "http://192.0.2.1:18081"},
+	}
+	for _, a := range cases {
+		result, err := db.UpsertAssets([]*Asset{a}, "")
+		if err != nil || result.Created != 1 {
+			t.Fatalf("rejected IP URL: %#v %v", result, err)
+		}
+		if a.Domain != "" || a.IP == "" || a.Port != 18081 {
+			t.Fatalf("wrong structured fields: %#v", a)
+		}
+	}
+}

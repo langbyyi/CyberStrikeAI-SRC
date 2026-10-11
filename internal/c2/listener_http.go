@@ -199,8 +199,8 @@ func (l *HTTPBeaconListener) handleCheckIn(w http.ResponseWriter, r *http.Reques
 	// curl oneliner 可能不携带完整字段，用 remote IP + listener ID 生成稳定标识
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if strings.TrimSpace(req.ImplantUUID) == "" {
-		// 基于 IP + listener ID 生成稳定 UUID，同一 IP 多次 check_in 复用同一会话
-		req.ImplantUUID = fmt.Sprintf("curl_%s_%s", host, shortHash(host+l.rec.ID))
+		// 同一客户端凭据复用会话，同 IP 的不同客户端保持独立身份
+		req.ImplantUUID = fmt.Sprintf("curl_%s_%s", host, httpIdentityHash(host+l.rec.ID+r.Header.Get("X-Session-Token")))
 	}
 	if strings.TrimSpace(req.Hostname) == "" {
 		req.Hostname = "curl_" + host
@@ -213,6 +213,11 @@ func (l *HTTPBeaconListener) handleCheckIn(w http.ResponseWriter, r *http.Reques
 	}
 	if strings.TrimSpace(req.Arch) == "" {
 		req.Arch = "unknown"
+	}
+	bound, bindErr := l.manager.DB().BindC2HTTPIdentity(l.rec.ID, req.ImplantUUID, r.Header.Get("X-Session-Token"))
+	if bindErr != nil || !bound {
+		l.disguisedReject(w)
+		return
 	}
 	session, err := l.manager.IngestCheckIn(l.rec.ID, req)
 	if err != nil {
@@ -254,7 +259,7 @@ func (l *HTTPBeaconListener) handleTasks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	session, err := l.manager.DB().GetC2Session(sessionID)
-	if err != nil || session == nil {
+	if err != nil || session == nil || session.ListenerID != l.rec.ID || !l.authenticatesSession(r, session) {
 		l.disguisedReject(w)
 		return
 	}
@@ -299,7 +304,17 @@ func (l *HTTPBeaconListener) handleResult(w http.ResponseWriter, r *http.Request
 		l.disguisedReject(w)
 		return
 	}
-	if err := l.manager.IngestTaskResult(report); err != nil {
+	task, taskErr := l.manager.DB().GetC2Task(report.TaskID)
+	if taskErr != nil || task == nil {
+		l.disguisedReject(w)
+		return
+	}
+	session, sessionErr := l.manager.DB().GetC2Session(task.SessionID)
+	if sessionErr != nil || !l.authenticatesSession(r, session) {
+		l.disguisedReject(w)
+		return
+	}
+	if err := l.manager.IngestTaskResultFromListener(l.rec.ID, session.ID, report); err != nil {
 		http.Error(w, "ingest result failed", http.StatusInternalServerError)
 		return
 	}
@@ -324,7 +339,7 @@ func (l *HTTPBeaconListener) handleUpload(w http.ResponseWriter, r *http.Request
 		return
 	}
 	taskID := r.URL.Query().Get("task_id")
-	if taskID == "" {
+	if taskID == "" || !l.authenticatesTask(r, taskID) {
 		l.disguisedReject(w)
 		return
 	}
@@ -372,6 +387,21 @@ func (l *HTTPBeaconListener) handleFileServe(w http.ResponseWriter, r *http.Requ
 		l.disguisedReject(w)
 		return
 	}
+	identities, identityErr := l.manager.DB().C2HTTPFileIdentities(l.rec.ID, taskID)
+	authenticated := false
+	if identityErr == nil {
+		for _, identity := range identities {
+			ok, err := l.manager.DB().VerifyC2HTTPIdentity(l.rec.ID, identity, r.Header.Get("X-Session-Token"))
+			if err == nil && ok {
+				authenticated = true
+				break
+			}
+		}
+	}
+	if !authenticated {
+		l.disguisedReject(w)
+		return
+	}
 	fpath := filepath.Join(l.manager.StorageDir(), "downstream", taskID+".bin")
 	absPath, err := filepath.Abs(fpath)
 	if err != nil {
@@ -396,6 +426,23 @@ func (l *HTTPBeaconListener) handleFileServe(w http.ResponseWriter, r *http.Requ
 // ----------------------------------------------------------------------------
 // 鉴权 / 输出辅助
 // ----------------------------------------------------------------------------
+
+func (l *HTTPBeaconListener) authenticatesSession(r *http.Request, session *database.C2Session) bool {
+	if session == nil || session.ListenerID != l.rec.ID {
+		return false
+	}
+	ok, err := l.manager.DB().VerifyC2HTTPIdentity(l.rec.ID, session.ImplantUUID, r.Header.Get("X-Session-Token"))
+	return err == nil && ok
+}
+
+func (l *HTTPBeaconListener) authenticatesTask(r *http.Request, taskID string) bool {
+	task, err := l.manager.DB().GetC2Task(taskID)
+	if err != nil || task == nil {
+		return false
+	}
+	session, err := l.manager.DB().GetC2Session(task.SessionID)
+	return err == nil && l.authenticatesSession(r, session)
+}
 
 // checkImplantToken 校验 X-Implant-Token header（恒定时间比较防止时序攻击）
 func (l *HTTPBeaconListener) checkImplantToken(r *http.Request) bool {
@@ -517,9 +564,9 @@ func base64Encode(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func shortHash(s string) string {
+func httpIdentityHash(s string) string {
 	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:6])
+	return hex.EncodeToString(h[:])
 }
 
 // isPlaintextClient 判断请求是否来自明文客户端（curl oneliner 等）

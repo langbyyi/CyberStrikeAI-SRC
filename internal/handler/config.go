@@ -381,7 +381,7 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	}
 	// 回填生效值：前端按它展示/选择审批引擎，空串会被误读成“未配置”。
 	hitlCfg.AuditBackend = h.config.Hitl.EffectiveAuditBackend()
-	c.JSON(http.StatusOK, GetConfigResponse{
+	response, err := maskedConfigResponse(GetConfigResponse{
 		AI:         h.config.AI,
 		OpenAI:     h.config.OpenAI,
 		Vision:     h.config.Vision,
@@ -400,6 +400,11 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		Robots:     h.config.Robots,
 		MultiAgent: multiPub,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "配置序列化失败"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // GetToolsResponse 获取工具列表响应（分页）
@@ -857,6 +862,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := restoreConfigRequestSecrets(&req, h.config); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 更新OpenAI配置
 	if req.AI != nil {
@@ -1312,10 +1321,12 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 // TestOpenAIRequest 测试OpenAI连接请求
 type TestOpenAIRequest struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"base_url"`
-	APIKey   string `json:"api_key"`
-	Model    string `json:"model"`
+	CredentialScope string `json:"credential_scope,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
 }
 
 // TestOpenAI 测试OpenAI API连接是否可用
@@ -1326,6 +1337,12 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 		return
 	}
 
+	resolvedKey, resolveErr := h.resolveProbeSecret(req.APIKey, req.ChannelID, req.BaseURL, req.CredentialScope)
+	if resolveErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resolveErr.Error()})
+		return
+	}
+	req.APIKey = resolvedKey
 	if strings.TrimSpace(req.APIKey) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "API Key 不能为空"})
 		return
@@ -1443,9 +1460,11 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 
 // TestTypeSafeRequest 测试 TypeSafe / Jev 连接。
 type TestTypeSafeRequest struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
+	CredentialScope string `json:"credential_scope,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
 }
 
 // TestTypeSafe 用一条最小 Noul 验证 TypeSafe System One 是否可用。
@@ -1455,6 +1474,12 @@ func (h *ConfigHandler) TestTypeSafe(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数: " + err.Error()})
 		return
 	}
+	resolvedKey, resolveErr := h.resolveProbeSecret(req.APIKey, req.ChannelID, req.BaseURL, req.CredentialScope)
+	if resolveErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resolveErr.Error()})
+		return
+	}
+	req.APIKey = resolvedKey
 	if strings.TrimSpace(req.APIKey) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "TypeSafe API Key 不能为空"})
 		return
@@ -1498,9 +1523,11 @@ func (h *ConfigHandler) TestTypeSafe(c *gin.Context) {
 
 // ListModelsRequest 获取模型列表请求（OpenAI 兼容 GET /models）。
 type ListModelsRequest struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"base_url"`
-	APIKey   string `json:"api_key"`
+	CredentialScope string `json:"credential_scope,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
 }
 
 // ListModels 代理调用上游 GET /models，返回可用模型 id 列表。
@@ -1511,6 +1538,12 @@ func (h *ConfigHandler) ListModels(c *gin.Context) {
 		return
 	}
 
+	resolvedKey, resolveErr := h.resolveProbeSecret(req.APIKey, req.ChannelID, req.BaseURL, req.CredentialScope)
+	if resolveErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": resolveErr.Error()})
+		return
+	}
+	req.APIKey = resolvedKey
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
 		provider = "openai"
@@ -1572,8 +1605,9 @@ func (h *ConfigHandler) ListModels(c *gin.Context) {
 
 // TestVisionRequest 测试 Vision 模型连接；vision.api_key/base_url 留空时可传 openai 段作回退。
 type TestVisionRequest struct {
-	Vision config.VisionConfig `json:"vision"`
-	OpenAI config.OpenAIConfig `json:"openai,omitempty"`
+	ChannelID string              `json:"channel_id,omitempty"`
+	Vision    config.VisionConfig `json:"vision"`
+	OpenAI    config.OpenAIConfig `json:"openai,omitempty"`
 }
 
 // TestVision 测试视觉模型 API 连接（最小 chat completion）。
@@ -1581,6 +1615,19 @@ func (h *ConfigHandler) TestVision(c *gin.Context) {
 	var req TestVisionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数: " + err.Error()})
+		return
+	}
+	mainKey, mainErr := h.resolveProbeSecret(req.OpenAI.APIKey, req.ChannelID, req.OpenAI.BaseURL, "openai")
+	if mainErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": mainErr.Error()})
+		return
+	}
+	req.OpenAI.APIKey = mainKey
+	h.mu.RLock()
+	restoreErr := restoreConfigRequestSecrets(&req, h.config)
+	h.mu.RUnlock()
+	if restoreErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": restoreErr.Error()})
 		return
 	}
 	oa := req.Vision.OpenAICfgEffective(req.OpenAI)

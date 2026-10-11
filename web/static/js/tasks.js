@@ -45,6 +45,18 @@ function getBatchQueueStatusPresentation(queue) {
     const nextStr = queue.nextRunAt ? new Date(queue.nextRunAt).toLocaleString() : '';
     const empty = { sublabel: null, progressNote: null, callout: null };
 
+    const failedCount = (queue.tasks || []).filter(task => task.status === 'failed').length;
+    if (queue.status === 'completed' && failedCount > 0) {
+        const allFailed = failedCount === (queue.tasks || []).length;
+        return {
+            text: allFailed ? _t('tasks.statusFailed') : _tPlain('tasks.statusEndedWithFailures', { count: failedCount }),
+            class: 'batch-queue-status-failed',
+            sublabel: cronOn && nextStr ? _tPlain('tasks.cronNextRunLine', { time: nextStr }) : null,
+            progressNote: _t('tasks.finishedProgressHint'),
+            callout: cronOn ? _t('tasks.cronRecurringCallout') : null
+        };
+    }
+
     if (cronOn && queue.status === 'completed') {
         return {
             text: _t('tasks.statusCronCycleIdle'),
@@ -2733,7 +2745,13 @@ async function saveInlineConcurrency() {
     const queueId = batchQueuesState.currentQueueId;
     if (!queueId) { _bqInlineSaving = false; return; }
     const inp = document.getElementById('bq-edit-concurrency');
-    const concurrency = normalizeBatchQueueConcurrencyInput(inp ? inp.value : 1);
+    const concurrency = inp && inp.value.trim() !== '' ? Number(inp.value) : NaN;
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) {
+        _bqInlineSaving = false;
+        alert(_t('tasks.concurrencyInvalid'));
+        if (inp) inp.focus();
+        return;
+    }
     try {
         const detailResp = await apiFetch(`/api/batch-tasks/${queueId}`);
         const detail = await detailResp.json();

@@ -1244,7 +1244,8 @@ function probeWebshellConnection(conn) {
             encoding: webshellConnEncoding(conn),
             os: webshellConnOS(conn),
             connection_id: conn.id || '',
-            command: buildWebshellProbeCommand(probeToken)
+            command: buildWebshellProbeCommand(probeToken),
+            connection_id: password === '********' ? (document.getElementById('webshell-edit-id')?.value || '') : ''
         })
     })
         .then(function (r) { return r.json(); })
@@ -1399,8 +1400,9 @@ function safeConnIdForStorage(conn) {
 
 function normalizeWebshellPath(path) {
     var p = path == null ? '.' : String(path).trim();
-    if (!p || p === '/') return '.';
-    p = p.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+    if (!p) return '.';
+    p = p.replace(/\\/g, '/').replace(/\/+/g, '/');
+    if (p === '/') return '/';
     // Windows 盘符根目录保持为 "C:/"，避免被裁成 "C:" 后父级计算异常
     if (/^[A-Za-z]:\/?$/.test(p)) {
         return p.slice(0, 2) + '/';
@@ -1428,6 +1430,7 @@ function setWebshellSelectedFile(conn, path) {
 
 function getWebshellParentPath(path) {
     var p = normalizeWebshellPath(path);
+    if (p === '/') return '/';
     // Windows 盘符根目录不可再上探
     if (/^[A-Za-z]:\/$/.test(p)) return p;
     // 允许从当前目录持续上探：. -> .. -> ../.. -> ../../..
@@ -1436,7 +1439,7 @@ function getWebshellParentPath(path) {
     // 已经是相对上探时，先维持链路；后续 list 成功后会用远端真实路径回填
     var idx = p.lastIndexOf('/');
     if (idx < 0) return '.';
-    var parent = p.slice(0, idx) || '.';
+    var parent = p.slice(0, idx) || (p.startsWith('/') ? '/' : '.');
     if (/^[A-Za-z]:$/.test(parent)) return parent + '/';
     return parent;
 }
@@ -4363,7 +4366,7 @@ function parseWebshellListItems(rawOutput) {
                 continue;
             }
             // 仅兜底解析 Unix 权限格式，避免把 `dir` 统计行误识别为文件。
-            if (/^[-dlcbsp]/.test(line)) {
+            if (/^[bcdlps-][rwxStTs-]{9}[+.@]?\s/.test(line)) {
                 var parts = line.trim().split(/\s+/);
                 if (parts.length >= 9) {
                     name = parts.slice(8).join(' ').trim();
@@ -4413,10 +4416,11 @@ function renderFileList(listEl, currentPath, rawOutput, conn, nameFilter) {
     // 面包屑
     var breadcrumbEl = document.getElementById('webshell-file-breadcrumb');
     if (breadcrumbEl) {
-        var parts = (currentPath === '.' || currentPath === '') ? [] : currentPath.replace(/^\//, '').split('/');
-        breadcrumbEl.innerHTML = '<a href="#" class="webshell-breadcrumb-item" data-path=".">' + (wsT('webshell.breadcrumbHome') || '根') + '</a>' +
+        var absolute = currentPath.startsWith('/');
+        var parts = (currentPath === '.' || currentPath === '/' || currentPath === '') ? [] : currentPath.replace(/^\//, '').split('/');
+        breadcrumbEl.innerHTML = '<a href="#" class="webshell-breadcrumb-item" data-path="' + (absolute ? '/' : '.') + '">' + (wsT('webshell.breadcrumbHome') || '根') + '</a>' +
             parts.map(function (p, idx) {
-                var path = parts.slice(0, idx + 1).join('/');
+                var path = (absolute ? '/' : '') + parts.slice(0, idx + 1).join('/');
                 return ' / <a href="#" class="webshell-breadcrumb-item" data-path="' + escapeHtml(path) + '">' + escapeHtml(p) + '</a>';
             }).join('');
     }
@@ -4434,7 +4438,7 @@ function renderFileList(listEl, currentPath, rawOutput, conn, nameFilter) {
     } else {
         html = '<table class="webshell-file-table"><thead><tr><th class="webshell-col-check"><input type="checkbox" id="webshell-file-select-all" title="' + (wsT('webshell.selectAll') || '全选') + '" /></th><th>' + wsT('webshell.filePath') + '</th><th class="webshell-col-size">大小</th><th class="webshell-col-mtime">' + (wsT('webshell.colModifiedAt') || '修改时间') + '</th><th class="webshell-col-owner">' + (wsT('webshell.colOwner') || '所有者') + '</th><th class="webshell-col-perms">' + (wsT('webshell.colPerms') || '权限') + '</th><th class="webshell-col-actions"></th></tr></thead><tbody>';
         if (currentPath !== '.' && currentPath !== '') {
-            html += '<tr><td></td><td><a href="#" class="webshell-file-link" data-path="' + escapeHtml(currentPath.replace(/\/[^/]+$/, '') || '.') + '" data-isdir="1">..</a></td><td></td><td></td><td></td><td></td><td></td></tr>';
+            html += '<tr><td></td><td><a href="#" class="webshell-file-link" data-path="' + escapeHtml(getWebshellParentPath(currentPath)) + '" data-isdir="1">..</a></td><td></td><td></td><td></td><td></td><td></td></tr>';
         }
         items.forEach(function (item) {
             var pathNext = currentPath === '.' ? item.name : currentPath + '/' + item.name;
@@ -4554,8 +4558,9 @@ function renderDirectoryTree(currentPath, items, conn) {
     var expanded = state.expanded;
     var loaded = state.loaded;
     var selectedPath = getWebshellSelectedFile(conn || webshellCurrentConn);
-    if (!tree['.']) tree['.'] = [];
-    if (expanded['.'] !== false) expanded['.'] = true;
+    var rootPath = curr.startsWith('/') ? '/' : '.';
+    if (!tree[rootPath]) tree[rootPath] = [];
+    if (expanded[rootPath] !== false) expanded[rootPath] = true;
 
     // 把当前目录的子项（目录+文件）同步到树缓存
     var childNodes = (items || []).map(function (item) {
@@ -4579,11 +4584,11 @@ function renderDirectoryTree(currentPath, items, conn) {
 
     // 仅对“真实路径”补祖先链；相对上探链（../..）不构建，避免出现假层级。
     var isRelativeUpChain = /^(?:\.\.\/)*\.\.$/.test(curr);
-    var parts = curr === '.' ? [] : curr.split('/');
-    var parentPath = '.';
+    var parts = (curr === '.' || curr === '/') ? [] : curr.replace(/^\//, '').split('/');
+    var parentPath = rootPath;
     if (!isRelativeUpChain) {
         for (var i = 0; i < parts.length; i++) {
-            var nextPath = parentPath === '.' ? parts[i] : parentPath + '/' + parts[i];
+            var nextPath = parentPath === '.' ? parts[i] : normalizeWebshellPath(parentPath + '/' + parts[i]);
             if (!tree[parentPath]) tree[parentPath] = [];
             var parentChildren = tree[parentPath];
             var hasAncestorNode = parentChildren.some(function (n) { return n && n.path === nextPath; });
@@ -4606,13 +4611,13 @@ function renderDirectoryTree(currentPath, items, conn) {
         var isDir = !!node.isDir;
         var children = isDir ? (tree[path] || []).slice() : [];
         var hasLoadedChildren = isDir ? (loaded[path] === true) : true;
-        var canExpand = isDir && (path === '.' || !hasLoadedChildren || children.length > 0);
+        var canExpand = isDir && (path === rootPath || !hasLoadedChildren || children.length > 0);
         var hasChildren = children.length > 0;
         var isExpanded = isDir ? (expanded[path] === true) : false;
         var isActive = path === curr;
         var isSelectedFile = !isDir && path === selectedPath;
         var name = node.name;
-        var icon = isDir ? (path === '.' ? '🗂' : '📁') : '📄';
+        var icon = isDir ? (path === rootPath ? '🗂' : '📁') : '📄';
         var nodeHtml =
             '<div class="webshell-tree-node" data-depth="' + depth + '">' +
             '<div class="webshell-tree-row' + (isActive ? ' active' : '') + (isSelectedFile ? ' selected-file' : '') + '">' +
@@ -4630,7 +4635,7 @@ function renderDirectoryTree(currentPath, items, conn) {
         return nodeHtml;
     }
 
-    treeEl.innerHTML = '<div class="webshell-tree-root">' + renderNode({ path: '.', name: '/', isDir: true }, 0) + '</div>';
+    treeEl.innerHTML = '<div class="webshell-tree-root">' + renderNode({ path: rootPath, name: '/', isDir: true }, 0) + '</div>';
     treeEl.querySelectorAll('.webshell-tree-toggle').forEach(function (btn) {
         btn.addEventListener('click', function (e) {
             e.preventDefault();

@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.21-src**
+> 当前分支：**v1.7.22-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -126,6 +126,21 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **微信群二维码更新（e9b6e0d8）裁剪已达成**：本地早已删除宣传 QR 图与 `README_CN.md`，官方动作与本分支现状一致，无需变更。
 - **版本号（82b0af10）**：`config.example.yaml` → `v1.7.21-src`，README 基线与本文件同步更新。
 - 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞全生命周期、bannerHosts、统一审批（`approval:*` 权限体系未动，存储清理权限独立成段）均未改动；本次新增 `internal/storage/` 七文件、`internal/handler/storage.go`、`internal/database/storage_activity.go`、`web/static/js/storage.js`、`web/static/i18n/ru-RU.json`，RBAC 目录净增 `storage:read/write` 两项权限。
+
+### v1.7.22 同步说明（2026-10-11）
+
+官方 v1.7.21→v1.7.22 共 29 个提交：**26 个 bug 清单修复语义合并（含工作流元数据确认修复 #345 与 1 个测试提交）+ 1 个手机端 UI（#344）整体采纳 + 1 个官方过程文档（裁剪）+ 1 个版本号**。规模为历次最大（119 文件 +10739 行），按文件三方合并（base=official-v1.7.21）+ 逐冲突语义消解，非直接 merge。
+
+- **开源 bug 清单修复（17498368 记录范围 + 26 个 fix/test 提交）整体采纳**：C2（回调 host 校验、监听编辑与必填校验恢复、任务文件上传所有权校验、HTTP 会话逐会话鉴权、过期离线命令关闭 + TCP 派发串行化、信标终端态保留、payload 模板 shell 输出保留）、工作流（工具执行超时下推 `internal/mcp/execution_deadline.go`、节点/列表标签边界、校验与执行结果保留、元数据确认后恢复保存 #345）、批量任务（已完成队列展示失败结果、任务取消贯穿 final 事件、审批中断后取消标签保留）、知识库（索引错误保留与归因提示）、nmap（扫描类型选择时保留脚本参数）、资产（导出本地化 + 导入兼容、受限扫描目标与资产完成指令、列表徽章边界、对话标题对齐）、凭据脱敏（config/webshell/agent 保存掩码）、登录/角色输入校验与任务访问保护。
+- **适配合并 3 处**：
+  - **凭据脱敏（76da9894）**：官方新增 `config_secrets.go` 泛化掩码（按 `api_key/password/token/...` 键名递归）+ `restoreConfigRequestSecrets` 回填 + `resolveProbeSecret` 探活解析；GetConfig 冲突取「本分支 hitlCfg 审批回填 + 官方 `maskedConfigResponse` 包装」。适配点：`configSecretSnapshot` 官方字段清单缺本分支二开段，**补 `WebSearch`**——否则 websearch.api_key GET 返回 `********` 后保存回填直接 400（快照缺段报「没有已保存凭据」）；Approval/Agent/C2 段核实无密钥字段，无需扩展。
+  - **robot/batch 终态化证据要求（079ba0d2）**：官方将 `decideAgentRunForDeliveryWithPolicy` 末参 `requireExecutionEvidence` true→false（无工具证据的纯文本/取消任务不再被 blocked 吞掉最终回复，配套 task_lifecycle/task_manager 取消终态保留）。本分支采纳官方语义于**循环后最终判定**（`finalizeRobotAgentSuccess`、batch 收尾两处，含 cleanup 重判定）；**循环内判定保留 `true`**（047a201e 的设计：喂 `tryAutoContinueAfterFinalization`，证据缺失先自动续跑最多两次再收尾，维持 SRC 证据压力）。官方新测试 `plain_text_finalization_test.go` 适配本分支 6 参签名（`mcpExecutionIDs`/`taskStatus` 传 `nil`）。
+  - **默认提示词范围收敛（062fd30c）**：官方将「高强度扫描要求」（火力全开/2000+ 步/绝不提前结束）改写为「任务范围与执行深度」（以用户本轮目标为边界、403/404 如实报告不自动扩大、达目标即收尾、不以赏金数量替代完成条件）。**本分支保留 SRC 化提示词原文**——授权 SRC 场景的持续挖掘与「不因 404/空响应结束」是二开定位，且铁律一「只测用户指定目标、禁止旁站/C 段扩展」已覆盖官方修复的范围纪律意图（文档化分歧，与 v1.7.20「本分支提示原样保留」同一处理）。
+- **手机端 UI（8e00147d #344）整体采纳**：新增 `web/static/css/mobile.css`（3628 行：底部导航/侧边抽屉/手势/触控与软键盘/安全区适配）、`api-docs-mobile.css`、`web/static/js/mobile-ui.js`（1270 行）、`web/static/site.webmanifest`（主屏启动配置）、`scripts/mobile-*.mjs|json`（官方移动端审计脚本）；i18n 三语言各 +20 键；`index.html`/`api-docs.html` 三方合并零冲突；大依赖延迟加载。
+- **官方前端测试落位适配**：官方位于 `web/static/js/*.test.cjs` 的 18 个新测试迁至本分支 `web/tests/`（官方测试以仓库根相对路径读源码，迁移无需改引用）。4 处适配：`c2-listener-form` / `knowledge-index-error` / `asset-export-language` / `workflow-save` 读取源码统一 `\r\n→\n` 规范化（官方测试以 `\n` 锚点 vm 切片源码，Windows autocrlf 检出下 `indexOf('\n\n')` 失败返回 -1）；后两者的 `__dirname` 相对路径对齐本分支 `web/static` 布局（js 与 vendor 路径）。官方对 `web/static/js/workflow-package-ui.test.cjs` 的两例新增测试（导入结果措辞/重复包确认语义）并入本分支迁移副本。
+- **裁剪**：官方 `docs/bug-sheet-review.md` / `docs/bug-sheet-status.md`（官方 bug 清单过程文档）不入库；官方旧 HITL 体系新测试 `internal/handler/hitl_task_cancel_integration_test.go`（依赖本分支已移除的 `NewHITLManager`）裁剪——取消终态语义由 task_lifecycle/task_manager（已合入）+ 统一审批覆盖。`internal/security/nmap_argument_order_test.go` 按本分支惯例补 `//go:build !windows`（其依赖的 `setupTestExecutor` 在带同标签的本分支 executor_test.go 中）。
+- **版本号（762f798a）**：`config.example.yaml` → `v1.7.22-src`，README 基线与本文件同步更新。
+- 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞全生命周期、统一审批、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills 均未改动；`finalizationBlockedMessage` 新增官方 `workflow_rejected` 直出分支，与分支既有缺完成信号分支共存（生产端 `workflow_integration.go` 随 C 类文件落地）。
 
 ### v1.7.20 同步说明（2026-09-27）
 

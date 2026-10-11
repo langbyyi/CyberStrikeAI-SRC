@@ -149,5 +149,28 @@ func resolveToolArguments(cfg map[string]any, state *WorkflowLocalState) (map[st
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	resolveArgumentTemplates(args, state)
 	return args, nil
+}
+
+// Expand after parsing JSON so quotes and newlines in state values remain data.
+func resolveArgumentTemplates(value any, state *WorkflowLocalState) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, item := range v {
+			if text, ok := item.(string); ok && templateVarRe.MatchString(text) {
+				v[key] = resolveTemplate(text, state)
+			} else {
+				resolveArgumentTemplates(item, state)
+			}
+		}
+	case []interface{}:
+		for i, item := range v {
+			if text, ok := item.(string); ok && templateVarRe.MatchString(text) {
+				v[i] = resolveTemplate(text, state)
+			} else {
+				resolveArgumentTemplates(item, state)
+			}
+		}
+	}
 }

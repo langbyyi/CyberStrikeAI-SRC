@@ -7,6 +7,7 @@ let currentEditingSkillName = null;
 let skillModalAddMode = true;
 let skillActivePath = 'SKILL.md';
 let skillFileDirty = false;
+let skillDescriptionDirty = false;
 let skillPackageFiles = [];
 let skillModalControlsWired = false;
 let isSavingSkill = false; // 防止重复提交
@@ -454,6 +455,8 @@ function wireSkillModalOnce() {
     skillModalControlsWired = true;
     const addTa = document.getElementById('skill-content-add');
     const edTa = document.getElementById('skill-content');
+    const descriptionInput = document.getElementById('skill-description');
+    if (descriptionInput) descriptionInput.addEventListener('input', () => { skillDescriptionDirty = true; });
     if (addTa) addTa.addEventListener('input', () => { if (skillModalAddMode) skillFileDirty = true; });
     if (edTa) edTa.addEventListener('input', () => { if (!skillModalAddMode) skillFileDirty = true; });
     const nb = document.getElementById('skill-new-file-btn');
@@ -483,6 +486,8 @@ function showAddSkillModal() {
     if (!modal) return;
 
     skillModalAddMode = true;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillFileDirty = false;
     skillActivePath = 'SKILL.md';
     skillPackageFiles = [];
@@ -544,12 +549,18 @@ async function selectSkillPackageFile(skillId, path, opts) {
     const freshContent = opts && Object.prototype.hasOwnProperty.call(opts, 'freshContent')
         ? opts.freshContent
         : null;
+    if (path !== 'SKILL.md' && skillDescriptionDirty) {
+        showNotification(_t('skillModal.saveDescriptionFirst'), 'error');
+        return;
+    }
     if (!force && skillFileDirty) {
         if (!confirm(_t('skillModal.unsavedSwitch'))) {
             return;
         }
     }
     skillActivePath = path;
+    const descriptionInput = document.getElementById('skill-description');
+    if (descriptionInput) descriptionInput.disabled = path !== 'SKILL.md';
     const label = document.getElementById('skill-active-path');
     if (label) label.textContent = path;
     const hint = document.getElementById('skill-body-hint-edit');
@@ -591,6 +602,8 @@ async function editSkill(skillId) {
     const modal = document.getElementById('skill-modal');
     if (!modal) return;
     skillModalAddMode = false;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillFileDirty = false;
     skillActivePath = 'SKILL.md';
     const pkg = document.getElementById('skill-package-editor');
@@ -739,6 +752,8 @@ function closeSkillModal() {
     currentEditingSkillName = null;
     skillModalAddMode = true;
     skillFileDirty = false;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillPackageFiles = [];
     skillActivePath = 'SKILL.md';
 }
@@ -833,6 +848,7 @@ async function saveSkill() {
         }
 
         skillFileDirty = false;
+        if (path === 'SKILL.md') skillDescriptionDirty = false;
         showNotification(_t('skills.saveSuccess'), 'success');
         const filesRes = await apiFetch(`/api/skills/${encodeURIComponent(currentEditingSkillName)}/files`);
         if (filesRes.ok) {

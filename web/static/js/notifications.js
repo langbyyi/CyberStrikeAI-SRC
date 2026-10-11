@@ -224,7 +224,7 @@
         list.innerHTML = html;
         const viewButtons = list.querySelectorAll('.notification-item-view-btn');
         viewButtons.forEach(btn => {
-            btn.addEventListener('click', function (event) {
+            btn.addEventListener('click', async function (event) {
                 event.preventDefault();
                 event.stopPropagation();
                 const eventID = btn.getAttribute('data-action-id') || '';
@@ -233,6 +233,9 @@
                 if (!item) return;
                 openNotificationTarget(item);
                 closeDropdown();
+                if (item.actionable !== true && await markItemsRead([eventID])) {
+                    await refreshNotifications();
+                }
             });
         });
         const readButtons = list.querySelectorAll('.notification-item-read-btn');

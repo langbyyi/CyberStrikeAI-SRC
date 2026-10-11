@@ -2,7 +2,15 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+    <meta name="format-detection" content="telephone=no">
+    <link rel="manifest" href="/static/site.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="CyberStrikeAI">
     <title>CyberStrikeAI</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v=20260728">
     <link rel="shortcut icon" type="image/x-icon" href="/static/favicon.ico?v=20260728">
@@ -36,6 +44,8 @@
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
     <link rel="stylesheet" href="/static/vendor/xterm.css">
+    <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
+    <link rel="stylesheet" href="/static/css/mobile.css?v=20261007-glass-1">
     <script src="/static/js/router.js?v=20260907-1"></script>
 </head>
 <body>
@@ -50,14 +60,17 @@
                 </h2>
                 <p class="login-subtitle" data-i18n="login.subtitle">使用平台账号登录，默认管理员为 admin。</p>
             </div>
-            <form id="login-form" class="login-form">
+            <form id="login-form" class="login-form" novalidate>
                 <div class="form-group">
                     <label for="login-username" data-i18n="login.usernameLabel">用户名</label>
-                    <input type="text" id="login-username" placeholder="admin" autocomplete="username" data-i18n="login.usernamePlaceholder" data-i18n-attr="placeholder" />
+                    <input type="text" id="login-username" placeholder="admin" required maxlength="64" autocomplete="username" data-i18n="login.usernamePlaceholder" data-i18n-attr="placeholder" />
                 </div>
                 <div class="form-group">
                     <label for="login-password" data-i18n="login.passwordLabel">密码</label>
-                    <input type="password" id="login-password" placeholder="输入登录密码" required autocomplete="current-password" data-i18n="login.passwordPlaceholder" data-i18n-attr="placeholder" />
+                    <div class="login-password-field">
+                        <input type="password" id="login-password" placeholder="输入登录密码" required autocomplete="current-password" aria-describedby="login-error" data-i18n="login.passwordPlaceholder" data-i18n-attr="placeholder" />
+                        <button type="button" id="login-password-toggle" class="btn-secondary" aria-controls="login-password" aria-pressed="false" onclick="toggleLoginPasswordVisibility()" data-i18n="login.showPassword">显示密码</button>
+                    </div>
                 </div>
                 <div id="login-error" class="login-error" role="alert" style="display: none;"></div>
                 <button type="submit" class="btn-primary login-submit">
@@ -1186,7 +1199,7 @@
                                 </div>
                                 <div class="chat-composer-footer">
                                     <div class="chat-composer-footer-leading">
-                                        <input type="file" id="chat-file-input" class="chat-file-input-hidden" multiple accept="*" data-i18n="chat.selectFile" data-i18n-attr="title" title="选择文件">
+                                        <input type="file" id="chat-file-input" class="chat-file-input-hidden" multiple accept="*/*" data-i18n="chat.selectFile" data-i18n-attr="title" title="选择文件">
                                         <button type="button" class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" data-i18n="chat.uploadFile" data-i18n-attr="title,aria-label" data-i18n-skip-text="true" title="上传文件（可多选或拖拽到此处）" aria-label="上传文件（可多选或拖拽到此处）">
                                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                                                 <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -2123,9 +2136,9 @@
                                 <div class="asset-editor-section-group">
                                     <div class="asset-editor-group-heading"><h3 data-i18n="assets.locationAndStatus">地理与状态</h3><p data-i18n="assets.locationAndStatusHint">记录资产归属地区和当前启用状态</p></div>
                                     <div class="asset-editor-grid">
-                                        <label class="asset-editor-field"><span data-i18n="assets.country">国家/地区</span><input id="asset-edit-country" type="text" maxlength="100" placeholder="CN"></label>
-                                        <label class="asset-editor-field"><span data-i18n="assets.province">省份/州</span><input id="asset-edit-province" type="text" maxlength="100" placeholder="Beijing"></label>
-                                        <label class="asset-editor-field"><span data-i18n="assets.city">城市</span><input id="asset-edit-city" type="text" maxlength="100" placeholder="Beijing"></label>
+                                        <label class="asset-editor-field"><span data-i18n="assets.country">国家/地区</span><input id="asset-edit-country" type="text" maxlength="100" placeholder="中国" data-i18n="assets.countryExample" data-i18n-attr="placeholder"></label>
+                                        <label class="asset-editor-field"><span data-i18n="assets.province">省份/州</span><input id="asset-edit-province" type="text" maxlength="100" placeholder="北京" data-i18n="assets.provinceExample" data-i18n-attr="placeholder"></label>
+                                        <label class="asset-editor-field"><span data-i18n="assets.city">城市</span><input id="asset-edit-city" type="text" maxlength="100" placeholder="北京" data-i18n="assets.cityExample" data-i18n-attr="placeholder"></label>
                                         <label class="asset-editor-field"><span data-i18n="assets.status">状态</span><select id="asset-edit-status"><option value="active" data-i18n="assets.statusActive">活跃</option><option value="inactive" data-i18n="assets.statusInactive">停用</option></select></label>
                                     </div>
                                 </div>
@@ -3235,7 +3248,7 @@
 
                 <!-- C2 模态框 -->
                 <div id="c2-modal" class="c2-modal-overlay" style="display:none;" onclick="if(event.target===this)C2.closeModal()">
-                    <div class="c2-modal" onclick="event.stopPropagation()">
+                    <div class="c2-modal">
                         <div id="c2-modal-content"></div>
                     </div>
                 </div>
@@ -5067,16 +5080,20 @@
                                     <div class="settings-form">
                                         <div class="form-group">
                                             <label for="auth-current-password" data-i18n="settingsSecurity.currentPassword">当前密码</label>
-                                            <input type="password" id="auth-current-password" data-i18n="settingsSecurity.currentPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="输入当前登录密码" autocomplete="current-password" />
+                                            <input type="password" id="auth-current-password" oninput="clearPasswordFieldError(this)" data-i18n="settingsSecurity.currentPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="输入当前登录密码" autocomplete="current-password" />
+                                            <small id="auth-current-password-error" class="password-field-error" role="alert" hidden></small>
                                         </div>
                                         <div class="form-group">
                                             <label for="auth-new-password" data-i18n="settingsSecurity.newPassword">新密码</label>
-                                            <input type="password" id="auth-new-password" data-i18n="settingsSecurity.newPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="设置新密码（至少 8 位）" autocomplete="new-password" />
+                                            <input type="password" id="auth-new-password" oninput="clearPasswordFieldError(this)" data-i18n="settingsSecurity.newPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="设置新密码（至少 8 位）" autocomplete="new-password" />
+                                            <small id="auth-new-password-error" class="password-field-error" role="alert" hidden></small>
                                         </div>
                                         <div class="form-group">
                                             <label for="auth-confirm-password" data-i18n="settingsSecurity.confirmPassword">确认新密码</label>
-                                            <input type="password" id="auth-confirm-password" data-i18n="settingsSecurity.confirmPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="再次输入新密码" autocomplete="new-password" />
+                                            <input type="password" id="auth-confirm-password" oninput="clearPasswordFieldError(this)" data-i18n="settingsSecurity.confirmPasswordPlaceholder" data-i18n-attr="placeholder" placeholder="再次输入新密码" autocomplete="new-password" />
+                                            <small id="auth-confirm-password-error" class="password-field-error" role="alert" hidden></small>
                                         </div>
+                                        <div id="password-form-error" class="password-field-error" role="alert" hidden></div>
                                         <div class="form-actions">
                                             <button class="btn-secondary" type="button" onclick="resetPasswordForm()" data-i18n="settingsSecurity.clear">清空</button>
                                             <button class="btn-primary change-password-submit" type="button" data-require-permission="auth:self" onclick="changePassword()" data-i18n="settingsSecurity.changePasswordBtn">修改密码</button>
@@ -5183,8 +5200,8 @@
                                     </div>
                                     <div class="page-header-actions">
                                         <button class="btn-secondary" type="button" onclick="refreshPlatformRbac(this)" data-i18n="common.refresh">刷新</button>
-                                        <button class="btn-secondary" type="button" onclick="openRbacRoleModal()" data-i18n="rbac.createRole">新建角色</button>
-                                        <button class="btn-primary" type="button" onclick="openRbacUserModal()" data-i18n="rbac.createUser">添加成员</button>
+                                        <button class="btn-secondary" type="button" onclick="openRbacRoleModal()" data-require-permission="rbac:write" data-i18n="rbac.createRole">新建角色</button>
+                                        <button class="btn-primary" type="button" onclick="openRbacUserModal()" data-require-permission="rbac:write" data-i18n="rbac.createUser">添加成员</button>
                                     </div>
                                 </div>
                                 <div class="page-content">
@@ -5409,7 +5426,7 @@
                                                     <label for="rbac-role-search" data-i18n="rbac.filterRoles">筛选角色</label>
                                                     <input id="rbac-role-search" class="form-input" type="search" placeholder="搜索角色或权限" data-i18n="rbac.searchRoles" data-i18n-attr="placeholder" oninput="setRbacRoleSearch(this.value)">
                                                 </div>
-                                                <button class="btn-primary btn-small" type="button" onclick="openRbacRoleModal()" data-i18n="rbac.createRole">新建角色</button>
+                                                <button class="btn-primary btn-small" type="button" onclick="openRbacRoleModal()" data-require-permission="rbac:write" data-i18n="rbac.createRole">新建角色</button>
                                             </div>
                                         </div>
                                         <div id="rbac-role-catalog" class="rbac-role-catalog"></div>
@@ -5790,10 +5807,32 @@
     <script src="/static/js/sanitize-markdown.js"></script>
     <!-- Cytoscape.js for attack chain visualization -->
     <script src="/static/vendor/cytoscape.min.js"></script>
-    <!-- ELK.js for high-quality DAG layout (reduces edge crossings) -->
-    <script src="/static/vendor/elk.bundled.js"></script>
-    <!-- SheetJS for XLSX export (info-collect) -->
-    <script src="/static/vendor/xlsx.full.min.js"></script>
+    <!-- ELK.js (1.5MB) + SheetJS (860KB)：移动端延迟加载，首屏不再阻塞解析。
+         桌面端走 document.write 分支，保持与静态 <script src> 完全一致的同步语义。
+         安全依据：chat.js:7450 与 fact-graph.js:491 均有 typeof ELK 守卫并降级为默认布局；
+         assets.js:127/234/1024 与 info-collect.js:1537 均有 XLSX 守卫。 -->
+    <script>
+    (function () {
+        var LAZY_VENDOR = ['/static/vendor/elk.bundled.js', '/static/vendor/xlsx.full.min.js'];
+        var mq = window.matchMedia && window.matchMedia('(max-width: 767.98px)').matches;
+        if (!mq) {
+            for (var i = 0; i < LAZY_VENDOR.length; i++) {
+                document.write('<script src="' + LAZY_VENDOR[i] + '"><\/script>');
+            }
+            return;
+        }
+        var load = function () {
+            LAZY_VENDOR.forEach(function (src) {
+                var s = document.createElement('script');
+                s.src = src;
+                s.async = false;
+                document.head.appendChild(s);
+            });
+        };
+        if (window.requestIdleCallback) { requestIdleCallback(load, { timeout: 2000 }); }
+        else { setTimeout(load, 1200); }
+    })();
+    </script>
     <script>
         // 确保ELK对象全局可用
         if (typeof ELK === 'undefined' && typeof elk !== 'undefined') {
@@ -6775,6 +6814,7 @@
                     </div>
                     <textarea id="fact-modal-body" class="form-input fact-modal-body-input" rows="14" placeholder="攻击链步骤、HTTP/命令 POC、响应现象、证据…" oninput="updateFactFormHints()"></textarea>
                     <p id="fact-modal-body-hint" class="projects-field-hint" role="status"></p>
+                    <small class="form-hint" data-i18n="projects.factBodyRelationsHint">正文中的 discovered_on 等关系请填写到下方“关系边”字段，才能生成图谱连线。</small>
                 </div>
                 <div class="projects-form-field">
                     <label class="projects-filter-check projects-pin-toggle">
@@ -6940,5 +6980,7 @@
     <script src="/static/js/rbac.js"></script>
     <script src="/static/js/c2.js"></script>
     <script src="/static/js/rbac-guards.js?v=20260907-1"></script>
+    <!-- 移动端交互层：必须最后加载，它包装 window.switchPage 并注入移动端 DOM -->
+    <script src="/static/js/mobile-ui.js?v=20261006-9"></script>
 </body>
 </html>

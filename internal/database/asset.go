@@ -135,8 +135,10 @@ func normalizeAsset(a *Asset) {
 	if strings.Contains(a.Host, "://") {
 		if parsed, err := url.Parse(a.Host); err == nil && parsed.Hostname() != "" && parsed.User == nil {
 			hostname := strings.Trim(strings.ToLower(parsed.Hostname()), "[]")
-			if net.ParseIP(hostname) != nil && a.IP == "" {
-				a.IP = hostname
+			if net.ParseIP(hostname) != nil {
+				if a.IP == "" {
+					a.IP = hostname
+				}
 			} else if a.Domain == "" {
 				if ascii, err := idna.Lookup.ToASCII(hostname); err == nil {
 					a.Domain = strings.ToLower(ascii)

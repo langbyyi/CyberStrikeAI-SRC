@@ -938,10 +938,16 @@ func (db *DB) initTables() error {
 	for tableName, ddl := range map[string]string{
 		"c2_listeners": createC2ListenersTable,
 		"c2_sessions":  createC2SessionsTable,
-		"c2_tasks":     createC2TasksTable,
-		"c2_files":     createC2FilesTable,
-		"c2_events":    createC2EventsTable,
-		"c2_profiles":  createC2ProfilesTable,
+		"c2_http_session_auth": `CREATE TABLE IF NOT EXISTS c2_http_session_auth (
+          implant_uuid TEXT PRIMARY KEY,
+          listener_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL,
+          FOREIGN KEY (listener_id) REFERENCES c2_listeners(id) ON DELETE CASCADE
+        );`,
+		"c2_tasks":    createC2TasksTable,
+		"c2_files":    createC2FilesTable,
+		"c2_events":   createC2EventsTable,
+		"c2_profiles": createC2ProfilesTable,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("创建%s表失败: %w", tableName, err)

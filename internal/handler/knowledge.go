@@ -489,13 +489,8 @@ func (h *KnowledgeHandler) GetIndexStatus(c *gin.Context) {
 	// 获取索引器的错误信息
 	if h.indexer != nil {
 		lastError, lastErrorTime := h.indexer.GetLastError()
-		if lastError != "" {
-			// 如果错误是最近发生的（5 分钟内），则返回错误信息
-			if time.Since(lastErrorTime) < 5*time.Minute {
-				status["last_error"] = lastError
-				status["last_error_time"] = lastErrorTime.Format(time.RFC3339)
-			}
-		}
+		// Keep a failed operation visible until the indexer clears it for the next run.
+		appendKnowledgeIndexError(status, lastError, lastErrorTime)
 
 		// 获取重建索引状态
 		isRebuilding, totalItems, current, failed, lastItemID, lastChunks, startTime := h.indexer.GetRebuildStatus()
@@ -563,4 +558,12 @@ func parseInt(s string) (int, error) {
 	var result int
 	_, err := fmt.Sscanf(s, "%d", &result)
 	return result, err
+}
+
+func appendKnowledgeIndexError(status map[string]interface{}, message string, occurredAt time.Time) {
+	if message == "" {
+		return
+	}
+	status["last_error"] = message
+	status["last_error_time"] = occurredAt.Format(time.RFC3339)
 }

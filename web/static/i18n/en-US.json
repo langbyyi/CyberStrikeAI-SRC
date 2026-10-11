@@ -4,6 +4,26 @@
     "enUS": "English",
     "ruRU": "Русский"
   },
+  "mobile": {
+    "openNav": "Open navigation menu",
+    "closeNav": "Close navigation menu",
+    "moreActions": "More actions",
+    "searchMenu": "Search menu…",
+    "noMatch": "No matching menu items",
+    "backToTop": "Back to top",
+    "chatList": "Conversations",
+    "closeChatList": "Close conversation list",
+    "mainNav": "Main navigation",
+    "switchTheme": "Switch theme",
+    "themeNow": "Theme: {{name}}",
+    "switchLanguage": "Switch language",
+    "refreshPage": "Reload page",
+    "fullscreen": "Fullscreen",
+    "fullscreenUnsupported": "This browser does not support fullscreen",
+    "conversations": "Chats",
+    "newChat": "New chat",
+    "chatModuleMissing": "Chat module not loaded yet"
+  },
   "common": {
     "ok": "OK",
     "cancel": "Cancel",
@@ -68,6 +88,8 @@
     "itemDefaultTitle": "Notification"
   },
   "login": {
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
     "title": "Sign in to CyberStrikeAI",
     "titlePrefix": "Sign in to",
     "subtitle": "Sign in with a platform account. The default administrator is admin.",
@@ -341,6 +363,7 @@
     "graphLegendExploits": "exploits",
     "graphLegendTentative": "Tentative (dashed)",
     "factLinksLabel": "Links (from → this fact)",
+    "factBodyRelationsHint": "Enter relationships such as discovered_on in the Links field below to create graph edges.",
     "factLinksPlaceholder": "discovered_on: target/primary_domain\nexploits: exploit/upload-rce",
     "factLinksHint": "One per line: type: source_fact_key (source → this fact). Common types: discovered_on, depends_on, leads_to, enables, exploits. Saving replaces all links.",
     "factIncomingLinksLabel": "Incoming links (read-only)",
@@ -1140,6 +1163,8 @@
     "toolFailed": "Failed"
   },
   "tasks": {
+    "statusEndedWithFailures": "Finished ({{count}} failed)",
+    "finishedProgressHint": "Progress counts finished tasks, including failures and cancellations; it is not the success rate.",
     "title": "Task Management",
     "stopTask": "Stop task",
     "interruptModalTitle": "Interrupt current step",
@@ -1312,6 +1337,11 @@
     "parseModalApplyRun": "Fill and query"
   },
   "assets": {
+    "countryExample": "China",
+    "provinceExample": "Beijing",
+    "cityExample": "Beijing",
+    "exportIP": "IP address",
+    "exportVulnerabilityCount": "Vulnerability count",
     "overviewTitle": "Asset Overview",
     "libraryTitle": "Asset Library",
     "viewLibrary": "View asset library",
@@ -1500,6 +1530,7 @@
     "executeNow": "Run immediately after creation",
     "confirmSend": "Send",
     "confirmCreate": "Create tasks",
+    "scanCompletionInstruction": "Stop probing once the task above is satisfied and report the available evidence. Call complete_asset_scan(id={{asset_id}}) to record this asset scan time and related results. This record update does not expand the requested probing scope.",
     "defaultScanPrompt": "Perform an authorized security scan of {{target}} (asset ID: {{asset_id}}). Save confirmed findings with record_vulnerability, then call complete_asset_scan(id={{asset_id}}) to update the last scan time and related vulnerability count.",
     "selectAssetsFirst": "Select assets first",
     "promptRequired": "Enter a user prompt",
@@ -2007,6 +2038,7 @@
     "forbidden": "Insufficient permissions",
     "requestFailed": "Request failed",
     "enterPassword": "Please enter password",
+    "usernameRequired": "Enter a username of at most 64 characters",
     "loginFailedCheck": "Sign-in failed, please check the username or password",
     "loginFailedRetry": "Sign-in failed, please try again later",
     "loggedOut": "Signed out"
@@ -3382,6 +3414,9 @@
     "detailSession": "Session"
   },
   "settingsSecurity": {
+    "currentRequired": "Enter your current password",
+    "newTooShort": "The new password must contain at least 8 characters",
+    "confirmMismatch": "The new passwords do not match",
     "changePasswordTitle": "Change password",
     "changePasswordDesc": "After changing password, sign in again with the new password.",
     "currentPassword": "Current password",
@@ -3536,6 +3571,7 @@
     "newFilePathInvalid": "Invalid path (no .. or absolute paths)",
     "noPackageFiles": "No files listed",
     "unsavedSwitch": "You have unsaved changes. Switch file anyway?",
+    "saveDescriptionFirst": "Save the description in SKILL.md before switching to another file",
     "contentLabel": "Content",
     "contentPlaceholder": "Edit the selected file…",
     "contentPlaceholderAdd": "SKILL.md body only (front matter is generated)…",
@@ -3657,6 +3693,7 @@
     "completedAt": "Completed at",
     "taskTotal": "Total tasks",
     "concurrency": "Concurrency",
+    "concurrencyInvalid": "Concurrency must be an integer from 1 to 8",
     "concurrencyEditHint": "Click to edit. Cannot change while the queue is running.",
     "taskList": "Task list",
     "startLabel": "Start",
@@ -3806,7 +3843,8 @@
     "workflowPolicyAuto": "Auto trigger",
     "workflowPolicyOff": "Off",
     "noWorkflowBind": "No workflow",
-    "workflowDisabledSuffix": " (disabled)"
+    "workflowDisabledSuffix": " (disabled)",
+    "workflowMissing": "missing or unavailable"
   },
   "workflows": {
     "title": "Workflows",
@@ -3814,6 +3852,7 @@
     "processLibrary": "Workflows",
     "nodeLibrary": "Node library",
     "emptyList": "No workflows yet",
+    "statusInvalid": "Invalid workflow",
     "statusEnabled": "Enabled",
     "statusDisabled": "Disabled",
     "metaId": "ID",
@@ -4000,6 +4039,8 @@
         "continueOverwrite": "Continue to overwrite confirmation",
         "confirmRename": "Confirm save as new ID",
         "confirmCreate": "Confirm create",
+        "confirmSkip": "Confirm skip import",
+        "confirmKeep": "Confirm keep local version",
         "confirmComplete": "Confirm completion"
       },
       "result": {
@@ -4009,6 +4050,8 @@
         "keptExisting": "The local workflow was kept; no changes were made.",
         "skippedIdentical": "The same local content already exists; import was skipped.",
         "complete": "Import completed.",
+        "skippedAction": "Import skipped",
+        "keptAction": "Local version kept",
         "completedAction": "Import completed"
       },
       "exportSelectSaved": "Choose a saved workflow before exporting."
@@ -4169,6 +4212,10 @@
       "failed": "Failed"
     },
     "listeners": {
+      "nameRequired": "Enter a listener name",
+      "typeRequired": "Select a listener type",
+      "portInvalid": "Port must be an integer from 1 to 65535",
+      "saveFailed": "Failed to save listener",
       "title": "Listener Management",
       "create": "Create Listener",
       "name": "Name",
@@ -4525,6 +4572,7 @@
       "hintHeaders": "HTTP response headers to mimic a legitimate server",
       "toastNameRequired": "Profile name is required",
       "toastInvalidHeadersJson": "Invalid JSON in response headers",
+      "toastInvalidJitter": "Jitter must use integers with 0 <= min <= max",
       "toastCreated": "Profile created",
       "toastDeleted": "Profile deleted",
       "confirmDelete": "Delete this profile?",

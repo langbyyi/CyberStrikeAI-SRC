@@ -1518,7 +1518,7 @@ async function loadProjectFacts() {
         const keyEsc = escapeHtml(f.fact_key);
         const idEsc = escapeHtml(f.id);
         const vulnLink = f.related_vulnerability_id
-            ? `<span class="projects-fact-vuln-link" title="${escapeHtml(tp('projects.relatedVulnIdTitle'))}">${escapeHtml(f.related_vulnerability_id.slice(0, 8))}…</span>`
+            ? `<span class="projects-fact-vuln-link" title="${escapeHtml(tp('projects.relatedVulnIdTitle') + ': ' + f.related_vulnerability_id)}">${escapeHtml(tp('projects.relatedVulnIdTitle'))}: ${escapeHtml(f.related_vulnerability_id.slice(0, 8))}…</span>`
             : '';
         const pinBadge = f.pinned
             ? `<span class="projects-list-item-badge" title="${escapeHtml(tp('projects.pinned'))}">${escapeHtml(tp('projects.pinned'))}</span>`
@@ -1529,7 +1529,7 @@ async function loadProjectFacts() {
                 ? `<span class="projects-fact-link-badge" title="${escapeHtml(tp('projects.linkCountsTitle'))}">↑${lc.outgoing || 0} ↓${lc.incoming || 0}</span>`
                 : '<span class="projects-fact-link-badge projects-fact-link-badge--empty">—</span>';
         return `<tr>
-            <td class="cell-fact-key"><code class="projects-fact-key-chip" title="${keyEsc}">${keyEsc}</code>${pinBadge}${vulnLink}</td>
+            <td class="cell-fact-key"><code class="projects-fact-key-chip" title="${keyEsc}">${keyEsc}</code>${pinBadge || vulnLink ? `<div class="projects-fact-meta">${pinBadge}${vulnLink}</div>` : ''}</td>
             <td class="cell-fact-category">${formatCategoryBadge(f.category)}</td>
             <td class="cell-summary" title="${escapeHtml(f.summary)}">${escapeHtml(f.summary)}</td>
             <td class="cell-fact-links">${linkBadge}</td>
@@ -1901,28 +1901,16 @@ function openVulnerabilityDetail(vulnId) {
 
 async function viewFactsForVulnerability(vulnId) {
     if (!currentProjectId) return;
-    switchProjectTab('facts');
-    const searchEl = document.getElementById('project-facts-search');
-    const catEl = document.getElementById('project-facts-filter-category');
-    const confEl = document.getElementById('project-facts-filter-confidence');
-    const sparseEl = document.getElementById('project-facts-filter-sparse');
-    const hideDepEl = document.getElementById('project-facts-filter-hide-deprecated');
-    if (searchEl) searchEl.value = '';
-    if (catEl) catEl.value = '';
-    if (confEl) confEl.value = '';
-    if (sparseEl) sparseEl.checked = false;
-    if (hideDepEl) hideDepEl.checked = true;
     const params = new URLSearchParams({ limit: '50', related_vulnerability_id: vulnId });
     const res = await apiFetch(`/api/projects/${currentProjectId}/facts?${params}`);
     if (!res.ok) return alert(tp('projects.loadRelatedFactsFailed'));
     const facts = await res.json();
     if (!facts.length) {
         alert(tp('projects.noFactsForVulnerability'));
-        loadProjectFacts();
         return;
     }
     if (facts.length === 1) {
-        viewProjectFactBody(facts[0].fact_key);
+        await viewProjectFactBody(facts[0].fact_key);
         return;
     }
     const pick = prompt(
@@ -1933,12 +1921,10 @@ async function viewFactsForVulnerability(vulnId) {
         }) || `This vulnerability is linked to ${facts.length} facts. Enter index to view:\n${facts.map((f, i) => `${i + 1}. ${f.fact_key}`).join('\n')}`,
     );
     if (pick == null || pick === '') {
-        loadProjectFacts();
         return;
     }
     const idx = parseInt(pick, 10) - 1;
-    if (facts[idx]) viewProjectFactBody(facts[idx].fact_key);
-    else loadProjectFacts();
+    if (facts[idx]) await viewProjectFactBody(facts[idx].fact_key);
 }
 
 function openProjectsOverlay(id, opts) {
@@ -2099,6 +2085,8 @@ function insertProjectScopeExample() {
 
 async function saveProjectSettings() {
     if (!currentProjectId || !requireProjectWrite()) return;
+    const name = document.getElementById('project-edit-name').value.trim();
+    if (!name) return alert(tp('projects.enterProjectName'));
     const scopeRaw = document.getElementById('project-edit-scope').value.trim();
     if (scopeRaw) {
         try {
@@ -2109,7 +2097,7 @@ async function saveProjectSettings() {
         }
     }
     const body = {
-        name: document.getElementById('project-edit-name').value.trim(),
+        name,
         description: clampProjectDescription(document.getElementById('project-edit-description').value),
         scope_json: scopeRaw,
         status: document.getElementById('project-edit-status')?.value || 'active',
