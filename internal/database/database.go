@@ -1538,20 +1538,18 @@ func (db *DB) migrateVulnerabilitiesConversationFK() error {
 	INSERT INTO vulnerabilities_new (
 		id, conversation_id, conversation_tag, task_tag, title, description,
 		severity, status, vulnerability_type, target, preconditions, reproduction_steps,
-		evidence, impact, recommendation, retest_notes,
-		category, auth_required, test_account, test_password, vuln_urls, network_segment, developer, poc_script, tool_call_id,
 		evidence, impact, recommendation, retest_notes, retest_log,
+		category, auth_required, test_account, test_password, vuln_urls, network_segment, developer, poc_script, tool_call_id,
 		created_at, updated_at, project_id
 	)
 	SELECT
 		id, conversation_id, conversation_tag, task_tag, title, description,
 		severity, status, vulnerability_type, target,
 		COALESCE(preconditions, ''), COALESCE(reproduction_steps, ''),
-		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''),
+		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''), COALESCE(retest_log, ''),
 		COALESCE(category, ''), COALESCE(auth_required, ''), COALESCE(test_account, ''), COALESCE(test_password, ''),
 		COALESCE(vuln_urls, ''), COALESCE(network_segment, ''), COALESCE(developer, ''),
 		COALESCE(poc_script, ''), COALESCE(tool_call_id, ''),
-		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''), COALESCE(retest_log, ''),
 		created_at, updated_at, project_id
 	FROM vulnerabilities;`
 	if _, err := tx.Exec(copyRows); err != nil {

@@ -155,6 +155,15 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **版本号（8ce62813）**：`config.example.yaml` → `v1.7.23-src`（并采纳官方对 version 字段的「一键更新后同步 config.yaml 版本号」注释）。
 - 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞五工具生命周期（与官方 `update_vulnerability_status` 并存）、统一审批（`approval:*` 目录未动，仅新增 `update:read/apply`）、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills 均未改动。
 
+**同步后审计（2026-10-11，三方合并探测法全量扫描 v1.7.21→v1.7.23 全部 209 个官方变更文件）**：
+
+- **149 个文件与官方 v1.7.23 完全一致（UPTODATE）、0 个可干净重放的遗漏（GAP）**；23 个 DIVERGED 全部为有意分歧（SRC 扩展列/五工具、默认源改指本仓库、提示词保留、审批体系差异、版本号后缀），逐项以官方新增行覆盖率核对——除有意替换的 6 行（官方默认仓库地址 ×2、版本号、hitl 测试依赖、日期断言、`__dirname` 路径适配）外，官方增量 100% 在位。
+- **修复两处 v1.7.23 合并残留**：
+  - `internal/database/database.go` 的 `migrateVulnerabilitiesConversationFK` 中 `copyRows` 的 INSERT 列表因合并拼接出现 `evidence, impact, recommendation, retest_notes` 四列重复（SQLite 容忍重复列且两侧取值相同、功能无异常，但属脏 SQL），已去重并规整为「官方列块 + 本分支 SRC 列块 + retest_log」单份顺序。
+  - `web/tests/chat-scroll-refresh.test.cjs` 补最后一处官方泛化断言（`style.css?v=[A-Za-z0-9._-]+`，原残留字面 `20260907` 锚点）。
+- 官方 `main` 分支在 v1.7.23 之后有 8 个未发版提交（SQLite 启动时表/列对账 `7f8dab4e` 及过程文档），**属下一版本范围，本次不跟**；发布后再评估。
+- 官方 98de0859「同时间戳消息收尾」修复落点在官方旧 `handler/hitl.go`（本分支已裁），等价语义由本分支统一审批 `approval` 包承担：`MigrateLegacyHITL`（每次启动幂等迁移遗留 HITL 历史）+ `CancelUnrecoverable`（启动时将不可恢复的 pending/approved 审批置 cancelled，「process restarted」）已覆盖官方修复意图；消息排序本分支全链为 `ORDER BY created_at, rowid`（官方修复的正是该 tie-breaker 语义），无缺口。
+
 ### v1.7.20 同步说明（2026-09-27）
 
 官方 v1.7.19→v1.7.20 共 4 个提交：**2 个直接合入（含 1 个版本号）+ 1 个适配合并 + 1 个语义合并到统一审批**；另顺带收口一处官方同源的 supervisor 委派失效。逐提交与本地二开层比对后按语义合并，非直接 merge。

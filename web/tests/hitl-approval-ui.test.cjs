@@ -262,7 +262,7 @@ test('多对话并发时释放隐藏主流且旧请求不能覆盖新对话状�
     assert.match(template, /monitor\.js\?v=20260907-blocked-1/);
     assert.match(template, /chat-scroll\.js\?v=20260815-1/);
     assert.match(template, /chat\.js\?v=[A-Za-z0-9._-]+/);
-    assert.match(template, /style\.css\?v=\d{8}-[\w-]+/);
+    assert.match(template, /style\.css\?v=[A-Za-z0-9._-]+/);
 });
 
 test('彻底停止始终使用弹窗锁定的会话且状态刷新后仍会取消', () => {

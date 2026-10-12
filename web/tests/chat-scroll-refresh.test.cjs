@@ -533,5 +533,5 @@ test('暗色模式对话三点悬浮不会触发浅色父行背景', () => {
     const css = fs.readFileSync('web/static/css/style.css', 'utf8');
     assert.match(css, /html\[data-theme="dark"\] \.project-conversation-row:hover \.project-conversation-item/);
     assert.match(css, /html\[data-theme="dark"\] \.project-folder-action:hover,[\s\S]*?background: rgba\(71, 85, 105, 0\.28\);[\s\S]*?box-shadow: none;/);
-    assert.match(html, /style\.css\?v=\d{8}-[\w-]+/);
+    assert.match(html, /style\.css\?v=[A-Za-z0-9._-]+/);
 });
