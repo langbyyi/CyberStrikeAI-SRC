@@ -1504,7 +1504,7 @@ function hideAllFofaColumns() {
     renderFofaResults(p);
 }
 
-function exportFofaResults(format) {
+async function exportFofaResults(format) {
     const p = infoCollectState.currentPayload;
     if (!p || !Array.isArray(p.results) || p.results.length === 0) {
         alert(_t('infoCollect.noExportResult'));
@@ -1533,7 +1533,7 @@ function exportFofaResults(format) {
     }
 
     if (format === 'xlsx') {
-        // 使用 SheetJS 生成 XLSX（需在页面中引入 xlsx 库）
+        if (!window.XLSX && typeof loadFrontendVendor === 'function') await loadFrontendVendor('xlsx').catch(function () {});
         if (typeof XLSX === 'undefined') {
             alert(_t('infoCollect.xlsxNotLoaded'));
             return;

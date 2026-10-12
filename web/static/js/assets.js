@@ -145,7 +145,7 @@ function assetImportTemplateHeaders() {
     return ASSET_IMPORT_COLUMNS.slice();
 }
 
-function downloadAssetTemplate(format) {
+async function downloadAssetTemplate(format) {
     const headers = assetImportTemplateHeaders();
     if (format === 'csv') {
         const csv = '\uFEFF' + headers.join(',') + '\r\n';
@@ -156,6 +156,7 @@ function downloadAssetTemplate(format) {
         setTimeout(() => URL.revokeObjectURL(link.href), 0);
         return;
     }
+    if (!window.XLSX && typeof loadFrontendVendor === 'function') await loadFrontendVendor('xlsx').catch(function () {});
     if (!window.XLSX) {
         setAssetImportError(assetT('assets.spreadsheetUnavailable', '表格组件加载失败，请刷新后重试'));
         return;
@@ -263,12 +264,10 @@ async function handleAssetImportFile(file) {
         setAssetImportError(assetT('assets.fileTooLarge', '文件不能超过 100 MB'));
         return;
     }
-    if (!window.XLSX) {
-        setAssetImportError(assetT('assets.spreadsheetUnavailable', '表格组件加载失败，请刷新后重试'));
-        return;
-    }
     setAssetImportBusy(true);
     try {
+        if (!window.XLSX && typeof loadFrontendVendor === 'function') await loadFrontendVendor('xlsx');
+        if (!window.XLSX) throw new Error(assetT('assets.spreadsheetUnavailable', '表格组件加载失败，请刷新后重试'));
         const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false });
         const preferred = workbook.SheetNames.find(name => /^(assets?|资产)$/i.test(String(name).trim()));
         const sheet = workbook.Sheets[preferred || workbook.SheetNames[0]];
@@ -1043,7 +1042,7 @@ function downloadAssetBlob(blob, filename) {
     setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
-function exportSelectedAssets(format) {
+async function exportSelectedAssets(format) {
     const rows = assetExportRows(Array.from(assetPageState.selected.values()));
     if (!rows.length) return alert('请先选择资产');
     const stamp = new Date().toISOString().slice(0, 10);
@@ -1053,7 +1052,8 @@ function exportSelectedAssets(format) {
         downloadAssetBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `assets-${stamp}.csv`);
         return;
     }
-    if (!window.XLSX) return alert('表格组件加载失败，请刷新后重试');
+    if (!window.XLSX && typeof loadFrontendVendor === 'function') await loadFrontendVendor('xlsx').catch(function () {});
+    if (!window.XLSX) return alert('表格组件加载失败，请重试');
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet([Object.keys(rows[0]).map(assetExportHeader), ...rows.map(row => Object.keys(row).map(key => assetExportValue(key, row[key])))]);
     sheet['!autofilter'] = { ref: sheet['!ref'] };

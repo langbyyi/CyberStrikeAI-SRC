@@ -481,7 +481,12 @@
         return '2';
     }
 
-    function applyElkLayout(validEdges, isComplex) {
+    async function applyElkLayout(validEdges, isComplex) {
+        const graph = _cy;
+        if (!window.ELK && typeof loadFrontendVendor === 'function') {
+            await loadFrontendVendor('elk').catch(function () {});
+        }
+        if (!graph || _cy !== graph || graph.destroyed()) return;
         const layoutOptions = {
             name: 'breadthfirst',
             directed: true,
@@ -529,6 +534,7 @@
         elkInstance
             .layout(elkGraph)
             .then((laidOut) => {
+                if (_cy !== graph || graph.destroyed()) return;
                 (laidOut.children || []).forEach((elkNode) => {
                     const cyNode = _cy.getElementById(elkNode.id);
                     if (cyNode.length && elkNode.x != null) {
@@ -541,6 +547,7 @@
                 setTimeout(centerGraph, 120);
             })
             .catch(() => {
+                if (_cy !== graph || graph.destroyed()) return;
                 const layout = _cy.layout(layoutOptions);
                 layout.one('layoutstop', () => setTimeout(centerGraph, 100));
                 layout.run();

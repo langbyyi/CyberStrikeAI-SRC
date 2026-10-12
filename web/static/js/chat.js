@@ -6150,6 +6150,7 @@ async function showAttackChain(conversationId) {
     // 清空容器
     const container = document.getElementById('attack-chain-container');
     if (container) {
+        container._attackChainRenderGeneration = (container._attackChainRenderGeneration || 0) + 1;
         container.innerHTML = '<div class="loading-spinner">' + (typeof window.t === 'function' ? window.t('chat.loading') : '加载中...') + '</div>';
     }
 
@@ -6238,7 +6239,10 @@ async function loadAttackChain(conversationId) {
         }
 
         // 渲染攻击链
-        renderAttackChain(chainData);
+        if (await renderAttackChain(chainData) === false) {
+            setAttackChainLoading(conversationId, false);
+            return;
+        }
 
         // 更新统计信息
         updateAttackChainStats(chainData);
@@ -6266,19 +6270,28 @@ async function loadAttackChain(conversationId) {
 }
 
 // 渲染攻击链
-function renderAttackChain(chainData) {
+async function renderAttackChain(chainData) {
     const container = document.getElementById('attack-chain-container');
     if (!container) {
-        return;
+        return false;
     }
 
-    // 清空容器
-    container.innerHTML = '';
+    var renderGeneration = (container._attackChainRenderGeneration || 0) + 1;
+    container._attackChainRenderGeneration = renderGeneration;
+    var renderConversationId = currentAttackChainConversationId;
 
     if (!chainData.nodes || chainData.nodes.length === 0) {
         container.innerHTML = '<div class="empty-message">' + (typeof window.t === 'function' ? window.t('chat.noAttackChainData') : '暂无攻击链数据') + '</div>';
         return;
     }
+
+    if (!window.ELK && typeof loadFrontendVendor === 'function') {
+        container.innerHTML = '<div class="loading-spinner" role="status" aria-live="polite">' + (typeof window.t === 'function' ? window.t('chat.loading') : '加载中...') + '</div>';
+        await loadFrontendVendor('elk').catch(function () {});
+        if (container._attackChainRenderGeneration !== renderGeneration || currentAttackChainConversationId !== renderConversationId || !container.isConnected) return false;
+    }
+
+    container.innerHTML = '';
 
     // 计算图的复杂度（用于动态调整布局和样式）
     const nodeCount = chainData.nodes.length;
@@ -7303,6 +7316,8 @@ function closeNodeDetails() {
 
 // 关闭攻击链模态框
 function closeAttackChainModal() {
+    const container = document.getElementById('attack-chain-container');
+    if (container) container._attackChainRenderGeneration = (container._attackChainRenderGeneration || 0) + 1;
     closeAppModal('attack-chain-modal');
 
     // 关闭节点详情
@@ -7354,6 +7369,7 @@ async function regenerateAttackChain() {
 
     const container = document.getElementById('attack-chain-container');
     if (container) {
+        container._attackChainRenderGeneration = (container._attackChainRenderGeneration || 0) + 1;
         container.innerHTML = '<div class="loading-spinner">重新生成中...</div>';
     }
 
@@ -7417,7 +7433,7 @@ async function regenerateAttackChain() {
         }
 
         // 渲染攻击链
-        renderAttackChain(chainData);
+        if (await renderAttackChain(chainData) === false) return;
 
         // 更新统计信息
         updateAttackChainStats(chainData);

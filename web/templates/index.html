@@ -5828,38 +5828,7 @@
     <script src="/static/js/sanitize-markdown.js"></script>
     <!-- Cytoscape.js for attack chain visualization -->
     <script src="/static/vendor/cytoscape.min.js"></script>
-    <!-- ELK.js (1.5MB) + SheetJS (860KB)：移动端延迟加载，首屏不再阻塞解析。
-         桌面端走 document.write 分支，保持与静态 <script src> 完全一致的同步语义。
-         安全依据：chat.js:7450 与 fact-graph.js:491 均有 typeof ELK 守卫并降级为默认布局；
-         assets.js:127/234/1024 与 info-collect.js:1537 均有 XLSX 守卫。 -->
-    <script>
-    (function () {
-        var LAZY_VENDOR = ['/static/vendor/elk.bundled.js', '/static/vendor/xlsx.full.min.js'];
-        var mq = window.matchMedia && window.matchMedia('(max-width: 767.98px)').matches;
-        if (!mq) {
-            for (var i = 0; i < LAZY_VENDOR.length; i++) {
-                document.write('<script src="' + LAZY_VENDOR[i] + '"><\/script>');
-            }
-            return;
-        }
-        var load = function () {
-            LAZY_VENDOR.forEach(function (src) {
-                var s = document.createElement('script');
-                s.src = src;
-                s.async = false;
-                document.head.appendChild(s);
-            });
-        };
-        if (window.requestIdleCallback) { requestIdleCallback(load, { timeout: 2000 }); }
-        else { setTimeout(load, 1200); }
-    })();
-    </script>
-    <script>
-        // 确保ELK对象全局可用
-        if (typeof ELK === 'undefined' && typeof elk !== 'undefined') {
-            window.ELK = elk;
-        }
-    </script>
+    <script src="/static/js/frontend-vendor.js?v=20261012-1"></script>
     <!-- 工作流信息 -->
     <div id="workflow-meta-modal" class="modal" style="display: none;">
         <div class="modal-content workflow-meta-modal-content">
@@ -6990,13 +6959,13 @@
     <script src="/static/js/auth.js?v=20261008-password-eye-1"></script>
     <script src="/static/js/modal.js"></script>
     <script src="/static/js/notifications.js"></script>
-    <script src="/static/js/info-collect.js?v=20260717-1"></script>
-    <script src="/static/js/assets.js?v=20260717-7"></script>
+    <script src="/static/js/info-collect.js?v=20261012-perf-1"></script>
+    <script src="/static/js/assets.js?v=20261012-perf-1"></script>
     <script src="/static/js/agents.js"></script>
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
     <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
-    <script src="/static/js/chat.js?v=20261009-retest-1"></script>
+    <script src="/static/js/chat.js?v=20261012-perf-2"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>
@@ -7012,7 +6981,7 @@
     <script src="/static/js/terminal.js"></script>
     <script src="/static/js/knowledge.js"></script>
     <script src="/static/js/skills.js"></script>
-    <script src="/static/js/fact-graph.js"></script>
+    <script src="/static/js/fact-graph.js?v=20261012-perf-1"></script>
     <script src="/static/js/projects.js?v=20260819-1"></script>
     <script src="/static/js/vulnerability.js?v=20261010-retest-2"></script>
     <script src="/static/js/webshell.js?v=20260907-blocked-1"></script>

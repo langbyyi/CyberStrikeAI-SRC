@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../static/js/assets.js'), '
 function context(locale) {
     const translations = JSON.parse(fs.readFileSync(path.join(__dirname, '../static/i18n', locale + '.json'))).assets;
     const c = vm.createContext({ window: { i18next: { t: key => translations[key.slice(7)] || key } } });
-    vm.runInContext(source.slice(source.indexOf('function assetT('), source.indexOf('function downloadAssetTemplate(')), c);
+    vm.runInContext(source.slice(source.indexOf('function assetT('), source.indexOf('async function downloadAssetTemplate(')), c);
     vm.runInContext(source.slice(source.indexOf('function assetRiskPresentation('), source.indexOf('function assetOwnershipMarkup(')), c);
     return c;
 }
@@ -32,7 +32,7 @@ for (const locale of ['zh-CN', 'en-US', 'ru-RU']) {
     });
 }
 test('CSV and XLSX both use localized headers and values', () => {
-    const exportFunction = source.slice(source.indexOf('function exportSelectedAssets('), source.indexOf('async function deleteSelectedAssets('));
+    const exportFunction = source.slice(source.indexOf('async function exportSelectedAssets('), source.indexOf('async function deleteSelectedAssets('));
     assert.match(exportFunction, /headers\.map\(key => assetCsvCell\(assetExportHeader\(key\)\)\)/);
     assert.match(exportFunction, /XLSX\.utils\.aoa_to_sheet/);
     assert.match(exportFunction, /assetExportValue\(key, row\[key\]\)/);
@@ -48,16 +48,16 @@ for (const locale of ['zh-CN', 'en-US', 'ru-RU']) {
         c.assetPageState.selected.set('a1', asset);
         vm.runInContext(source.slice(source.indexOf('function assetTargetLabel('), source.indexOf('function assetRiskPresentation(')), c);
         vm.runInContext(source.slice(source.indexOf('function assetExportRows('), source.indexOf('function downloadAssetBlob(')), c);
-        vm.runInContext(source.slice(source.indexOf('function exportSelectedAssets('), source.indexOf('async function deleteSelectedAssets(')), c);
+        vm.runInContext(source.slice(source.indexOf('async function exportSelectedAssets('), source.indexOf('async function deleteSelectedAssets(')), c);
         vm.runInContext(source.slice(source.indexOf('function assetEditorDefaultPort('), source.indexOf('async function assetEditorResponseError(')), c);
         vm.runInContext(source.slice(source.indexOf('function parseAssetImportMatrix('), source.indexOf('function renderAssetImportPreview(')), c);
         c.renderAssetImportPreview = () => {};
         let csv, workbook;
         c.downloadAssetBlob = blob => { csv = blob; };
         c.XLSX.writeFile = book => { workbook = book; };
-        c.exportSelectedAssets('csv');
+        await c.exportSelectedAssets('csv');
         const csvBook = c.XLSX.read(await csv.text(), { type: 'string' });
-        c.exportSelectedAssets('xlsx');
+        await c.exportSelectedAssets('xlsx');
         const bytes = c.XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
         const xlsxBook = c.XLSX.read(bytes, { type: 'array' });
         for (const book of [csvBook, xlsxBook]) {
@@ -70,5 +70,18 @@ for (const locale of ['zh-CN', 'en-US', 'ru-RU']) {
             assert.equal(imported.asset.project_id, 'p1');
             assert.deepEqual(Array.from(imported.asset.tags), asset.tags);
         }
+        delete c.window.XLSX;
+        workbook = undefined;
+        let vendorReady;
+        c.loadFrontendVendor = name => {
+            assert.equal(name, 'xlsx');
+            return new Promise(resolve => { vendorReady = resolve; });
+        };
+        const deferredExport = c.exportSelectedAssets('xlsx');
+        assert.equal(workbook, undefined, 'export must wait for SheetJS');
+        c.window.XLSX = c.XLSX;
+        vendorReady(c.XLSX);
+        await deferredExport;
+        assert.ok(workbook, 'first export resumes after SheetJS loads');
     });
 }

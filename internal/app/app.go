@@ -95,6 +95,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// CORS中间件
 	router.Use(corsMiddleware(cfg.Server.CORSAllowedOrigins))
+	router.Use(frontendHTMLCompression())
 
 	// 初始化数据库
 	dbPath := cfg.Database.Path
@@ -1490,7 +1491,7 @@ func setupRoutes(
 	})
 
 	// 静态文件
-	router.Static("/static", "./web/static")
+	registerFrontendStatic(router, "./web/static")
 	router.LoadHTMLGlob("web/templates/*")
 
 	// 前端页面
