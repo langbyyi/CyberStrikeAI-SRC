@@ -58,6 +58,15 @@ test('带插值的文案在三种语言里都保留占位符', () => {
     }
 });
 
+test('移动端项目、角色和模式选择面板的标题在每种语言中都有译文', () => {
+    for (const locale of LOCALES) {
+        const dict = JSON.parse(fs.readFileSync(`web/static/i18n/${locale}.json`, 'utf8'));
+        for (const key of ['projects.selectProject', 'chat.rolePanelTitle', 'chat.agentModePanelTitle']) {
+            assert.equal(typeof lookup(dict, key), 'string', `${locale} 缺少 ${key}，切换语言后会保留上一语言的标题`);
+        }
+    }
+});
+
 test('语言与主题动作复用桌面端既有键，不另立一套', () => {
     assert.ok(keys.has('header.apiDocs'), 'API 文档应复用 header.apiDocs');
     assert.ok(keys.has('header.github'), 'GitHub 应复用 header.github 而不是另立键');

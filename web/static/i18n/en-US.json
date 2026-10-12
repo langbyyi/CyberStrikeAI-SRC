@@ -769,6 +769,7 @@
     "attackChain": "Attack chain",
     "viewAttackChain": "View attack chain",
     "selectRole": "Select role",
+    "rolePanelTitle": "Select role",
     "defaultRole": "Default",
     "inputPlaceholder": "Enter a target or command…  @ select tools",
     "selectFile": "Select file",

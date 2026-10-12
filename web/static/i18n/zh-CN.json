@@ -757,6 +757,7 @@
     "attackChain": "攻击链",
     "viewAttackChain": "查看攻击链",
     "selectRole": "选择角色",
+    "rolePanelTitle": "选择角色",
     "defaultRole": "默认",
     "inputPlaceholder": "输入测试目标或命令…  @ 选择工具",
     "selectFile": "选择文件",

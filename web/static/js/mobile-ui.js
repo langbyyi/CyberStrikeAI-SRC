@@ -150,10 +150,17 @@
        3. 视口高度与键盘避让
        --------------------------------------------------------------------- */
     var baseViewportHeight = window.innerHeight || 0;
+    var baseViewportWidth = window.innerWidth || 0;
 
     function syncViewportHeight() {
         var h = window.innerHeight || document.documentElement.clientHeight;
-        if (h > baseViewportHeight) baseViewportHeight = h;
+        var w = window.innerWidth || 0;
+        if (w !== baseViewportWidth) {
+            baseViewportWidth = w;
+            baseViewportHeight = h;
+        } else if (h > baseViewportHeight) {
+            baseViewportHeight = h;
+        }
         document.documentElement.style.setProperty('--m-app-height', h + 'px');
     }
 
@@ -164,7 +171,12 @@
             return;
         }
         var overlap = baseViewportHeight - vv.height - vv.offsetTop;
-        var open = overlap > 120;
+        var focused = document.activeElement;
+        var editable = focused && !focused.readOnly && !focused.disabled && (
+            focused.tagName === 'TEXTAREA' || focused.isContentEditable ||
+            focused.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|file|range|color|hidden)$/i.test(focused.type || '')
+        );
+        var open = !!editable && (vv.scale || 1) === 1 && overlap > 120;
         document.body.classList.toggle('m-keyboard', open);
     }
 
@@ -176,9 +188,14 @@
             syncKeyboard();
         });
         window.addEventListener('orientationchange', function () {
-            setTimeout(syncViewportHeight, 220);
-            setTimeout(syncKeyboard, 260);
+            setTimeout(function () {
+                baseViewportHeight = window.innerHeight || 0;
+                syncViewportHeight();
+                syncKeyboard();
+            }, 260);
         });
+        document.addEventListener('focusin', syncKeyboard);
+        document.addEventListener('focusout', function () { setTimeout(syncKeyboard, 0); });
         if (window.visualViewport) {
             /* scroll 在页面滚动时逐帧触发，而 syncKeyboard 要读 vv.height 触发强制布局，
                必须用 rAF 合帧，否则滚动明显掉帧 */
@@ -916,48 +933,63 @@
         badge.style.display = 'inline-block';
     }
 
+    var hitlBadgeSequence = 0;
+
     function refreshHitlBadge() {
         if (!isMobile() || !state.booted) return;
+        var sequence = ++hitlBadgeSequence;
         if ($('#login-overlay') && $('#login-overlay').style.display !== 'none') {
             setHitlBadge(0);
             return;
         }
-        var pending = fetch('/api/hitl/pending?page=1&pageSize=1', { credentials: 'same-origin' })
+        if (document.hidden) return;
+        if (typeof apiFetch !== 'function') {
+            setHitlBadge(0);
+            return;
+        }
+        var canRead = function (permission) {
+            return typeof window.hasPermission !== 'function' || window.hasPermission(permission);
+        };
+        var pending = canRead('approval:read') ? apiFetch('/api/approvals?status=pending_human&limit=1&offset=0')
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
                 if (!d) return 0;
-                if (typeof d.total === 'number') return d.total;
+                if (window.ApprovalUIModel) return window.ApprovalUIModel.pendingCount(d);
+                if (typeof d.total === 'number' && Number.isFinite(d.total) && d.total >= 0) return d.total;
                 if (Array.isArray(d.items)) return d.items.length;
                 return 0;
             })
-            .catch(function () { return 0; });
-
-        var workflows = fetch('/api/workflows/runs/pending', { credentials: 'same-origin' })
+            .catch(function () { return 0; }) : Promise.resolve(0);
+        // 工作流节点等待仍保存在 workflow_runs，不能用统一工具审批总数替代。
+        var workflows = canRead('workflow:read') ? apiFetch('/api/workflows/runs/pending')
             .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (d) {
-                if (!d || !Array.isArray(d.runs)) return 0;
-                return d.runs.length;
-            })
-            .catch(function () { return 0; });
-
-        Promise.all([pending, workflows]).then(function (res) {
-            setHitlBadge((res[0] || 0) + (res[1] || 0));
+            .then(function (d) { return d && Array.isArray(d.runs) ? d.runs.length : 0; })
+            .catch(function () { return 0; }) : Promise.resolve(0);
+        return Promise.all([pending, workflows]).then(function (counts) {
+            if (sequence === hitlBadgeSequence) setHitlBadge(counts[0] + counts[1]);
         });
     }
 
     /* ---------------------------------------------------------------------
        13. 登录态与底部栏可见性
        --------------------------------------------------------------------- */
+    var authChromeLoggedOut = null;
+
     function syncAuthChrome() {
         var overlay = $('#login-overlay');
         var loggedOut = overlay && overlay.style.display !== 'none';
         var bar = $('#m-tabbar');
         if (bar) bar.style.display = loggedOut ? 'none' : '';
         if (loggedOut) {
+            ++hitlBadgeSequence;
+            setHitlBadge(0);
             closeDrawer();
             closeSheet();
             closeChatDrawer();
+        } else if (authChromeLoggedOut === true) {
+            refreshHitlBadge();
         }
+        authChromeLoggedOut = !!loggedOut;
     }
 
     function watchAuthOverlay() {

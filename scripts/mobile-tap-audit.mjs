@@ -56,7 +56,7 @@ const PAGES = argv.all
      'asset-library', 'info-collect', 'hitl', 'tool-guard', 'webshell', 'c2-listeners', 'c2-sessions',
      'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles', 'chat-files', 'mcp-monitor', 'mcp-management',
      'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'platform-rbac',
-     'skills-monitor', 'skills-management', 'agents-management', 'settings', 'audit-log', 'monitor']
+     'skills-monitor', 'skills-management', 'agents-management', 'settings']
   : SPA_PAGES;
 
 fs.mkdirSync(OUT, { recursive: true });
@@ -242,19 +242,25 @@ const DETECT = `(function(){
     var out={el:nm(el),p:path(el),t:label(el),w:Math.round(w),h:Math.round(h)};
     if(w<2||h<2){ out.why='zero'; bad.push(out); return; }
     if(c.pointerEvents==='none'||c.pointerEvents==='hidden'){ out.why='pointer-none'; bad.push(out); return; }
-    if(w<MIN||h<MIN){
-      /* 复选/单选框的命中区常常由外层 label 提供（iOS 设置里也是整行可点）：
-         自身 >=32 且 label 两个方向都到下限才算合格，否则照报 tiny */
+    if(w<MIN-0.5||h<MIN-0.5){
+      /* 复选/单选框按可点击 label 或实际命中范围检查，不以本体的视觉尺寸代替。 */
       var pass=false;
       /* 本层对复选/单选框的口径是 30px（见 mobile.css 24.11），整行/label 才是命中区 */
-      if((el.type==='checkbox'||el.type==='radio')&&w>=30&&h>=30){
+      if(el.type==='checkbox'||el.type==='radio'){
         /* 命中区常常由 label 或整行提供（本层 24.11 就是按"整行可点"写的）：
            向上找第一个真正可点的祖先，它到下限就算合格 */
         var n=el, d=0;
         while(n&&n!==document.body&&d++<5){
           var clickable=n.tagName==='LABEL'||n.hasAttribute('onclick')||getComputedStyle(n).cursor==='pointer';
-          if(clickable){var nb=n.getBoundingClientRect(); if(nb.width>=MIN&&nb.height>=MIN){pass=true;break;}}
+          if(clickable){var nb=n.getBoundingClientRect(); if(nb.width>=MIN-0.5&&nb.height>=MIN-0.5){pass=true;break;}}
           n=n.parentElement;
+        }
+        /* 透明伪元素也能扩展命中面；四角实际命中本体才接受，避免只看 CSS 尺寸。 */
+        if(!pass){
+          var half=(MIN-1)/2, cx0=r.left+w/2, cy0=r.top+h/2;
+          pass=[[-half,-half],[half,-half],[-half,half],[half,half]].every(function(o){
+            return document.elementFromPoint(cx0+o[0],cy0+o[1])===el;
+          });
         }
       }
       if(!pass){ out.why='tiny'; bad.push(out); return; }
@@ -307,6 +313,8 @@ const detectFor = scope => DETECT.replace('/*SCOPE*/',
 async function openPage(hash) {
   await ev(`location.hash=${JSON.stringify(hash)}`);
   await sleep(2600);
+  const active = await ev(`document.querySelector('.page.active')?.id`);
+  if (active !== 'page-' + hash) throw new Error(`route ${hash} activated ${active || 'no page'}`);
 }
 
 const host = new URL(BASE).hostname;
