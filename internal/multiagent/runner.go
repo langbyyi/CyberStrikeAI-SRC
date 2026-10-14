@@ -87,6 +87,12 @@ func RunDeepAgent(
 	if appCfg == nil || ma == nil || ag == nil {
 		return nil, fmt.Errorf("multiagent: 配置或 Agent 为空")
 	}
+	var taskSpecification string
+	var specErr error
+	systemPromptExtra, taskSpecification, specErr = taskSpecificationContext(db, conversationID, systemPromptExtra)
+	if specErr != nil {
+		return nil, specErr
+	}
 
 	runtimeUserMessage := prepareLatestUserMessageForModel(userMessage, appCfg, &ma.EinoMiddleware, conversationID, logger)
 
@@ -257,6 +263,7 @@ func RunDeepAgent(
 			})
 
 			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready())
+			subInstrFinal = project.AppendSystemPromptBlock(subInstrFinal, taskSpecification)
 			subInstrFinal = injectToolNamesOnlyInstruction(ctx, subInstrFinal, subTools, subToolsForCfg, subToolSearchActive)
 			if logger != nil {
 				subNames := collectToolNames(ctx, subTools)
@@ -416,6 +423,7 @@ func RunDeepAgent(
 			}
 		}
 	}
+	taskBlackboardSupplement = project.AppendSystemPromptBlock(taskBlackboardSupplement, taskSpecification)
 	if mw := newAgenticTaskContextEnrichMiddleware(runtimeUserMessage, history, ma.SubAgentUserContextMaxRunesEffective(), taskBlackboardSupplement); mw != nil {
 		deepHandlers = append(deepHandlers, mw)
 	}

@@ -59,6 +59,40 @@ func (db *DB) CreateBatchQueue(
 	tasks []map[string]interface{},
 	hitlPolicies ...string,
 ) error {
+	return db.CreateBatchQueueWithTestingSpecifications(queueID, title, role, agentMode, scheduleMode, cronExpr, nextRunAt, projectID, concurrency, tasks, nil, nil, hitlPolicies...)
+}
+
+func (db *DB) CreateBatchQueueWithTestingSpecifications(
+	queueID, title, role, agentMode, scheduleMode, cronExpr string,
+	nextRunAt *time.Time, projectID string, concurrency int, tasks []map[string]interface{},
+	override *TestingSpecification, taskOverrides map[int]*TestingSpecification, hitlPolicies ...string,
+) error {
+	var spec *TestingSpecification
+	source := "project"
+	if strings.TrimSpace(projectID) != "" {
+		p, err := db.GetProject(strings.TrimSpace(projectID))
+		if err != nil {
+			return err
+		}
+		spec = p.TestingSpecification
+	}
+	if override != nil {
+		spec = override
+		source = "task"
+	}
+	normalized, err := NormalizeTestingSpecification(spec)
+	if err != nil {
+		return err
+	}
+	snapshot := specificationSnapshot(normalized, source)
+	for index, item := range taskOverrides {
+		if index < 0 || index >= len(tasks) {
+			return fmt.Errorf("任务规范索引无效")
+		}
+		if _, err := NormalizeTestingSpecification(item); err != nil {
+			return err
+		}
+	}
 	policy := ""
 	if len(hitlPolicies) > 0 {
 		policy = hitlPolicies[0]
@@ -86,9 +120,12 @@ func (db *DB) CreateBatchQueue(
 	if err != nil {
 		return fmt.Errorf("创建批量任务队列失败: %w", err)
 	}
+	if _, err := tx.Exec("INSERT INTO batch_testing_specifications(queue_id,task_id,name,content,source,hash) VALUES (?,?,?,?,?,?)", queueID, "", snapshot.Name, snapshot.Content, snapshot.Source, snapshot.Hash); err != nil {
+		return err
+	}
 
 	// 插入任务
-	for _, task := range tasks {
+	for index, task := range tasks {
 		taskID, ok := task["id"].(string)
 		if !ok {
 			continue
@@ -104,6 +141,13 @@ func (db *DB) CreateBatchQueue(
 		)
 		if err != nil {
 			return fmt.Errorf("创建批量任务失败: %w", err)
+		}
+		if override := taskOverrides[index]; override != nil {
+			normalized, _ := NormalizeTestingSpecification(override)
+			snapshot := specificationSnapshot(normalized, "task")
+			if _, err := tx.Exec("INSERT INTO batch_testing_specifications(queue_id,task_id,name,content,source,hash) VALUES (?,?,?,?,?,?)", queueID, taskID, snapshot.Name, snapshot.Content, snapshot.Source, snapshot.Hash); err != nil {
+				return err
+			}
 		}
 	}
 

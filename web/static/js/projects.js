@@ -1019,6 +1019,7 @@ async function selectProject(id) {
         renderProjectDetailTitle(p.name);
         document.getElementById('project-edit-name').value = p.name || '';
         document.getElementById('project-edit-description').value = p.description || '';
+        window.TestingSpecifications?.fillEditor('project-spec', p.testing_specification);
         document.getElementById('project-edit-scope').value = p.scope_json || '';
         const statusEl = document.getElementById('project-edit-status');
         if (statusEl) statusEl.value = p.status || 'active';
@@ -1948,6 +1949,7 @@ function showNewProjectModal() {
     if (submitBtn) submitBtn.textContent = tp('projects.createProject');
     document.getElementById('project-modal-name').value = '';
     document.getElementById('project-modal-description').value = '';
+    window.TestingSpecifications?.fillEditor('project-modal-spec', null);
     window._projectModalEditId = null;
     openProjectsOverlay('project-modal');
 }
@@ -1968,7 +1970,7 @@ async function showEditProjectModal(projectId, options = {}) {
     if (nameEl) nameEl.value = '';
     if (descEl) descEl.value = '';
     openProjectsOverlay('project-modal', { focus: false });
-    let p = findProjectById(projectId);
+    let p = null; // Fetch full project data: list entries intentionally omit specification content.
     if (!p) {
         try {
             const res = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`);
@@ -1986,6 +1988,7 @@ async function showEditProjectModal(projectId, options = {}) {
     deferModalContent(() => {
         if (nameEl) nameEl.value = name;
         if (descEl) descEl.value = description;
+        window.TestingSpecifications?.fillEditor('project-modal-spec', p.testing_specification);
         nameEl?.focus();
     });
 }
@@ -2009,9 +2012,13 @@ async function saveProjectModal() {
     if (!requireProjectWrite()) return;
     const name = document.getElementById('project-modal-name').value.trim().slice(0, PROJECT_NAME_MAX_LENGTH);
     if (!name) return alert(tp('projects.enterProjectName'));
+    let testingSpecification;
+    try { testingSpecification = window.TestingSpecifications?.readEditor('project-modal-spec'); }
+    catch (error) { alert(error.message); return; }
     const body = {
         name,
         description: clampProjectDescription(document.getElementById('project-modal-description').value),
+        testing_specification: testingSpecification,
     };
     const editId = window._projectModalEditId;
     const submitBtn = document.getElementById('project-modal-submit-btn');
@@ -2096,9 +2103,13 @@ async function saveProjectSettings() {
             return;
         }
     }
+    let testingSpecification;
+    try { testingSpecification = window.TestingSpecifications?.readEditor('project-spec'); }
+    catch (error) { alert(error.message); return; }
     const body = {
         name,
         description: clampProjectDescription(document.getElementById('project-edit-description').value),
+        testing_specification: testingSpecification,
         scope_json: scopeRaw,
         status: document.getElementById('project-edit-status')?.value || 'active',
         pinned: !!document.getElementById('project-edit-pinned')?.checked,

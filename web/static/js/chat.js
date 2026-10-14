@@ -1562,6 +1562,7 @@ async function sendMessage(options = {}) {
         const pid = getActiveProjectId();
         if (pid) body.projectId = pid;
     }
+    window.TestingSpecifications?.applyToChat(body);
     const aiChannelId = selectedChatAIChannelId();
     if (aiChannelId) {
         body.aiChannelId = aiChannelId;
@@ -1638,6 +1639,7 @@ async function sendMessage(options = {}) {
             let buffer = '';
             let streamSawDone = false;
             const dispatchStreamEvent = function (eventData) {
+                window.TestingSpecifications?.acceptChatEvent(body, eventData);
                 if (eventData && eventData.type === 'done') {
                     streamSawDone = true;
                 }
@@ -5113,6 +5115,7 @@ async function startNewConversation(options = {}) {
     if (typeof window.clearChatHitlApprovalDock === 'function') {
         window.clearChatHitlApprovalDock();
     }
+    window.TestingSpecifications?.resetChat();
     currentConversationId = null;
     window._loadedConversationProjectId = '';
     try {

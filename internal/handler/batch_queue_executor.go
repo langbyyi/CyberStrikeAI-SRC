@@ -120,8 +120,32 @@ func (h *AgentHandler) executeOneBatchSubTask(queueID string, queue *BatchTaskQu
 		return
 	}
 	principal := authctx.NewPrincipalWithScopes(access.User.ID, access.User.Username, access.Scope, access.Permissions, access.PermissionScopes)
+	projectID, projectErr := h.db.GetBatchQueueTestingSpecificationProjectID(queueID, effectiveProjectID(h.config, ""))
+	if projectErr != nil {
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "读取队列项目失败: "+projectErr.Error())
+		return
+	}
+	if projectID != "" && (!principal.HasPermission("project:read") || !h.db.UserCanAccessResource(principal.UserID, principal.ScopeFor("project:read"), "project", projectID)) {
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "无权访问队列项目，无法载入测试规范")
+		return
+	}
 	title := safeTruncateString(task.Message, 50)
 	batchMeta := batchSubTaskConversationMeta(h.config, queue)
+	spec, specErr := h.db.GetBatchTaskTestingSpecification(queueID, task.ID, projectID)
+	if specErr != nil {
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "读取任务规范失败: "+specErr.Error())
+		return
+	}
+	batchMeta.ProjectID, projectErr = h.db.GetBatchQueueTestingSpecificationProjectID(queueID, "")
+	if projectErr != nil {
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "读取队列项目失败: "+projectErr.Error())
+		return
+	}
+	if batchMeta.ProjectID != projectID && batchMeta.ProjectID != "" && (!principal.HasPermission("project:read") || !h.db.UserCanAccessResource(principal.UserID, principal.ScopeFor("project:read"), "project", batchMeta.ProjectID)) {
+		h.batchTaskManager.UpdateTaskStatus(queueID, task.ID, BatchTaskStatusFailed, "", "无权访问队列项目，无法载入测试规范")
+		return
+	}
+	batchMeta.TestingSpecificationSnapshot = spec
 	conv, err := h.db.CreateConversation(title, batchMeta)
 	if err != nil {
 		h.logger.Error("创建对话失败", zap.String("queueId", queueID), zap.String("taskId", task.ID), zap.Error(err))
@@ -361,7 +385,7 @@ func batchSubTaskConversationMeta(cfg *config.Config, queue *BatchTaskQueue) dat
 		meta.ProjectID = effectiveProjectID(cfg, "")
 		return meta
 	}
-	meta.ProjectID = effectiveProjectID(cfg, queue.ProjectID)
+	meta.ProjectID = strings.TrimSpace(queue.ProjectID)
 	meta.RoleName = strings.TrimSpace(queue.Role)
 	return meta
 }

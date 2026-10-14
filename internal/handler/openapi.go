@@ -35,6 +35,14 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 		scheme = "https"
 	}
 
+	testingSpecificationSchema := map[string]interface{}{
+		"type": "object", "description": "任务开始前设置的测试规范；省略时继承项目默认规范，正文为空可不使用规范。UTF-8 正文最多 64 KiB。",
+		"properties": map[string]interface{}{
+			"name":    map[string]interface{}{"type": "string", "maxLength": 200},
+			"content": map[string]interface{}{"type": "string", "description": "规范正文，最多 65536 个 UTF-8 字节"},
+		},
+	}
+
 	finalizationRequestSchema := map[string]interface{}{
 		"type":        "object",
 		"description": "最终回复交付策略。后端不会从自然语言内容推断执行意图；执行入口应显式声明是否要求 completed 工具证据。",
@@ -460,6 +468,8 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"type":     "object",
 					"required": []string{"tasks"},
 					"properties": map[string]interface{}{
+						"testingSpecification":      testingSpecificationSchema,
+						"taskTestingSpecifications": map[string]interface{}{"type": "object", "description": "以零起始任务索引为键的单条覆盖规范", "additionalProperties": testingSpecificationSchema},
 						"title": map[string]interface{}{
 							"type":        "string",
 							"description": "任务标题（可选）",
@@ -1580,6 +1590,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
 										"finalization":         finalizationRequestSchema,
+										"testingSpecification": testingSpecificationSchema,
 									},
 									"required": []string{"message"},
 								},
@@ -1619,6 +1630,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
 										"finalization":         finalizationRequestSchema,
+										"testingSpecification": testingSpecificationSchema,
 									},
 									"required": []string{"message"},
 								},
@@ -1670,7 +1682,8 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 											"type":        "string",
 											"description": "WebShell 连接 ID（可选，与 Eino 单/多代理流式行为一致）",
 										},
-										"finalization": finalizationRequestSchema,
+										"finalization":         finalizationRequestSchema,
+										"testingSpecification": testingSpecificationSchema,
 										"orchestration": map[string]interface{}{
 											"type":        "string",
 											"description": "Eino 预置编排：deep | plan_execute | supervisor；缺省 deep",
@@ -1716,6 +1729,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 										"role":                 map[string]interface{}{"type": "string"},
 										"webshellConnectionId": map[string]interface{}{"type": "string"},
 										"finalization":         finalizationRequestSchema,
+										"testingSpecification": testingSpecificationSchema,
 										"orchestration": map[string]interface{}{
 											"type":        "string",
 											"description": "deep | plan_execute | supervisor；缺省 deep",
@@ -2293,9 +2307,10 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 								"schema": map[string]interface{}{
 									"type": "object",
 									"properties": map[string]interface{}{
-										"name":        map[string]interface{}{"type": "string"},
-										"description": map[string]interface{}{"type": "string"},
-										"scope_json":  map[string]interface{}{"type": "string"},
+										"name":                  map[string]interface{}{"type": "string"},
+										"description":           map[string]interface{}{"type": "string"},
+										"scope_json":            map[string]interface{}{"type": "string"},
+										"testing_specification": testingSpecificationSchema,
 									},
 									"required": []string{"name"},
 								},

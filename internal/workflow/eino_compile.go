@@ -145,6 +145,15 @@ func ResumeWorkflowRun(ctx context.Context, args RunArgs, runID string, approved
 	if run == nil {
 		return nil, fmt.Errorf("工作流运行不存在")
 	}
+	args.ConversationID = run.ConversationID
+	args.ProjectID = run.ProjectID
+	block, err := args.DB.ConversationTestingSpecificationBlock(run.ConversationID)
+	if err != nil {
+		return nil, fmt.Errorf("读取任务测试规范失败: %w", err)
+	}
+	if block != "" && !strings.Contains(args.SystemPromptExtra, block) {
+		args.SystemPromptExtra += "\n\n" + block
+	}
 	if run.Status != "awaiting_hitl" {
 		return nil, fmt.Errorf("工作流运行不在等待审批状态: %s", run.Status)
 	}

@@ -11,7 +11,6 @@ import (
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 
@@ -223,9 +222,9 @@ func RegisterBatchTaskMCPTools(mcpServer *mcp.Server, h *AgentHandler, logger *z
 		if !ok {
 			executeNow = false
 		}
-		projectID := strings.TrimSpace(mcpArgString(args, "project_id"))
-		if principal, ok := authctx.PrincipalFromContext(ctx); ok && projectID != "" && principal.ScopeFor("tasks:write") != database.RBACScopeAll {
-			if h.db == nil || !h.db.UserCanAccessResource(principal.UserID, principal.ScopeFor("tasks:write"), "project", projectID) {
+		projectID := effectiveProjectID(h.config, mcpArgString(args, "project_id"))
+		if principal, ok := authctx.PrincipalFromContext(ctx); ok && projectID != "" {
+			if !principal.HasPermission("project:read") || h.db == nil || !h.db.UserCanAccessResource(principal.UserID, principal.ScopeFor("project:read"), "project", projectID) {
 				return batchMCPTextResult("无权访问目标项目", true), nil
 			}
 		}

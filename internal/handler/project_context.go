@@ -11,6 +11,16 @@ import (
 // 用户输入由 message history 承载；压缩后由 summarization 摘要指令保留关键约束。
 func (h *AgentHandler) agentSessionContextBlock(conversationID string) string {
 	var parts []string
+	if h != nil && h.db != nil {
+		block, err := h.db.ConversationTestingSpecificationBlock(conversationID)
+		if err != nil {
+			h.logger.Error("读取任务测试规范失败", zap.String("conversationId", conversationID), zap.Error(err))
+			return "任务测试规范读取失败。停止执行并告知用户，禁止在缺少规范的情况下继续测试。"
+		}
+		if block != "" {
+			parts = append(parts, block)
+		}
+	}
 	if ws := h.buildWorkspaceBlock(conversationID); ws != "" {
 		parts = append(parts, ws)
 	}

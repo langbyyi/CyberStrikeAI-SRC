@@ -140,7 +140,7 @@ func (h *ConversationHandler) conversationProjectAllowed(c *gin.Context, project
 	if !ok {
 		return false
 	}
-	return h.db.UserCanAccessResource(session.UserID, session.Scope, "project", projectID)
+	return session.Permissions["project:read"] && h.db.UserCanAccessResource(session.UserID, session.ScopeFor("project:read"), "project", projectID)
 }
 
 // ListConversations 列出对话
@@ -242,6 +242,11 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 	conv.Retest, err = h.db.GetVulnerabilityRetest(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取复测分支失败"})
+		return
+	}
+	conv.TestingSpecification, err = h.db.GetConversationTestingSpecification(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取任务规范失败"})
 		return
 	}
 	c.JSON(http.StatusOK, conv)

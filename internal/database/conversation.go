@@ -19,16 +19,17 @@ const ProjectFilterUnbound = "__none__"
 
 // Conversation 对话
 type Conversation struct {
-	ID        string               `json:"id"`
-	Title     string               `json:"title"`
-	ProjectID string               `json:"projectId,omitempty"`
-	RoleName  string               `json:"roleName,omitempty"`
-	AgentMode string               `json:"agentMode,omitempty"`
-	Pinned    bool                 `json:"pinned"`
-	CreatedAt time.Time            `json:"createdAt"`
-	UpdatedAt time.Time            `json:"updatedAt"`
-	Messages  []Message            `json:"messages,omitempty"`
-	Retest    *VulnerabilityRetest `json:"retest,omitempty"`
+	TestingSpecification *TestingSpecificationSnapshot `json:"testingSpecification,omitempty"`
+	ID                   string                        `json:"id"`
+	Title                string                        `json:"title"`
+	ProjectID            string                        `json:"projectId,omitempty"`
+	RoleName             string                        `json:"roleName,omitempty"`
+	AgentMode            string                        `json:"agentMode,omitempty"`
+	Pinned               bool                          `json:"pinned"`
+	CreatedAt            time.Time                     `json:"createdAt"`
+	UpdatedAt            time.Time                     `json:"updatedAt"`
+	Messages             []Message                     `json:"messages,omitempty"`
+	Retest               *VulnerabilityRetest          `json:"retest,omitempty"`
 }
 
 // Message 消息
@@ -55,40 +56,67 @@ func (db *DB) CreateConversationWithWebshell(webshellConnectionID, title string,
 	now := time.Now()
 
 	projectID := strings.TrimSpace(meta.ProjectID)
+	var spec *TestingSpecification
 	if projectID != "" {
-		if _, err := db.GetProject(projectID); err != nil {
+		p, err := db.GetProject(projectID)
+		if err != nil {
 			return nil, err
 		}
+		spec = p.TestingSpecification
 	}
+	source := "project"
+	if meta.TestingSpecificationSnapshot != nil {
+		spec = &meta.TestingSpecificationSnapshot.TestingSpecification
+		source = meta.TestingSpecificationSnapshot.Source
+	}
+	if meta.TestingSpecification != nil {
+		spec = meta.TestingSpecification
+		source = "task"
+	}
+	spec, specErr := NormalizeTestingSpecification(spec)
+	if specErr != nil {
+		return nil, specErr
+	}
+	snapshot := specificationSnapshot(spec, source)
 	roleName := normalizeConversationRoleName(meta.RoleName)
 	agentMode := normalizeConversationAgentMode(meta.AgentMode)
 
-	var err error
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	wsID := strings.TrimSpace(webshellConnectionID)
 	switch {
 	case wsID != "" && projectID != "":
-		_, err = db.Exec(
+		_, err = tx.Exec(
 			"INSERT INTO conversations (id, title, created_at, updated_at, webshell_connection_id, project_id, role_name, agent_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 			id, title, now, now, wsID, projectID, roleName, agentMode,
 		)
 	case wsID != "":
-		_, err = db.Exec(
+		_, err = tx.Exec(
 			"INSERT INTO conversations (id, title, created_at, updated_at, webshell_connection_id, role_name, agent_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			id, title, now, now, wsID, roleName, agentMode,
 		)
 	case projectID != "":
-		_, err = db.Exec(
+		_, err = tx.Exec(
 			"INSERT INTO conversations (id, title, created_at, updated_at, project_id, role_name, agent_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			id, title, now, now, projectID, roleName, agentMode,
 		)
 	default:
-		_, err = db.Exec(
+		_, err = tx.Exec(
 			"INSERT INTO conversations (id, title, created_at, updated_at, role_name, agent_mode) VALUES (?, ?, ?, ?, ?, ?)",
 			id, title, now, now, roleName, agentMode,
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("创建对话失败: %w", err)
+	}
+	if _, err = tx.Exec("INSERT INTO conversation_testing_specifications(conversation_id,name,content,source,hash) VALUES (?,?,?,?,?)", id, snapshot.Name, snapshot.Content, snapshot.Source, snapshot.Hash); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	conv := &Conversation{

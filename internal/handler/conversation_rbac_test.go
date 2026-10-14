@@ -110,7 +110,7 @@ func performConversationRequest(user *database.RBACUser, method, path string, bo
 	c.Set(security.ContextSessionKey, security.Session{
 		UserID:      user.ID,
 		Username:    user.Username,
-		Permissions: map[string]bool{"chat:write": true},
+		Permissions: map[string]bool{"chat:write": true, "project:read": true},
 		Scope:       database.RBACScopeAssigned,
 	})
 	handler(c)

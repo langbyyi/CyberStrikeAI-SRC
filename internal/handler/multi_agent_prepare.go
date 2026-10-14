@@ -34,6 +34,9 @@ func chatRequestAgentMode(req *ChatRequest, source string) string {
 }
 
 func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context, source string) (*multiAgentPrepared, error) {
+	if _, err := database.NormalizeTestingSpecification(req.TestingSpecification); err != nil {
+		return nil, err
+	}
 	if len(req.Attachments) > maxAttachments {
 		return nil, fmt.Errorf("附件最多 %d 个", maxAttachments)
 	}
@@ -51,7 +54,7 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		}
 		return h.db.UserCanAccessResource(session.UserID, session.Scope, resourceType, resourceID)
 	}
-	if projectID != "" && (!session.Permissions["project:read"] || !canAccess("project", projectID)) {
+	if projectID != "" && (!session.Permissions["project:read"] || h.db == nil || !h.db.UserCanAccessResource(session.UserID, session.ScopeFor("project:read"), "project", projectID)) {
 		return nil, fmt.Errorf("无权访问目标项目")
 	}
 	if webshellID != "" && (!session.Permissions["webshell:write"] || !canAccess("webshell", webshellID)) {
@@ -64,6 +67,7 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		var err error
 		meta := audit.ConversationCreateMetaFromGin(c, source)
 		meta.ProjectID = projectID
+		meta.TestingSpecification = req.TestingSpecification
 		meta.RoleName = req.Role
 		meta.AgentMode = chatRequestAgentMode(req, source)
 		if webshellID != "" {
@@ -89,6 +93,14 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		if !canAccess("conversation", conversationID) {
 			return nil, fmt.Errorf("无权访问该对话")
 		}
+		if req.TestingSpecification != nil {
+			if err := h.db.SetConversationTestingSpecification(conversationID, req.TestingSpecification); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err := h.db.ConversationTestingSpecificationBlock(conversationID); err != nil {
+		return nil, fmt.Errorf("读取任务规范失败: %w", err)
 	}
 	if err := h.db.SetConversationRoleName(conversationID, req.Role); err != nil {
 		h.logger.Warn("更新对话角色失败", zap.String("conversationId", conversationID), zap.String("role", req.Role), zap.Error(err))

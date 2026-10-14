@@ -313,7 +313,7 @@ test('审批状态主动轮询并在服务不可用时立即关闭旧审批', ()
     assert.match(monitor, /renderActiveTasks\(\[\]\);[\s\S]{0,260}hitlPendingInterruptTracker\.update\(\[\]\)/);
     assert.match(projects, /function syncProjectConversationApprovalStatuses\(items\)/);
     assert.match(projects, /window\.syncProjectConversationApprovalStatuses/);
-    assert.match(template, /projects\.js\?v=20260819-1/);
+    assert.match(template, /projects\.js\?v=[\w-]+/);
 });
 
 test('人机协同页与审计日志展示 Jev / OpenAI 审批引擎', () => {

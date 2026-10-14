@@ -23,6 +23,7 @@
 
 ### 功能指南
 
+- [项目与任务测试规范](zh-CN/testing-specifications.md)
 - [知识库](zh-CN/knowledge-base.md)
 - [RBAC 权限管理](zh-CN/rbac.md)
 - [机器人接入](zh-CN/robot.md)

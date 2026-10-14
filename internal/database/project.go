@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -29,14 +30,15 @@ func ValidateFactKey(key string) error {
 
 // Project 渗透测试项目（跨对话共享黑板）。
 type Project struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	ScopeJSON   string    `json:"scope_json,omitempty"`
-	Status      string    `json:"status"` // active | archived
-	Pinned      bool      `json:"pinned"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	TestingSpecification *TestingSpecification `json:"testing_specification,omitempty"`
+	ID                   string                `json:"id"`
+	Name                 string                `json:"name"`
+	Description          string                `json:"description,omitempty"`
+	ScopeJSON            string                `json:"scope_json,omitempty"`
+	Status               string                `json:"status"` // active | archived
+	Pinned               bool                  `json:"pinned"`
+	CreatedAt            time.Time             `json:"created_at"`
+	UpdatedAt            time.Time             `json:"updated_at"`
 }
 
 // ProjectFact 项目事实（黑板条目）。
@@ -67,6 +69,10 @@ type ProjectFactListFilter struct {
 
 // CreateProject 创建项目。
 func (db *DB) CreateProject(p *Project) (*Project, error) {
+	specJSON, err := testingSpecificationJSON(p.TestingSpecification)
+	if err != nil {
+		return nil, err
+	}
 	if p.ID == "" {
 		p.ID = uuid.New().String()
 	}
@@ -79,10 +85,10 @@ func (db *DB) CreateProject(p *Project) (*Project, error) {
 	}
 	p.UpdatedAt = now
 
-	_, err := db.Exec(
-		`INSERT INTO projects (id, name, description, scope_json, status, pinned, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Description, p.ScopeJSON, p.Status, boolToInt(p.Pinned), p.CreatedAt, p.UpdatedAt,
+	_, err = db.Exec(
+		`INSERT INTO projects (id, name, description, scope_json, status, pinned, created_at, updated_at, testing_specification_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Description, p.ScopeJSON, p.Status, boolToInt(p.Pinned), p.CreatedAt, p.UpdatedAt, specJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("创建项目失败: %w", err)
@@ -95,10 +101,11 @@ func (db *DB) GetProject(id string) (*Project, error) {
 	var p Project
 	var pinned int
 	var createdAt, updatedAt string
+	var specJSON string
 	err := db.QueryRow(
-		`SELECT id, name, COALESCE(description,''), COALESCE(scope_json,''), status, pinned, created_at, updated_at
+		`SELECT id, name, COALESCE(description,''), COALESCE(scope_json,''), status, pinned, created_at, updated_at, testing_specification_json
 		 FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Description, &p.ScopeJSON, &p.Status, &pinned, &createdAt, &updatedAt)
+	).Scan(&p.ID, &p.Name, &p.Description, &p.ScopeJSON, &p.Status, &pinned, &createdAt, &updatedAt, &specJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("项目不存在")
@@ -106,6 +113,11 @@ func (db *DB) GetProject(id string) (*Project, error) {
 		return nil, fmt.Errorf("获取项目失败: %w", err)
 	}
 	p.Pinned = pinned != 0
+	if specJSON != "" {
+		if err := json.Unmarshal([]byte(specJSON), &p.TestingSpecification); err != nil {
+			return nil, fmt.Errorf("测试规范数据损坏: %w", err)
+		}
+	}
 	p.CreatedAt = parseDBTime(createdAt)
 	p.UpdatedAt = parseDBTime(updatedAt)
 	return &p, nil
@@ -265,10 +277,14 @@ func (db *DB) ListProjectsForAccess(status, search string, limit, offset int, us
 
 // UpdateProject 更新项目。
 func (db *DB) UpdateProject(p *Project) error {
+	specJSON, err := testingSpecificationJSON(p.TestingSpecification)
+	if err != nil {
+		return err
+	}
 	p.UpdatedAt = time.Now()
-	_, err := db.Exec(
-		`UPDATE projects SET name = ?, description = ?, scope_json = ?, status = ?, pinned = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Description, p.ScopeJSON, p.Status, boolToInt(p.Pinned), p.UpdatedAt, p.ID,
+	_, err = db.Exec(
+		`UPDATE projects SET name = ?, description = ?, scope_json = ?, status = ?, pinned = ?, updated_at = ?, testing_specification_json = ? WHERE id = ?`,
+		p.Name, p.Description, p.ScopeJSON, p.Status, boolToInt(p.Pinned), p.UpdatedAt, specJSON, p.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("更新项目失败: %w", err)
@@ -317,10 +333,13 @@ func (db *DB) GetConversationProjectID(conversationID string) (string, error) {
 // SetConversationProjectID 设置对话所属项目（空字符串表示解除绑定）。
 func (db *DB) SetConversationProjectID(conversationID, projectID string) error {
 	projectID = strings.TrimSpace(projectID)
+	var spec *TestingSpecification
 	if projectID != "" {
-		if _, err := db.GetProject(projectID); err != nil {
+		p, err := db.GetProject(projectID)
+		if err != nil {
 			return err
 		}
+		spec = p.TestingSpecification
 	}
 	var val interface{}
 	if projectID == "" {
@@ -328,11 +347,21 @@ func (db *DB) SetConversationProjectID(conversationID, projectID string) error {
 	} else {
 		val = projectID
 	}
-	_, err := db.Exec(`UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?`, val, time.Now(), conversationID)
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?`, val, time.Now(), conversationID)
 	if err != nil {
 		return fmt.Errorf("设置对话项目失败: %w", err)
 	}
-	return nil
+	snapshot := specificationSnapshot(spec, "project")
+	_, err = tx.Exec(`UPDATE conversation_testing_specifications SET name=?,content=?,source=?,hash=? WHERE conversation_id=? AND source<>'task' AND frozen=0 AND NOT EXISTS (SELECT 1 FROM messages WHERE conversation_id=?)`, snapshot.Name, snapshot.Content, snapshot.Source, snapshot.Hash, conversationID, conversationID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ListProjectFactsForIndex 列出用于黑板索引注入的事实（不含 deprecated，除非 includeDeprecated）。

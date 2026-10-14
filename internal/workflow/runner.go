@@ -29,6 +29,15 @@ func RunRoleBoundWorkflow(ctx context.Context, args RunArgs) (*RunResult, error)
 	if args.DB == nil {
 		return nil, fmt.Errorf("workflow db is nil")
 	}
+	if strings.TrimSpace(args.ConversationID) != "" {
+		block, specErr := args.DB.ConversationTestingSpecificationBlock(args.ConversationID)
+		if specErr != nil {
+			return nil, fmt.Errorf("读取任务测试规范失败: %w", specErr)
+		}
+		if block != "" && !strings.Contains(args.SystemPromptExtra, block) {
+			args.SystemPromptExtra += "\n\n" + block
+		}
+	}
 	workflowID := strings.TrimSpace(args.Role.WorkflowID)
 	if workflowID == "" {
 		return nil, fmt.Errorf("角色未绑定工作流")

@@ -2,13 +2,15 @@ package database
 
 // ConversationCreateMeta describes how a conversation was created (for audit hooks).
 type ConversationCreateMeta struct {
-	Source               string
-	WebShellConnectionID string
-	ProjectID            string
-	RoleName             string
-	AgentMode            string
-	ClientIP             string
-	SessionHint          string
+	TestingSpecification         *TestingSpecification
+	TestingSpecificationSnapshot *TestingSpecificationSnapshot
+	Source                       string
+	WebShellConnectionID         string
+	ProjectID                    string
+	RoleName                     string
+	AgentMode                    string
+	ClientIP                     string
+	SessionHint                  string
 }
 
 // ConversationCreateHook is invoked after a conversation row is inserted.

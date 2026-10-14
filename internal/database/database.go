@@ -1011,6 +1011,9 @@ func (db *DB) initTables() error {
 	if err := db.migrateRBACOwnershipColumns(); err != nil {
 		db.logger.Warn("迁移RBAC资源归属字段失败", zap.Error(err))
 	}
+	if err := db.initTestingSpecifications(); err != nil {
+		return fmt.Errorf("初始化测试规范失败: %w", err)
+	}
 
 	if _, err := db.Exec(createIndexes); err != nil {
 		return fmt.Errorf("创建索引失败: %w", err)

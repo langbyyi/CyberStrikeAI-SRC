@@ -37,19 +37,21 @@ func NewProjectHandler(db *database.DB, logger *zap.Logger) *ProjectHandler {
 }
 
 type createProjectRequest struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
-	ScopeJSON   string `json:"scope_json"`
-	Status      string `json:"status"`
+	TestingSpecification *database.TestingSpecification `json:"testing_specification"`
+	Name                 string                         `json:"name" binding:"required"`
+	Description          string                         `json:"description"`
+	ScopeJSON            string                         `json:"scope_json"`
+	Status               string                         `json:"status"`
 }
 
 // updateProjectRequest 部分更新：字段省略表示不修改；传 null 或 "" 可清空字符串字段。
 type updateProjectRequest struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
-	ScopeJSON   *string `json:"scope_json"`
-	Status      *string `json:"status"`
-	Pinned      *bool   `json:"pinned"`
+	TestingSpecification *database.TestingSpecification `json:"testing_specification"`
+	Name                 *string                        `json:"name"`
+	Description          *string                        `json:"description"`
+	ScopeJSON            *string                        `json:"scope_json"`
+	Status               *string                        `json:"status"`
+	Pinned               *bool                          `json:"pinned"`
 }
 
 // CreateProject POST /api/projects
@@ -59,11 +61,16 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if _, err := database.NormalizeTestingSpecification(req.TestingSpecification); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	p := &database.Project{
-		Name:        strings.TrimSpace(req.Name),
-		Description: clampProjectDescription(req.Description),
-		ScopeJSON:   req.ScopeJSON,
-		Status:      strings.TrimSpace(req.Status),
+		TestingSpecification: req.TestingSpecification,
+		Name:                 strings.TrimSpace(req.Name),
+		Description:          clampProjectDescription(req.Description),
+		ScopeJSON:            req.ScopeJSON,
+		Status:               strings.TrimSpace(req.Status),
 	}
 	created, err := h.db.CreateProject(p)
 	if err != nil {
@@ -207,6 +214,14 @@ func (h *ProjectHandler) UpdateProject(c *gin.Context) {
 	}
 	if req.Description != nil {
 		p.Description = clampProjectDescription(*req.Description)
+	}
+	if req.TestingSpecification != nil {
+		normalized, err := database.NormalizeTestingSpecification(req.TestingSpecification)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		p.TestingSpecification = normalized
 	}
 	if req.ScopeJSON != nil {
 		p.ScopeJSON = *req.ScopeJSON

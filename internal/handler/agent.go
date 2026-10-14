@@ -334,15 +334,16 @@ type ChatFinalizationRequest struct {
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	Message              string                  `json:"message" binding:"required"`
-	ConversationID       string                  `json:"conversationId,omitempty"`
-	ProjectID            string                  `json:"projectId,omitempty"` // 新对话绑定的项目（可选；未指定时可用 config.project.default_project_id）
-	Role                 string                  `json:"role,omitempty"`      // 角色名称
-	Attachments          []ChatAttachment        `json:"attachments,omitempty"`
-	WebShellConnectionID string                  `json:"webshellConnectionId,omitempty"` // WebShell 管理 - AI 助手：当前选中的连接 ID，仅使用 webshell_* 工具
-	AIChannelID          string                  `json:"aiChannelId,omitempty"`          // 会话级 AI 通道；空则使用 ai.default_channel
-	Reasoning            *ChatReasoningRequest   `json:"reasoning,omitempty"`
-	Finalization         ChatFinalizationRequest `json:"finalization,omitempty"`
+	TestingSpecification *database.TestingSpecification `json:"testingSpecification,omitempty"`
+	Message              string                         `json:"message" binding:"required"`
+	ConversationID       string                         `json:"conversationId,omitempty"`
+	ProjectID            string                         `json:"projectId,omitempty"` // 新对话绑定的项目（可选；未指定时可用 config.project.default_project_id）
+	Role                 string                         `json:"role,omitempty"`      // 角色名称
+	Attachments          []ChatAttachment               `json:"attachments,omitempty"`
+	WebShellConnectionID string                         `json:"webshellConnectionId,omitempty"` // WebShell 管理 - AI 助手：当前选中的连接 ID，仅使用 webshell_* 工具
+	AIChannelID          string                         `json:"aiChannelId,omitempty"`          // 会话级 AI 通道；空则使用 ai.default_channel
+	Reasoning            *ChatReasoningRequest          `json:"reasoning,omitempty"`
+	Finalization         ChatFinalizationRequest        `json:"finalization,omitempty"`
 	// Orchestration 仅对 /api/multi-agent、/api/multi-agent/stream：deep | plan_execute | supervisor；空则等同 deep。机器人/批量等无请求体时由服务端默认 deep。/api/eino-agent* 不使用此字段。
 	Orchestration string `json:"orchestration,omitempty"`
 }
@@ -1794,16 +1795,18 @@ func filterSlice[T any](items []T, keep func(T) bool) []T {
 
 // BatchTaskRequest 批量任务请求
 type BatchTaskRequest struct {
-	HITLPolicy   string   `json:"hitlPolicy"`
-	Title        string   `json:"title"`                    // 任务标题（可选）
-	Tasks        []string `json:"tasks" binding:"required"` // 任务列表，每行一个任务
-	Role         string   `json:"role,omitempty"`           // 角色名称（可选，空字符串表示默认角色）
-	AgentMode    string   `json:"agentMode,omitempty"`      // eino_single | deep | plan_execute | supervisor
-	ScheduleMode string   `json:"scheduleMode,omitempty"`   // manual | cron
-	CronExpr     string   `json:"cronExpr,omitempty"`       // scheduleMode=cron 时必填
-	ExecuteNow   bool     `json:"executeNow,omitempty"`     // 创建后是否立即执行（默认 false）
-	ProjectID    string   `json:"projectId,omitempty"`      // 队列内子对话绑定的项目（可选）
-	Concurrency  int      `json:"concurrency,omitempty"`    // 同时执行的子任务数，默认 1，最大 8
+	TestingSpecification      *database.TestingSpecification         `json:"testingSpecification,omitempty"`
+	TaskTestingSpecifications map[int]*database.TestingSpecification `json:"taskTestingSpecifications,omitempty"`
+	HITLPolicy                string                                 `json:"hitlPolicy"`
+	Title                     string                                 `json:"title"`                    // 任务标题（可选）
+	Tasks                     []string                               `json:"tasks" binding:"required"` // 任务列表，每行一个任务
+	Role                      string                                 `json:"role,omitempty"`           // 角色名称（可选，空字符串表示默认角色）
+	AgentMode                 string                                 `json:"agentMode,omitempty"`      // eino_single | deep | plan_execute | supervisor
+	ScheduleMode              string                                 `json:"scheduleMode,omitempty"`   // manual | cron
+	CronExpr                  string                                 `json:"cronExpr,omitempty"`       // scheduleMode=cron 时必填
+	ExecuteNow                bool                                   `json:"executeNow,omitempty"`     // 创建后是否立即执行（默认 false）
+	ProjectID                 string                                 `json:"projectId,omitempty"`      // 队列内子对话绑定的项目（可选）
+	Concurrency               int                                    `json:"concurrency,omitempty"`    // 同时执行的子任务数，默认 1，最大 8
 }
 
 // batchQueueWantsEino 队列是否配置为走 Eino 多代理。
@@ -1826,6 +1829,7 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	req.ProjectID = effectiveProjectID(h.config, req.ProjectID)
 
 	if len(req.Tasks) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "任务列表不能为空"})
@@ -1834,9 +1838,19 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 
 	// 过滤空任务
 	validTasks := make([]string, 0, len(req.Tasks))
-	for _, task := range req.Tasks {
+	validSpecs := make(map[int]*database.TestingSpecification)
+	for index, task := range req.Tasks {
 		if task != "" {
+			if spec := req.TaskTestingSpecifications[index]; spec != nil {
+				validSpecs[len(validTasks)] = spec
+			}
 			validTasks = append(validTasks, task)
+		}
+	}
+	for index := range req.TaskTestingSpecifications {
+		if index < 0 || index >= len(req.Tasks) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "任务规范索引无效"})
+			return
 		}
 	}
 
@@ -1844,8 +1858,8 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "没有有效的任务"})
 		return
 	}
-	if session, ok := security.CurrentSession(c); ok && h.db != nil && session.Scope != database.RBACScopeAll && strings.TrimSpace(req.ProjectID) != "" {
-		if !h.db.UserCanAccessResource(session.UserID, session.Scope, "project", strings.TrimSpace(req.ProjectID)) {
+	if session, ok := security.CurrentSession(c); ok && h.db != nil && strings.TrimSpace(req.ProjectID) != "" {
+		if !session.Permissions["project:read"] || !h.db.UserCanAccessResource(session.UserID, session.ScopeFor("project:read"), "project", strings.TrimSpace(req.ProjectID)) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "无权在该项目下创建批量任务"})
 			return
 		}
@@ -1869,7 +1883,7 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 		nextRunAt = &next
 	}
 
-	queue, createErr := h.batchTaskManager.CreateBatchQueue(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks, req.HITLPolicy)
+	queue, createErr := h.batchTaskManager.createBatchQueueWithSpecifications(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks, req.TestingSpecification, validSpecs, req.HITLPolicy)
 	if createErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": createErr.Error()})
 		return

@@ -40,6 +40,7 @@
         })();
     </script>
     <link rel="stylesheet" href="/static/css/style.css?v=20261013-hints-1">
+    <link rel="stylesheet" href="/static/css/testing-specification.css?v=20261015-4">
     <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
@@ -2573,7 +2574,8 @@
                                                 <p class="projects-settings-intro-hint" data-i18n="projects.settingsIntroHint">配置项目元数据与 Agent 授权边界，保存后即时生效于绑定对话。</p>
                                             </div>
                                         </header>
-                                        <div class="projects-settings-grid">
+                                        <div class="projects-settings-grid projects-settings-grid--specification">
+                                            <div class="projects-settings-primary">
                                             <section class="projects-settings-card projects-settings-card--basic">
                                                 <div class="projects-settings-card-head">
                                                     <div class="projects-settings-card-head-left">
@@ -2633,10 +2635,14 @@
                                                 <div class="projects-settings-card-body projects-settings-card-body--fill">
                                                     <div class="projects-scope-editor">
                                                         <label for="project-edit-scope" class="sr-only" data-i18n="projects.scopeJsonLabel">范围 JSON</label>
-                                                        <textarea id="project-edit-scope" class="form-input form-input--mono projects-scope-textarea" spellcheck="false" placeholder='{"targets":["https://example.com"],"exclude":["*.cdn.example.com"]}'></textarea>
+                                                        <textarea id="project-edit-scope" rows="4" class="form-input form-input--mono projects-scope-textarea" spellcheck="false" placeholder='{"targets":["https://example.com"],"exclude":["*.cdn.example.com"]}'></textarea>
                                                     </div>
                                                     <p class="projects-scope-footnote" data-i18n="projects.scopeFootnote">支持 targets、exclude、notes 等字段，留空表示不限制范围。</p>
                                                 </div>
+                                            </section>
+                                            </div>
+                                            <section class="projects-settings-card projects-settings-card--specification" aria-label="测试规范" data-i18n="testingSpec.title" data-i18n-attr="aria-label" data-i18n-skip-text="true">
+                                                <div id="project-settings-specification-target" class="projects-settings-card-body"></div>
                                             </section>
                                         </div>
                                         <section class="projects-settings-card projects-settings-card--danger">
@@ -6958,6 +6964,7 @@
     <script src="/static/js/builtin-tools.js"></script>
     <script src="/static/js/auth.js?v=20261008-password-eye-1"></script>
     <script src="/static/js/modal.js"></script>
+    <script src="/static/js/testing-specification.js?v=20261015-5"></script>
     <script src="/static/js/notifications.js"></script>
     <script src="/static/js/info-collect.js?v=20261012-perf-1"></script>
     <script src="/static/js/assets.js?v=20261012-perf-1"></script>
@@ -6965,7 +6972,7 @@
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
     <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
-    <script src="/static/js/chat.js?v=20261012-perf-2"></script>
+    <script src="/static/js/chat.js?v=20261014-spec-1"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>
@@ -6982,11 +6989,11 @@
     <script src="/static/js/knowledge.js"></script>
     <script src="/static/js/skills.js"></script>
     <script src="/static/js/fact-graph.js?v=20261012-perf-1"></script>
-    <script src="/static/js/projects.js?v=20260819-1"></script>
+    <script src="/static/js/projects.js?v=20261014-spec-1"></script>
     <script src="/static/js/vulnerability.js?v=20261010-retest-2"></script>
     <script src="/static/js/webshell.js?v=20260907-blocked-1"></script>
     <script src="/static/js/chat-files.js"></script>
-    <script src="/static/js/tasks.js"></script>
+    <script src="/static/js/tasks.js?v=20261015-spec-2"></script>
     <script src="/static/js/workflow-package-client.js"></script>
     <script src="/static/js/workflows.js"></script>
     <script src="/static/js/update.js?v={{.Version}}"></script>

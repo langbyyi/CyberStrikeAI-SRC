@@ -188,6 +188,13 @@ func (m *BatchTaskManager) CreateBatchQueue(
 	tasks []string,
 	hitlPolicies ...string,
 ) (*BatchTaskQueue, error) {
+	return m.createBatchQueueWithSpecifications(title, role, agentMode, scheduleMode, cronExpr, projectID, nextRunAt, concurrency, tasks, nil, nil, hitlPolicies...)
+}
+
+func (m *BatchTaskManager) createBatchQueueWithSpecifications(
+	title, role, agentMode, scheduleMode, cronExpr, projectID string, nextRunAt *time.Time, concurrency int, tasks []string,
+	spec *database.TestingSpecification, overrides map[int]*database.TestingSpecification, hitlPolicies ...string,
+) (*BatchTaskQueue, error) {
 	policy := ""
 	if len(hitlPolicies) > 0 {
 		policy = hitlPolicies[0]
@@ -254,7 +261,7 @@ func (m *BatchTaskManager) CreateBatchQueue(
 
 	// 保存到数据库
 	if m.db != nil {
-		if err := m.db.CreateBatchQueue(
+		if err := m.db.CreateBatchQueueWithTestingSpecifications(
 			queueID,
 			title,
 			role,
@@ -265,6 +272,7 @@ func (m *BatchTaskManager) CreateBatchQueue(
 			queue.ProjectID,
 			queue.Concurrency,
 			dbTasks,
+			spec, overrides,
 			policy,
 		); err != nil {
 			return nil, fmt.Errorf("保存任务队列失败: %w", err)

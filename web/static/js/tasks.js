@@ -896,6 +896,7 @@ async function refreshBatchProjectSelectOptions() {
 
 // 显示新建任务模态框
 async function showBatchImportModal() {
+    window.TestingSpecifications?.resetBatch();
     const modal = document.getElementById('batch-import-modal');
     const input = document.getElementById('batch-tasks-input');
     const titleInput = document.getElementById('batch-queue-title');
@@ -961,6 +962,7 @@ async function showBatchImportModal() {
             }
         }
         await refreshBatchProjectSelectOptions();
+        projectSelect?.dispatchEvent(new Event('change'));
         refreshBatchFormSelects();
 
         openAppModal('batch-import-modal', { focusEl: input });
@@ -1083,6 +1085,7 @@ async function createBatchQueue() {
                 executeNow,
                 projectId,
                 concurrency,
+                ...window.TestingSpecifications?.batchPayload(tasks),
             }),
         });
         
