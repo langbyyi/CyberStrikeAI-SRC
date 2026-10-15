@@ -122,6 +122,41 @@ test('渲染缩略图并通过鉴权接口拉取字节，失败时降级为文�
     assert.equal(empty.children.length, 0);
 });
 
+test('发送当刻用已知 serverPath 立即渲染缩略图（正文还没写入路径）', async () => {
+    const { api, sandbox } = loadChatImages();
+    const makeEl = (tag) => ({
+        tagName: tag,
+        children: [],
+        classList: { _set: new Set(), add(c) { this._set.add(c); }, remove(c) { this._set.delete(c); }, contains(c) { return this._set.has(c); } },
+        appendChild(child) { this.children.push(child); child.parentNode = this; return child; },
+        removeChild(child) { this.children = this.children.filter((c) => c !== child); return child; },
+        addEventListener() {},
+        setAttribute() {},
+        get firstChild() { return this.children[0] || null; }
+    });
+    sandbox.document = { createElement: makeEl, body: makeEl('body'), addEventListener() {}, removeEventListener() {} };
+
+    // 实时发送：正文只有「📎 文件名」，路径来自已上传附件的 serverPath
+    const container = makeEl('div');
+    api.attach(container, '看这张图\n📎 login.png', ['/app/chat_uploads/2026-10-15/conv-1/login.png']);
+    assert.equal(container.children.length, 1, '显式路径应即时渲染缩略图');
+    assert.match(container.children[0].children[0].title, /login\.png$/);
+
+    // 刷新后：正文带路径，且与显式路径重复 → 不能画两张
+    const dedup = makeEl('div');
+    api.attach(
+        dedup,
+        '看这张图\n📎 login.png: /app/chat_uploads/2026-10-15/conv-1/login.png',
+        ['/app/chat_uploads/2026-10-15/conv-1/login.png', '', null]
+    );
+    assert.equal(dedup.children[0].children.length, 1, '同一路径只渲染一次');
+
+    // 非 chat_uploads 路径与非法项直接忽略
+    const ignored = makeEl('div');
+    api.attach(ignored, '无附件', ['/var/tmp/x.png', '', '/tmp/notes.txt']);
+    assert.equal(ignored.children.length, 0);
+});
+
 test('缩略图拉取失败时显示不可用状态而不是空白', async () => {
     const { api, sandbox } = loadChatImages({
         fetchResult: { ok: false, status: 404, blob: () => Promise.resolve({ size: 0 }) }
@@ -151,13 +186,18 @@ test('缩略图拉取失败时显示不可用状态而不是空白', async () =>
 test('对话界面接线：用户消息渲染缩略图、切换会话释放缓存、资源与样式已接入', () => {
     assert.match(
         chat,
-        /role === 'user' && window\.csChatImages[\s\S]{0,120}window\.csChatImages\.attach\(contentWrapper, content\)/,
-        'addMessage 应在用户消息里挂缩略图'
+        /previousConversationId !== conversationId && window\.csChatImages[\s\S]{0,80}window\.csChatImages\.reset\(\)/,
+        '切换会话应释放 blob 缓存'
     );
     assert.match(
         chat,
-        /previousConversationId !== conversationId && window\.csChatImages[\s\S]{0,80}window\.csChatImages\.reset\(\)/,
-        '切换会话应释放 blob 缓存'
+        /liveAttachmentPaths = hasAttachments[\s\S]{0,140}serverPath[\s\S]{0,80}addMessage\('user', displayMessage, null, null, null, \{ scroll: 'none', imagePaths: liveAttachmentPaths \}\)/,
+        '实时发送必须把已上传附件的 serverPath 交给缩略图渲染器'
+    );
+    assert.match(
+        chat,
+        /role === 'user' && window\.csChatImages[\s\S]{0,160}options\.imagePaths[\s\S]{0,80}window\.csChatImages\.attach\(contentWrapper, content, extraImagePaths\)/,
+        'addMessage 应把 options.imagePaths 传入 attach'
     );
     assert.match(html, /<script src="\/static\/js\/chat-images\.js\?v=[A-Za-z0-9._-]+"><\/script>/);
     assert.match(styles, /\.message-attachment-thumb\s*\{[^}]*cursor: zoom-in;/);

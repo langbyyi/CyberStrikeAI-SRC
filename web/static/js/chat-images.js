@@ -42,6 +42,22 @@
         return '';
     }
 
+    /** 从显式路径构造可预览项（发送当刻已知 serverPath 时用，不必等消息落库回显）。 */
+    function imageItemsFromPaths(paths) {
+        var out = [];
+        var seen = {};
+        (paths || []).forEach(function (rawPath) {
+            var path = String(rawPath == null ? '' : rawPath).trim();
+            if (!IMAGE_EXT_RE.test(path)) return;
+            var rel = chatUploadsRelativePath(path);
+            if (!rel || seen[rel]) return;
+            seen[rel] = true;
+            var name = rel.split('/').pop() || rel;
+            out.push({ name: name, path: path, relativePath: rel });
+        });
+        return out;
+    }
+
     /** 从消息正文解析出可预览的图片附件（去重，非 chat_uploads 的路径不预览）。 */
     function parseImageAttachments(content) {
         var text = String(content == null ? '' : content);
@@ -129,10 +145,20 @@
         return overlay;
     }
 
-    /** 在用户消息容器里追加图片缩略图条；无图片附件时不做任何事。 */
-    function attach(container, content) {
+    /**
+     * 在用户消息容器里追加图片缩略图条；无图片附件时不做任何事。
+     * extraPaths：发送当刻已上传附件的服务端路径（正文里还没写入路径时用它立即渲染）。
+     */
+    function attach(container, content, extraPaths) {
         if (!container || typeof document === 'undefined') return;
-        var items = parseImageAttachments(content);
+        var items = imageItemsFromPaths(extraPaths);
+        var seen = {};
+        items.forEach(function (item) { seen[item.relativePath] = true; });
+        parseImageAttachments(content).forEach(function (item) {
+            if (seen[item.relativePath]) return;
+            seen[item.relativePath] = true;
+            items.push(item);
+        });
         if (!items.length) return;
         var strip = document.createElement('div');
         strip.className = 'message-attachment-thumbs';
@@ -178,6 +204,7 @@
         reset: reset,
         // 以下为内部实现，供前端测试直接调用
         parseImageAttachments: parseImageAttachments,
+        imageItemsFromPaths: imageItemsFromPaths,
         chatUploadsRelativePath: chatUploadsRelativePath,
         openLightbox: openLightbox
     };

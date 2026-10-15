@@ -46828,7 +46828,9 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
 .message-attachment-thumb img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    /* contain 而非 cover：对话里的图多为截图，等比完整显示比铺满更重要 */
+    object-fit: contain;
+    background: rgba(0, 0, 0, 0.03);
     display: block;
 }
 
@@ -46848,6 +46850,18 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     line-height: 1.3;
     color: var(--text-muted, #718096);
     text-align: center;
+}
+
+/* 窄屏：缩小缩略图，一行能放下 2~3 张 */
+@media (max-width: 480px) {
+    .message-attachment-thumb {
+        width: 104px;
+        height: 78px;
+    }
+
+    .message-attachment-thumbs {
+        gap: 6px;
+    }
 }
 
 .cs-image-lightbox {

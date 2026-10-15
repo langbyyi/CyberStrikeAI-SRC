@@ -1517,7 +1517,11 @@ async function sendMessage(options = {}) {
     if (window.CyberStrikeChatScroll) {
         window.CyberStrikeChatScroll.onUserSendMessage();
     }
-    addMessage('user', displayMessage, null, null, null, { scroll: 'none' });
+    // 附件若已预先上传，serverPath 此刻已知：立即渲染缩略图，不必等消息落库回显路径
+    const liveAttachmentPaths = hasAttachments
+        ? chatAttachments.map(a => (a && a.serverPath) ? a.serverPath : '').filter(Boolean)
+        : [];
+    addMessage('user', displayMessage, null, null, null, { scroll: 'none', imagePaths: liveAttachmentPaths });
     if (currentConversationId) {
         invalidateConversationLiteCache(currentConversationId);
     }
@@ -2817,7 +2821,8 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
 
     // 用户消息里的图片附件渲染缩略图（点击放大）；只做展示，不发模型请求
     if (role === 'user' && window.csChatImages) {
-        window.csChatImages.attach(contentWrapper, content);
+        const extraImagePaths = options && Array.isArray(options.imagePaths) ? options.imagePaths : null;
+        window.csChatImages.attach(contentWrapper, content, extraImagePaths);
     }
 
     // 保存原始内容到消息元素，用于复制功能
