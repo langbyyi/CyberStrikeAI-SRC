@@ -82,6 +82,7 @@ tools:
 - wafw00f
 - dnslog
 - nmap
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

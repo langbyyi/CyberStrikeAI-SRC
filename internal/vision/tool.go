@@ -44,9 +44,9 @@ func RegisterAnalyzeImageTool(mcpServer *mcp.Server, cfg *config.Config, logger 
 
 	tool := mcp.Tool{
 		Name: builtin.ToolAnalyzeImage,
-		Description: "分析服务器上的本地图片并返回文字描述（验证码、UI 元素、报错、架构图要点等）。" +
-			"输入为文件路径（如用户上传的 chat_uploads 路径或工具截图路径）。" +
-			"输出仅为文本，不含图片数据。不要对二进制图片使用 read_file 指望理解内容。",
+		Description: "用独立视觉模型分析服务器上的本地图片并返回文字描述（验证码、UI 元素、报错、架构图要点等）。" +
+			"输入为文件路径（如用户上传的 chat_uploads 路径或工具截图路径），输出仅为文本。" +
+			"仅当主模型不能直接读图（纯文本模型）时使用；主模型支持图片输入时请直接用 read_file 读取图片，不要用本工具绕一圈。",
 		ShortDescription: "分析本地图片并返回文字描述（验证码/UI/报错等）",
 		InputSchema: map[string]interface{}{
 			"type": "object",

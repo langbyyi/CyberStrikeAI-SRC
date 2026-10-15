@@ -33,6 +33,7 @@ tools:
 - john
 - nmap
 - fofa_search
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

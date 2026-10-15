@@ -732,10 +732,12 @@ func einoSummarizationTokenCounter(openAIModel string) summarization.TokenCounte
 			}
 		}
 		text := sb.String()
+		// 图片不在文本里，必须单独计入，否则带图的输入对上下文预算不可见
+		surcharge := imagePartsTokenSurcharge(input.Messages)
 		n, err := tc.Count(openAIModel, text)
 		if err != nil {
-			return (len(text) + 3) / 4, nil
+			return (len(text)+3)/4 + surcharge, nil
 		}
-		return n, nil
+		return n + surcharge, nil
 	}
 }

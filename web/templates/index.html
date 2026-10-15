@@ -39,7 +39,7 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20261013-hints-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261015-img-1">
     <link rel="stylesheet" href="/static/css/testing-specification.css?v=20261015-4">
     <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
@@ -3717,6 +3717,14 @@
                                                                 <small id="fetch-openai-models-hint" class="form-hint" style="display: none;"></small>
                                                                 <span id="fetch-openai-models-result" class="form-inline-result"></span>
                                                             </div>
+                                                            <div class="form-group span-2">
+                                                                <label class="checkbox-label">
+                                                                    <input type="checkbox" id="openai-supports-vision" class="modern-checkbox" />
+                                                                    <span class="checkbox-custom"></span>
+                                                                    <span class="checkbox-text" data-i18n="settingsBasic.supportsVision">主模型支持图片输入（多模态）</span>
+                                                                </label>
+                                                                <small class="form-hint" data-i18n="settingsBasic.supportsVisionHint">开启后，对话中上传的图片会作为图片输入直发本通道主模型；未开启时图片只落盘为路径，由 analyze_image 工具旁路识图。保存并应用后生效。</small>
+                                                            </div>
                                                         </div>
                                                     </section>
 
@@ -6972,7 +6980,8 @@
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
     <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
-    <script src="/static/js/chat.js?v=20261014-spec-1"></script>
+    <script src="/static/js/chat.js?v=20261015-img-1"></script>
+    <script src="/static/js/chat-images.js?v=20261015-img-1"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>

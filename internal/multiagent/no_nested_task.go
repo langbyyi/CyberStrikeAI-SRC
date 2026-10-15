@@ -34,6 +34,9 @@ func newNoNestedAgenticTaskMiddleware() adk.TypedChatModelAgentMiddleware[*schem
 	}
 }
 
+// 契约：本中间件只作用于经典 InvokableTool（task 工具属此列）。
+// 若 task 将来改为 EnhancedInvokableTool（多模态工具），必须同时实现
+// WrapEnhancedInvokableToolCall，否则该守卫会被静默绕过。
 func (m *noNestedTaskMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,

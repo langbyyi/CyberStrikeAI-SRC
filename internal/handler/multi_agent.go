@@ -251,7 +251,7 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		taskCtxLoop = h.withApprovalToolInterceptor(taskCtxLoop, conversationID, assistantMessageID)
 
 		result, runErr = multiagent.RunDeepAgent(
-			taskCtxLoop,
+			h.withTurnImages(taskCtxLoop, runCfg, prep),
 			runCfg,
 			&runCfg.MultiAgent,
 			h.agent,
@@ -500,7 +500,7 @@ func (h *AgentHandler) MultiAgentLoop(c *gin.Context) {
 	var autoCancelledPendingExecutionIDs []string
 	for {
 		result, runErr = multiagent.RunDeepAgent(
-			taskCtx,
+			h.withTurnImages(taskCtx, runCfg, prep),
 			runCfg,
 			&runCfg.MultiAgent,
 			h.agent,

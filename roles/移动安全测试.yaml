@@ -25,6 +25,7 @@ tools:
 - install-python-package
 - http-framework-test
 - dnslog
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

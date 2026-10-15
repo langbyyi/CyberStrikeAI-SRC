@@ -2615,6 +2615,7 @@ function ensureAIConfigShape(cfg) {
             model: oa.model || '',
             max_total_tokens: oa.max_total_tokens || 120000,
             max_completion_tokens: oa.max_completion_tokens || 0,
+            supports_vision: oa.supports_vision === true,
             reasoning: oa.reasoning || {}
         };
     }
@@ -2633,6 +2634,7 @@ function readAIChannelFromMainForm(id) {
         model: document.getElementById('openai-model')?.value.trim() || '',
         max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value, 10) || 120000,
         max_completion_tokens: maxCompletionTokens,
+        supports_vision: document.getElementById('openai-supports-vision')?.checked === true,
         reasoning: {
             ...(prev.reasoning || {}),
             mode: document.getElementById('openai-reasoning-mode')?.value || 'auto',
@@ -2665,6 +2667,8 @@ function writeAIChannelToMainForm(id) {
     if (maxTokensEl) maxTokensEl.value = ch.max_total_tokens || 120000;
     const maxCompletionTokensEl = document.getElementById('openai-max-completion-tokens');
     if (maxCompletionTokensEl) maxCompletionTokensEl.value = ch.max_completion_tokens || 32768;
+    const supportsVisionEl = document.getElementById('openai-supports-vision');
+    if (supportsVisionEl) supportsVisionEl.checked = ch.supports_vision === true;
     const r = ch.reasoning || {};
     const modeEl = document.getElementById('openai-reasoning-mode');
     if (modeEl) {

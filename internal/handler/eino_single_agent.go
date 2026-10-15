@@ -238,7 +238,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 		taskCtxLoop = h.withApprovalToolInterceptor(taskCtxLoop, conversationID, assistantMessageID)
 
 		result, runErr = multiagent.RunEinoSingleChatModelAgent(
-			taskCtxLoop,
+			h.withTurnImages(taskCtxLoop, runCfg, prep),
 			runCfg,
 			&runCfg.MultiAgent,
 			h.agent,
@@ -486,7 +486,7 @@ func (h *AgentHandler) EinoSingleAgentLoop(c *gin.Context) {
 	var autoCancelledPendingExecutionIDs []string
 	for {
 		result, runErr = multiagent.RunEinoSingleChatModelAgent(
-			taskCtx,
+			h.withTurnImages(taskCtx, runCfg, prep),
 			runCfg,
 			&runCfg.MultiAgent,
 			h.agent,

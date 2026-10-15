@@ -51,6 +51,7 @@ tools:
 - nbtscan
 - dnslog
 - fofa_search
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

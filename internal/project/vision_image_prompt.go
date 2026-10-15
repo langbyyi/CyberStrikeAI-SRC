@@ -5,6 +5,9 @@ import "strings"
 // VisionImageSectionMarker 图片分析 section 标题（与 AppendVisionImageAnalysisIfReady 注入一致）。
 const VisionImageSectionMarker = "## 图片分析"
 
+// NativeImageInputSectionMarker 主模型原生多模态时的图片输入 section 标题。
+const NativeImageInputSectionMarker = "## 图片输入"
+
 // VisionImageAnalysisSection 单/多代理共用的图片分析提示（analyze_image；上下文仅保留文字摘要）。
 func VisionImageAnalysisSection() string {
 	var b strings.Builder
@@ -17,10 +20,36 @@ func VisionImageAnalysisSection() string {
 	return b.String()
 }
 
-// AppendVisionImageAnalysisIfReady 仅在 vision.enabled 且 model 已配置时追加图片分析提示。
-func AppendVisionImageAnalysisIfReady(base string, visionReady bool) string {
-	if !visionReady {
+// NativeImageInputSection 主模型可直接读图（多模态）时的提示。
+//
+// 读图的统一入口是 read_file：框架的多模态 read_file 会把图片作为图片输入返回给模型，
+// 因此这里不再引导 analyze_image 旁路识图（那是纯文本主模型的兜底，见 VisionImageAnalysisSection）。
+func NativeImageInputSection() string {
+	var b strings.Builder
+	b.WriteString(NativeImageInputSectionMarker)
+	b.WriteString("\n\n")
+	b.WriteString("- 当前主模型支持直接读图：用户上传的图片已作为图片输入随本轮消息给出，直接看图回答，**不要**再说「看不到图片」。\n")
+	b.WriteString("- 磁盘上的图片（工具截图、接口下载的验证码、报告配图）直接用 read_file 读取：图片会作为图片输入返回给你；不要用 execute/curl 去解析二进制图片。\n")
+	b.WriteString("- 图片只进入被读取/上传的那一轮上下文；后续轮次若还需参考，重新 read_file 同一路径即可（路径已写在历史消息里）。\n")
+	b.WriteString("- 委派子代理时，子代理看不到父对话已附带的图片：在 task description 中写明图片路径，子代理自行 read_file。\n")
+	b.WriteString("- 复杂验证码（滑块/点选/强噪点）单次识读可能失败：换图重取或改用专用工具（如 ddddocr），不要对同一张图连续空转。\n")
+	return b.String()
+}
+
+// AppendVisionImageAnalysisIfReady 追加图片相关提示：
+//   - nativeVision：主模型可直接读图（本轮附件已作为图片输入直发）；
+//   - visionReady：analyze_image 工具可用（磁盘图片旁路识图）。
+//
+// 两者都为假时不追加任何内容。
+func AppendVisionImageAnalysisIfReady(base string, visionReady bool, nativeVision bool) string {
+	switch {
+	case nativeVision:
+		// 原生多模态：读图走 read_file，不再引导 analyze_image 旁路
+		return AppendSystemPromptBlock(base, NativeImageInputSection())
+	case visionReady:
+		// 纯文本主模型：磁盘图片只能旁路识图（兼容路径）
+		return AppendSystemPromptBlock(base, VisionImageAnalysisSection())
+	default:
 		return base
 	}
-	return AppendSystemPromptBlock(base, VisionImageAnalysisSection())
 }

@@ -17,6 +17,7 @@
 | 8 | Tavily 联网搜索 | Agent 可用的 web_search 工具 | `internal/app/web_search_tool.go` |
 | 9 | Eino 显式完成协议 | 过程说明不再被误判为最终回复 | `internal/multiagent/eino_completion_contract.go` |
 | 10 | 红队工具箱 | msfconsole / frida / evil-winrm / aircrack-ng 等工具 YAML | `tools/*.yaml` |
+| 11 | 多模态图片输入 | 对标 Codex/Claude Code：上传图片与 `read_file` 图片原生直发；纯文本主模型走旁路 | `internal/vision/native.go` `internal/multiagent/turn_images.go` `internal/multiagent/eino_skills.go` |
 
 ## 核心二开（相对官方）
 
@@ -65,6 +66,21 @@
 ### 9. Eino 显式完成协议
 
 Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=...)` 工具真实执行并返回后才允许最终化；计划和进度正文继续实时显示，但保持 `commentary`，不会触发“最终回复检查通过”。Plan-Execute 使用框架的确定性完成事件。缺少完成信号时从已有模型轨迹最多自动续跑一次（其余 finalization 阻塞原因最多两次，见 `internal/handler/finalization_auto_continue.go` 的 `finalizationMissingSignalAutoContinueMaxAttempts` / `finalizationAutoContinueMaxAttempts`），不重放已完成的工具调用；`use of closed network connection`、`net.ErrClosed` 和 `io.ErrUnexpectedEOF` 纳入当前模型调用的瞬时网络重试。该协议不修改 MCP 工具、RBAC、HITL、Tool Search、迭代预算或执行证据策略，漏洞挖掘与子 Agent 执行能力保持原路径。
+
+### 10. 多模态图片输入（对标 Codex / Claude Code）
+
+官方只有旁路方案：图片一律经独立 VL 模型转文字（`analyze_image`），主模型永远看不到图。本分支补上主流的**图片作为一等内容在 agent 循环内流转**，由通道能力位 `supports_vision` 单向开关：
+
+- **用户上传图片**：按上限裁剪（长边 ≤1568px、JPEG q88、单图 ≤4MB、单轮 ≤10 张且总量 ≤12MB）后作为图片内容块随本轮消息直发主模型；图片只存在于本轮请求，历史仍只存路径，后续轮次不重复计费
+- **`read_file` 读磁盘图片**：打开 eino ADK filesystem 的 `UseMultiModalRead`，`read_file` 变成 EnhancedInvokableTool，图片作为**工具结果图片块**返回给模型（与 Codex/Claude Code 的 read 行为一致）；纯文本通道保持原纯文本 `read_file`
+- **外部 MCP 图片结果**：先落盘 `tmp/mcp-images/`（7 天）并在结果里给路径，模型按需 `read_file` 取图（不再把图片字节 `%v` 字符串化灌进上下文）
+- **安全缝隙修复**：多模态工具走 compose 的独立中间件通道（`ToolMiddleware.EnhancedInvokable`），只实现 `Invokable` 的中间件对其不生效——若不处理，`read_file` 变 enhanced 后会绕过 RBAC / 统一审批 / 输出守卫 / 错误恢复。新增 `withEnhancedToolMiddlewares`（`internal/multiagent/enhanced_tool_middleware.go`）：把结构化结果投影为文本喂给既有中间件，中间件放行且未改写则返回原始结构化结果（图片保留），被改写（拒绝/审批拦截）则只返回文本
+- **存储与预算核查修复（本轮自查发现）**：①`last_react_input` 模型视角轨迹会落库并在续跑时回灌，含 base64 图片会撑大数据库与每轮请求体——`cloneADKMessagesForTrace` 统一剥离二进制为占位；②自建 token counter 只取文本部分，图片对软预算/摘要触发不可见——新增 `imagePartsTokenSurcharge`（每图按保守 1600 token 计入）；③轨迹剥离同时覆盖历史遗留的 `Message.MultiContent` 字段
+- **旁路降级**：`supports_vision` 关闭时维持官方行为（只给路径 + `analyze_image` 识图），提示词也切换为 `## 图片分析`；`analyze_image` 工具与 `vision` 段配置保持不变（兼容既有部署）
+- **清理旧设计**：原生路径下不再注入 `## 图片分析`，也不再出现「不要用 read_file 读二进制图片」这类旧指引；`analyze_image` 的工具描述改为「仅主模型不能读图时使用」
+- **改动点**：`internal/vision/native.go`（上传图编码）、`internal/multiagent/turn_images.go`（ctx 承载 + 带图 user 消息，避免改 12 处 runner 签名）、`internal/multiagent/eino_skills.go`（`UseMultiModalRead` 门控 + `WrapEnhancedInvokableToolCall` 保留参数绑定与文本裁剪语义）、`internal/multiagent/enhanced_tool_middleware.go`（中间件多模态通道映射）、`internal/multiagent/eino_agentic_message.go`（图片块双向映射 + 工具结果图片占位，避免 base64 进文本通道）、`internal/handler/multi_agent_prepare.go`（按通道能力位收集）、`internal/project/vision_image_prompt.go`（两套提示分流）、`web/static/js/chat-images.js`（已发图片缩略图 + 灯箱）
+- **配置/UI**：`ai.channels.<id>.supports_vision` / `openai.supports_vision`（默认 false，行为不变）；系统设置 → AI 通道勾选「主模型支持图片输入（多模态）」
+- 文档：`docs/zh-CN/VISION.md`；测试：`internal/vision/native_test.go`、`internal/multiagent/turn_images_test.go`、`internal/multiagent/eino_multimodal_read_test.go`（断言 read_file 仅在能力位开启时返回图片块）、`internal/mcp/image_content_test.go`、`internal/handler/chat_turn_images_test.go`、`internal/handler/config_vision_flag_test.go`、`internal/project/vision_image_prompt_test.go`、`internal/multiagent/enhanced_tool_middleware_test.go`（断言中间件链同时覆盖两条通道）、`internal/multiagent/multimodal_parts_test.go`（图片计入预算 + 轨迹不含 base64）、`internal/handler/chat_turn_images_test.go`（编码载荷可解码为真图片）、`web/tests/chat-attachment-thumbs.test.cjs`
 
 ## 与官方版本及本仓库历史的关系（对照核实）
 

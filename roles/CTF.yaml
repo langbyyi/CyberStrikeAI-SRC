@@ -85,4 +85,5 @@ tools:
 - volatility3
 - one-gadget
 - web_search
+- analyze_image
 enabled: true

@@ -36,6 +36,7 @@ tools:
 - msfvenom
 - metasploit
 - dnslog
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

@@ -2211,6 +2211,11 @@ func updateOpenAIConfig(doc *yaml.Node, cfg config.OpenAIConfig) {
 	setStringInMap(openaiNode, "api_key", cfg.APIKey)
 	setStringInMap(openaiNode, "base_url", cfg.BaseURL)
 	setStringInMap(openaiNode, "model", cfg.Model)
+	if cfg.SupportsVision {
+		setBoolInMap(openaiNode, "supports_vision", true)
+	} else {
+		removeKeyFromMap(openaiNode, "supports_vision")
+	}
 	if cfg.MaxTotalTokens > 0 {
 		setIntInMap(openaiNode, "max_total_tokens", cfg.MaxTotalTokens)
 	}
@@ -2272,6 +2277,11 @@ func updateAIConfig(doc *yaml.Node, cfg config.AIConfig) {
 		}
 		if ch.MaxCompletionTokens > 0 {
 			setIntInMap(channelNode, "max_completion_tokens", ch.MaxCompletionTokens)
+		}
+		if ch.SupportsVision {
+			setBoolInMap(channelNode, "supports_vision", true)
+		} else {
+			removeKeyFromMap(channelNode, "supports_vision")
 		}
 		rn := ensureMap(channelNode, "reasoning")
 		if strings.TrimSpace(ch.Reasoning.Mode) != "" {

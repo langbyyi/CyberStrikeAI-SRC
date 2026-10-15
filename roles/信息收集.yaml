@@ -31,4 +31,5 @@ tools:
 - search_project_facts
 - gau
 - web_search
+- analyze_image
 enabled: true

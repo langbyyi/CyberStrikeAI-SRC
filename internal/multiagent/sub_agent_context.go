@@ -71,6 +71,9 @@ func newAgenticTaskContextEnrichMiddleware(userMessage string, history []agent.C
 	}
 }
 
+// 契约：本中间件只作用于经典 InvokableTool（task 工具属此列）。
+// 若 task 将来改为 EnhancedInvokableTool（多模态工具），必须同时实现
+// WrapEnhancedInvokableToolCall，否则任务上下文补充会被静默跳过。
 func (m *taskContextEnrichMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,

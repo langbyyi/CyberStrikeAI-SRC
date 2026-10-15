@@ -80,6 +80,7 @@ tools:
 - install-python-package
 - wafw00f
 - dnslog
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

@@ -21,6 +21,7 @@ tools:
 - trivy
 - nmap
 - nuclei
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

@@ -843,6 +843,10 @@ type OpenAIConfig struct {
 	Model               string `yaml:"model" json:"model"`
 	MaxTotalTokens      int    `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
 	MaxCompletionTokens int    `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+	// SupportsVision 声明该通道的主模型可直接接收图片输入（多模态）。
+	// true 时用户上传的图片会作为图片内容块随本轮消息直发主模型；
+	// false（默认）时图片只落盘为路径，由 analyze_image 工具旁路识图。
+	SupportsVision bool `yaml:"supports_vision,omitempty" json:"supports_vision,omitempty"`
 	// Reasoning 控制 Eino ChatModel 的 thinking / reasoning_effort / output_config 等（Eino 单/多代理路径生效）。
 	Reasoning OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 }
@@ -862,6 +866,7 @@ type AIChannelConfig struct {
 	Model               string                `yaml:"model" json:"model"`
 	MaxTotalTokens      int                   `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
 	MaxCompletionTokens int                   `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+	SupportsVision      bool                  `yaml:"supports_vision,omitempty" json:"supports_vision,omitempty"`
 	Reasoning           OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 }
 
@@ -877,6 +882,7 @@ func (c AIChannelConfig) ToOpenAIConfig() OpenAIConfig {
 		Model:               c.Model,
 		MaxTotalTokens:      c.MaxTotalTokens,
 		MaxCompletionTokens: c.MaxCompletionTokens,
+		SupportsVision:      c.SupportsVision,
 		Reasoning:           c.Reasoning,
 	}
 }
@@ -893,6 +899,7 @@ func AIChannelFromOpenAI(id, name string, oa OpenAIConfig) AIChannelConfig {
 		Model:               oa.Model,
 		MaxTotalTokens:      oa.MaxTotalTokens,
 		MaxCompletionTokens: oa.MaxCompletionTokens,
+		SupportsVision:      oa.SupportsVision,
 		Reasoning:           oa.Reasoning,
 	}
 }

@@ -101,14 +101,15 @@ func estimateTokensForMessagesAndTools(
 		}
 	}
 	text := sb.String()
+	surcharge := imagePartsTokenSurcharge(messages)
 	if text == "" {
-		return 0
+		return surcharge
 	}
 	tc := agent.NewTikTokenCounter()
 	if n, err := tc.Count(modelName, text); err == nil {
-		return n
+		return n + surcharge
 	}
-	return (len(text) + 3) / 4
+	return (len(text)+3)/4 + surcharge
 }
 
 func logPlanExecuteModelInputEstimate(
@@ -130,4 +131,3 @@ func logPlanExecuteModelInputEstimate(
 		zap.Int("input_tokens_estimated", tokens),
 	)
 }
-

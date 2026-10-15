@@ -243,7 +243,7 @@ func RunDeepAgent(
 			}
 			if agenticSkillMW != nil {
 				if agenticFSTools && agenticLoc != nil {
-					subFs, fsErr := subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, id, conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+					subFs, fsErr := subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, id, conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil, appCfg.OpenAI.SupportsVision)
 					if fsErr != nil {
 						return nil, fmt.Errorf("子代理 %q filesystem 中间件: %w", id, fsErr)
 					}
@@ -262,7 +262,7 @@ func RunDeepAgent(
 				middlewareConfig:     &ma.EinoMiddleware,
 			})
 
-			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready())
+			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready(), appCfg.OpenAI.SupportsVision)
 			subInstrFinal = project.AppendSystemPromptBlock(subInstrFinal, taskSpecification)
 			subInstrFinal = injectToolNamesOnlyInstruction(ctx, subInstrFinal, subTools, subToolsForCfg, subToolSearchActive)
 			if logger != nil {
@@ -286,12 +286,7 @@ func RunDeepAgent(
 					ToolsNodeConfig: compose.ToolsNodeConfig{
 						Tools:               subToolsForCfg,
 						UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-						ToolCallMiddlewares: []compose.ToolMiddleware{
-							modelOutputExecutionGuardMiddleware(),
-							localToolRBACMiddleware(),
-							hitlToolCallMiddleware(),
-							softRecoveryToolMiddleware(),
-						},
+						ToolCallMiddlewares: einoAgenticToolMiddlewares(),
 					},
 					EmitInternalEvents: true,
 				},
@@ -346,7 +341,7 @@ func RunDeepAgent(
 
 	orchInstruction = project.AppendSystemPromptBlock(orchInstruction, systemPromptExtra)
 	orchInstruction = project.AppendSystemPromptBlock(orchInstruction, einoExplicitCompletionInstruction(orchMode))
-	orchInstruction = project.AppendVisionImageAnalysisIfReady(orchInstruction, appCfg.Vision.Ready())
+	orchInstruction = project.AppendVisionImageAnalysisIfReady(orchInstruction, appCfg.Vision.Ready(), appCfg.OpenAI.SupportsVision)
 	orchInstruction = injectToolNamesOnlyInstruction(ctx, orchInstruction, mainTools, mainToolsForCfg, mainToolSearchActive)
 	if logger != nil {
 		mainNames := collectToolNames(ctx, mainTools)
@@ -468,12 +463,7 @@ func RunDeepAgent(
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-			ToolCallMiddlewares: []compose.ToolMiddleware{
-				modelOutputExecutionGuardMiddleware(),
-				localToolRBACMiddleware(),
-				hitlToolCallMiddleware(),
-				softRecoveryToolMiddleware(),
-			},
+			ToolCallMiddlewares: einoAgenticToolMiddlewares(),
 		},
 		EmitInternalEvents: true,
 	}
@@ -506,7 +496,7 @@ func RunDeepAgent(
 		}
 		var peFsMw adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
 		if agenticSkillMW != nil && agenticFSTools && agenticLoc != nil {
-			peFsMw, err = subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, "executor", conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+			peFsMw, err = subAgentAgenticFilesystemMiddleware(ctx, agenticLoc, toolInvokeNotify, "executor", conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil, appCfg.OpenAI.SupportsVision)
 			if err != nil {
 				return nil, fmt.Errorf("plan_execute agentic filesystem 中间件: %w", err)
 			}
@@ -618,7 +608,7 @@ func RunDeepAgent(
 	}
 
 	baseMsgs := historyToMessages(history, appCfg, &ma.EinoMiddleware)
-	baseMsgs = appendUserMessageIfNeeded(baseMsgs, runtimeUserMessage)
+	baseMsgs = appendUserMessageWithImagesIfNeeded(baseMsgs, runtimeUserMessage, TurnImagesFromContext(ctx))
 
 	streamsMainAssistant := func(agent string) bool {
 		if orchMode == "plan_execute" {

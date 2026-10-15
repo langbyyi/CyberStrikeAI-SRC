@@ -2815,6 +2815,11 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
 
     contentWrapper.appendChild(bubble);
 
+    // 用户消息里的图片附件渲染缩略图（点击放大）；只做展示，不发模型请求
+    if (role === 'user' && window.csChatImages) {
+        window.csChatImages.attach(contentWrapper, content);
+    }
+
     // 保存原始内容到消息元素，用于复制功能
     if (role === 'assistant' || role === 'user') {
         messageDiv.dataset.originalContent = content;
@@ -5573,6 +5578,9 @@ async function loadConversation(conversationId) {
     syncChatConversationHash(conversationId);
     const seq = ++loadConversationRequestSeq;
     const previousConversationId = currentConversationId;
+    if (previousConversationId !== conversationId && window.csChatImages) {
+        window.csChatImages.reset();
+    }
     cancelPendingConversationLoad();
     detachLiveChatStreamForNavigation(conversationId);
     // 用户单击即代表新的可见会话。必须在任何网络等待之前提交该选择，

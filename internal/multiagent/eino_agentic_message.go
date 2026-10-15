@@ -7,10 +7,9 @@ import (
 )
 
 // EinoMessagesToAgentic converts the project's current ADK message history to
-// Eino's native AgenticMessage shape. It intentionally covers the text,
-// reasoning, function tool-call, and function tool-result channels used by the
-// agent runtime today; unsupported multimodal/provider-specific fields stay in
-// schema.Message until a real AgenticModel backend is wired.
+// Eino's native AgenticMessage shape. It covers the text, reasoning, function
+// tool-call, function tool-result, and image-input (multimodal) channels used by
+// the agent runtime today; other provider-specific fields stay in schema.Message.
 func EinoMessagesToAgentic(msgs []*schema.Message) []*schema.AgenticMessage {
 	if len(msgs) == 0 {
 		return nil
@@ -65,8 +64,39 @@ func EinoMessageToAgentic(msg *schema.Message) *schema.AgenticMessage {
 		if msg.Content != "" {
 			out.ContentBlocks = append(out.ContentBlocks, schema.NewContentBlock(&schema.UserInputText{Text: msg.Content}))
 		}
+		appendUserInputMultimodalBlocks(out, msg)
 	}
 	return out
+}
+
+// appendUserInputMultimodalBlocks 把经典 schema.Message 的多模态输入块（图片等）
+// 转成 AgenticMessage 的原生输入块。文本块仅在 Content 为空时补齐，避免重复。
+func appendUserInputMultimodalBlocks(out *schema.AgenticMessage, msg *schema.Message) {
+	if out == nil || msg == nil || len(msg.UserInputMultiContent) == 0 {
+		return
+	}
+	contentEmpty := strings.TrimSpace(msg.Content) == ""
+	for _, part := range msg.UserInputMultiContent {
+		switch {
+		case part.Type == schema.ChatMessagePartTypeImageURL && part.Image != nil:
+			img := &schema.UserInputImage{
+				MIMEType: part.Image.MIMEType,
+				Detail:   part.Image.Detail,
+			}
+			if part.Image.Base64Data != nil {
+				img.Base64Data = *part.Image.Base64Data
+			}
+			if part.Image.URL != nil {
+				img.URL = *part.Image.URL
+			}
+			if img.Base64Data == "" && img.URL == "" {
+				continue
+			}
+			out.ContentBlocks = append(out.ContentBlocks, schema.NewContentBlock(img))
+		case part.Type == schema.ChatMessagePartTypeText && contentEmpty && strings.TrimSpace(part.Text) != "":
+			out.ContentBlocks = append(out.ContentBlocks, schema.NewContentBlock(&schema.UserInputText{Text: part.Text}))
+		}
+	}
 }
 
 // AgenticMessagesToEino converts AgenticMessage values back into the classic
@@ -97,6 +127,7 @@ func AgenticMessageToEino(msg *schema.AgenticMessage) []*schema.Message {
 		base.ResponseMeta = &schema.ResponseMeta{Usage: msg.ResponseMeta.TokenUsage}
 	}
 	var toolResults []*schema.Message
+	var inputParts []schema.MessageInputPart
 	for _, block := range msg.ContentBlocks {
 		if block == nil {
 			continue
@@ -106,6 +137,10 @@ func AgenticMessageToEino(msg *schema.AgenticMessage) []*schema.Message {
 			base.ReasoningContent += block.Reasoning.Text
 		case block.UserInputText != nil:
 			base.Content += block.UserInputText.Text
+		case block.UserInputImage != nil:
+			if part, ok := userInputImageToMessagePart(block.UserInputImage); ok {
+				inputParts = append(inputParts, part)
+			}
 		case block.AssistantGenText != nil:
 			base.Role = schema.Assistant
 			base.Content += block.AssistantGenText.Text
@@ -129,12 +164,38 @@ func AgenticMessageToEino(msg *schema.AgenticMessage) []*schema.Message {
 			toolResults = append(toolResults, functionToolResultToMessage(block.FunctionToolResult))
 		}
 	}
-	if len(toolResults) > 0 && base.Content == "" && base.ReasoningContent == "" && len(base.ToolCalls) == 0 {
+	if len(inputParts) > 0 {
+		base.UserInputMultiContent = inputParts
+	}
+	if len(toolResults) > 0 && base.Content == "" && base.ReasoningContent == "" && len(base.ToolCalls) == 0 && len(inputParts) == 0 {
 		return toolResults
 	}
 	out := []*schema.Message{base}
 	out = append(out, toolResults...)
 	return out
+}
+
+// userInputImageToMessagePart 把 AgenticMessage 的图片输入块转回经典 MessageInputPart。
+func userInputImageToMessagePart(img *schema.UserInputImage) (schema.MessageInputPart, bool) {
+	if img == nil {
+		return schema.MessageInputPart{}, false
+	}
+	common := schema.MessagePartCommon{MIMEType: img.MIMEType}
+	if img.Base64Data != "" {
+		data := img.Base64Data
+		common.Base64Data = &data
+	}
+	if img.URL != "" {
+		u := img.URL
+		common.URL = &u
+	}
+	if common.Base64Data == nil && common.URL == nil {
+		return schema.MessageInputPart{}, false
+	}
+	return schema.MessageInputPart{
+		Type:  schema.ChatMessagePartTypeImageURL,
+		Image: &schema.MessageInputImage{MessagePartCommon: common, Detail: img.Detail},
+	}, true
 }
 
 func messageRoleToAgentic(role schema.RoleType) schema.AgenticRoleType {
@@ -165,10 +226,17 @@ func functionToolResultToMessage(result *schema.FunctionToolResult) *schema.Mess
 	}
 	parts := make([]string, 0, len(result.Content))
 	for _, block := range result.Content {
-		if block == nil || block.Text == nil {
+		if block == nil {
 			continue
 		}
-		parts = append(parts, block.Text.Text)
+		switch {
+		case block.Text != nil:
+			parts = append(parts, block.Text.Text)
+		case block.Image != nil:
+			// 图片已作为图片输入直发模型：文本通道（监控落库 / SSE / 摘要）只留占位，
+			// 避免把 base64 写进数据库与事件流。
+			parts = append(parts, toolResultImagePlaceholder(block.Image))
+		}
 	}
 	return &schema.Message{
 		Role:       schema.Tool,
@@ -176,6 +244,18 @@ func functionToolResultToMessage(result *schema.FunctionToolResult) *schema.Mess
 		ToolCallID: result.CallID,
 		ToolName:   result.Name,
 	}
+}
+
+// toolResultImagePlaceholder 工具结果中图片的文本占位（不含 base64）。
+func toolResultImagePlaceholder(img *schema.UserInputImage) string {
+	if img == nil {
+		return ""
+	}
+	mime := strings.TrimSpace(img.MIMEType)
+	if mime == "" {
+		mime = "image"
+	}
+	return toolResultMediaPlaceholder(mime, &img.Base64Data)
 }
 
 func cloneAnyMap(in map[string]any) map[string]any {

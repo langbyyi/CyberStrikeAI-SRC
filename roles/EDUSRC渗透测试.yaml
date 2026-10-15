@@ -19,6 +19,7 @@ user_prompt: '你是面向 EDUSRC 的专业安全研究员。仅测试用户明�
   '
 icon: 🎯
 tools:
+- analyze_image
 - record_vulnerability
 - list_vulnerabilities
 - get_vulnerability

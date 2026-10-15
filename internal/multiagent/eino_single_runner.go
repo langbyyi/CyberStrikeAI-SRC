@@ -125,7 +125,7 @@ func RunEinoSingleChatModelAgent(
 	}
 	if einoSkillMW != nil {
 		if einoFSTools && einoLoc != nil {
-			fsMw, fsErr := subAgentAgenticFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, einoSingleAgentName, conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil)
+			fsMw, fsErr := subAgentAgenticFilesystemMiddleware(ctx, einoLoc, toolInvokeNotify, einoSingleAgentName, conversationID, projectID, ma.EinoMiddleware.ReductionRootDir, toolMaxBytesFromMW(&ma.EinoMiddleware), mcpExecBinder, einoExecBegin, einoExecAppendPartial, einoExecRegisterCancel, einoExecUnregisterCancel, einoExecFinish, agentToolTimeoutMinutes(appCfg), agentToolWaitTimeoutSeconds(appCfg), agentShellNoOutputTimeoutSeconds(appCfg), nil, appCfg.OpenAI.SupportsVision)
 			if fsErr != nil {
 				return nil, fmt.Errorf("eino single filesystem 中间件: %w", fsErr)
 			}
@@ -151,18 +151,13 @@ func RunEinoSingleChatModelAgent(
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
-			ToolCallMiddlewares: []compose.ToolMiddleware{
-				modelOutputExecutionGuardMiddleware(),
-				localToolRBACMiddleware(),
-				hitlToolCallMiddleware(),
-				softRecoveryToolMiddleware(),
-			},
+			ToolCallMiddlewares: einoAgenticToolMiddlewares(),
 		},
 		EmitInternalEvents: true,
 	}
 	ins := project.AppendSystemPromptBlock(ag.EinoSingleAgentSystemInstruction(), systemPromptExtra)
 	ins = project.AppendSystemPromptBlock(ins, einoExplicitCompletionInstruction("eino_single"))
-	ins = project.AppendVisionImageAnalysisIfReady(ins, appCfg.Vision.Ready())
+	ins = project.AppendVisionImageAnalysisIfReady(ins, appCfg.Vision.Ready(), appCfg.OpenAI.SupportsVision)
 	ins = injectToolNamesOnlyInstruction(ctx, ins, mainTools, mainToolsForCfg, singleToolSearchActive)
 	if logger != nil {
 		names := collectToolNames(ctx, mainTools)
@@ -199,7 +194,7 @@ func RunEinoSingleChatModelAgent(
 	}
 
 	baseMsgs := historyToMessages(history, appCfg, &ma.EinoMiddleware)
-	baseMsgs = appendUserMessageIfNeeded(baseMsgs, runtimeUserMessage)
+	baseMsgs = appendUserMessageWithImagesIfNeeded(baseMsgs, runtimeUserMessage, TurnImagesFromContext(ctx))
 
 	streamsMainAssistant := func(agent string) bool {
 		return agent == "" || agent == einoSingleAgentName

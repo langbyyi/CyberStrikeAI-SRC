@@ -47,6 +47,7 @@ ai:
       model: gpt-4.1
       max_total_tokens: 120000
       max_completion_tokens: 16384
+      supports_vision: true # 主模型可直接读图（多模态）；false/省略时图片只给路径给 analyze_image
       reasoning:
         mode: on
         effort: high
@@ -73,6 +74,7 @@ ai:
 | `base_url/api_key/model` | 必填。Base URL 通常需要包含版本路径，如 OpenAI/兼容网关的 `/v1`。 |
 | `max_total_tokens` | 上下文压缩、攻击链构建、多代理摘要等共用的总预算。 |
 | `max_completion_tokens` | 单次模型输出上限；未填时使用默认值。 |
+| `supports_vision` | 声明该通道主模型可直接接收图片（多模态）。`true` 时上传的图片随本轮消息直发主模型，`read_file` 读取图片也直接把图片返回给模型；`false`/省略时图片只给路径，由 `vision` 段的 `analyze_image` 工具旁路识图（纯文本主模型才需要）。多模态模型（qwen-vl-max、gpt-4o、claude 系）填 `true`，纯文本模型（deepseek-chat 等）保持 `false`。详见 `docs/zh-CN/VISION.md`。 |
 | `reasoning` | 该通道的默认推理扩展字段。不同网关支持差异较大，异常时先尝试 `mode: off`。 |
 
 对话页的“AI 通道”下拉框会读取已保存通道。请求体中的 `aiChannelId` 非空时仅对本次/本会话运行配置生效，不会把 API Key 发送给模型；为空时跟随 `ai.default_channel`。

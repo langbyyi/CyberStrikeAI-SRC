@@ -51,7 +51,8 @@ func agenticTransferToolMiddleware() compose.ToolMiddleware {
 func withEinoAgenticTransferTool(cfg adk.ToolsConfig) adk.ToolsConfig {
 	middlewares := append([]compose.ToolMiddleware(nil), cfg.ToolsNodeConfig.ToolCallMiddlewares...)
 	middlewares = append(middlewares, agenticTransferToolMiddleware())
-	cfg.ToolsNodeConfig.ToolCallMiddlewares = middlewares
+	// 追加后同样补齐多模态通道，避免 transfer 中间件在多模态工具上失效
+	cfg.ToolsNodeConfig.ToolCallMiddlewares = withEnhancedToolMiddlewares(middlewares)
 	return cfg
 }
 

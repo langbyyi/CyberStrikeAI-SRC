@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,9 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai/internal/multiagent"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/vision"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -24,6 +27,61 @@ type multiAgentPrepared struct {
 	RoleTools          []string
 	AssistantMessageID string
 	UserMessageID      string
+	// TurnImages 本轮随附的图片（仅当所走 AI 通道声明 supports_vision 时非空）。
+	// 图片字节只随本轮消息直发主模型，不写入历史；历史里只有附件路径。
+	TurnImages []multiagent.TurnImage
+}
+
+// withTurnImages 把本轮图片挂到 ctx 交给 runner；通道未声明多模态或本轮无图时原样返回。
+func (h *AgentHandler) withTurnImages(ctx context.Context, runCfg *config.Config, prep *multiAgentPrepared) context.Context {
+	if ctx == nil || runCfg == nil || prep == nil || len(prep.TurnImages) == 0 {
+		return ctx
+	}
+	if !runCfg.OpenAI.SupportsVision {
+		return ctx
+	}
+	return multiagent.WithTurnImages(ctx, prep.TurnImages)
+}
+
+// aiChannelSupportsVision 该请求所走 AI 通道的主模型是否声明可直接接收图片。
+func (h *AgentHandler) aiChannelSupportsVision(channelID string) bool {
+	if h == nil || h.config == nil {
+		return false
+	}
+	oa, _, _ := h.config.ResolveAIChannel(channelID)
+	return oa.SupportsVision
+}
+
+// buildTurnImages 把附件里的图片编码为主模型可原生消费的图片输入。
+// 逐张失败只降级该张（其余走路径 + analyze_image），总量超预算即停止追加。
+func buildTurnImages(paths []string, logger *zap.Logger) []multiagent.TurnImage {
+	filtered := vision.FilterImagePaths(paths, vision.NativeMaxImages)
+	out := make([]multiagent.TurnImage, 0, len(filtered))
+	var total int
+	for _, p := range filtered {
+		img, err := vision.PrepareNativeImage(p)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("附件图片编码失败，退回流路径", zap.String("path", p), zap.Error(err))
+			}
+			continue
+		}
+		if total+img.Bytes > vision.NativeMaxTotalBytes {
+			if logger != nil {
+				logger.Info("附件图片总量超出本轮预算，后续图片退回流路径",
+					zap.Int("included", len(out)), zap.Int("budget_bytes", vision.NativeMaxTotalBytes))
+			}
+			break
+		}
+		total += img.Bytes
+		out = append(out, multiagent.TurnImage{
+			Path:     img.Path,
+			Base64:   img.Base64,
+			MIMEType: img.MIMEType,
+			Detail:   img.Detail,
+		})
+	}
+	return out
 }
 
 func chatRequestAgentMode(req *ChatRequest, source string) string {
@@ -196,6 +254,18 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 	}
 	finalMessage = appendAttachmentsToMessage(finalMessage, req.Attachments, savedPaths)
 
+	// 主模型声明多模态时，把本轮附件中的图片编码为原生图片输入（直发主模型）；
+	// 否则维持旧行为：只给路径，由 analyze_image 旁路 VL 模型识图。
+	// WebShell 助手会话的工具集与上下文独立，不注入图片。
+	var turnImages []multiagent.TurnImage
+	if len(savedPaths) > 0 && webshellID == "" && h.aiChannelSupportsVision(req.AIChannelID) {
+		turnImages = buildTurnImages(savedPaths, h.logger)
+		if len(turnImages) > 0 && h.logger != nil {
+			h.logger.Info("本轮附件图片将直发主模型（supports_vision）",
+				zap.Int("images", len(turnImages)), zap.String("conversationId", conversationID))
+		}
+	}
+
 	userContent := userMessageContentForStorage(req.Message, req.Attachments, savedPaths)
 	userMsgRow, uerr := h.db.AddMessage(conversationID, "user", userContent, nil)
 	if uerr != nil {
@@ -228,5 +298,6 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		RoleTools:          roleTools,
 		AssistantMessageID: assistantMessageID,
 		UserMessageID:      userMessageID,
+		TurnImages:         turnImages,
 	}, nil
 }

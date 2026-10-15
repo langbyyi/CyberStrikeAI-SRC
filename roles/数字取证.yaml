@@ -29,4 +29,5 @@ tools:
 - zsteg
 - volatility3
 - web_search
+- analyze_image
 enabled: true

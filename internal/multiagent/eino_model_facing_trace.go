@@ -61,6 +61,9 @@ func cloneADKMessagesForTrace(msgs []adk.Message) []adk.Message {
 	if len(msgs) == 0 {
 		return nil
 	}
+	// 轨迹会落库（last_react_input）并在续跑时回灌为历史：二进制部分先换成文本占位，
+	// 否则单条图片就把数据库与每轮请求体撑到 MB 级。
+	msgs = stripBinaryPartsForTraceMessages(msgs)
 	b, err := json.Marshal(msgs)
 	if err != nil {
 		return nil

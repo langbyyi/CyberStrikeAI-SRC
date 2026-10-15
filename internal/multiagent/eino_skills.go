@@ -117,12 +117,17 @@ func subAgentAgenticFilesystemMiddleware(
 	toolWaitTimeoutSeconds int,
 	shellNoOutputTimeoutSec int,
 	outputChunk func(toolName, toolCallID, chunk string),
+	multiModalRead bool,
 ) (adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], error) {
 	if loc == nil {
 		return nil, nil
 	}
 	mw, err := filesystem.NewTyped[*schema.AgenticMessage](ctx, &filesystem.MiddlewareConfig{
 		Backend: loc,
+		// 主模型可读图时，read_file 改由框架的多模态实现（EnhancedInvokableTool）：
+		// 读图片/PDF 直接把内容作为图片输入返回给模型（与 Codex / Claude Code 一致）。
+		// 主模型不支持图片时保持纯文本 read_file，行为与历史一致。
+		UseMultiModalRead: multiModalRead,
 		StreamingShell: &einoStreamingShellWrap{
 			inner:                   security.NewEinoStreamingShell(),
 			invokeNotify:            invokeNotify,
@@ -179,6 +184,58 @@ func (m *einoAgenticFilesystemToolMiddleware) WrapInvokableToolCall(ctx context.
 		}
 		return m.boundToolResult(tCtx.CallID, result), nil
 	}, nil
+}
+
+// WrapEnhancedInvokableToolCall 覆盖多模态工具（UseMultiModalRead 打开后的 read_file 走这条路径）：
+// 保持与 WrapInvokableToolCall 一致的参数绑定与文本体积裁剪，但图片部分原样透传（不落盘、不截断）。
+// 注意：工具只实现 EnhancedInvokableTool 时，eino 不会调用 WrapInvokableToolCall。
+func (m *einoAgenticFilesystemToolMiddleware) WrapEnhancedInvokableToolCall(ctx context.Context, endpoint adk.EnhancedInvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.EnhancedInvokableToolCallEndpoint, error) {
+	wrapped, err := m.TypedChatModelAgentMiddleware.WrapEnhancedInvokableToolCall(ctx, endpoint, tCtx)
+	if err != nil {
+		return nil, err
+	}
+	if tCtx == nil || !isBuiltinEinoADKFilesystemToolName(tCtx.Name) {
+		return wrapped, nil
+	}
+	return func(ctx context.Context, toolArgument *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
+		if m.binder != nil && toolArgument != nil {
+			if args := parseToolArgumentsObject(toolArgument.Text); len(args) > 0 {
+				m.binder.BindArguments(tCtx.CallID, args)
+			}
+		}
+		result, runErr := wrapped(ctx, toolArgument, opts...)
+		if runErr != nil {
+			return result, runErr
+		}
+		return m.boundEnhancedToolResult(tCtx.CallID, result), nil
+	}, nil
+}
+
+// boundEnhancedToolResult 只对文本部分做体积裁剪；图片等二进制部分原样保留给模型。
+func (m *einoAgenticFilesystemToolMiddleware) boundEnhancedToolResult(toolCallID string, result *schema.ToolResult) *schema.ToolResult {
+	if m == nil || result == nil || m.toolMaxBytes <= 0 {
+		return result
+	}
+	needTrim := false
+	for _, part := range result.Parts {
+		if part.Type == schema.ToolPartTypeText && len(part.Text) > m.toolMaxBytes {
+			needTrim = true
+			break
+		}
+	}
+	if !needTrim {
+		return result
+	}
+	out := &schema.ToolResult{Parts: make([]schema.ToolOutputPart, 0, len(result.Parts))}
+	for _, part := range result.Parts {
+		if part.Type != schema.ToolPartTypeText || len(part.Text) <= m.toolMaxBytes {
+			out.Parts = append(out.Parts, part)
+			continue
+		}
+		part.Text = m.boundToolResult(toolCallID, part.Text)
+		out.Parts = append(out.Parts, part)
+	}
+	return out
 }
 
 func (m *einoAgenticFilesystemToolMiddleware) boundToolResult(toolCallID, result string) string {

@@ -108,6 +108,9 @@ ai:
       model: qwen3-max
       max_total_tokens: 120000
       max_completion_tokens: 32768
+      # supports_vision: true  # 该通道主模型可直接读图（多模态）：上传的图片随消息直发主模型，read_file 读图片也直接返回图片。
+      #                        # 默认 false：只给图片路径，由 vision 段的 analyze_image 工具旁路识图（纯文本模型才需要）。
+      #                        # 多模态模型（qwen-vl-max / gpt-4o / claude 系）= true；纯文本模型（deepseek-chat 等）= false。
       # Eino 路径模型推理：DeepSeek/OpenAI 为 thinking / reasoning_effort；Claude 4.6+ 为 adaptive + output_config.effort（仅显式配置 effort 时下发）；3.7 为 enabled+budget_tokens:10000（文档示例），effort 不映射，自定义预算用 extra_request_fields
       reasoning:
         mode: on # auto | on | off；off：OpenAI/Claude 不附加推理字段，DeepSeek 发送 thinking.type=disabled（其默认开启思考）
@@ -123,7 +126,9 @@ ai:
     #   model: qwen-plus
     #   max_total_tokens: 120000
     #   max_completion_tokens: 32768
-# 视觉分析（analyze_image MCP 工具；图片仅在单次 VL 调用中出现，Agent 上下文只保留文字摘要）
+# 视觉分析（analyze_image MCP 工具）：纯文本主模型的旁路识图兜底。
+# 主模型支持图片输入时（ai.channels.<id>.supports_vision=true）用 read_file 直接读图，无需本段。
+# 本段生效时图片仅在单次 VL 调用中出现，Agent 上下文只保留文字摘要。
 vision:
   enabled: false # true 且 model 非空时注册 analyze_image
   model: qwen-vl # VL 模型名（enabled 时必填）

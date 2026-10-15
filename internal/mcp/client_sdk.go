@@ -325,6 +325,13 @@ func sdkContentToOurs(list []mcp.Content) []Content {
 		switch v := c.(type) {
 		case *mcp.TextContent:
 			out = append(out, Content{Type: "text", Text: v.Text})
+		case *mcp.ImageContent:
+			// 图片内容落盘并把路径交给模型：既不把 base64 灌进上下文，也保留可分析能力。
+			if text, _ := spillImageContent(v.Data, v.MIMEType); text != "" {
+				out = append(out, Content{Type: "text", Text: text})
+				continue
+			}
+			out = append(out, Content{Type: "text", Text: "[MCP 返回了图片内容，但为空或无法落盘；如需该图，请让工具改为保存文件后提供路径]"})
 		default:
 			out = append(out, Content{Type: "text", Text: fmt.Sprintf("%v", c)})
 		}
