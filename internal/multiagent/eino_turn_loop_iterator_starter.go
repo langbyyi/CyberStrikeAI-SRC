@@ -16,6 +16,7 @@ type einoTurnLoopRuntimeControl interface {
 	Run(context.Context)
 	PushInterruptContinue(string) bool
 	PushInterruptContinueWithTrace(string, []*schema.Message) bool
+	PushUserSteerWithTrace(string, []*schema.Message) bool
 	StopImmediate(string)
 	StopWhenIdle()
 	Wait() *adk.TurnLoopExitState[EinoTurnLoopItem, *schema.Message]
@@ -36,8 +37,10 @@ type einoTurnLoopIteratorStarterConfig struct {
 	NativeCancelCause           *atomic.Value
 	UnregisterAgentCancel       *func()
 	UnregisterTurnLoopInterrupt *func()
+	UnregisterTurnLoopSteer     *func()
 	RuntimeCancelRegistrar      AgentRuntimeCancelRegistrar
 	TurnLoopInterruptRegistrar  AgentTurnLoopInterruptRegistrar
+	TurnLoopSteerRegistrar      AgentTurnLoopSteerRegistrar
 	RuntimeFactory              einoTurnLoopRuntimeFactory
 	// SnapshotModelFacingTrace 可选：返回被中断轮最近一次送入模型的消息快照。
 	// 「中断并继续」时作为前置消息随中断提示词一起推入续跑 item，
@@ -63,6 +66,7 @@ func (s *einoTurnLoopIteratorStarter) Start(runMsgs []adk.Message) *adk.AsyncIte
 		return nil
 	}
 	callAndClearUnregister(s.cfg.UnregisterTurnLoopInterrupt)
+	callAndClearUnregister(s.cfg.UnregisterTurnLoopSteer)
 	callAndClearUnregister(s.cfg.UnregisterAgentCancel)
 
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
@@ -77,6 +81,7 @@ func (s *einoTurnLoopIteratorStarter) Start(runMsgs []adk.Message) *adk.AsyncIte
 		OnAgentEvents:    eventsBridge.OnAgentEvents,
 	})
 	s.bindTurnLoopInterrupt(runtime)
+	s.bindTurnLoopSteer(runtime)
 	s.bindRuntimeCancel(runtime)
 	runtime.Run(s.cfg.Context)
 	runtime.StopWhenIdle()
@@ -106,6 +111,21 @@ func (s *einoTurnLoopIteratorStarter) bindTurnLoopInterrupt(runtime einoTurnLoop
 		ok := runtime.PushInterruptContinueWithTrace(note, s.snapshotModelFacingTrace())
 		if ok {
 			s.emitInterruptContinueProgress(note)
+		}
+		return ok
+	})
+}
+
+// bindTurnLoopSteer 登记执行中用户补充指示（引导）的入队 hook。
+// 与「中断并继续」共用同一条 TurnLoop 抢占通道，但提示词与抢占策略不同。
+func (s *einoTurnLoopIteratorStarter) bindTurnLoopSteer(runtime einoTurnLoopRuntimeControl) {
+	if s == nil || runtime == nil || s.cfg.TurnLoopSteerRegistrar == nil || s.cfg.UnregisterTurnLoopSteer == nil {
+		return
+	}
+	*s.cfg.UnregisterTurnLoopSteer = s.cfg.TurnLoopSteerRegistrar(func(note string) bool {
+		ok := runtime.PushUserSteerWithTrace(note, s.snapshotModelFacingTrace())
+		if ok {
+			s.emitUserSteerProgress(note)
 		}
 		return ok
 	})
@@ -162,6 +182,20 @@ func (s *einoTurnLoopIteratorStarter) emitInterruptContinueProgress(note string)
 	})
 	s.cfg.Progress("progress", "已将用户补充推入 Eino TurnLoop，正在等待安全点切换…", map[string]interface{}{
 		"conversationId": s.cfg.ConversationID,
+		"source":         "eino",
+		"orchestration":  s.cfg.OrchMode,
+	})
+}
+
+// emitUserSteerProgress 把用户补充指示记为时间线事件，供对话/监控页展示「已引导」及生效时刻。
+func (s *einoTurnLoopIteratorStarter) emitUserSteerProgress(note string) {
+	if s == nil || s.cfg.Progress == nil {
+		return
+	}
+	s.cfg.Progress("user_steer", einoUserSteerTimelineSummary(note), map[string]interface{}{
+		"conversationId": s.cfg.ConversationID,
+		"rawMessage":     strings.TrimSpace(note),
+		"kind":           "turn_loop_steer",
 		"source":         "eino",
 		"orchestration":  s.cfg.OrchMode,
 	})

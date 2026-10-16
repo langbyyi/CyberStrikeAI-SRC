@@ -68,6 +68,10 @@ type AgentTask struct {
 	agentTurnLoopInterrupt        func(string) bool
 	agentTurnLoopInterruptVersion uint64
 
+	// agentTurnLoopSteer 当前 Eino TurnLoop 执行中引导（用户补充指示）push hook。
+	agentTurnLoopSteer        func(string) bool
+	agentTurnLoopSteerVersion uint64
+
 	cancel func(error)
 }
 
@@ -300,6 +304,75 @@ func (m *AgentTaskManager) BindAgentTurnLoopInterrupt(conversationID string, pus
 			cur.agentTurnLoopInterrupt = nil
 		}
 	}
+}
+
+// BindAgentTurnLoopSteer 登记当前运行任务的 Eino TurnLoop 执行中引导入队 hook。
+// 未登记（workflow/批量等运行时不支持 TurnLoop）时 SteerRunningTask 返回 SteerUnsupported。
+func (m *AgentTaskManager) BindAgentTurnLoopSteer(conversationID string, push func(string) bool) func() {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || push == nil {
+		return func() {}
+	}
+	m.mu.Lock()
+	t, ok := m.tasks[conversationID]
+	if !ok || t == nil {
+		m.mu.Unlock()
+		return func() {}
+	}
+	t.agentTurnLoopSteerVersion++
+	version := t.agentTurnLoopSteerVersion
+	t.agentTurnLoopSteer = push
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if cur, exists := m.tasks[conversationID]; exists && cur != nil && cur.agentTurnLoopSteerVersion == version {
+			cur.agentTurnLoopSteer = nil
+		}
+	}
+}
+
+// SteerOutcome 执行中引导（运行期间用户补充指示）的受理结果。
+type SteerOutcome int
+
+const (
+	// SteerNoActiveTask 该会话没有正在运行的任务。
+	SteerNoActiveTask SteerOutcome = iota
+	// SteerUnsupported 任务在运行，但当前运行时不支持引导（无 TurnLoop 安全点）。
+	SteerUnsupported
+	// SteerAccepted 已入队，将在下一个安全点生效。
+	SteerAccepted
+)
+
+// SteerRunningTask 把用户在任务运行期间补充的指示推入运行任务的 TurnLoop。
+// 不取消任务、不掐断工具：仅请求在当前模型调用或工具轮结束的安全点切换。
+// 空 conversationID / 空消息视为「无可引导内容」，按 SteerNoActiveTask 返回。
+func (m *AgentTaskManager) SteerRunningTask(conversationID, message string) SteerOutcome {
+	conversationID = strings.TrimSpace(conversationID)
+	message = strings.TrimSpace(message)
+	if conversationID == "" || message == "" {
+		return SteerNoActiveTask
+	}
+	m.mu.RLock()
+	t := m.tasks[conversationID]
+	var push func(string) bool
+	if t != nil {
+		push = t.agentTurnLoopSteer
+	}
+	m.mu.RUnlock()
+
+	if t == nil {
+		return SteerNoActiveTask
+	}
+	if push == nil {
+		return SteerUnsupported
+	}
+	if !push(message) {
+		// 入队失败只可能是 loop 已停止（任务正在收尾），按「不支持」让前端回退提示。
+		return SteerUnsupported
+	}
+	return SteerAccepted
 }
 
 // ActiveMCPExecutionID 返回当前会话进行中的工具 executionId，无则空串。

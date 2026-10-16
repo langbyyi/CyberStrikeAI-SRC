@@ -280,3 +280,88 @@ func TestFormatInterruptContinuePrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestEinoTurnLoopRuntimePushUserSteerWithTrace 执行中引导的续跑输入同样须为
+// 「轨迹 + 引导提示词」，且提示词按「补充指示」而非「中断并继续」措辞。
+func TestEinoTurnLoopRuntimePushUserSteerWithTrace(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	mockModel := newTurnLoopBlockingModel()
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:  "turn-loop-agent",
+		Model: mockModel,
+	})
+	if err != nil {
+		t.Fatalf("NewChatModelAgent: %v", err)
+	}
+
+	runtime := NewEinoTurnLoopRuntime(EinoTurnLoopRuntimeConfig{
+		Agent:            agent,
+		InitialMessages:  []*schema.Message{schema.UserMessage("initial task")},
+		InterruptTimeout: 20 * time.Millisecond,
+	})
+	runtime.Run(ctx)
+
+	select {
+	case <-mockModel.started:
+	case <-ctx.Done():
+		t.Fatal("first model call did not start")
+	}
+	trace := []*schema.Message{
+		schema.UserMessage("initial task"),
+		schema.AssistantMessage("已完成 a-03 侦察", nil),
+	}
+	if !runtime.PushUserSteerWithTrace("补充：只测 10.0.160.98 的 8080", trace) {
+		t.Fatal("user steer push was rejected")
+	}
+	close(mockModel.release)
+
+	select {
+	case <-mockModel.started:
+	case <-ctx.Done():
+		t.Fatal("second model call did not start after user steer")
+	}
+	runtime.StopWhenIdle()
+	if state := runtime.Wait(); state == nil || state.ExitReason != nil {
+		t.Fatalf("exit state = %+v", state)
+	}
+
+	inputs := mockModel.snapshotInputs()
+	if len(inputs) < 2 {
+		t.Fatalf("model calls = %d, want at least 2", len(inputs))
+	}
+	lastInput := inputs[len(inputs)-1]
+	if len(lastInput) != 3 {
+		t.Fatalf("steered input len = %d, want 3 (trace×2 + steer)", len(lastInput))
+	}
+	if lastInput[0].Content != "initial task" || lastInput[1].Content != "已完成 a-03 侦察" {
+		t.Fatalf("steered input prefix = %#v, want model-facing trace", lastInput[:2])
+	}
+	if !strings.Contains(lastInput[2].Content, "10.0.160.98") || !strings.Contains(lastInput[2].Content, "补充") {
+		t.Fatalf("steered input tail = %q, want steer message", lastInput[2].Content)
+	}
+	if strings.Contains(lastInput[2].Content, "中断") {
+		t.Fatalf("steer prompt must not be framed as an interrupt: %q", lastInput[2].Content)
+	}
+}
+
+func TestEinoItemsCarryModelFacingTrace(t *testing.T) {
+	traceAndPrompt := []*schema.Message{schema.UserMessage("initial task"), schema.UserMessage("补充")}
+	cases := []struct {
+		name  string
+		items []EinoTurnLoopItem
+		want  bool
+	}{
+		{"interrupt with trace", []EinoTurnLoopItem{{Kind: EinoTurnLoopItemKindInterruptContinue, Messages: traceAndPrompt}}, true},
+		{"steer with trace", []EinoTurnLoopItem{{Kind: EinoTurnLoopItemKindUserSteer, Messages: traceAndPrompt}}, true},
+		{"interrupt prompt only", []EinoTurnLoopItem{{Kind: EinoTurnLoopItemKindInterruptContinue, Messages: traceAndPrompt[:1]}}, false},
+		{"steer prompt only", []EinoTurnLoopItem{{Kind: EinoTurnLoopItemKindUserSteer, Messages: traceAndPrompt[:1]}}, false},
+		{"initial turn", []EinoTurnLoopItem{{Kind: "initial", Messages: traceAndPrompt}}, false},
+	}
+	for _, tc := range cases {
+		if got := einoItemsCarryModelFacingTrace(tc.items); got != tc.want {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

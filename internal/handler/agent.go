@@ -1669,6 +1669,61 @@ func (h *AgentHandler) CancelAgentLoop(c *gin.Context) {
 	})
 }
 
+// SteerAgentLoop 在任务运行期间追加用户补充指示（引导）。
+// 不停止任务、不掐断已运行的工具：由运行中的 Eino TurnLoop 在当前模型调用或
+// 工具轮结束的安全点切换输入，模型带着已完成轨迹继续推进。
+func (h *AgentHandler) SteerAgentLoop(c *gin.Context) {
+	var req struct {
+		ConversationID string `json:"conversationId" binding:"required"`
+		Message        string `json:"message" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !h.agentConversationAllowed(c, req.ConversationID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
+		return
+	}
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "补充指示不能为空"})
+		return
+	}
+
+	switch h.tasks.SteerRunningTask(req.ConversationID, message) {
+	case SteerNoActiveTask:
+		c.JSON(http.StatusNotFound, gin.H{
+			"status": "no_active_task",
+			"error":  "该会话没有正在执行的任务",
+		})
+		return
+	case SteerUnsupported:
+		c.JSON(http.StatusConflict, gin.H{
+			"status": "steer_unsupported",
+			"error":  "当前无法执行中引导（该运行方式没有 TurnLoop 安全点，或任务正在收尾），请等待任务完成后再发送。",
+		})
+		return
+	}
+
+	// 运行中追加的用户声明同样构成审批授权范围（与工具终止的说明一致）。
+	h.tasks.RecordHitlUserDeclaration(req.ConversationID, message)
+	if h.audit != nil {
+		h.audit.RecordOK(c, "agent", "steer_loop", "对话执行中引导", "conversation", req.ConversationID, map[string]interface{}{
+			"message_chars": len([]rune(message)),
+		})
+	}
+	h.logger.Info("对话页执行中引导已入队",
+		zap.String("conversationId", req.ConversationID),
+		zap.Int("messageChars", len([]rune(message))),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"status":         "steer_accepted",
+		"conversationId": req.ConversationID,
+		"message":        "已加入引导，将在当前步骤的安全点生效。",
+	})
+}
+
 // SubscribeAgentTaskEvents GET SSE：订阅指定会话当前运行中任务的事件镜像（帧格式与 POST .../stream 一致），用于刷新页面或断线后接续 UI。
 func (h *AgentHandler) SubscribeAgentTaskEvents(c *gin.Context) {
 	conversationID := strings.TrimSpace(c.Query("conversationId"))

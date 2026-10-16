@@ -43,6 +43,7 @@ type einoRunRuntimeSession struct {
 
 	unregisterAgentCancel       func()
 	unregisterTurnLoopInterrupt func()
+	unregisterTurnLoopSteer     func()
 	nativeCancelCause           atomic.Value
 
 	transientRetry      *einoTransientRunRetryHandler
@@ -100,6 +101,7 @@ func (s *einoRunRuntimeSession) Close() {
 	}
 	callAndClearUnregister(&s.unregisterAgentCancel)
 	callAndClearUnregister(&s.unregisterTurnLoopInterrupt)
+	callAndClearUnregister(&s.unregisterTurnLoopSteer)
 }
 
 func (s *einoRunRuntimeSession) HandleIteratorContextError(err error) (*RunResult, error) {
@@ -215,6 +217,7 @@ func (s *einoRunRuntimeSession) initIteratorRuntime() {
 	runner := adk.NewRunner(s.ctx, runnerCfg)
 	runtimeCancelRegistrar := agentRuntimeCancelRegistrarFromContext(s.ctx)
 	turnLoopInterruptRegistrar := agentTurnLoopInterruptRegistrarFromContext(s.ctx)
+	turnLoopSteerRegistrar := agentTurnLoopSteerRegistrarFromContext(s.ctx)
 	runnerStarter := newEinoRunnerIteratorStarter(einoRunnerIteratorStarterConfig{
 		Context:                s.ctx,
 		ConversationID:         s.conversationID,
@@ -239,8 +242,10 @@ func (s *einoRunRuntimeSession) initIteratorRuntime() {
 		NativeCancelCause:           &s.nativeCancelCause,
 		UnregisterAgentCancel:       &s.unregisterAgentCancel,
 		UnregisterTurnLoopInterrupt: &s.unregisterTurnLoopInterrupt,
+		UnregisterTurnLoopSteer:     &s.unregisterTurnLoopSteer,
 		RuntimeCancelRegistrar:      runtimeCancelRegistrar,
 		TurnLoopInterruptRegistrar:  turnLoopInterruptRegistrar,
+		TurnLoopSteerRegistrar:      turnLoopSteerRegistrar,
 		SnapshotModelFacingTrace: func() []*schema.Message {
 			if s.args == nil || s.args.ModelFacingTrace == nil {
 				return nil

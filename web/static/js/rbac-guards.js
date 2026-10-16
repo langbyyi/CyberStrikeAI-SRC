@@ -135,6 +135,7 @@
         cancelTask: 'tasks:write',
         cancelActiveTask: 'tasks:write',
         cancelProgressTask: 'tasks:write',
+        requestChatSteer: 'tasks:write',
 
         // 工作流
         saveWorkflowDraft: 'workflow:write',
@@ -197,10 +198,6 @@
         exportAuditLogs: 'audit:read',
         exportAuditLogsCsv: 'audit:read',
         runAuditExport: 'audit:read',
-
-        // Agent 中断
-        submitUserInterruptContinue: 'agent:execute',
-        submitUserInterruptHardCancel: 'agent:execute',
 
         // 终端（多会话）
         addTerminalTab: 'terminal:execute',

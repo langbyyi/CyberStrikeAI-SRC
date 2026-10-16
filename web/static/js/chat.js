@@ -1,5 +1,14 @@
 let currentConversationId = null;
 
+// 运行中输入排队（Codex 风格）的状态与常量。声明放在文件顶部：updateChatPrimaryActionState
+// 在任意任务状态刷新/输入时都会顺带同步队列，晚于调用点声明（let/const）会触发 TDZ 报错。
+const CHAT_QUEUE_STORAGE_PREFIX = 'cyberstrike_chat_queue_';
+const CHAT_QUEUE_MAX_ITEMS = 20;
+let chatQueuedMessages = [];
+let chatQueueConversationId = '';
+let chatQueueDispatching = false;
+let chatQueueAwaitingNoticeId = '';
+
 /** Persist the visible chat in the URL so a reload can restore and reconnect it. */
 function syncChatConversationHash(conversationId) {
     const normalizedConversationId = String(conversationId || '').trim();
@@ -1126,14 +1135,27 @@ function isCurrentChatTaskActive() {
         isConversationTaskRunning(visibleConversationId);
 }
 
+/** 运行中且输入框为空才呈现「停止任务」：输入框有内容时按钮回到「发送」，点击即引导。 */
+function chatPrimaryActionShowsStop() {
+    if (!isCurrentChatTaskActive()) return false;
+    const input = document.getElementById('chat-input');
+    return !(input && input.value.trim());
+}
+
 function updateChatPrimaryActionState() {
     const button = document.getElementById('chat-send-btn');
+    // 会话切换后装载该会话自己的排队队列；任务结束后把队首排队消息发出。
+    // 无排队消息时零开销（每次任务状态刷新/输入都会走到这里）。
+    syncChatQueueForVisibleConversation();
+    if (chatQueuedMessages.length) {
+        void drainChatQueueIfIdle();
+    }
     if (!button) return;
-    const running = isCurrentChatTaskActive();
-    const label = running
+    const stop = chatPrimaryActionShowsStop();
+    const label = stop
         ? chatTranslate('tasks.stopTask', '停止任务')
         : chatTranslate('chat.send', '发送');
-    button.classList.toggle('is-task-running', running);
+    button.classList.toggle('is-task-running', stop);
     button.setAttribute('aria-label', label);
     button.setAttribute('title', label);
     const labelElement = button.querySelector('.send-btn-label');
@@ -1142,7 +1164,7 @@ function updateChatPrimaryActionState() {
 
 function handleChatPrimaryAction(event) {
     if (event) event.preventDefault();
-    if (!isCurrentChatTaskActive()) {
+    if (!chatPrimaryActionShowsStop()) {
         sendMessage();
         return;
     }
@@ -1172,6 +1194,18 @@ function initChatPrimaryActionButton() {
 }
 
 document.addEventListener('DOMContentLoaded', initChatPrimaryActionButton);
+document.addEventListener('DOMContentLoaded', function () {
+    syncChatQueueForVisibleConversation();
+    renderChatQueue();
+});
+// 占位符（排队提示）与卡片按钮文案都随语言切换刷新
+document.addEventListener('languagechange', function () {
+    renderChatQueue();
+});
+// 任务状态每次刷新（top 运行中任务条轮询）时，检查「其它会话」是否有排队消息已可发送
+window.addEventListener('conversation-task-state-changed', function () {
+    notifyQueuedMessagesAwaitingSend();
+});
 
 
 function restoreChatReasoningControlsFromStorage() {
@@ -1452,15 +1486,393 @@ function adjustTextareaHeight(textarea) {
     }
 }
 
+/**
+ * 请求把一条用户补充指示注入正在运行的任务（执行中引导，后端在安全点生效）。
+ * 返回 'ok' | 'idle'（该会话已无运行任务）| 'unsupported'（运行方式无 TurnLoop 安全点）
+ *     | 'forbidden'（无 tasks:write 权限）| 'retry'（请求失败，可重试）。
+ */
+async function requestChatSteer(conversationId, text) {
+    const id = String(conversationId || '').trim();
+    const body = String(text || '').trim();
+    if (!id || !body) {
+        return 'unsupported';
+    }
+    let response;
+    try {
+        response = await apiFetch('/api/agent-loop/steer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationId: id, message: body }),
+        });
+    } catch (error) {
+        console.warn('执行中引导请求失败:', error);
+        return 'retry';
+    }
+    if (response.ok) {
+        return 'ok';
+    }
+    if (response.status === 404) {
+        return 'idle';
+    }
+    if (response.status === 403) {
+        // 权限不足与「运行方式不支持」是两回事，文案不能混（否则会误导用户去等任务结束）。
+        return 'forbidden';
+    }
+    if (response.status === 409) {
+        return 'unsupported';
+    }
+    const payload = await response.json().catch(() => ({}));
+    console.warn('执行中引导被拒绝:', response.status, payload.error || payload.status || '');
+    return 'retry';
+}
+
+// ---------- 运行中输入排队（Codex 风格）----------
+// 任务运行期间按 Enter 不打断当前任务：消息进入输入框上方的队列卡片，
+// 任务结束后自动按序发出；需要立刻影响当前任务时点卡片上的「立即」（执行中引导）。
+// 状态与常量声明在文件顶部（见 chatQueuedMessages）。
+
+function chatQueueNewId() {
+    return 'q-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+function chatQueueStorageKey(conversationId) {
+    return CHAT_QUEUE_STORAGE_PREFIX + (conversationId || '');
+}
+
+function chatQueueLoad(conversationId) {
+    if (!conversationId) return [];
+    try {
+        const raw = localStorage.getItem(chatQueueStorageKey(conversationId));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter((item) => item && typeof item.text === 'string' && item.text.trim())
+            .map((item) => ({ id: String(item.id || chatQueueNewId()), text: String(item.text) }))
+            .slice(0, CHAT_QUEUE_MAX_ITEMS);
+    } catch (error) {
+        console.warn('恢复排队消息失败:', error);
+        return [];
+    }
+}
+
+function chatQueuePersist(conversationId, items) {
+    const id = conversationId || '';
+    if (!id) return;
+    try {
+        if (!items.length) {
+            localStorage.removeItem(chatQueueStorageKey(id));
+            return;
+        }
+        localStorage.setItem(chatQueueStorageKey(id), JSON.stringify(items));
+    } catch (error) {
+        console.warn('保存排队消息失败:', error);
+    }
+}
+
+/** 输入框的常规占位符：优先按当前 i18n 现取（语言切换后要跟着变），取不到再回落到静态值。 */
+function chatQueueBasePlaceholder(input) {
+    if (!input) return '';
+    const key = input.dataset.i18n;
+    if (key && typeof window.t === 'function') {
+        const translated = window.t(key);
+        if (translated && translated !== key) return translated;
+    }
+    if (input.dataset.chatQueueFallbackPlaceholder === undefined) {
+        input.dataset.chatQueueFallbackPlaceholder = input.placeholder || '';
+    }
+    return input.dataset.chatQueueFallbackPlaceholder;
+}
+
+/** 输入框占位符在「有排队」时切换为排队提示；否则回落到 i18n 默认值。 */
+function chatQueueApplyPlaceholder(input, text) {
+    if (!input) return;
+    if (!text) {
+        input.placeholder = chatQueueBasePlaceholder(input);
+        return;
+    }
+    // 覆盖前记住原始占位符（无 i18n 键时作为回落值）；重复应用同一条提示时不覆盖已记录值
+    if (input.dataset.chatQueueFallbackPlaceholder === undefined && input.placeholder !== text) {
+        input.dataset.chatQueueFallbackPlaceholder = input.placeholder || '';
+    }
+    input.placeholder = text;
+}
+
+function chatQueueVisibleItems() {
+    if (!chatQueueConversationId || chatQueueConversationId !== getVisibleChatConversationId()) {
+        return [];
+    }
+    return chatQueuedMessages;
+}
+
+function renderChatQueue() {
+    const list = document.getElementById('chat-queued-list');
+    if (!list) return;
+    const input = document.getElementById('chat-input');
+    const items = chatQueueVisibleItems();
+    list.innerHTML = '';
+    list.hidden = items.length === 0;
+    if (!items.length) {
+        chatQueueApplyPlaceholder(input, null);
+        return;
+    }
+    const t = (key, fallback) => chatTranslate(key, fallback);
+    items.forEach((item) => list.appendChild(chatQueueItemElement(item, t)));
+    chatQueueApplyPlaceholder(input, t('chat.queuedFollowUpHint', '继续输入以排队后续修改'));
+}
+
+function chatQueueIconButton(className, label, iconPath) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+        + 'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" '
+        + 'aria-hidden="true">' + iconPath + '</svg>';
+    return button;
+}
+
+function chatQueueItemElement(item, t) {
+    const row = document.createElement('div');
+    row.className = 'chat-queued-item';
+    row.dataset.queueId = item.id;
+    row.setAttribute('role', 'listitem');
+
+    const text = document.createElement('span');
+    text.className = 'chat-queued-text';
+    text.textContent = item.text;
+    text.title = item.text;
+
+    const actions = document.createElement('div');
+    actions.className = 'chat-queued-actions';
+
+    const sendNow = chatQueueIconButton(
+        'chat-queued-action chat-queued-action--send',
+        t('chat.queuedSendNowTitle', '立即作为引导注入正在运行的任务'),
+        '<path d="M12 19V6"/><path d="M6.5 11.5 12 6l5.5 5.5"/>'
+    );
+    const sendNowLabel = document.createElement('span');
+    sendNowLabel.className = 'chat-queued-action-label';
+    sendNowLabel.textContent = chatTranslate('chat.queuedSendNow', '立即');
+    sendNow.appendChild(sendNowLabel);
+    sendNow.addEventListener('click', () => { void chatQueueSendNow(item.id); });
+
+    const edit = chatQueueIconButton(
+        'chat-queued-action',
+        t('chat.queuedEdit', '编辑'),
+        '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M14.5 6.5 17.5 9.5"/>'
+    );
+    edit.addEventListener('click', () => startChatQueueEdit(row, item.id));
+
+    const remove = chatQueueIconButton(
+        'chat-queued-action',
+        t('chat.queuedRemove', '移除'),
+        '<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>'
+    );
+    remove.addEventListener('click', () => removeChatQueueMessage(item.id));
+
+    actions.appendChild(sendNow);
+    actions.appendChild(edit);
+    actions.appendChild(remove);
+    row.appendChild(text);
+    row.appendChild(actions);
+    return row;
+}
+
+function startChatQueueEdit(row, id) {
+    const item = chatQueuedMessages.find((q) => q.id === id);
+    const textEl = row && row.querySelector('.chat-queued-text');
+    if (!item || !textEl || row.querySelector('.chat-queued-edit-input')) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'chat-queued-edit-input';
+    input.value = item.text;
+    let settled = false;
+    const commit = (save) => {
+        if (settled) return;
+        settled = true;
+        const next = input.value.trim();
+        if (save && next) {
+            item.text = next;
+            chatQueuePersist(chatQueueConversationId, chatQueuedMessages);
+        }
+        renderChatQueue();
+    };
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); commit(true); }
+        else if (event.key === 'Escape') { event.preventDefault(); commit(false); }
+    });
+    input.addEventListener('blur', () => commit(true));
+    textEl.replaceWith(input);
+    input.focus();
+    input.select();
+}
+
+function enqueueChatMessage(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    syncChatQueueForVisibleConversation();
+    if (!chatQueueConversationId) return false;
+    chatQueuedMessages.push({ id: chatQueueNewId(), text: value });
+    if (chatQueuedMessages.length > CHAT_QUEUE_MAX_ITEMS) {
+        chatQueuedMessages = chatQueuedMessages.slice(-CHAT_QUEUE_MAX_ITEMS);
+    }
+    chatQueuePersist(chatQueueConversationId, chatQueuedMessages);
+    renderChatQueue();
+    return true;
+}
+
+function removeChatQueueMessage(id) {
+    const index = chatQueuedMessages.findIndex((q) => q.id === id);
+    if (index === -1) return false;
+    chatQueuedMessages.splice(index, 1);
+    chatQueuePersist(chatQueueConversationId, chatQueuedMessages);
+    renderChatQueue();
+    return true;
+}
+
+/** 队列卡片上的「立即」：把这条消息作为执行中引导注入正在运行的任务。 */
+async function chatQueueSendNow(id) {
+    const item = chatQueuedMessages.find((q) => q.id === id);
+    if (!item) return false;
+    const conversationId = getCurrentChatTaskConversationId() || chatQueueConversationId;
+    if (!isCurrentChatTaskActive()) {
+        // 任务已结束：按普通消息发出，等价于排队到点。
+        removeChatQueueMessage(id);
+        await sendMessage({ text: item.text });
+        return true;
+    }
+    const outcome = await requestChatSteer(conversationId, item.text);
+    if (outcome === 'unsupported') {
+        showChatToast(chatTranslate('chat.queuedSteerUnsupported', '当前模式不支持引导，已留在队列。'), 'info');
+        return false;
+    }
+    if (outcome === 'forbidden') {
+        showChatToast(chatTranslate('chat.queuedSteerForbidden', '没有该会话的操作权限，引导未发送，已留在队列。'), 'error');
+        return false;
+    }
+    if (outcome !== 'ok' && outcome !== 'idle') {
+        showChatToast(chatTranslate('chat.queuedSteerFailed', '引导发送失败，已留在队列。'), 'error');
+        return false;
+    }
+    removeChatQueueMessage(id);
+    if (outcome === 'idle') {
+        await sendMessage({ text: item.text });
+        return true;
+    }
+    showChatToast(chatTranslate('chat.steerSent', '已发送引导，将在当前步骤的安全点生效。'), 'info');
+    return true;
+}
+
+/** 会话切换后装载该会话自己的队列；会话未变则立即返回。 */
+function syncChatQueueForVisibleConversation() {
+    const visibleId = getVisibleChatConversationId();
+    if (visibleId === chatQueueConversationId) return;
+    chatQueuePersist(chatQueueConversationId, chatQueuedMessages);
+    chatQueueConversationId = visibleId;
+    chatQueuedMessages = chatQueueLoad(visibleId);
+    renderChatQueue();
+}
+
+/** 任务结束后把队首消息按普通消息发出（一次一条，避免并发起两个任务）。 */
+async function drainChatQueueIfIdle() {
+    syncChatQueueForVisibleConversation();
+    if (chatQueueDispatching) return false;
+    if (!chatQueuedMessages.length) return false;
+    if (isCurrentChatTaskActive()) return false;
+    if (!chatQueueConversationId || chatQueueConversationId !== getVisibleChatConversationId()) return false;
+    const next = chatQueuedMessages[0];
+    removeChatQueueMessage(next.id);
+    chatQueueDispatching = true;
+    try {
+        await sendMessage({ text: next.text });
+        return true;
+    } finally {
+        chatQueueDispatching = false;
+    }
+}
+
+/**
+ * 找出「非当前可见会话」里仍有排队消息的会话 id（队列按会话隔离存在 localStorage）。
+ * 内存里的 chatQueuedMessages 只装当前可见会话的队列，所以跨会话情况必须读存储。
+ */
+function chatQueueConversationsWithPending() {
+    const visibleId = getVisibleChatConversationId();
+    const pending = [];
+    let keys = [];
+    try {
+        keys = Object.keys(localStorage);
+    } catch (error) {
+        return pending;
+    }
+    keys.forEach((key) => {
+        if (!key.startsWith(CHAT_QUEUE_STORAGE_PREFIX)) return;
+        const convId = key.slice(CHAT_QUEUE_STORAGE_PREFIX.length);
+        if (!convId || convId === visibleId) return;
+        try {
+            const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+            if (Array.isArray(parsed) && parsed.some((item) => item && String(item.text || '').trim())) {
+                pending.push(convId);
+            }
+        } catch (error) {
+            // 坏数据忽略，不阻塞其它会话
+        }
+    });
+    return pending;
+}
+
+/**
+ * 队列所属会话的任务已结束、但用户当前不在该会话：自动发送要等切回去才发生，
+ * 这里提示一次，避免「任务结束后自动发送」被静默拖延。
+ */
+function notifyQueuedMessagesAwaitingSend() {
+    const ready = chatQueueConversationsWithPending().find((convId) =>
+        !(typeof isConversationTaskRunning === 'function' && isConversationTaskRunning(convId)));
+    if (!ready) {
+        chatQueueAwaitingNoticeId = '';
+        return;
+    }
+    if (ready === chatQueueAwaitingNoticeId) return;
+    chatQueueAwaitingNoticeId = ready;
+    showChatToast(chatTranslate('chat.queuedWaitingSend', '有排队消息在其它会话等待发送：切回该会话即会自动发出。'), 'info');
+}
+
+/** 发送/排队后清空输入框与草稿（防止刷新时恢复已发出的内容）。 */
+function clearChatInputAfterSend() {
+    if (draftSaveTimer) {
+        clearTimeout(draftSaveTimer);
+        draftSaveTimer = null;
+    }
+    clearChatDraft();
+    try {
+        // 使用同步方式确保草稿被清除
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } catch (e) {
+        // 忽略错误
+    }
+    const input = document.getElementById('chat-input');
+    if (input) {
+        input.value = '';
+        // 强制重置输入框高度为初始高度（40px）
+        input.style.height = '40px';
+    }
+}
+
 // 发送消息
 async function sendMessage(options = {}) {
     const input = document.getElementById('chat-input');
-    let message = input.value.trim();
-    const hasAttachments = chatAttachments && chatAttachments.length > 0;
+    // options.text：由排队消息 / 队列「立即」代发，不使用（也不清空）输入框内容。
+    const explicitText = typeof options.text === 'string' ? options.text.trim() : '';
+    let message = explicitText || input.value.trim();
+    // 代发（排队消息 / 队列「立即」）只发文本：既不把用户当前暂存的附件带出去，
+    // 也不清空它们。否则任务一结束自动补发时，会连用户为下一条消息准备的附件一起发出并抹掉。
+    const useAttachments = !explicitText && !!(chatAttachments && chatAttachments.length > 0);
     const requestConversationId = currentConversationId;
     const requestNavigationSeq = chatConversationNavigationSeq;
 
-    if (!message && !hasAttachments) {
+    if (!message && !useAttachments) {
         return;
     }
 
@@ -1471,12 +1883,31 @@ async function sendMessage(options = {}) {
         await loadActiveTasks();
     }
     if (isCurrentChatTaskActive()) {
+        // 运行中发送 = 排队（Codex 风格）：不打断当前任务，任务结束后自动发出；
+        // 需要立刻影响当前任务时用队列卡片上的「立即」（执行中引导）。
+        // 附件无法排队（需要走完整会话准备流程），仍提示等待。
+        // 附件消息无法排队：附件需要走完整的会话准备流程（上传 → 路径 → 多模态编码），
+        // 因此这里只拒绝、不清空输入，文本与附件都原样保留，任务结束后可直接发送。
+        if (useAttachments) {
+            updateChatPrimaryActionState();
+            showChatToast(chatTranslate('chat.queuedAttachmentsUnsupported', '带附件不能排队（内容已保留）：请等待任务结束或先停止任务后再发送。'), 'info');
+            return;
+        }
+        if (!enqueueChatMessage(message)) {
+            updateChatPrimaryActionState();
+            showChatToast(chatTranslate('chat.taskAlreadyRunning', '当前会话已有任务正在执行，请先等待完成或停止任务。'), 'info');
+            return;
+        }
+        // 代发排队消息（options.text）时不动用户当前正在输入的内容
+        if (!explicitText) {
+            clearChatInputAfterSend();
+        }
         updateChatPrimaryActionState();
-        showChatToast(chatTranslate('chat.taskAlreadyRunning', '当前会话已有任务正在执行，请先等待完成或停止任务。'), 'info');
+        showChatToast(chatTranslate('chat.queuedToast', '已加入队列，任务结束后自动发送；需要立刻生效可点「立即」。'), 'info');
         return;
     }
 
-    if (hasAttachments) {
+    if (useAttachments) {
         const needWait = chatAttachments.some((a) => a.uploading);
         if (needWait) {
             const waitLabel = (typeof window.t === 'function')
@@ -1500,7 +1931,7 @@ async function sendMessage(options = {}) {
     }
 
     // 有附件且用户未输入时，发一句简短默认提示即可（后端会拼接路径和文件内容给大模型）
-    if (hasAttachments && !message) {
+    if (useAttachments && !message) {
         message = CHAT_FILE_DEFAULT_PROMPT;
     }
 
@@ -1511,14 +1942,14 @@ async function sendMessage(options = {}) {
     }
 
     // 显示用户消息（含附件名，便于用户确认）
-    const displayMessage = hasAttachments
+    const displayMessage = useAttachments
         ? message + '\n' + chatAttachments.map(a => '📎 ' + a.fileName).join('\n')
         : message;
     if (window.CyberStrikeChatScroll) {
         window.CyberStrikeChatScroll.onUserSendMessage();
     }
     // 附件若已预先上传，serverPath 此刻已知：立即渲染缩略图，不必等消息落库回显路径
-    const liveAttachmentPaths = hasAttachments
+    const liveAttachmentPaths = useAttachments
         ? chatAttachments.map(a => (a && a.serverPath) ? a.serverPath : '').filter(Boolean)
         : [];
     addMessage('user', displayMessage, null, null, null, { scroll: 'none', imagePaths: liveAttachmentPaths });
@@ -1526,25 +1957,10 @@ async function sendMessage(options = {}) {
         invalidateConversationLiteCache(currentConversationId);
     }
 
-    // 清除防抖定时器，防止在清空输入框后重新保存草稿
-    if (draftSaveTimer) {
-        clearTimeout(draftSaveTimer);
-        draftSaveTimer = null;
+    // 清除防抖定时器与输入框内容；代发排队消息时不动用户当前输入。
+    if (!explicitText) {
+        clearChatInputAfterSend();
     }
-
-    // 立即清除草稿，防止页面刷新时恢复
-    clearChatDraft();
-    // 使用同步方式确保草稿被清除
-    try {
-        localStorage.removeItem(DRAFT_STORAGE_KEY);
-    } catch (e) {
-        // 忽略错误
-    }
-
-    // 立即清空输入框并清除草稿（在发送请求之前）
-    input.value = '';
-    // 强制重置输入框高度为初始高度（40px）
-    input.style.height = '40px';
 
     // 构建请求体（含附件）
     const body = {
@@ -1571,7 +1987,7 @@ async function sendMessage(options = {}) {
     if (aiChannelId) {
         body.aiChannelId = aiChannelId;
     }
-    if (hasAttachments) {
+    if (useAttachments) {
         body.attachments = chatAttachments.map((a) => ({
             fileName: a.fileName,
             mimeType: a.mimeType || '',
@@ -1582,9 +1998,11 @@ async function sendMessage(options = {}) {
     if (reasoningPayload) {
         body.reasoning = reasoningPayload;
     }
-    // 发送后清空附件列表
-    chatAttachments = [];
-    renderChatFileChips();
+    // 发送后清空附件列表（代发不动用户暂存的附件）
+    if (useAttachments) {
+        chatAttachments = [];
+        renderChatFileChips();
+    }
 
     // 创建进度消息容器（使用详细的进度展示）
     const progressId = addProgressMessage();
@@ -2129,6 +2547,8 @@ async function fetchMentionTools() {
 function handleChatInputInput(event) {
     const textarea = event.target;
     updateMentionStateFromInput(textarea);
+    // 运行中输入内容会把主按钮从「停止任务」切回「发送」（点击即排队），需要同步刷新。
+    updateChatPrimaryActionState();
     // 自动调整输入框高度
     // 使用requestAnimationFrame确保在DOM更新后立即调整，特别是在删除内容时
     requestAnimationFrame(() => {
@@ -3633,6 +4053,10 @@ function renderProcessDetails(messageId, processDetails, options) {
             itemTitle = typeof window.t === 'function'
                 ? window.t('chat.userInterruptContinueTitle')
                 : '⏸️ 用户中断并继续';
+        } else if (eventType === 'user_steer') {
+            itemTitle = typeof window.t === 'function'
+                ? window.t('chat.userSteerTitle')
+                : '🧭 执行中引导';
         }
 
         if (eventType === 'hitl_interrupt' || eventType === 'hitl_audit_agent_started' ||
@@ -4972,26 +5396,18 @@ async function cancelMCPToolExecutionSubmit(executionId, userNote, options = {})
     if (!executionId) {
         return;
     }
-    let conversationId = '';
-    if (typeof monitorState !== 'undefined' && Array.isArray(monitorState.executions)) {
-        const exec = monitorState.executions.find(e => e && e.id === executionId);
-        if (exec) {
-            conversationId = (exec.conversationId || '').trim();
-        }
-    }
+    // 单一入口：/api/monitor/execution/:id/cancel 自己反查会话后调用与对话侧相同的
+    // cancelToolContinueAfter（含 Eino execute 终止），解析不到会话时还有内/外部 MCP
+    // 仅凭 executionId 的兜底——比经 /api/agent-loop/cancel{continueAfter} 更完备。
     try {
-        if (conversationId && typeof requestCancelWithContinue === 'function') {
-            await requestCancelWithContinue(conversationId, userNote || '', { executionId });
-        } else {
-            const res = await apiFetch(`/api/monitor/execution/${encodeURIComponent(executionId)}/cancel`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ note: userNote || '' }),
-            });
-            const body = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                throw new Error(body.error || body.message || res.statusText);
-            }
+        const res = await apiFetch(`/api/monitor/execution/${encodeURIComponent(executionId)}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note: userNote || '' }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(body.error || body.message || res.statusText);
         }
         const okMsg = typeof window.t === 'function' ? window.t('mcpDetailModal.abortSuccess') : '已发送终止请求';
         alert(okMsg);
@@ -5009,24 +5425,13 @@ async function cancelMCPToolExecutionSubmit(executionId, userNote, options = {})
 }
 
 /**
- * 取消单次 MCP 工具执行（监控页「终止」）。有 conversationId 时复用对话页「中断并继续」弹窗与 API。
+ * 取消单次 MCP 工具执行（监控页「终止」）。统一走 mcp-tool-abort-modal：
+ * 只掐掉这一个工具调用（说明可选，合并进工具返回给模型），本轮推理继续。
  * @param {string} executionId
  * @param {{ refreshDetail?: boolean }} [options]
  */
 async function cancelMCPToolExecution(executionId, options = {}) {
     if (!executionId) {
-        return;
-    }
-    let conversationId = '';
-    if (typeof monitorState !== 'undefined' && Array.isArray(monitorState.executions)) {
-        const exec = monitorState.executions.find(e => e && e.id === executionId);
-        if (exec) {
-            conversationId = (exec.conversationId || '').trim();
-        }
-    }
-    if (conversationId && typeof openUserInterruptModal === 'function') {
-        openUserInterruptModal(null, conversationId);
-        window.__monitorInterruptContext = { executionId: executionId, options: options || {} };
         return;
     }
     openMcpToolAbortModal(executionId, options);

@@ -191,8 +191,8 @@ test('对话界面接线：用户消息渲染缩略图、切换会话释放缓�
     );
     assert.match(
         chat,
-        /liveAttachmentPaths = hasAttachments[\s\S]{0,140}serverPath[\s\S]{0,80}addMessage\('user', displayMessage, null, null, null, \{ scroll: 'none', imagePaths: liveAttachmentPaths \}\)/,
-        '实时发送必须把已上传附件的 serverPath 交给缩略图渲染器'
+        /liveAttachmentPaths = useAttachments[\s\S]{0,140}serverPath[\s\S]{0,80}addMessage\('user', displayMessage, null, null, null, \{ scroll: 'none', imagePaths: liveAttachmentPaths \}\)/,
+        '实时发送必须把已上传附件的 serverPath 交给缩略图渲染器（代发排队消息除外，其 useAttachments 恒为 false）'
     );
     assert.match(
         chat,

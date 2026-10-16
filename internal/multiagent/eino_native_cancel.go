@@ -16,6 +16,7 @@ const (
 
 type agentRuntimeCancelRegistrarKey struct{}
 type agentTurnLoopInterruptRegistrarKey struct{}
+type agentTurnLoopSteerRegistrarKey struct{}
 
 // AgentRuntimeCancelRegistrar binds the currently active Eino ADK cancel hook
 // into the host task manager. The hook returns true when Eino accepted and
@@ -60,6 +61,30 @@ func agentTurnLoopInterruptRegistrarFromContext(ctx context.Context) AgentTurnLo
 		return nil
 	}
 	if v, ok := ctx.Value(agentTurnLoopInterruptRegistrarKey{}).(AgentTurnLoopInterruptRegistrar); ok {
+		return v
+	}
+	return nil
+}
+
+// AgentTurnLoopSteerRegistrar binds a conversation-level TurnLoop steer pusher into
+// the host task manager. The pusher receives a user message typed while the task is
+// running and returns true when the loop accepted it at the next safe point.
+type AgentTurnLoopSteerRegistrar func(push func(message string) bool) (unregister func())
+
+// WithAgentTurnLoopSteerRegistrar lets the HTTP/task layer inject a user message into
+// an active Eino TurnLoop without interrupting the running step.
+func WithAgentTurnLoopSteerRegistrar(ctx context.Context, registrar AgentTurnLoopSteerRegistrar) context.Context {
+	if ctx == nil || registrar == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentTurnLoopSteerRegistrarKey{}, registrar)
+}
+
+func agentTurnLoopSteerRegistrarFromContext(ctx context.Context) AgentTurnLoopSteerRegistrar {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(agentTurnLoopSteerRegistrarKey{}).(AgentTurnLoopSteerRegistrar); ok {
 		return v
 	}
 	return nil

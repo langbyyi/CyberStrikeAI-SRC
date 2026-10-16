@@ -12,6 +12,20 @@ import (
 const (
 	einoTurnLoopInterruptPreemptTimeout = 3 * time.Second
 	einoTurnLoopIdleStop                = 250 * time.Millisecond
+
+	// einoTurnLoopSteerPreemptTimeout 执行中引导抢占的「升级兜底」超时。
+	//
+	// ADK 没有「安全点抢占 + WithRecursive + 无超时」的组合选项：递归传播只存在于
+	// WithPreemptTimeout 里，而它会在超时后升级为立即中止（掐断正在跑的步骤）。
+	// 取 60 分钟对齐配置默认的单次工具上限 agent.tool_timeout_minutes（默认 60）：
+	// 正常情况下工具轮/模型调用一结束就命中安全点完成切换，升级只用于运行真正挂死
+	// （用户另有「停止任务」）。注意该配置若被设为 0（不限）或大于 60，长时间工具仍
+	// 可能在升级点被中止——需要更宽窗口时调大本常量。
+	einoTurnLoopSteerPreemptTimeout = 60 * time.Minute
+
+	// TurnLoop item 类型：中断续跑与执行中用户补充指示（引导）。
+	EinoTurnLoopItemKindInterruptContinue = "interrupt_continue"
+	EinoTurnLoopItemKindUserSteer         = "user_steer"
 )
 
 // EinoTurnLoopItem is the conversation-level input unit consumed by an Eino
@@ -60,10 +74,10 @@ func NewEinoTurnLoopRuntime(cfg EinoTurnLoopRuntimeConfig) *EinoTurnLoopRuntime 
 		CheckpointID: cfg.CheckpointID,
 		GenInput: func(ctx context.Context, _ *adk.TurnLoop[EinoTurnLoopItem, *schema.Message], items []EinoTurnLoopItem) (*adk.GenInputResult[EinoTurnLoopItem, *schema.Message], error) {
 			msgs := mergeEinoTurnLoopMessages(items)
-			// 二开的中断续跑（interrupt_continue）已把被中断轮的 model-facing
-			// 轨迹前置进 item 消息，此时 history 再前置会造成同一进度重复输入；
-			// 仅纯提示词续跑等无轨迹场景用 history 找回跨轮记忆。
-			if !einoItemsCarryInterruptTrace(items) {
+			// 二开的中断续跑（interrupt_continue）与执行中用户补充指示（user_steer）
+			// 已把被中断轮的 model-facing 轨迹前置进 item 消息，此时 history 再前置
+			// 会造成同一进度重复输入；仅纯提示词续跑等无轨迹场景用 history 找回跨轮记忆。
+			if !einoItemsCarryModelFacingTrace(items) {
 				msgs = append(history.nextInput(), msgs...)
 			}
 			history = &einoTurnHistory{}
@@ -117,17 +131,53 @@ func (r *EinoTurnLoopRuntime) PushInterruptContinue(note string) bool {
 // 「原有进度 + 用户备注」，与「中断并继续」的产品语义一致。
 // prefix 为空时退化为纯提示词续跑（首次模型调用前中断等场景）。
 func (r *EinoTurnLoopRuntime) PushInterruptContinueWithTrace(note string, prefix []*schema.Message) bool {
+	return r.pushUserInput(
+		EinoTurnLoopItemKindInterruptContinue,
+		note,
+		formatInterruptContinuePrompt(note),
+		prefix,
+		adk.WithPreemptTimeout[EinoTurnLoopItem, *schema.Message](adk.AnySafePoint, r.interruptTimeout),
+	)
+}
+
+// PushUserSteerWithTrace 把用户在任务执行过程中补充的指示（引导）推入 TurnLoop。
+//
+// 抢占参数取 WithPreemptTimeout(AnySafePoint, einoTurnLoopSteerPreemptTimeout)：
+//   - 升级超时远长于单步合法耗时，避免「中断并继续」那套 3 秒升级掐断正在跑的工具
+//     （真机实测：3 秒会把 30 秒的 exec 打断重跑）。这一条有判别性回归测试。
+//   - 顺带获得 WithRecursive（ADK 只在 WithPreemptTimeout 里附带递归传播）。本项目
+//     TurnLoop 的根 agent 是 adapter 包装（newEinoAgenticChatModelAgentAdapter），
+//     真实安全点在内层，带递归是保守选择；但递归对结果的决定作用**未逐项隔离**：
+//     单测里不带递归也能送达（item 无论如何都会在轮次结束时被消费），真机差异更可能
+//     来自超时升级路径。保留递归无额外副作用——升级不触发就不会有立即中止的级联。
+func (r *EinoTurnLoopRuntime) PushUserSteerWithTrace(note string, prefix []*schema.Message) bool {
+	return r.pushUserInput(
+		EinoTurnLoopItemKindUserSteer,
+		note,
+		formatUserSteerPrompt(note),
+		prefix,
+		adk.WithPreemptTimeout[EinoTurnLoopItem, *schema.Message](adk.AnySafePoint, einoTurnLoopSteerPreemptTimeout),
+	)
+}
+
+// pushUserInput 把一条用户输入作为 TurnLoop item 入队并请求安全点切换。
+// 返回 false 仅当 loop 不存在或已停止；调用方据此回退到「无法引导」的提示。
+func (r *EinoTurnLoopRuntime) pushUserInput(
+	kind, note, prompt string,
+	prefix []*schema.Message,
+	opts ...adk.PushOption[EinoTurnLoopItem, *schema.Message],
+) bool {
 	if r == nil || r.loop == nil {
 		return false
 	}
 	msgs := cloneSchemaMessages(prefix)
-	msgs = append(msgs, schema.UserMessage(formatInterruptContinuePrompt(note)))
+	msgs = append(msgs, schema.UserMessage(prompt))
 	item := EinoTurnLoopItem{
-		Kind:     "interrupt_continue",
+		Kind:     kind,
 		Note:     strings.TrimSpace(note),
 		Messages: msgs,
 	}
-	ok, ack := r.loop.Push(item, adk.WithPreemptTimeout[EinoTurnLoopItem, *schema.Message](adk.AnySafePoint, r.interruptTimeout))
+	ok, ack := r.loop.Push(item, opts...)
 	if ack != nil {
 		go func() { <-ack }()
 	}
@@ -163,11 +213,15 @@ func mergeEinoTurnLoopMessages(items []EinoTurnLoopItem) []*schema.Message {
 	return msgs
 }
 
-// einoItemsCarryInterruptTrace 报告 items 中是否有已携带被中断轮轨迹前缀的
-// interrupt_continue 消息（轨迹前置 + 提示词 > 1 条）；纯提示词续跑为 1 条。
-func einoItemsCarryInterruptTrace(items []EinoTurnLoopItem) bool {
+// einoItemsCarryModelFacingTrace 报告 items 中是否有已携带上一轮模型可见轨迹前缀的
+// 续跑消息（轨迹前置 + 提示词 > 1 条）；纯提示词续跑为 1 条。
+// 中断续跑与执行中用户补充指示都走这条前缀，避免与 history 重复注入同一进度。
+func einoItemsCarryModelFacingTrace(items []EinoTurnLoopItem) bool {
 	for _, item := range items {
-		if item.Kind == "interrupt_continue" && len(item.Messages) > 1 {
+		if item.Kind != EinoTurnLoopItemKindInterruptContinue && item.Kind != EinoTurnLoopItemKindUserSteer {
+			continue
+		}
+		if len(item.Messages) > 1 {
 			return true
 		}
 	}
@@ -186,6 +240,14 @@ func formatInterruptContinuePrompt(note string) string {
 	}
 	return "用户请求中断当前推理并补充上下文后继续：\n" + note +
 		"\n\n请基于已经完成的步骤继续，不要重复已完成工具调用。" + interruptContinueRecoverHint
+}
+
+// formatUserSteerPrompt 执行中用户补充指示（引导）的注入提示词。
+// 与「中断并继续」区分：用户没有要求中断，只是追加或修正方向，
+// 因此在已有轨迹基础上调整后续动作即可，不做「重来一轮」的暗示。
+func formatUserSteerPrompt(note string) string {
+	return "用户在任务执行过程中补充了以下指示，请在继续推进时遵循，不要重复已经完成的工具调用：\n" +
+		strings.TrimSpace(note)
 }
 
 func cloneSchemaMessages(in []*schema.Message) []*schema.Message {

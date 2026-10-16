@@ -1241,6 +1241,30 @@
         -webkit-overflow-scrolling: touch;
     }
 
+    /* 排队卡片：收紧内边距，长文本换行显示，操作按钮保持可点尺寸 */
+    .chat-composer-surface .chat-queued-list:not([hidden]) {
+        padding: 12px 12px 0;
+    }
+
+    .chat-queued-item {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .chat-queued-text {
+        white-space: normal;
+        word-break: break-word;
+    }
+
+    .chat-queued-actions {
+        margin-left: auto;
+    }
+
+    .chat-queued-action {
+        min-width: 32px;
+        height: 32px;
+    }
+
     /* 对话页移动端工具条（由 mobile-ui.js 注入到 .chat-container 首位） */
     #m-chat-bar {
         display: flex;

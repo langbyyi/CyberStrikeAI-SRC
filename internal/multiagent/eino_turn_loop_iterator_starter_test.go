@@ -3,6 +3,7 @@ package multiagent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ type fakeTurnLoopRuntimeControl struct {
 	stopped      string
 	pushedNotes  []string
 	pushedPrefix [][]*schema.Message
+	steerNotes   []string
+	steerPrefix  [][]*schema.Message
 	pushOK       bool
 }
 
@@ -37,6 +40,20 @@ func (f *fakeTurnLoopRuntimeControl) PushInterruptContinueWithTrace(note string,
 	f.pushedNotes = append(f.pushedNotes, note)
 	f.pushedPrefix = append(f.pushedPrefix, prefix)
 	return f.pushOK
+}
+
+func (f *fakeTurnLoopRuntimeControl) PushUserSteerWithTrace(note string, prefix []*schema.Message) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steerNotes = append(f.steerNotes, note)
+	f.steerPrefix = append(f.steerPrefix, prefix)
+	return f.pushOK
+}
+
+func (f *fakeTurnLoopRuntimeControl) pushedSteers() ([]string, [][]*schema.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.steerNotes...), append([][]*schema.Message(nil), f.steerPrefix...)
 }
 
 func (f *fakeTurnLoopRuntimeControl) StopImmediate(cause string) {
@@ -224,6 +241,104 @@ func TestEinoTurnLoopIteratorStarterBindsRegistrarsAndProgress(t *testing.T) {
 	}
 	if events[1].eventType != "progress" {
 		t.Fatalf("second event = %#v", events[1])
+	}
+}
+
+// TestEinoTurnLoopStarterSteerBindsTraceAndEmitsTimeline 执行中引导 hook 须被登记，
+// 携带模型可见轨迹快照，并写入 user_steer 时间线事件（对话/监控页据此展示生效时刻）。
+func TestEinoTurnLoopStarterSteerBindsTraceAndEmitsTimeline(t *testing.T) {
+	fakeRuntime := &fakeTurnLoopRuntimeControl{pushOK: true}
+	var steerPush func(string) bool
+	var unregisterSteer func()
+	var events []struct {
+		eventType string
+		message   string
+		data      map[string]interface{}
+	}
+
+	newEinoTurnLoopIteratorStarter(einoTurnLoopIteratorStarterConfig{
+		Context:                 context.Background(),
+		ConversationID:          "conv",
+		OrchMode:                "deep",
+		UnregisterTurnLoopSteer: &unregisterSteer,
+		TurnLoopSteerRegistrar: func(push func(string) bool) func() {
+			steerPush = push
+			return func() {}
+		},
+		SnapshotModelFacingTrace: func() []*schema.Message {
+			return []*schema.Message{schema.UserMessage("原始任务")}
+		},
+		Progress: func(eventType, message string, data interface{}) {
+			item := struct {
+				eventType string
+				message   string
+				data      map[string]interface{}
+			}{eventType: eventType, message: message}
+			if m, ok := data.(map[string]interface{}); ok {
+				item.data = m
+			}
+			events = append(events, item)
+		},
+		RuntimeFactory: func(EinoTurnLoopRuntimeConfig) einoTurnLoopRuntimeControl {
+			return fakeRuntime
+		},
+	}).Start(nil)
+
+	if steerPush == nil {
+		t.Fatal("turn loop steer registrar was not bound")
+	}
+	if !steerPush("  补充：只测 443  ") {
+		t.Fatal("steer push should return runtime result")
+	}
+	notes, prefixes := fakeRuntime.pushedSteers()
+	if len(notes) != 1 || notes[0] != "  补充：只测 443  " {
+		t.Fatalf("steer notes = %#v", notes)
+	}
+	if len(prefixes) != 1 || len(prefixes[0]) != 1 || prefixes[0][0].Content != "原始任务" {
+		t.Fatalf("steer prefix = %#v, want model-facing trace snapshot", prefixes)
+	}
+	if len(events) != 1 || events[0].eventType != "user_steer" {
+		t.Fatalf("events = %#v, want single user_steer event", events)
+	}
+	if events[0].data["rawMessage"] != "补充：只测 443" || events[0].data["kind"] != "turn_loop_steer" {
+		t.Fatalf("user_steer event = %#v", events[0])
+	}
+	if !strings.Contains(events[0].message, "补充：只测 443") {
+		t.Fatalf("user_steer message = %q, want the user text", events[0].message)
+	}
+}
+
+// TestEinoTurnLoopStarterSteerRejectedEmitsNoTimeline loop 已停止时入队失败：
+// 返回 false 且不写时间线，HTTP 层据此回退为「不支持执行中引导」。
+func TestEinoTurnLoopStarterSteerRejectedEmitsNoTimeline(t *testing.T) {
+	fakeRuntime := &fakeTurnLoopRuntimeControl{pushOK: false}
+	var steerPush func(string) bool
+	var unregisterSteer func()
+	eventCount := 0
+
+	newEinoTurnLoopIteratorStarter(einoTurnLoopIteratorStarterConfig{
+		Context:                 context.Background(),
+		ConversationID:          "conv",
+		OrchMode:                "eino_single",
+		UnregisterTurnLoopSteer: &unregisterSteer,
+		TurnLoopSteerRegistrar: func(push func(string) bool) func() {
+			steerPush = push
+			return func() {}
+		},
+		Progress: func(string, string, interface{}) { eventCount++ },
+		RuntimeFactory: func(EinoTurnLoopRuntimeConfig) einoTurnLoopRuntimeControl {
+			return fakeRuntime
+		},
+	}).Start(nil)
+
+	if steerPush == nil {
+		t.Fatal("turn loop steer registrar was not bound")
+	}
+	if steerPush("补充") {
+		t.Fatal("steer push should report the runtime rejection")
+	}
+	if eventCount != 0 {
+		t.Fatalf("events = %d, want none for a rejected steer", eventCount)
 	}
 }
 

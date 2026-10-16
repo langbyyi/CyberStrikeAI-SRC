@@ -265,13 +265,14 @@ test('多对话并发时释放隐藏主流且旧请求不能覆盖新对话状�
     assert.match(template, /style\.css\?v=[A-Za-z0-9._-]+/);
 });
 
-test('彻底停止始终使用弹窗锁定的会话且状态刷新后仍会取消', () => {
+test('停止任务始终使用调用方给定的会话且状态刷新后仍会取消', () => {
     const start = monitor.indexOf("async function performHardCancelProgressTask(progressId, conversationId = '')");
     const end = monitor.indexOf('function progressElapsedText(', start);
     assert.notEqual(start, -1);
     assert.notEqual(end, -1);
     const hardCancelSource = monitor.slice(start, end);
-    assert.match(monitor, /performHardCancelProgressTask\(progressId, conversationId\)/);
+    // 调用方（对话页停止按钮、顶部「运行中」任务条）传入自己的会话 id，不依赖可能已刷新的任务列表状态
+    assert.match(monitor, /void performHardCancelProgressTask\(findProgressIdByConversationId\(target\), target\)/);
     assert.match(hardCancelSource, /const targetConversationId = String\(conversationId \|\| \(state && state\.conversationId\) \|\| ''\)\.trim\(\)/);
     assert.match(hardCancelSource, /await requestCancel\(targetConversationId\)/);
     assert.doesNotMatch(hardCancelSource, /if \(!state \|\| !state\.conversationId\)/);

@@ -1052,6 +1052,8 @@ func setupRoutes(
 		protected.POST("/eino-agent/stream", agentHandler.EinoSingleAgentLoopStream)
 		// Agent Loop 取消与任务列表
 		protected.POST("/agent-loop/cancel", agentHandler.CancelAgentLoop)
+		// 执行中引导：任务运行期间追加用户补充指示，不停止任务
+		protected.POST("/agent-loop/steer", agentHandler.SteerAgentLoop)
 		protected.GET("/agent-loop/tasks", agentHandler.ListAgentTasks)
 		protected.GET("/agent-loop/task-events", agentHandler.SubscribeAgentTaskEvents)
 		protected.GET("/agent-loop/tasks/completed", agentHandler.ListCompletedTasks)

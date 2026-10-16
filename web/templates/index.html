@@ -1196,6 +1196,7 @@
                                 <section id="chat-hitl-approval-dock" class="chat-hitl-approval-dock" aria-label="待审批操作" aria-live="polite" hidden></section>
                                 <div class="chat-input-primary-row chat-composer-surface">
                                 <div class="chat-input-with-files">
+                                    <div id="chat-queued-list" class="chat-queued-list" role="list" data-i18n="chat.queuedListTitle" data-i18n-attr="aria-label" aria-label="待发送队列" hidden></div>
                                     <div id="chat-file-list" class="chat-file-list" aria-label="已选文件列表"></div>
                                     <div id="chat-attachment-progress" class="chat-upload-progress-row" hidden role="status" aria-live="polite">
                                         <div class="chat-upload-progress-track" aria-hidden="true"><div class="chat-upload-progress-fill" id="chat-attachment-progress-fill"></div></div>
@@ -5552,28 +5553,6 @@
                     <div class="detail-code-card">
                         <pre id="detail-error" class="code-block error"></pre>
                     </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 用户中断并说明（继续迭代） -->
-    <div id="user-interrupt-modal" class="modal">
-        <div class="modal-content" style="max-width: 520px;">
-            <div class="modal-header">
-                <h2 data-i18n="tasks.interruptModalTitle">中断当前步骤</h2>
-                <span class="modal-close" onclick="closeUserInterruptModal()">&times;</span>
-            </div>
-            <div class="modal-body">
-                <p class="detail-abort-hint" data-i18n="tasks.interruptModalHint">填写说明后将写入对话并由智能体继续迭代。</p>
-                <div class="form-group">
-                    <label for="user-interrupt-reason"><span data-i18n="tasks.interruptReasonLabel">中断说明</span></label>
-                    <textarea id="user-interrupt-reason" class="form-control" rows="4" data-i18n="tasks.interruptReasonPlaceholder" data-i18n-attr="placeholder" placeholder=""></textarea>
-                </div>
-                <div class="form-actions" style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end;">
-                    <button type="button" class="btn-secondary" onclick="closeUserInterruptModal()" data-i18n="tasks.interruptModalClose">关闭</button>
-                    <button type="button" class="btn-secondary btn-delete" onclick="submitUserInterruptHardCancel()" data-i18n="tasks.interruptHardStop">彻底停止</button>
-                    <button type="button" class="btn-primary" onclick="submitUserInterruptContinue()" data-i18n="tasks.interruptConfirmContinue">中断并继续</button>
                 </div>
             </div>
         </div>

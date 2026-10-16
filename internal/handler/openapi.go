@@ -553,6 +553,20 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 					},
 				},
+				"SteerAgentLoopRequest": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"conversationId", "message"},
+					"properties": map[string]interface{}{
+						"conversationId": map[string]interface{}{
+							"type":        "string",
+							"description": "对话ID（该会话须有正在运行的任务）",
+						},
+						"message": map[string]interface{}{
+							"type":        "string",
+							"description": "运行中补充的用户指示。入队到运行任务的 Eino TurnLoop，在当前模型调用或工具轮结束的安全点生效；不停止任务、不掐断已运行的工具。由对话页输入框上方排队卡片的「立即」触发（运行中按 Enter 只排队，任务结束后自动发出，不调用本接口）",
+						},
+					},
+				},
 				"AgentTask": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -1800,6 +1814,65 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 						"404": map[string]interface{}{
 							"description": "未找到正在执行的任务",
+						},
+						"401": map[string]interface{}{
+							"description": "未授权",
+						},
+					},
+				},
+			},
+			"/api/agent-loop/steer": map[string]interface{}{
+				"post": map[string]interface{}{
+					"tags":        []string{"对话交互"},
+					"summary":     "执行中引导",
+					"description": "任务运行期间追加用户补充指示（引导）：入队到运行中的 Eino TurnLoop，在当前模型调用或工具轮结束的安全点生效。不停止任务，也不掐断已经在运行的工具。",
+					"operationId": "steerAgentLoop",
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/SteerAgentLoopRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "引导已入队",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"status": map[string]interface{}{
+												"type":    "string",
+												"example": "steer_accepted",
+											},
+											"conversationId": map[string]interface{}{
+												"type":        "string",
+												"description": "对话ID",
+											},
+											"message": map[string]interface{}{
+												"type":    "string",
+												"example": "已加入引导，将在当前步骤的安全点生效。",
+											},
+										},
+									},
+								},
+							},
+						},
+						"404": map[string]interface{}{
+							"description": "该会话没有正在执行的任务（status=no_active_task；调用方应按普通发送处理）",
+						},
+						"409": map[string]interface{}{
+							"description": "当前运行方式不支持执行中引导（status=steer_unsupported；如 workflow/批量等无 TurnLoop 安全点的运行时）",
+						},
+						"400": map[string]interface{}{
+							"description": "请求体不合法，或补充指示为空",
+						},
+						"403": map[string]interface{}{
+							"description": "无权访问该会话",
 						},
 						"401": map[string]interface{}{
 							"description": "未授权",

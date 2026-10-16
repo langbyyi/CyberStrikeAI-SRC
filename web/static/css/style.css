@@ -44560,6 +44560,97 @@ html[data-theme="dark"] .project-conversation-row:hover .project-conversation-it
     padding: 18px 22px 0;
 }
 
+/* 运行中输入的排队卡片（Codex 风格）：任务结束后自动按序发出，
+   需要立刻影响当前任务时点「立即」把它作为执行中引导注入。 */
+.chat-composer-surface .chat-queued-list:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 22px 0;
+}
+
+.chat-queued-list[hidden] {
+    display: none;
+}
+
+.chat-queued-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 8px 7px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.03);
+    font-size: 13.5px;
+}
+
+.chat-queued-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-queued-edit-input {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 5px;
+    border: 1px solid rgba(0, 102, 255, 0.35);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13.5px;
+    outline: none;
+}
+
+.chat-queued-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+}
+
+.chat-queued-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.16s, color 0.16s, border-color 0.16s;
+}
+
+.chat-queued-action:hover {
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--text-primary);
+}
+
+.chat-queued-action--send {
+    padding: 0 9px;
+    border-color: var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.chat-queued-action--send:hover {
+    border-color: rgba(0, 102, 255, 0.4);
+    color: var(--accent-color);
+}
+
+.chat-queued-action-label {
+    font-weight: 500;
+}
+
 .chat-composer-surface .chat-upload-progress-row:not([hidden]) {
     margin: 12px 22px 0;
 }
@@ -45017,6 +45108,20 @@ html[data-theme="dark"] .chat-composer-meta-divider {
 html[data-theme="dark"] .chat-composer-surface.chat-input-primary-row {
     border-color: #2b374b !important;
     background: #0f172a !important;
+}
+
+html[data-theme="dark"] .chat-queued-item {
+    border-color: #2b374b;
+    background: rgba(148, 163, 184, 0.08);
+}
+
+html[data-theme="dark"] .chat-queued-action:hover {
+    background: rgba(148, 163, 184, 0.14);
+}
+
+html[data-theme="dark"] .chat-queued-action--send {
+    border-color: #2b374b;
+    background: #16223a;
 }
 
 /* Keep the rounded surface as the sole dark background painter. Rectangular

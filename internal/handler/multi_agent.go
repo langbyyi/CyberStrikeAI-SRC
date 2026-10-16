@@ -248,6 +248,9 @@ func (h *AgentHandler) MultiAgentLoopStream(c *gin.Context) {
 		taskCtxLoop = multiagent.WithAgentTurnLoopInterruptRegistrar(taskCtxLoop, func(push func(string) bool) func() {
 			return h.tasks.BindAgentTurnLoopInterrupt(conversationID, push)
 		})
+		taskCtxLoop = multiagent.WithAgentTurnLoopSteerRegistrar(taskCtxLoop, func(push func(string) bool) func() {
+			return h.tasks.BindAgentTurnLoopSteer(conversationID, push)
+		})
 		taskCtxLoop = h.withApprovalToolInterceptor(taskCtxLoop, conversationID, assistantMessageID)
 
 		result, runErr = multiagent.RunDeepAgent(

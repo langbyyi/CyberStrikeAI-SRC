@@ -103,3 +103,9 @@ func einoTurnLoopInterruptTimelineSummary(note string) string {
 	}
 	return "用户中断说明（Eino TurnLoop 原生续跑）：\n\n" + note
 }
+
+// einoUserSteerTimelineSummary 时间线正文只放用户原文：条目标题已经是「执行中引导」，
+// 再前缀一次标题属重复展示。
+func einoUserSteerTimelineSummary(note string) string {
+	return strings.TrimSpace(note)
+}

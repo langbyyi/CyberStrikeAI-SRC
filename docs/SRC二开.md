@@ -18,6 +18,7 @@
 | 9 | Eino 显式完成协议 | 过程说明不再被误判为最终回复 | `internal/multiagent/eino_completion_contract.go` |
 | 10 | 红队工具箱 | msfconsole / frida / evil-winrm / aircrack-ng 等工具 YAML | `tools/*.yaml` |
 | 11 | 多模态图片输入 | 对标 Codex/Claude Code：上传图片与 `read_file` 图片原生直发；纯文本主模型走旁路 | `internal/vision/native.go` `internal/multiagent/turn_images.go` `internal/multiagent/eino_skills.go` |
+| 12 | 运行中输入排队 + 执行中引导 | 对标 Codex：运行中输入=排队卡片（立即/编辑/删除，结束自动发出），「立即」= TurnLoop 安全点注入指示 | `web/static/js/chat.js` `internal/multiagent/eino_turn_loop_runtime.go` `internal/handler/agent.go` |
 
 ## 核心二开（相对官方）
 
@@ -82,6 +83,20 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **配置/UI**：`ai.channels.<id>.supports_vision` / `openai.supports_vision`（默认 false，行为不变）；系统设置 → AI 通道勾选「主模型支持图片输入（多模态）」
 - 文档：`docs/zh-CN/VISION.md`；测试：`internal/vision/native_test.go`、`internal/multiagent/turn_images_test.go`、`internal/multiagent/eino_multimodal_read_test.go`（断言 read_file 仅在能力位开启时返回图片块）、`internal/mcp/image_content_test.go`、`internal/handler/chat_turn_images_test.go`、`internal/handler/config_vision_flag_test.go`、`internal/project/vision_image_prompt_test.go`、`internal/multiagent/enhanced_tool_middleware_test.go`（断言中间件链同时覆盖两条通道）、`internal/multiagent/multimodal_parts_test.go`（图片计入预算 + 轨迹不含 base64）、`internal/handler/chat_turn_images_test.go`（编码载荷可解码为真图片）、`web/tests/chat-attachment-thumbs.test.cjs`
 
+### 11. 运行中输入排队 + 执行中引导（对标 Codex）
+
+官方与同步前本分支的行为：会话已有任务在跑时，前端 `sendMessage` 直接弹「当前会话已有任务正在执行」，后端各入口以 `ErrTaskAlreadyRunning` 拒绝 —— 用户只能等或整轮停止。本分支改为 **Codex 式排队**：运行中按 Enter 不打断当前任务，消息落到输入框上方的队列卡片，任务结束后自动按序发出；需要立刻影响当前任务时点卡片上的「立即」，走**执行中引导**（TurnLoop 安全点注入）。
+
+- **排队（前端，主路径）**：`chat.js` 队列模块（`enqueueChatMessage` / `renderChatQueue` / `chatQueueSendNow` / `drainChatQueueIfIdle` 等）。运行中发送 → 入队并清空输入，卡片支持「立即 / 编辑（行内）/ 删除」，队列按会话隔离并写入 `localStorage`（切会话各自装载，不串会话）；输入框占位符在有排队时切为「继续输入以排队后续修改」；任务结束由 `updateChatPrimaryActionState` 触发 `drainChatQueueIfIdle` 逐条发出。不发附件（附件需完整会话准备流程，仍提示等待）
+- **执行中引导（后端，卡片「立即」= `POST /api/agent-loop/steer`）**：`{conversationId, message}`。200 = 已入队；404 `no_active_task`；409 `steer_unsupported`（workflow/批量等无 TurnLoop 安全点的运行时，明确拒绝而非静默中断任务）；403 沿用 `agentConversationAllowed`。受理后用户指示同时进入 `hitlCognition` 作为审批授权范围补充声明。实现：`PushUserSteerWithTrace` / `formatUserSteerPrompt` / `EinoTurnLoopItemKindUserSteer`（`eino_turn_loop_runtime.go`）、`AgentTurnLoopSteerRegistrar`（`eino_native_cancel.go`）、hook 绑定与 `user_steer` 进度事件（`eino_turn_loop_iterator_starter.go`，经 `createProgressCallback` 落 process_details + SSE + taskEventBus）、`BindAgentTurnLoopSteer` / `SteerRunningTask` 三态（`handler/task_manager.go`）
+- **抢占参数的两条依据（区分「已证实」与「保守选择」）**：
+  - **升级超时必须远长于单步合法耗时（已证实，有判别性回归测试）**：`WithPreemptTimeout` 超时后升级为立即中止。沿用「中断并继续」的 3 秒实测把 30 秒的 exec 打断重跑（真机事件时间线可查），故引导取 `einoTurnLoopSteerPreemptTimeout = 60min`（= 配置上限 `tool_timeout_minutes`），正常情况下工具轮/模型调用一结束就命中安全点完成切换，升级只用于运行真正挂死。注意该配置若被设为 0（不限）或大于 60，长时间工具仍可能在升级点被中止——需要更宽窗口时调大常量。`TestEinoTurnLoopUserSteerDoesNotAbortRunningTool` 把该超时改回 3 秒即失败。
+  - **带 `WithRecursive()` 是保守选择（未逐项隔离）**：ADK 只在 `WithPreemptTimeout` 里附带递归传播；本项目 TurnLoop 的根 agent 是 adapter 包装、真实安全点在内层，带递归更稳妥。但「递归 vs 超时升级」哪个是引导送达的决定因素**没有隔离验证**：真机首版（无超时、无递归）引导丢失，第二版（3 秒超时 + 递归）送达，而第二版已被证明触发了升级路径，故更可能由升级而非递归起决定作用；单测里换回无递归的 `WithPreempt` 也能通过（`TestEinoTurnLoopUserSteerReachesDescendantSafePoint` 只锁定「生产装配下引导能进模型输入」，不判别递归）。保留递归无额外副作用——不触发升级就不会有立即中止级联。
+- **停止不再弹「中断并继续」弹窗（旧实现已整体废弃）**：`cancelActiveTask` / `cancelProgressTask` 直接 `performHardCancelProgressTask` 停止。超集弹窗 `#user-interrupt-modal` 及其四个处理器（`openUserInterruptModal` / `closeUserInterruptModal` / `submitUserInterruptContinue` / `submitUserInterruptHardCancel`）、`userInterruptModalPending` / `__monitorInterruptContext` 上下文、9 个 `tasks.interrupt*` i18n 键、2 条 rbac-guards 权限包装、以及早已无人引用的 `tasks.userInterruptTimelineTitle` **全部删除**（它在两个按钮都可被更清楚的入口替代后只剩余度）。监控页针对**单次工具调用**的「终止」改走专用弹窗 `#mcp-tool-abort-modal`（单用途：只掐这一个工具、说明可选、本轮推理继续），并统一到**一条**后端路径 `POST /api/monitor/execution/:id/cancel`：它自己反查会话后调用与对话侧相同的 `cancelToolContinueAfter`（含 Eino execute 终止），解析不到会话时还有内/外部 MCP 仅凭 executionId 的兜底——这条比经 `/api/agent-loop/cancel{continueAfter}` 更完备，故前端删除了 `requestCancelWithContinue` 及其分叉逻辑（`web/tests/monitor-tool-terminate.test.cjs` 锁定）。后端 `CancelAgentLoop` 的 `continueAfter` 分支**保留但 UI 不再调用**（公开 API 且 OpenAPI 有记录）；若要彻底删除，需连带移除 `SetInterruptContinueNote` / `CancelTask(ErrInterruptContinue)` / `PushInterruptContinue*` 整条中断并继续子系统与运行循环抢占机制，属独立大改，未纳入本次范围
+- **CI 覆盖修正（两类空跑）**：`.github/workflows/self-update.yml` 的前端步骤原为 `node --test web/static/js/*.test.cjs`，匹配 0 文件且 exit 0（本分支测试实际在 `web/tests/`，官方测试迁移时漏改）；`paths` 触发范围也少了 css/i18n/templates/tests。同时 `go test -race` 列表缺 `./internal/multiagent`，本次引导的 3 个核心 Go 用例不在 CI 里跑——已一并补上（列表 + paths）。
+- **已知边界**：运行起始的极短窗口内 TurnLoop 尚未挂载，队列「立即」会退化为 409 并留在队列（不丢消息）
+- **测试**：`internal/multiagent/eino_turn_loop_steer_tool_test.go`（工具执行期间引导能切换轮次、**引导不掐断正在跑的工具**、引导升级超时常量下限、与「中断并继续」对照）、`eino_turn_loop_runtime_test.go`、`eino_turn_loop_iterator_starter_test.go`（hook 绑定 + `user_steer` 事件 + 拒绝时不写时间线）、`internal/handler/agent_steer_test.go`、`internal/handler/task_manager_steer_test.go`、`web/tests/chat-queued-followup.test.cjs`（入队/持久化/会话隔离/立即/回退/自动发出/按钮态/占位符/403 权限提示）、`web/tests/monitor-tool-terminate.test.cjs`（停止不弹窗、单次工具终止单一后端路径、旧弹窗不复活）
+
 ## 与官方版本及本仓库历史的关系（对照核实）
 
 **对比基准与结论均经代码检索核实**（2026-09-09 复核，`git diff v1.7.18` 工作区全量对比）：
@@ -117,7 +132,7 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **新增官方能力（整体采纳）**：
   - `internal/processguard/` 进程隔离（Linux cgroup v2 / Windows Job Object）：`config.yaml` 新增 `security.process_isolation` 段，MCP 执行服务、外部管理器接入；配套 `.github/workflows/process-isolation.yml` CI
   - 任务进程生命周期（`internal/handler/task_lifecycle.go` + runlease）：任务启动/结束登记进程范围，任务取消时清理遗留子进程（`task_process_cleanup_test.go`）
-  - Eino 跨中断轮次记忆（`internal/multiagent/eino_turn_history.go`）：TurnLoop GenInput 在纯提示词续跑时前置历史轮消息（官方修复 issue #121）；与本分支 `PushInterruptContinueWithTrace` 轨迹前置机制通过 `einoItemsCarryInterruptTrace` 守卫协调——轨迹已随 item 携带时跳过 history 前置，两套机制互不重复
+  - Eino 跨中断轮次记忆（`internal/multiagent/eino_turn_history.go`）：TurnLoop GenInput 在纯提示词续跑时前置历史轮消息（官方修复 issue #121）；与本分支 `PushInterruptContinueWithTrace` 轨迹前置机制通过守卫函数协调（该守卫后因「执行中引导」加入同类 item 而更名为 `einoItemsCarryModelFacingTrace`）——轨迹已随 item 携带时跳过 history 前置，两套机制互不重复
   - SSE 错误规范化（`internal/openai/eino_sse_error.go`）：流式响应错误事件统一转结构化错误
   - 摘要模型守卫增强（`eino_summarize_model_guard.go`）
   - supervisor 退出优先 final_result（`eino_exit_fallback_test.go` 跟进）

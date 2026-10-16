@@ -420,6 +420,7 @@ C2：
 | 方法 | 路径 | 说明 | 权限 |
 | --- | --- | --- | --- |
 | POST | `/api/agent-loop/cancel` | 取消运行中的 Agent Loop | `tasks:write` |
+| POST | `/api/agent-loop/steer` | 执行中引导：把用户补充指示注入运行中的任务（下一个安全点生效，不停止任务、不掐断已运行工具） | `tasks:write` |
 | GET | `/api/agent-loop/tasks` | 运行中任务列表 | `tasks:read` |
 | GET | `/api/agent-loop/tasks/completed` | 已完成任务列表 | `tasks:read` |
 | GET | `/api/agent-loop/task-events` | 任务事件 SSE 流 | `tasks:read` |
