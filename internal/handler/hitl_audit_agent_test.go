@@ -2,11 +2,72 @@ package handler
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"cyberstrike-ai/internal/config"
+
+	"go.uber.org/zap"
 )
+
+func newAuditStubHandler(baseURL string) *AgentHandler {
+	return &AgentHandler{
+		config: &config.Config{OpenAI: config.OpenAIConfig{APIKey: "test-key", BaseURL: baseURL, Model: "audit-model"}},
+		logger: zap.NewNop(),
+	}
+}
+
+// 引擎抖动不该把一类操作判死：首次失败后重试，第二次成功即按裁决结果返回。
+func TestAuditAgentReviewRetriesEngineFailureThenDecides(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"decision\":\"approve\",\"comment\":\"改的是自建账号，最小化验证\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	h := newAuditStubHandler(server.URL)
+	decision := h.auditAgentReview(context.Background(), "http-framework-test", map[string]interface{}{"arguments": `{"method":"POST"}`})
+
+	if decision.Decision != "approve" {
+		t.Fatalf("decision=%s comment=%s", decision.Decision, decision.Comment)
+	}
+	if decision.Failure {
+		t.Fatal("recovered attempt must not be flagged as engine failure")
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("attempts=%d, want 2", got)
+	}
+}
+
+// 持续失败时按"引擎不可用"返回，而不是伪装成策略拒绝：
+// 文案必须说明这不是对本次操作的裁决，也不代表该类操作被封禁。
+func TestAuditAgentReviewMarksPersistentEngineFailureAsNonPolicy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	h := newAuditStubHandler(server.URL)
+	decision := h.auditAgentReview(context.Background(), "exec", map[string]interface{}{"arguments": `{"command":"id"}`})
+
+	if decision.Decision != "reject" || !decision.Failure {
+		t.Fatalf("decision=%s failure=%v", decision.Decision, decision.Failure)
+	}
+	for _, want := range []string{"审批引擎不可用", "非策略裁决", "重试"} {
+		if !strings.Contains(decision.Comment, want) {
+			t.Fatalf("comment=%q must mention %q", decision.Comment, want)
+		}
+	}
+}
 
 func TestParseAuditAgentLLMContentApprove(t *testing.T) {
 	d, err := parseAuditAgentLLMContent(`{"decision":"approve","comment":"与任务一致"}`)

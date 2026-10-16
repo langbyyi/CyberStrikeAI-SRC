@@ -2,7 +2,9 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +66,49 @@ func TestCoordinatorCreatesOneRequestForMergedTriggersAndOneShotGrant(t *testing
 	}
 	if err := coordinator.Claim(context.Background(), grant, "exec-2"); err == nil {
 		t.Fatal("grant must not be claimable twice")
+	}
+}
+
+// 审批人原文必须一路传到工具层软结果：模型靠这段话里的
+// "请确认是否授权本次操作" 才知道该向用户索要授权。只回哨兵串
+// 会让被拦操作在会话里再无解封路径。
+func TestCoordinatorRejectionCarriesReviewerWording(t *testing.T) {
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "reject.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewSQLiteStore(db)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	const reason = "audit agent: 实际操作：调用密码重置接口；命中规则：R1 未声明——需要执行密码重置操作但任务未声明，请确认是否授权本次操作。"
+	reviewer := &recordingReviewer{result: ReviewDecision{
+		Decision: ReviewerReject, ActorType: ReviewerAgent, ActorID: "audit-model", Comment: reason,
+	}}
+	coordinator := NewCoordinator(CoordinatorOptions{
+		Evaluator: NewEvaluator(fixedTrigger{
+			name:   PolicyTypeDangerousAction,
+			result: TriggerResult{Matched: true, RiskLevel: RiskCritical},
+		}),
+		Config: Config{Reviewer: ReviewerAgent}, Store: store, AgentReviewer: reviewer,
+	})
+	_, err = coordinator.Authorize(context.Background(), Invocation{
+		ID: "inv-reject", Source: "eino_middleware", RequesterUserID: "admin", ToolName: "http-framework-test",
+		Arguments: map[string]any{"method": "POST", "url": "http://target/seeyon/rest/phoneLogin/phoneCode/resetPassword"},
+	})
+	if !errors.Is(err, ErrApprovalRejected) {
+		t.Fatalf("err=%v, want ErrApprovalRejected", err)
+	}
+	if got := RejectionReason(err); got != reason {
+		t.Fatalf("RejectionReason=%q, want %q", got, reason)
+	}
+	if got := RejectionReason(err); strings.Contains(got, ErrApprovalRejected.Error()) {
+		t.Fatalf("reason must not carry the sentinel: %q", got)
+	}
+	if got := RejectionReason(errors.New("some other failure")); got != "" {
+		t.Fatalf("non-rejection error must yield empty reason, got %q", got)
 	}
 }
 

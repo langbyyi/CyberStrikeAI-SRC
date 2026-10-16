@@ -21,11 +21,15 @@ type humanRejectError struct {
 	reason string
 }
 
+// humanRejectError 保留历史命名：软结果分支按类型判定，不依赖措辞。
+// 措辞本身必须如实——审计 Agent 才是常见裁决方，把它的否决说成
+// "rejected by user" 会让模型以为用户否决过，转而向用户申诉一件
+// 用户从未做过的事，授权闭环就此断掉。
 func (e *humanRejectError) Error() string {
 	if strings.TrimSpace(e.reason) == "" {
-		return "rejected by user"
+		return "审批未通过（未提供理由）"
 	}
-	return "rejected by user: " + strings.TrimSpace(e.reason)
+	return strings.TrimSpace(e.reason)
 }
 
 func NewHumanRejectError(reason string) error {

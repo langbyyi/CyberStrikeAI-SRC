@@ -1272,6 +1272,62 @@ LIMIT 1`, conversationID, anchorMessageID, conversationID).Scan(&content)
 	return content, nil
 }
 
+// defaultConversationUserDeclarationLimit 审批上下文默认取最近多少条用户原文。
+const defaultConversationUserDeclarationLimit = 20
+
+// ConversationUserDeclarations 返回锚点轮次之前的用户原文（含锚点轮），
+// 按时间升序、最多 limit 条。审批侧需要看到"用户此前是否已授权这类操作"，
+// 只给当轮消息会让跨轮授权失效，用户同意之后仍然被反复拦截。
+//
+// 锚点比较放在 SQL 内做（列与列比，避免 Go 侧绑参与列值类型不一致），
+// 并以 rowid 兜同一时间戳的先后；锚点缺失时不截断，与 GetTurnUserMessage 的兜底一致。
+func (db *DB) ConversationUserDeclarations(conversationID, anchorMessageID string, limit int) ([]string, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	anchorMessageID = strings.TrimSpace(anchorMessageID)
+	if conversationID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = defaultConversationUserDeclarationLimit
+	}
+	rows, err := db.Query(`
+SELECT content FROM (
+  SELECT m.content AS content, m.created_at AS created_at, m.rowid AS rowid
+  FROM messages m
+  WHERE m.conversation_id = ? AND m.role = 'user'
+    AND (
+      ? = ''
+      OR EXISTS (
+        SELECT 1 FROM messages a
+        WHERE a.id = ? AND a.conversation_id = ?
+          AND (m.created_at < a.created_at
+               OR (m.created_at = a.created_at AND m.rowid <= a.rowid))
+      )
+    )
+  ORDER BY m.created_at DESC, m.rowid DESC
+  LIMIT ?
+) ORDER BY created_at ASC, rowid ASC
+`, conversationID, anchorMessageID, anchorMessageID, conversationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query conversation user declarations: %w", err)
+	}
+	defer rows.Close()
+	declarations := make([]string, 0, limit)
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			return nil, fmt.Errorf("scan conversation user declaration: %w", err)
+		}
+		if trimmed := strings.TrimSpace(content); trimmed != "" {
+			declarations = append(declarations, trimmed)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate conversation user declarations: %w", err)
+	}
+	return declarations, nil
+}
+
 // AssistantCognitionTexts 单条助手消息上的思考/推理/规划文本。
 type AssistantCognitionTexts struct {
 	Thinking       string

@@ -34,14 +34,15 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, toolName string, pa
 	}
 	llmCfg := h.auditLLMConfig()
 	if strings.TrimSpace(llmCfg.APIKey) == "" || strings.TrimSpace(llmCfg.Model) == "" {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: LLM 未配置"}
+		return hitlDecision{
+			Decision: "reject",
+			Comment:  "audit agent: LLM 未配置（审批引擎不可用，非策略裁决）",
+			Failure:  true,
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
 	userContent := buildAuditAgentReviewInput(toolName, payload)
 	requestBody := map[string]interface{}{
 		"model": strings.TrimSpace(llmCfg.Model),
@@ -62,6 +63,32 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, toolName string, pa
 		"enable_thinking": false,
 	}
 
+	// 引擎故障（调用失败 / 无响应 / 解析失败）不该把一类操作永久判死：
+	// 重试一次，仍失败才返回"引擎不可用"，且明确标注这不是策略裁决。
+	var lastFailure string
+	for attempt := 1; attempt <= hitlAuditAttempts; attempt++ {
+		callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		decision, err := h.callAuditAgentLLM(callCtx, &llmCfg, requestBody, toolName)
+		cancel()
+		if err == nil {
+			return decision
+		}
+		lastFailure = err.Error()
+	}
+	return hitlDecision{
+		Decision: "reject",
+		Comment: "audit agent: 审批引擎不可用（非策略裁决）：" + lastFailure +
+			"。本次调用未执行，稍后可重试同类调用；引擎恢复后按正常规则裁决。",
+		Failure: true,
+	}
+}
+
+// hitlAuditAttempts 审批引擎故障时的总尝试次数（含首次）。
+const hitlAuditAttempts = 2
+
+// callAuditAgentLLM 单次审计裁决调用；返回 error 表示引擎侧故障（可重试），
+// 而 approve/reject 决策一律以 (decision, nil) 返回。
+func (h *AgentHandler) callAuditAgentLLM(ctx context.Context, llmCfg *config.OpenAIConfig, requestBody map[string]interface{}, toolName string) (hitlDecision, error) {
 	var apiResponse struct {
 		Choices []struct {
 			Message struct {
@@ -70,16 +97,13 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, toolName string, pa
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	client := openai.NewClient(&llmCfg, nil, h.logger)
-	if err := client.ChatCompletion(callCtx, requestBody, &apiResponse); err != nil {
+	client := openai.NewClient(llmCfg, nil, h.logger)
+	if err := client.ChatCompletion(ctx, requestBody, &apiResponse); err != nil {
 		h.logger.Warn("审计 Agent LLM 调用失败", zap.Error(err), zap.String("tool", toolName))
-		return hitlDecision{
-			Decision: "reject",
-			Comment:  "audit agent: LLM 调用失败，保守拒绝",
-		}
+		return hitlDecision{}, fmt.Errorf("LLM 调用失败: %w", err)
 	}
 	if len(apiResponse.Choices) == 0 {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: LLM 无有效响应，保守拒绝"}
+		return hitlDecision{}, errors.New("LLM 无有效响应")
 	}
 	msg := apiResponse.Choices[0].Message
 	raw := strings.TrimSpace(msg.Content)
@@ -97,14 +121,14 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, toolName string, pa
 			zap.String("tool", toolName),
 			zap.String("snippet", snippet),
 		)
-		return hitlDecision{Decision: "reject", Comment: "audit agent: 响应无法解析，保守拒绝"}
+		return hitlDecision{}, errors.New("响应无法解析")
 	}
 	if dec.Comment == "" {
 		dec.Comment = "audit agent: " + dec.Decision
 	} else if !strings.HasPrefix(strings.ToLower(dec.Comment), "audit agent") {
 		dec.Comment = "audit agent: " + dec.Comment
 	}
-	return dec
+	return dec, nil
 }
 
 func (h *AgentHandler) auditLLMConfig() config.OpenAIConfig {
@@ -138,32 +162,45 @@ func (h *AgentHandler) AuditEngineInfo() (backend, model string) {
 // 一次请求回答内置破坏性问题 + 组织策略，放通/拦截由 DecideJev 在代码侧裁定。
 func (h *AgentHandler) auditAgentReviewTypeSafe(ctx context.Context, toolName string, payload map[string]interface{}) hitlDecision {
 	if h == nil || h.config == nil {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 未配置"}
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 未配置", Failure: true}
 	}
 	baseURL, apiKey, model := h.config.Hitl.TypeSafeConfigEffective()
 	if apiKey == "" {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe API Key 未配置"}
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe API Key 未配置", Failure: true}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
 	client := typesafe.NewClient(baseURL, apiKey, model, nil)
 	policy := h.config.Hitl.JevOperatorPolicy()
-	result, err := client.SystemOne(callCtx, hitl.BuildJevState(hitlAuditMode, toolName, payload, policy), hitl.JevAuditQuestions(policy))
-	if err != nil {
+	state := hitl.BuildJevState(hitlAuditMode, toolName, payload, policy)
+	questions := hitl.JevAuditQuestions(policy)
+
+	// 与 openai 后端同口径：引擎故障重试一次，仍失败按"引擎不可用"返回，
+	// 而不是把一次网络抖动变成该类操作的终身封禁。
+	var lastFailure string
+	for attempt := 1; attempt <= hitlAuditAttempts; attempt++ {
+		callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		result, err := client.SystemOne(callCtx, state, questions)
+		cancel()
+		if err == nil {
+			decision, comment := hitl.DecideJev(result)
+			if comment == "" {
+				comment = "audit agent: " + decision
+			}
+			return hitlDecision{Decision: decision, Comment: comment}
+		}
+		lastFailure = err.Error()
 		if h.logger != nil {
 			h.logger.Warn("审计 Agent TypeSafe 调用失败", zap.Error(err), zap.String("tool", toolName))
 		}
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 调用失败，保守拒绝"}
 	}
-	decision, comment := hitl.DecideJev(result)
-	if comment == "" {
-		comment = "audit agent: " + decision
+	return hitlDecision{
+		Decision: "reject",
+		Comment: "audit agent: 审批引擎不可用（非策略裁决）：" + lastFailure +
+			"。本次调用未执行，稍后可重试同类调用；引擎恢复后按正常规则裁决。",
+		Failure: true,
 	}
-	return hitlDecision{Decision: decision, Comment: comment}
 }
 
 func buildAuditAgentReviewInput(toolName string, payload map[string]interface{}) string {
@@ -171,8 +208,14 @@ func buildAuditAgentReviewInput(toolName string, payload map[string]interface{})
 		"toolName": strings.TrimSpace(toolName),
 	}
 	if payload != nil {
+		// 显式列举字段，不整包 dump arguments。
 		// findings/riskLevel：让审计 Agent 看到危险规则命中详情，而非仅凭命令自行推断。
-		for _, k := range []string{"arguments", "argumentsObj", "command", "findings", "riskLevel", hitlPayloadUserMessage} {
+		// userMessage/testingSpecification：人类声明级输入——用户此前是否已授权、
+		// 目标是否在声明的范围内，缺了它们就只能按"本轮有没有逐字声明"误判。
+		for _, k := range []string{
+			"arguments", "argumentsObj", "command", "findings", "riskLevel",
+			hitlPayloadUserMessage, hitlPayloadTestingSpecification,
+		} {
 			if v, ok := payload[k]; ok && v != nil && fmt.Sprint(v) != "" {
 				review[k] = v
 			}

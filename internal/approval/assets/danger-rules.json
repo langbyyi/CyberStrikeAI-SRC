@@ -22,6 +22,12 @@
       "tools": [
         "http-framework-test"
       ],
+      "httpMethods": [
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
       "pathPatterns": [
         "(?i)(^|/)(delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|delones?|del[_-]?batch|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*)(?:[/?#._-]|$)"
       ]
@@ -35,6 +41,12 @@
     "matcher": {
       "tools": [
         "http-framework-test"
+      ],
+      "httpMethods": [
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
       ],
       "pathPatterns": [
         "(?i)(^|/)(delete[_-]?admin[_-]?user|deleteuser|disableuser|lockuser|deluser|removeuser|resetpassword|resetpwd|changepassword|changepwd|forcedownline|kickout)(?:[/?#._-]|$)"
@@ -64,7 +76,9 @@
       "tools": [
         "exec",
         "execute-python-script",
-        "execute_python_script"
+        "execute_python_script",
+        "execute",
+        "eino_fs::execute"
       ],
       "textPatterns": [
         "(?i)\\bdrop\\s+(database|schema|table)\\b",
@@ -82,7 +96,9 @@
       "tools": [
         "exec",
         "execute-python-script",
-        "execute_python_script"
+        "execute_python_script",
+        "execute",
+        "eino_fs::execute"
       ],
       "textPatterns": [
         "(?i)\\b(shutdown|reboot|poweroff|halt)\\b",
@@ -102,7 +118,9 @@
       "tools": [
         "exec",
         "execute-python-script",
-        "execute_python_script"
+        "execute_python_script",
+        "execute",
+        "eino_fs::execute"
       ],
       "textPatterns": [
         "(?i)\\brm\\s+[^;|&]{0,60}--no-preserve-root",
@@ -127,11 +145,14 @@
       "tools": [
         "exec",
         "execute-python-script",
-        "execute_python_script"
+        "execute_python_script",
+        "execute",
+        "eino_fs::execute"
       ],
       "requireHttpTransport": true,
       "textPatterns": [
-        "(?i)(-X\\s*DELETE|--request\\s*DELETE|requests\\.delete\\s*\\(|httpx\\.delete\\s*\\(|/(?:delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|del[_-]?batch[a-z0-9_]*|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|resetpassword|changepassword|resetpwd|changepwd|deleteuser|disableuser|lockuser|restart(?:server|host|system|service|os)[a-z0-9_]*)(?:[/?#._-]|['\\\"]|$))"
+        "(?i)(-X\\s*DELETE|--request\\s*DELETE|requests\\.delete\\s*\\(|httpx\\.delete\\s*\\(|/(?:delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|del[_-]?batch[a-z0-9_]*|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*|drop(?:table|database|db)?|format|wipe|unlink|rmdir|kill(?:proc|process)?|resetpassword|changepassword|resetpwd|changepwd|deleteuser|disableuser|lockuser|restart(?:server|host|system|service|os)[a-z0-9_]*|factory[_-]?reset|execpower[a-z0-9_]*|execreboot[a-z0-9_]*)(?:[/?#._-]|['\\\"]|$))",
+        "(?i)((?:-X|--request)\\s*.{0,2}\\$|for\\s+\\w+\\s+in\\s+[^\\n;|&]*(?:PUT|PATCH|DELETE))"
       ]
     }
   },

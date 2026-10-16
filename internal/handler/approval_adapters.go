@@ -37,8 +37,18 @@ func (r *approvalAgentReviewer) Review(ctx context.Context, request approval.Rev
 	}
 	// 审批引擎随决定落库（approval_decisions.metadata_json），
 	// 供人机协同页与审计日志展示“谁裁决的 + 用哪个引擎”。
+	metadata := map[string]any{}
 	if backend, model := r.handler.hitlAuditEngineInfo(); backend != "" {
-		out.Metadata = map[string]any{"auditBackend": backend, "auditModel": model}
+		metadata["auditBackend"] = backend
+		metadata["auditModel"] = model
+	}
+	if decision.Failure {
+		// 区分"引擎故障"与"策略拒绝"：前者不是对本次操作的裁决，
+		// 不代表该类操作在本会话被禁用。
+		metadata["auditFailure"] = true
+	}
+	if len(metadata) > 0 {
+		out.Metadata = metadata
 	}
 	return out, nil
 }
@@ -78,7 +88,13 @@ func (h *AgentHandler) withApprovalToolInterceptor(ctx context.Context, conversa
 		grant, err := h.approvalCoordinator.Authorize(callCtx, invocation)
 		if err != nil {
 			if errors.Is(err, approval.ErrApprovalRejected) {
-				return nil, arguments, multiagent.NewHumanRejectError(err.Error())
+				// 审批人原文必须原样传给模型：它包含"请确认是否授权本次操作"，
+				// 是主 Agent 唯一能走的解封路径。只传哨兵串会永久卡死该操作。
+				reason := approval.RejectionReason(err)
+				if reason == "" {
+					reason = err.Error()
+				}
+				return nil, arguments, multiagent.NewHumanRejectError(reason)
 			}
 			return nil, arguments, err
 		}

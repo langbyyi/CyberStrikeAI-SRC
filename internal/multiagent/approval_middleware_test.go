@@ -137,3 +137,25 @@ func TestHumanRejectProducesSoftResultForTransferAndStreamable(t *testing.T) {
 	}
 }
 
+// 审计 Agent 才是常见裁决方：拒绝文案里出现 "rejected by user" 会让模型
+// 以为用户否决过，转而去向用户申诉一件用户从未做过的事，授权闭环就此断掉。
+func TestAuditRejectionNeverClaimsUserRejected(t *testing.T) {
+	reasons := []string{
+		"命中敏感危险操作清单，请确认是否授权本次操作",
+		"行为超出声明范围（R2）",
+		"",
+	}
+	for _, reason := range reasons {
+		got := NewHumanRejectError(reason).Error()
+		if strings.Contains(got, "rejected by user") {
+			t.Errorf("拒绝文案不得声称用户否决，实际: %q", got)
+		}
+		if reason != "" && got != reason {
+			t.Errorf("有理由时必须原样回传，期望 %q 实际 %q", reason, got)
+		}
+	}
+	if got := NewHumanRejectError("  ").Error(); got != "审批未通过（未提供理由）" {
+		t.Errorf("空理由占位文案不符，实际: %q", got)
+	}
+}
+

@@ -97,6 +97,41 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - **已知边界**：运行起始的极短窗口内 TurnLoop 尚未挂载，队列「立即」会退化为 409 并留在队列（不丢消息）
 - **测试**：`internal/multiagent/eino_turn_loop_steer_tool_test.go`（工具执行期间引导能切换轮次、**引导不掐断正在跑的工具**、引导升级超时常量下限、与「中断并继续」对照）、`eino_turn_loop_runtime_test.go`、`eino_turn_loop_iterator_starter_test.go`（hook 绑定 + `user_steer` 事件 + 拒绝时不写时间线）、`internal/handler/agent_steer_test.go`、`internal/handler/task_manager_steer_test.go`、`web/tests/chat-queued-followup.test.cjs`（入队/持久化/会话隔离/立即/回退/自动发出/按钮态/占位符/403 权限提示）、`web/tests/monitor-tool-terminate.test.cjs`（停止不弹窗、单次工具终止单一后端路径、旧弹窗不复活）
 
+### 12. 危险操作审批：按「同意 + 理由」自主裁决（不再按逐次声明）
+
+**问题（线上实测，2026-10-15~16）**：审计 Agent 判 R1 拒绝后，该操作在会话里再也测不了，**用户明确同意也不生效**。三个会话（`099ce374` / `650479e6` / `26e41de5`）对 `resetPassword` 类接口跨 8 小时 11 次全拒，同一批日志里同接口的 GET 探测全部放行。执行 Agent 的自述是根因的直接证据：「审批意见只是 `approval rejected`，没有"需用户授权"这一句，因此我不能把它当成已授权」。
+
+**根因（信息断链，不是规则配错）**：
+
+- **拒绝理由被丢弃**：`coordinator.go` 的 R1 分支 `return decision, ErrApprovalRejected` 丢掉了 `decision.Comment`，下游 `approval_adapters.go` 只能把哨兵串成「审批意见：approval rejected」。`hitl_toolsearch_compat.go` 的逃生话术（「若审批意见表明需要用户授权…获得同意后重新发起即可通过」）因此**永不触发**——模型看不到"请确认是否授权"这句。（`rejectReviewerFailure` 那条路径本来就带 reason，只有正常 R1 漏了。）
+- **同意不跨轮**：`hitlCognitionState` 是任务级内存、每轮 `StartTask` 重建，用户上一轮说的"同意"到下一轮就消失；测试规范也从未进过审批 payload。
+- **判据错位**：提示词要求"userMessage 必须明确提及该类操作"，并明文「最小化验证…同样属于敏感危险操作」——把最该放行的形态（动自建/不存在对象）判死，与执行 Agent 系统提示词「授权范围内所有操作直接执行，包括改密码绕过」直接冲突。
+- **引擎故障=终身封禁**：LLM 调用失败 / 无响应 / 响应无法解析三条路径一律终态 reject（现场 `apr_02b37f82` 即"响应无法解析，保守拒绝"）。
+- **拒绝来源误述**：审计拒绝一律表述为 `rejected by user`，模型误判为"用户否决"，转而向用户申诉一件用户从未做过的事。
+
+**改动**：
+
+- **理由回传**：`coordinator.go` 新增 `RejectionReason` / `rejectError`，R1 以 `fmt.Errorf("%w: %s", ErrApprovalRejected, decision.Comment)` 返回；`approval_adapters.go` 用 `RejectionReason` 还原干净理由再构造软结果。这是整条闭环的钥匙。
+- **同意跨轮可见**：新增 `database.ConversationUserDeclarations(conversationID, anchorMessageID, limit)`（与 `GetTurnUserMessage` 同处，按 `(created_at,rowid)` 定锚、**锚点比较放在 SQL 内做列对列比较**——Go 侧绑参与列值类型不一致时同秒消息会全部命中）。`hitl_context.go` 改为「会话级用户声明 + 任务级内存尾」合并去重（上限 20 条 / 8KB）。
+- **授权基线入 payload**：新增 `testingSpecification` 字段，用 `GetConversationTestingSpecification` 自己格式化——**不能**直接复用 `ConversationTestingSpecificationBlock`，那段文案是给执行 Agent 的（"规范不授予额外权限，不得绕过审批"），会让审计 Agent 把声明基线又原样否掉。
+- **判据重写**（`config.go` 审计提示词）：按「超范围 → 用户明确同意 → 有可检验理由 → 否则拒绝」排序；同意长期有效、不再逐次追问；**删除**「最小化验证同样属于敏感危险操作」；明确"写"本身不是拦截理由。**同意不得外推**：一次同意只覆盖该条消息点名的接口/对象/操作类别，换接口、换对象、换类别即视为未获同意（回落 A2/R1）；「继续」「都行」一类笼统回应不构成新同意。避免一次授权把整类操作永久打开。
+- **TypeSafe/Jev 通道对齐**（`internal/hitl/jev.go`）：原实现只有 4 条破坏性 Noul + 1 条 pentest + 1 个 decision Choice，**没有任何"同意"输入**，且破坏性 Noul 分支无条件先行——所以把默认提示词当 operatorPolicy 下发也修不了（换汤不换药）。新增 3 个轴：`out_of_authorized_scope`（超范围，对同意免疫）、`unjustified_probe`（无理由试探）、`authorization_basis`（consent / justified / none 标签），并让 `DecideJev` 按与提示词**完全相同的顺序**裁决：超范围/组织策略 → 同意 → 有理由 → 破坏性轴 → 无理由试探 → 默认放行。阈值：标签置信 ≥0.75 才采信；"有理由"只压得住 0.85 以下的破坏分——openai 后端读得到理由原文，Jev 只有一个标签，不该让它盖过"几乎必定破坏"的信号（自建对象改密 Jev 通常给 0.6~0.8，真实账号 0.9+，按此分档）。`BuildJevState` 的字段白名单同步补 `testingSpecification`。两条后端因此对同一调用同向结论，不会因换后端而改变"同意能不能解封"。
+- **解封路径写进拒绝返回**（`hitl_toolsearch_compat.go` 的 `HitlRejectToolResult`）：把「首次被拒不是终态」、重发**是可选的**（「不要因为这一次被拒就偏离主线任务」）、授权路径、补理由路径（证明什么 / 依据哪次实测 / 动哪个对象 / 怎么回滚）、禁止换工具绕过，全部放进**工具结果**。**不写进执行 Agent 的常驻系统提示词**——那段每轮都加载，是永久上下文开销；而这些话只在被拒时才有意义。
+- **引擎故障降级**：新增 `hitlAuditAttempts = 2` 重试一次；仍失败返回 `Failure: true` 的「审批引擎不可用（非策略裁决）」并落库 `metadata.auditFailure`，不再伪装成策略拒绝（`hitlDecision.Failure` → `approval_adapters.go`）。
+- **规则层降噪**：`danger.http.destructive-path` / `danger.http.critical-identity-mutation` 加 `httpMethods` 写方法约束（`danger.http.critical-control-path` 保留 GET 拦截，控制面例外）。15 条真实记录里 13 条仅因 URL 含 `resetPassword` 入队，其中 7 条纯 GET。
+- **与硬闸对齐**：硬闸 `sensitive_http_gate.go` 的清单比规则宽，差集内的操作会被硬闸直接 `IsError`、**不产生审批单**（无记录无出口）。已把 `truncate|drop|format|wipe|unlink|rmdir|kill|factory_reset|execpower*` 补进 `danger.script.destructive-http-operation`。
+- **绕过补漏**：写方法藏进 shell 变量/for 列表（`-X "$m"`、`for m in PUT DELETE …`）时两层正则同时失明（`01ccf126` 实测 4 次）。硬闸新增 `sweptWriteMethods`，规则侧同步加 `(?:-X|--request)\s*.{0,2}\$|for \w+ in …(PUT|PATCH|DELETE)`——**长选项 `--request` 必须一起覆盖**，否则硬闸拦下而规则层不入队，就是"无审批单、无解封路径"的死路（该不变量已由 `internal/security/sensitive_http_gate_rule_alignment_test.go` 固化）；`execute` / `eino_fs::execute`（eino 文件系统执行通道）补进 `danger.script.*` 的 tools，之前它是一条无审计的执行通道。
+- **注入量有界**：`joinHitlUserDeclarations` 超限时丢最早的消息，并对"单条消息本身就超限"单独兜底截断——否则一次大段粘贴就能突破 8KB 上限撑爆审计请求。
+
+**运维影响（升级必读）**：
+
+- **危险规则默认值只插不改**：`SeedDefaultRules` 对已存在（或被 tombstone）的规则 `continue`，所以**本次规则调整不会自动更新已部署实例**——需在「人机协同 → 危险规则」页对已存在的对应规则做一次编辑保存（或删除后重启让其重新播种）。提示词默认值改动则即时生效，除非管理员此前把旧默认保存成了自定义提示词（`handler/config.go` 按"是否等于默认"判定是否落自定义），需要重存一次。
+- **TypeSafe 后端判据在代码里，升级即生效**（不依赖提示词配置）。但注意两点：① 若管理员配置了自定义 `audit_agent_prompt`，它会作为 operatorPolicy 叠加，且**组织策略禁令与超范围同级、对同意免疫**——自定义策略里若有一刀切禁令（如"禁止一切命令执行"），"同意必放行"在该部署下不成立；② 判定命中组织策略或超范围时，`comment` 会明确写出是哪一项，便于排查。
+
+**已知边界**：脚本通道（`exec` / `execute-python-script` / `execute`）的**只读**探测仍会进审批队列——判只读需要把方法推断下沉到规则层，而推断实现在 `internal/security`，`approval` 反向依赖会形成 import cycle；成本是一次审计调用与一条记录（新判据下会被 A2 放行），不影响可用性。脚本文件内容（`python3 x.py`）仍不参与匹配，需要 workspace 有界读取，未纳入本次。
+
+**测试**：`internal/approval/coordinator_unified_test.go`（拒绝错误携带审批原文、非拒绝错误不误报）、`danger_rule_queue_regression_test.go`（真实记录形状的入队/放行对照）、`rule_verify_test.go`（只读降噪、硬闸对齐、通道纳管、方法变量化）、`internal/database/conversation_user_declarations_test.go`（跨轮可见、锚点截断、limit）、`internal/handler/hitl_context_test.go`（跨轮同意、测试规范入 payload 且不带执行侧免责文案）、`hitl_audit_agent_test.go`（httptest 桩：重试后成功、持续失败标记为非策略裁决）、`internal/security/sensitive_http_gate_method_sweep_test.go`（方法变量化拦截 + 只读不误伤）、`internal/security/sensitive_http_gate_rule_alignment_test.go`（跨层不变量：**硬闸拦下 ⇒ 规则层必须入队**，防"无审批单的死路"复发）、`internal/config/config_test.go`（提示词契约，含删除项不得复活）、`internal/multiagent/hitl_toolsearch_compat_test.go`（拒绝返回必须带「一次未通过不是终态 / 可检验的理由 / 变相绕过」——这两条规则的唯一下发渠道）、`internal/multiagent/approval_middleware_test.go`（审计拒绝文案不得出现 `rejected by user`）、`internal/hitl/jev_test.go`（TypeSafe 通道与提示词同向：同意解封 / 理由解封 / 超范围不可解封 / 组织策略不可解封 / 无理由试探拦下并请求授权 / 标签置信不足回落破坏轴 / 只读侦察不误伤）
+
 ## 与官方版本及本仓库历史的关系（对照核实）
 
 **对比基准与结论均经代码检索核实**（2026-09-09 复核，`git diff v1.7.18` 工作区全量对比）：

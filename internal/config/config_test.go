@@ -395,10 +395,10 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 			t.Errorf("default audit prompt missing %q", want)
 		}
 	}
-	// 声明对齐：未声明的敏感危险操作必须拦下并提示补充授权；已声明才放行；
-	// userMessage 明确声明的大规模操作视为知情授权，仅超出声明范围才 reject
+	// 判据口径：同意与理由优先，未声明且无理由才拦下并提示补充授权；
+	// 用户明确同意的大规模操作视为知情授权，仅超出声明范围才 reject
 	for _, want := range []string{
-		"核心裁决原则（声明对齐）",
+		"核心裁决原则（同意与理由）",
 		"请确认是否授权本次操作",
 		"敏感危险操作清单",
 		"泛化任务描述",
@@ -408,6 +408,32 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("default audit prompt missing %q", want)
+		}
+	}
+	// 自主闭环：用户同意必须压过"未声明"，理由可核验的验证必须放行，
+	// 且不得再出现"最小化验证也算敏感危险操作"这类把正解判死的措辞。
+	for _, want := range []string{
+		"唯一不可被同意覆盖",
+		"A2 有可检验的理由",
+		"长期有效",
+		"testingSpecification",
+		"最小化本身不构成拒绝理由",
+		// 同意不得外推：对 A 接口的同意不能变成"所有写操作都同意"，
+		// 否则一次授权会把整类操作永久打开，且没有 R1 逃生话术可以补救。
+		"同意的范围",
+		"同意不得外推",
+		"不构成新的同意",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default audit prompt missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"最小化验证（删除不存在的 ID、使用自建测试数据）同样属于敏感危险操作",
+		"userMessage 必须明确提及该类操作本身",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("default audit prompt must not keep %q", forbidden)
 		}
 	}
 	// 普通渗透操作不受声明要求限制

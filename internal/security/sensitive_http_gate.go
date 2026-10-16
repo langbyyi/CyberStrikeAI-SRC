@@ -44,7 +44,46 @@ var (
 		`requests\.(get|head|options)\s*\(|` +
 		`httpx\.(get|head|options)\s*\(` +
 		`)`)
+	// 方法被写进变量或用 for 列表枚举时（-X $m / -X "$m" / for m in PUT DELETE …），
+	// 上面两条字面量提示必然失明；这种写法唯一的目的就是把写方法扫一遍。
+	reIndirectMethod = regexp.MustCompile(`(?i)(-X|--request)\s*.{0,2}\$`)
+	reMethodListLoop = regexp.MustCompile(`(?i)for\s+\w+\s+in\s+([^\n;|&]+)`)
 )
+
+// sweptWriteMethods 返回"方法藏在变量或 for 列表里"的写方法集合。
+// 空集合表示没有这种写法；仅见变量间接引用而看不到方法列表时给出 WRITE?（未知即保守）。
+func sweptWriteMethods(blob string) []string {
+	found := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	add := func(method string) {
+		if _, ok := seen[method]; ok {
+			return
+		}
+		seen[method] = struct{}{}
+		found = append(found, method)
+	}
+	for _, list := range reMethodListLoop.FindAllStringSubmatch(blob, 4) {
+		if len(list) < 2 {
+			continue
+		}
+		for _, field := range strings.FieldsFunc(list[1], func(r rune) bool {
+			switch r {
+			case ' ', '\t', ',', '|', '"', '\'', '(', ')':
+				return true
+			}
+			return false
+		}) {
+			switch strings.ToUpper(strings.TrimSpace(field)) {
+			case "DELETE", "PUT", "PATCH", "POST":
+				add(strings.ToUpper(strings.TrimSpace(field)))
+			}
+		}
+	}
+	if len(found) == 0 && reIndirectMethod.MatchString(blob) {
+		add("WRITE?")
+	}
+	return found
+}
 
 // SensitiveHTTPAssessment is the gate decision payload.
 type SensitiveHTTPAssessment struct {
@@ -144,6 +183,11 @@ func extractSensitiveHTTPRisk(toolName string, args map[string]interface{}) (met
 	// Free-form DELETE to any URL (curl -X DELETE …)
 	if method == "DELETE" && len(targets) > 0 {
 		return method, targets[0], "method:DELETE"
+	}
+	// 方法藏在变量或 for 列表里：等价于对同一目标扫写方法，按写方法拦下。
+	// 例：for m in PUT put DELETE delete …; do curl -X "$m" http://target/; done
+	if swept := sweptWriteMethods(blob); len(swept) > 0 && len(targets) > 0 {
+		return strings.Join(swept, "/"), targets[0], "method:sweep"
 	}
 	return method, "", ""
 }

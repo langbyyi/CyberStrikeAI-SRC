@@ -36,7 +36,12 @@ func TestHitlRejectToolResult_otherToolKeepsLegacyText(t *testing.T) {
 func TestHitlRejectToolResult_rejectsCallNotTool(t *testing.T) {
 	raw := HitlRejectToolResult("exec", "rejected by user: 删除业务数据属于破坏性操作")
 	// 措辞必须传达"仅否决本次调用、工具未被禁用"，避免模型把单次拒绝泛化成工具不可用。
-	for _, want := range []string{"本次调用未通过审批", "工具本身未被禁用", "重新发起", "删除业务数据属于破坏性操作"} {
+	// 解封路径（补理由 / 换工具绕过）是执行 Agent 唯一能看到这两条规则的渠道——
+	// 它们不写进常驻系统提示词，这条断言就是那条链路的契约。
+	for _, want := range []string{
+		"本次调用未通过审批", "工具本身未被禁用", "重新发起", "删除业务数据属于破坏性操作",
+		"不要因为这一次被拒就偏离主线任务", "可检验的理由", "变相绕过",
+	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("reject result missing %q: %s", want, raw)
 		}

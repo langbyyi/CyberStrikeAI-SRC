@@ -17,6 +17,25 @@ var (
 	ErrReviewerUnavailable = errors.New("approval reviewer unavailable")
 )
 
+// RejectionReason 返回拒绝错误里携带的审批人原文，去掉哨兵前缀。
+// 调用方（工具层软结果、模型）要靠这段原文才知道"需要向用户请求授权"，
+// 只传 ErrApprovalRejected 会让整条授权闭环失效。
+func RejectionReason(err error) string {
+	if err == nil || !errors.Is(err, ErrApprovalRejected) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrApprovalRejected.Error()+":"))
+}
+
+// rejectError 把审批人原文与哨兵一起包进错误，保持 errors.Is 可用。
+func rejectError(decision ReviewDecision) error {
+	reason := strings.TrimSpace(decision.Comment)
+	if reason == "" {
+		return ErrApprovalRejected
+	}
+	return fmt.Errorf("%w: %s", ErrApprovalRejected, reason)
+}
+
 type CoordinatorOptions struct {
 	Evaluator interface {
 		Evaluate(context.Context, Invocation) (Assessment, error)
@@ -215,7 +234,7 @@ func (c *Coordinator) review(ctx context.Context, invocation Invocation, assessm
 	if err := c.record(ctx, request, decision, request.Status, StatusRejected, StageTerminal); err != nil {
 		return decision, err
 	}
-	return decision, ErrApprovalRejected
+	return decision, rejectError(decision)
 }
 
 func (c *Coordinator) currentConfig() Config {

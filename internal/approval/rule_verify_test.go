@@ -84,6 +84,20 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		{"curl DELETE", "danger.script.destructive-http-operation", "curl -s -X DELETE https://target/api/v1/panels/1", true},
 		{"requests.delete", "danger.script.destructive-http-operation", `python3 -c "requests.delete('https://t/x')`, true},
 		{"curl GET 放行", "danger.script.destructive-http-operation", "curl -s https://target/api/v1/panels", false},
+		// 与硬闸清单对齐：硬闸会拦的路径必须也能进审批队列，
+		// 否则硬闸直接 IsError 返回、不产生审批单，操作就成了无记录的死路。
+		{"硬闸对齐 truncate", "danger.script.destructive-http-operation", "curl -s -X POST https://target/api/truncateTable", true},
+		{"硬闸对齐 unlink", "danger.script.destructive-http-operation", "curl -s https://target/api/unlink", true},
+		{"硬闸对齐 factory reset", "danger.script.destructive-http-operation", "curl -s https://target/api/factory-reset", true},
+		{"对齐后只读探测仍放行", "danger.script.destructive-http-operation", "curl -s https://target/status", false},
+		// 方法藏在变量/for 列表里：字面量提示会失明，按写方法纳入审批队列
+		{"方法变量化 for 列表", "danger.script.destructive-http-operation", `for m in OPTIONS TRACE PUT DELETE HEAD POST; do curl -s -X $m "http://target/"; done`, true},
+		{"方法变量化带引号", "danger.script.destructive-http-operation", `for m in PUT put pUt DELETE delete PATCH TRACE; do r=$(curl -s -X "$m" "http://target/"); done`, true},
+		// 硬闸的间接方法识别同时覆盖 --request；规则层只认 -X 时会出现
+		// "硬闸拦下但不产生审批单"的死路，故两者必须同宽。
+		{"方法变量化长选项", "danger.script.destructive-http-operation", `M=PUT; curl -s --request $M "http://target/api/item/1"`, true},
+		{"方法变量化长选项带引号", "danger.script.destructive-http-operation", `for m in PUT DELETE; do curl -s --request "$m" "http://target/api/item/1"; done`, true},
+		{"只读 for 列表放行", "danger.script.destructive-http-operation", `for p in /a /b /c; do curl -s "http://target$p"; done`, false},
 		// 常规渗透操作放行
 		{"nmap 扫描放行", "danger.script.filesystem-wipe", "nmap -sV -p 1-65535 10.0.0.5", false},
 		{"sqlmap 放行", "danger.script.database-destruction", "sqlmap -u http://x/a?id=1 --batch --dbs", false},
@@ -96,6 +110,30 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		}
 		if got := ruleHits(t, rule, "exec", map[string]any{"command": tc.cmd}); got != tc.want {
 			t.Errorf("%s: 命中=%v 期望=%v (命令: %s)", tc.name, got, tc.want, tc.cmd)
+		}
+	}
+
+	// 执行通道改名同样要纳管：eino 文件系统的 execute 与 exec 同属脚本执行面，
+	// 之前只列 exec/execute-python-script，等于给了一条无审计的执行通道。
+	channelCases := []struct {
+		name string
+		rule string
+		tool string
+		cmd  string
+		want bool
+	}{
+		{"execute 通道删库", "danger.script.database-destruction", "execute", `mysql -e "DROP TABLE users"`, true},
+		{"eino 通道毁盘", "danger.script.filesystem-wipe", "eino_fs::execute", "rm -rf /etc/nginx", true},
+		{"execute 通道写接口", "danger.script.destructive-http-operation", "execute", "curl -s -X DELETE https://target/api/v1/panels/1", true},
+		{"execute 通道只读放行", "danger.script.destructive-http-operation", "execute", "curl -s https://target/status", false},
+	}
+	for _, tc := range channelCases {
+		rule, ok := byID[tc.rule]
+		if !ok {
+			t.Fatalf("规则 %s 不存在", tc.rule)
+		}
+		if got := ruleHits(t, rule, tc.tool, map[string]any{"command": tc.cmd}); got != tc.want {
+			t.Errorf("%s: 命中=%v 期望=%v (通道 %s)", tc.name, got, tc.want, tc.tool)
 		}
 	}
 
@@ -114,6 +152,12 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		{"密码重置接口", "danger.http.critical-identity-mutation", "post", "/api/resetpassword", true},
 		{"重启接口", "danger.http.critical-control-path", "post", "/api/system/reboot", true},
 		{"普通查询放行", "danger.http.critical-control-path", "get", "/api/v1/dashboard", false},
+		// 只读探测不进审批队列：敏感路径名本身不是危险信号，
+		// 之前仅凭 URL 含 resetPassword 就把大量 GET 送进审计队列。
+		{"GET 身份类路径不入队", "danger.http.critical-identity-mutation", "get", "/api/resetpassword", false},
+		{"GET 删除类路径不入队", "danger.http.destructive-path", "get", "/api/v1/panel/delete", false},
+		{"PUT 身份类路径仍入队", "danger.http.critical-identity-mutation", "put", "/api/resetpassword", true},
+		{"GET 控制面仍拦", "danger.http.critical-control-path", "get", "/api/system/reboot", true},
 	}
 	for _, tc := range httpCases {
 		rule := byID[tc.rule]
