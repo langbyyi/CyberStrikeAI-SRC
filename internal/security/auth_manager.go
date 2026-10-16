@@ -37,6 +37,9 @@ type AuthManager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]Session
+	// Changes when cached authorization is revoked, including while a login
+	// is resolving access outside mu.
+	accessVersion uint64
 }
 
 // NewAuthManager creates a new AuthManager instance.
@@ -87,14 +90,29 @@ func (a *AuthManager) AttachRBACStore(db *database.DB) (generatedAdminPassword s
 
 // Authenticate validates the password and creates a new session.
 func (a *AuthManager) Authenticate(username, password string) (string, time.Time, error) {
-	session, err := a.authenticateSession(username, password)
-	if err != nil {
-		return "", time.Time{}, err
+	for {
+		a.mu.RLock()
+		version := a.accessVersion
+		a.mu.RUnlock()
+		session, err := a.authenticateSession(username, password)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if a.publishSession(session, version) {
+			return session.Token, session.ExpiresAt, nil
+		}
 	}
+}
+
+// publishSession rejects a snapshot resolved across an authorization revocation.
+func (a *AuthManager) publishSession(session Session, version uint64) bool {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.accessVersion != version {
+		return false
+	}
 	a.sessions[session.Token] = session
-	a.mu.Unlock()
-	return session.Token, session.ExpiresAt, nil
+	return true
 }
 
 func (a *AuthManager) authenticateSession(username, password string) (Session, error) {
@@ -212,6 +230,7 @@ func (a *AuthManager) UpdateUserPassword(userID, password string) error {
 		return err
 	}
 	a.mu.Lock()
+	a.accessVersion++
 	for token, session := range a.sessions {
 		if session.UserID == userID {
 			delete(a.sessions, token)
@@ -238,6 +257,7 @@ func (a *AuthManager) RevokeUserSessions(userID string) {
 		return
 	}
 	a.mu.Lock()
+	a.accessVersion++
 	for token, session := range a.sessions {
 		if session.UserID == userID {
 			delete(a.sessions, token)
@@ -246,8 +266,29 @@ func (a *AuthManager) RevokeUserSessions(userID string) {
 	a.mu.Unlock()
 }
 
+// RevokeRoleSessions invalidates only snapshots containing the changed role.
+// Matching the session snapshot also works after the role has been deleted.
+func (a *AuthManager) RevokeRoleSessions(roleID string) {
+	roleID = strings.TrimSpace(roleID)
+	if roleID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.accessVersion++
+	for token, session := range a.sessions {
+		for _, id := range session.Roles {
+			if id == roleID {
+				delete(a.sessions, token)
+				break
+			}
+		}
+	}
+}
+
 func (a *AuthManager) RevokeAllSessions() {
 	a.mu.Lock()
+	a.accessVersion++
 	a.sessions = make(map[string]Session)
 	a.mu.Unlock()
 }

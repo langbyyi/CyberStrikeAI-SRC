@@ -661,6 +661,13 @@ function switchSettingsSection(section) {
         return;
     }
 
+    // Unknown hash sections must not hide every settings panel.
+    const requestedContent = document.getElementById(`settings-section-${section}`);
+    if (!requestedContent) return;
+    if (window.location.hash.split('?')[0] === '#settings') {
+        history.replaceState(null, '', section === 'token-usage' ? '#settings?section=token-usage' : '#settings');
+    }
+
     // 更新导航项状态
     document.querySelectorAll('.settings-nav-item').forEach(item => {
         item.classList.remove('active');
@@ -678,6 +685,11 @@ function switchSettingsSection(section) {
     if (activeContent) {
         activeContent.classList.add('active');
         initSettingsCustomSelects(activeContent);
+    }
+    if (section === 'token-usage' && typeof refreshTokenUsage === 'function') {
+        refreshTokenUsage();
+    } else if (typeof stopTokenUsageRequests === 'function') {
+        stopTokenUsageRequests();
     }
 	if (section === 'robots' && typeof window.loadVulnerabilityAlertSubscription === 'function') {
 		window.loadVulnerabilityAlertSubscription();

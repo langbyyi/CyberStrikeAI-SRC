@@ -99,6 +99,7 @@ type ConfigHandler struct {
 	logger                     *zap.Logger
 	mu                         sync.RWMutex
 	toolGuard                  *toolguard.Manager
+	toolGuardRevision          string                  // protected by mu; advanced only after a successful save
 	lastEmbeddingConfig        *config.EmbeddingConfig // 上一次的嵌入模型配置（用于检测变更）
 }
 

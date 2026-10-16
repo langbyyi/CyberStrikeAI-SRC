@@ -1092,7 +1092,12 @@ func (h *C2Handler) UpdateProfile(c *gin.Context) {
 func (h *C2Handler) DeleteProfile(c *gin.Context) {
 	id := c.Param("id")
 	if err := h.mgr().DB().DeleteC2Profile(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+			return
+		}
+		h.logger.Error("删除 C2 Profile 失败", zap.Error(err), zap.String("id", id))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete profile"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": true})

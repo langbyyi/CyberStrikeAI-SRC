@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    const state = { config: null, saved: null, busy: false, testing: false, revision: 0, openRuleId: null, addDraft: null };
+    const state = { config: null, saved: null, etag: null, busy: false, testing: false, revision: 0, openRuleId: null, addDraft: null };
     const ruleViews = new Map();
     const el = (id) => document.getElementById('tool-guard-' + id);
     const canRead = () => typeof hasPermission !== 'function' || hasPermission('config:read');
@@ -281,16 +281,18 @@
         updateControls();
     }
 
-    async function request(url, method, body) {
+    async function request(url, method, body, versioned = false) {
         const options = { method: method || 'GET' };
         if (body !== undefined) {
             options.headers = { 'Content-Type': 'application/json' };
+            if (versioned && method === 'PUT' && state.etag) options.headers['If-Match'] = state.etag;
             options.body = JSON.stringify(body);
         }
         const response = await apiFetch(url, options);
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || tr('requestFailed'));
-        return result;
+        if (!response.ok) throw new Error(result.code === 'tool_guard_conflict' ? tr('saveConflict') :
+            result.code === 'tool_guard_version_required' ? tr('versionRequired') : result.error || tr('requestFailed'));
+        return versioned ? { config: result, etag: response.headers.get('ETag') } : result;
     }
 
     function normalizeConfig(config) {
@@ -311,7 +313,9 @@
         feedback('');
         updateControls();
         try {
-            const config = normalizeConfig(await request('/api/tool-guard'));
+            const result = await request('/api/tool-guard', 'GET', undefined, true);
+            const config = normalizeConfig(result.config);
+            state.etag = result.etag;
             state.saved = copy(config);
             state.config = config;
             invalidateTest();
@@ -377,7 +381,9 @@
             state.busy = true;
             feedback('');
             updateControls();
-            const saved = normalizeConfig(await request('/api/tool-guard', 'PUT', config));
+            const result = await request('/api/tool-guard', 'PUT', config, true);
+            const saved = normalizeConfig(result.config);
+            state.etag = result.etag;
             state.saved = copy(saved);
             state.config = saved;
             invalidateTest();

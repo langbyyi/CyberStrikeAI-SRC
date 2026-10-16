@@ -302,12 +302,15 @@ c2:
   enabled: true
 project:
   enabled: true
+  context_checkpoints: true
+  # 续接补充包含在事实索引预算内；工作文件候选清单另有最多 4000 字符预算
   fact_index_max_runes: 65000
 ```
 
 - `c2.enabled`：关闭后不启动 C2 监听器，也不注册 C2 MCP 工具。
 - WebShell 连接配置存 SQLite，没有单独的主配置开关。
-- `project` 控制跨对话事实黑板注入预算。
+- `project` 控制跨对话事实黑板注入预算。[项目续聊与成果复用](project-resume.md) 说明脚本登记、测试结果与续接流程。
+- `project.context_checkpoints` 默认开启：已绑定项目的会话成功压缩时，将续接摘要自动保存为 `note/context-*`（tentative），按会话及主/子代理分别更新，不覆盖已确认事实。完整原始记录保存为不可变快照，后续可通过 `get_project_fact` 与 `read_file` 找回。关闭此项仅停止自动黑板记录，仍保留原始上下文快照。详见 [长上下文续接留存](blackboard-context-memory.md)。
 
 ## 机器人
 

@@ -56,7 +56,7 @@ func TestToolGuardSavePersistsAndAppliesWithoutChangingHITL(t *testing.T) {
 	}
 	cfg := toolguard.DefaultConfig()
 	cfg.Rules[0].Message = "识别到 {match}，禁止攻击政府网站，请检查目标。"
-	w := toolGuardRequest(t, h.UpdateToolGuard, cfg)
+	w := toolGuardUpdateRequest(t, h, cfg)
 	if w.Code != http.StatusOK {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
 	}
@@ -80,7 +80,7 @@ func TestToolGuardSavePersistsAndAppliesWithoutChangingHITL(t *testing.T) {
 		t.Fatalf("updated message not applied: %+v", match)
 	}
 	cfg.Enabled = false
-	w = toolGuardRequest(t, h.UpdateToolGuard, cfg)
+	w = toolGuardUpdateRequest(t, h, cfg)
 	if w.Code != http.StatusOK || h.toolGuard.Check("scan", map[string]interface{}{"target": "agency.gov"}) != nil {
 		t.Fatal("explicitly disabling protection did not apply")
 	}
@@ -93,7 +93,7 @@ func TestToolGuardInvalidAndFailedSaveKeepEffectivePolicy(t *testing.T) {
 	cfg.Enabled = false
 	cfg.Rules[0].Pattern = "["
 	for _, body := range []interface{}{cfg, map[string]interface{}{}, nil, map[string]interface{}{"enabled": false, "rules": nil}} {
-		w := toolGuardRequest(t, h.UpdateToolGuard, body)
+		w := toolGuardUpdateRequest(t, h, body)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("invalid update accepted: %d %s", w.Code, w.Body.String())
 		}
@@ -105,7 +105,7 @@ func TestToolGuardInvalidAndFailedSaveKeepEffectivePolicy(t *testing.T) {
 	h.configPath = filepath.Join(t.TempDir(), "missing", "config.yaml")
 	cfg = toolguard.DefaultConfig()
 	cfg.Enabled = false
-	w := toolGuardRequest(t, h.UpdateToolGuard, cfg)
+	w := toolGuardUpdateRequest(t, h, cfg)
 	if w.Code != http.StatusInternalServerError || !h.toolGuard.Config().Enabled || h.config.ToolGuard != nil {
 		t.Fatal("failed persistence changed live configuration")
 	}

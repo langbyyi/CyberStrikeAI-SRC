@@ -2203,6 +2203,9 @@ function formatWebshellEinoUsageSummaryMessage(data) {
     if (Number(d.cachedTokens || 0) > 0) {
         rows.push([wsTOr('chat.einoUsageCachedTokens', '缓存 tokens'), d.cachedTokens]);
     }
+    if (Number(d.cacheWriteTokens || 0) > 0) {
+        rows.push([wsTOr('chat.einoUsageCacheWriteTokens', '缓存写入 tokens'), d.cacheWriteTokens]);
+    }
     if (Number(d.reasoningTokens || 0) > 0) {
         rows.push([wsTOr('chat.einoUsageReasoningTokens', '推理 tokens'), d.reasoningTokens]);
     }

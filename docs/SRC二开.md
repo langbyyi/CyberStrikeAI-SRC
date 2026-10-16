@@ -1,6 +1,6 @@
 # CyberStrikeAI-SRC 二开特性
 
-> 当前分支：**v1.7.23-src**
+> 当前分支：**v1.7.24-src**
 > 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 官方主线，聚焦**授权 SRC / 漏洞挖掘**方向：在官方完整平台之上做定向增强（可复现强制、SRC 报告、FOFA 多引擎、漏洞全生命周期、Tavily 联网搜索），并剔除压制 agent 自主性的治理层。
 
 ## 特性总览
@@ -229,6 +229,34 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
   - `web/tests/chat-scroll-refresh.test.cjs` 补最后一处官方泛化断言（`style.css?v=[A-Za-z0-9._-]+`，原残留字面 `20260907` 锚点）。
 - 官方 `main` 分支在 v1.7.23 之后有 8 个未发版提交（SQLite 启动时表/列对账 `7f8dab4e` 及过程文档），**属下一版本范围，本次不跟**；发布后再评估。
 - 官方 98de0859「同时间戳消息收尾」修复落点在官方旧 `handler/hitl.go`（本分支已裁），等价语义由本分支统一审批 `approval` 包承担：`MigrateLegacyHITL`（每次启动幂等迁移遗留 HITL 历史）+ `CancelUnrecoverable`（启动时将不可恢复的 pending/approved 审批置 cancelled，「process restarted」）已覆盖官方修复意图；消息排序本分支全链为 `ORDER BY created_at, rowid`（官方修复的正是该 tie-breaker 语义），无缺口。
+
+### v1.7.24 同步说明（2026-10-16）
+
+官方 v1.7.23→v1.7.24 共 82 个提交（含 5 个 PR 合并）：**声明式 Schema 启动对账（7f8dab4e 等 F0-F3 全套）整体采纳并做 SRC 扩展列适配 + 项目续跑（#361）整体采纳 + 黑board 上下文记忆与压缩检查点（#355）整体采纳 + Token 用量监控（#354）整体采纳 + 移动端项目 UI 修复（#360）整体采纳 + SQLite 并发锁等待加固（#362）直接合入 + 攻击链节点实证与上下文摘要 + 工具拦截乐观并发 + REST 空列表/404 语义 + 手工漏洞独立创建 + RBAC 角色会话定点吊销 + 任务超时归类**；裁剪官方过程文档 12 份；非直接 merge，按文件三方合并（base=official-v1.7.23）。
+
+- **声明式 Schema 启动对账（v1.7.24 头号变更）整体采纳 + SRC 适配**：官方把逐表 `migrateXxxTable()` 增量迁移整体替换为声明式 schema——新增 `internal/database/schemas/application.sql`（51 表 + 89 索引，`CREATE TABLE`/`CREATE INDEX` 全集）与 `schemas/knowledge.sql`，`internal/database/schema_reconcile.go` 的 `reconcileSchema()` 在启动时对照参考库补齐缺表/缺列/缺索引（保留额外列与数据、事务内全有或全无），`schema_legacy.go` 保留漏洞外键语义重建（动态保留旧库额外列）。`database.go` 从 1800+ 行瘦身为 277 行：`initTables()` 只剩 `reconcileSchema(applicationSchema)` + 数据回填 + 外键语义迁移。**SRC 适配（关键，缺则新建库丢列）**：本分支 9 个 SRC 漏洞列（`category / auth_required / test_account / test_password / vuln_urls / network_segment / developer / poc_script / tool_call_id`）、`projects.testing_specification_json`、两张测试规范表（`conversation_testing_specifications` / `batch_testing_specifications`）均补进 `application.sql`；`initTestingSpecifications()` 保留为启动钩子（触发器创建与存量冻结回填属行为迁移，非结构声明）。
+- **项目续跑（#361）整体采纳**：新增 `internal/project/resume.go`、`internal/projectprompt/resume.go`、`internal/project/workspace_inventory.go`（工作文件候选清单，最多 4000 字符预算）、`internal/project/blackboard_refresh.go`；`fact_index_*` 预算与续接补充纳入同一索引预算；文件事实与索引链接重构（`fact_body_links.go` / `fact_index_links.go`）。
+- **黑board 上下文记忆 + 压缩检查点（#355）整体采纳**：`internal/multiagent/eino_context_checkpoint.go`（压缩时自动存 tentative note，每会话/代理一条，不替代已确认事实）、`internal/agent/generated_context.go` 与 `internal/multiagent/eino_generated_context.go`（系统生成摘要标注来源，不计入原始用户意图）、按会话 scoped memory；配置新增 `project.context_checkpoints`（默认 true）。
+- **Token 用量监控（#354）整体采纳**：新增 `internal/database/model_token_usage.go`（结构化聚合表 + 回填）、`internal/openai/eino_usage_normalizer.go`、`internal/multiagent/eino_run_usage_accumulator.go`；前端新增 `web/static/js/token-usage.js` + 设置页 Token 明细与看板缓存命中率；`web/static/js/attack-chain-context.js`（压缩摘要与证据线索卡片）。
+- **移动端项目页修复（#360）整体采纳**：`mobile.css` 表头遮挡、横向滚动至末行、事实列可读性；官方新增 `scripts/project-mobile-layout.test.cjs`（Playwright 离线回归）一并入库。
+- **SQLite 并发加固（#362）直接合入**：`internal/database` 事务锁等待边界 + 资产 upsert 忙等重试（`transaction_lock_test.go` 覆盖）。
+- **工具拦截乐观并发（#351）直接合入**：`tool_guard` 规则保存带 `If-Match` 版本号，陈旧保存返回 `tool_guard_conflict` 且保留草稿；`internal/handler/tool_guard.go` 与前端 `tool-guard.js` 同步；官方测试 72 行新增并入 `web/tests/tool-guard.test.cjs`（36 项全通过）。
+- **REST 语义归一（9f111a13）直接合入**：`DELETE /api/c2/profiles/:id`、`DELETE /api/webshell/connections/:id` 不存在返回 404 与固定文案；`GET /api/vulnerabilities`、`GET /api/batch-tasks` 空结果由 `null` 改 `[]`；`docs/zh-CN/api-reference.md` 新增「删除与空列表响应约定」一节。
+- **手工漏洞独立创建（a8321c4b）直接合入**：允许无对话的独立漏洞录入并校验关联；前端 `vulnerability.js` 的会话 ID 裁剪与空值提交，官方测试迁址 `web/tests/vulnerability-create.test.cjs`。
+- **RBAC 角色会话定点吊销（088d6da3）直接合入**：角色权限/范围变更仅吊销受影响角色会话（`RevokeRoleSessions`，替代全量 `RevokeAllSessions`），`UpdateRole`/`DeleteRole` 加 `roleMu` 串行化 + 权限快照比对。
+- **任务超时归类（5ff781bd）直接合入**：新增 `internal/handler/task_deadline.go`，区分任务级 deadline 与子操作超时（子操作超时不再误杀整个任务）。
+- **攻击链实证与摘要**：`internal/attackchain/node_evidence.go`（节点对照真实工具调用核验）、`context_summary.go`（压缩摘要进攻击链上下文）；前端 `chat.js` 的 `renderAttackChain` 采纳官方上下文卡片渲染，**本分支 async 签名保留**（ELK 按需加载依赖 await），官方防串台重构（`beginAttackChainRequest` / `isCurrentAttackChainRequest`）随之落地。
+- **适配合并**：
+  - `go.mod`：官方 eino 系列升级全采纳（`eino v0.9.14→v0.9.21`、`agenticclaude v0.1.3→v0.1.7`、`agenticopenai v0.2.1→v0.2.4`、`acl/openai` 新伪版本、`openai-go/v3 v3.35.0→v3.44.0`），其余依赖取本分支较新版本（gin 1.12.0 / zap 1.28.0 / x/crypto 0.54.0 等），`go mod tidy` 归一。
+  - `web/static/i18n/{zh-CN,en-US}.json`：官方新增键并入，同时补 `hitl.reviewerManual`（并入的官方代码引用）；官方 41 个 HITL 前端键按本分支精简策略跳过（统一审批无人机协同页语义）。
+  - `web/templates/index.html`：脚本区取并集——官方新增 `attack-chain-context.js` / `token-usage.js`，本分支保留 `chat-images.js` / `approval-ui*.js`；样式与脚本缓存版本号统一到官方新值。
+  - `internal/handler/hitl.go` / `hitl_logs.go`：官方把建表交给声明式 schema，`EnsureSchema` 只留 `backfillHitlReviewers`；本分支这两个文件早已裁撤（统一审批取代），对应 reviewer 默认值改动落在 `application.sql`。
+  - 官方 X 类 5 个测试（chat-scroll-refresh / hitl-approval-ui / tool-guard / turn-duration-refresh / update-ui）增量并入本分支 `web/tests/` 迁移副本：monitor 缓存版本号断言更新、`reviewer TEXT` 断言改指 `application.sql`、tool-guard 乐观并发 2 用例、`cacheWriteTokens` 断言、update-ui alias 正则泛化。
+  - `internal/project/workspace_inventory_test.go`：官方 e21ac52b 已做文件名可移植化，本分支补 symlink 不可用时的 `t.Skipf` 守卫（Windows 本地无 `SeCreateSymbolicLinkPrivilege` 时官方 CI 之外会失败，官方 CI runner 有该特权）。
+- **裁剪**：官方过程文档 12 份——`docs/feature/{rest-error-empty-results,russian-layout-overflow,task-timeout-classification,tool-guard-conflict-detection}.md`、`docs/feature/startup-schema-reconcile/`（6 份）、`docs/fixes/{P-026-role-session-revocation,manual-vulnerability-create}.md`（本分支以 git log + 本文件记录，不收录过程文档）；`docs/en-US/{api-reference,rbac}.md` 等英文文档目录不收录。
+- **版本号（4ca8b7d3）**：`config.example.yaml` → `v1.7.24-src`（并采纳官方 `project.context_checkpoints` 注释与 `fact_index` 预算说明）。
+- 合并后审计（165 个官方变更文件三方探测）：**104 个与官方 v1.7.24 完全一致（UPTODATE）、28 个官方增量干净并入（UPDATED）、8 个 DIVERGED 全部为有意分歧（版本号/`go.mod` 依赖策略/`go.sum`/SRC 列 schema/`chat.js` 本分支队列与 async 签名/`style.css` 并集/`index.html` 并集）、25 个裁剪或迁址**，0 个遗漏。
+- 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞五工具生命周期（与官方 `update_vulnerability_status` 并存）、统一审批（`approval:*` 目录未动，批量任务策略覆盖不变量保持）、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills、前端资源按需加载与多模态图片直发均未改动。
 
 ### v1.7.20 同步说明（2026-09-27）
 

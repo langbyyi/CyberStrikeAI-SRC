@@ -352,7 +352,7 @@ func (h *AgentHandler) EinoSingleAgentLoopStream(c *gin.Context) {
 			return
 		}
 
-		if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(context.Cause(taskCtx), context.DeadlineExceeded) {
+		if taskDeadlineExceeded(taskCtx) {
 			taskStatus = "timeout"
 			h.tasks.UpdateTaskStatus(conversationID, taskStatus)
 			timeoutMsg := "任务执行超时，已自动终止。"

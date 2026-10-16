@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,15 +21,28 @@ func (h *ConfigHandler) SetToolGuard(manager *toolguard.Manager) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.toolGuard = manager
+	h.toolGuardRevision = uuid.NewString()
+}
+
+// Call with h.mu held. The nonce fences no-op saves and ABA; the hash detects
+// policy changes made directly through the manager as well.
+func (h *ConfigHandler) toolGuardETag() string {
+	if h.toolGuardRevision == "" {
+		h.toolGuardRevision = uuid.NewString()
+	}
+	data, _ := json.Marshal(h.toolGuard.Config())
+	return fmt.Sprintf(`"%s-%x"`, h.toolGuardRevision, sha256.Sum256(data))
 }
 
 func (h *ConfigHandler) GetToolGuard(c *gin.Context) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.toolGuard == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "调用拦截服务未初始化"})
 		return
 	}
+	c.Header("ETag", h.toolGuardETag())
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, h.toolGuard.Config())
 }
 
@@ -72,6 +87,14 @@ func (h *ConfigHandler) UpdateToolGuard(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "调用拦截服务未初始化"})
 		return
 	}
+	if c.GetHeader("If-Match") == "" {
+		c.JSON(http.StatusPreconditionRequired, gin.H{"code": "tool_guard_version_required", "error": "缺少调用拦截配置版本，请刷新页面后重试"})
+		return
+	}
+	if c.GetHeader("If-Match") != h.toolGuardETag() {
+		c.JSON(http.StatusConflict, gin.H{"code": "tool_guard_conflict", "error": "调用拦截配置已被其他用户修改，本次修改未保存。请刷新页面获取最新配置后重试"})
+		return
+	}
 	// Commit the file first; a validation/write failure must leave the current
 	// effective policy and in-memory config intact.
 	if err := h.saveToolGuardConfig(cfg); err != nil {
@@ -85,11 +108,14 @@ func (h *ConfigHandler) UpdateToolGuard(c *gin.Context) {
 		return
 	}
 	h.config.ToolGuard = &cfg
+	h.toolGuardRevision = uuid.NewString()
 	if h.audit != nil {
 		h.audit.RecordOK(c, "config", "tool_guard_update", "更新调用拦截规则", "config", "tool_guard", map[string]interface{}{
 			"enabled": cfg.Enabled, "rule_count": len(cfg.Rules),
 		})
 	}
+	c.Header("ETag", h.toolGuardETag())
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, h.toolGuard.Config())
 }
 

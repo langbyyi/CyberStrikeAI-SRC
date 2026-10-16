@@ -39,15 +39,15 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20261016-img-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20261016-context-memory-token-analytics">
     <link rel="stylesheet" href="/static/css/testing-specification.css?v=20261015-4">
     <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
     <link rel="stylesheet" href="/static/css/c2.css">
     <link rel="stylesheet" href="/static/vendor/xterm.css">
     <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
-    <link rel="stylesheet" href="/static/css/mobile.css?v=20261007-glass-1">
-    <script src="/static/js/router.js?v=20261009-retest-1"></script>
+    <link rel="stylesheet" href="/static/css/mobile.css?v=20261015-project-table-3">
+    <script src="/static/js/router.js?v=20261011-token-settings"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -557,7 +557,7 @@
                                         <span class="dashboard-kpi-sub-text" id="dashboard-kpi-rate-sub-text" data-i18n="dashboard.healthyStatus">运行平稳</span>
                                     </div>
                                 </div>
-                                <div class="dashboard-kpi-card" role="button" tabindex="0" onclick="switchPage('chat')" onkeydown="if(event.key==='Enter'||event.key===' ') { event.preventDefault(); switchPage('chat'); }" data-i18n="dashboard.clickToViewChat" data-i18n-attr="title" title="点击查看对话">
+                                <div class="dashboard-kpi-card" role="button" tabindex="0" onclick="openDashboardTokenUsage()" onkeydown="if(event.key==='Enter'||event.key===' ') { event.preventDefault(); openDashboardTokenUsage(); }" data-i18n="dashboard.usageView" data-i18n-attr="title" title="查看用量详情">
                                     <div class="dashboard-kpi-head">
                                         <div class="dashboard-kpi-label" data-i18n="dashboard.tokenUsage">Token 用量</div>
                                         <span class="dashboard-kpi-icon dashboard-kpi-icon-tokens" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/><path d="M8 3 6 21"/><path d="m18 3-2 18"/></svg></span>
@@ -3598,6 +3598,9 @@
                                 <div class="settings-nav-item active" data-section="basic" onclick="switchSettingsSection('basic')">
                                     <span data-i18n="settings.nav.basic">基本设置</span>
                                 </div>
+                                <div class="settings-nav-item" data-section="token-usage" role="button" tabindex="0" onclick="switchSettingsSection('token-usage')" onkeydown="if(event.key==='Enter'||event.key===' ') { event.preventDefault(); switchSettingsSection('token-usage'); }">
+                                    <span data-i18n="settings.nav.tokenUsage">Token 用量</span>
+                                </div>
                                 <div class="settings-nav-item" data-section="hitl" onclick="switchSettingsSection('hitl')">
                                     <span data-i18n="settings.nav.hitl">人机协同</span>
                                 </div>
@@ -3633,6 +3636,24 @@
                         
                         <!-- 右侧内容区域 -->
                         <div class="settings-content">
+                            <div id="settings-section-token-usage" class="settings-section-content token-usage-panel">
+                                <div class="settings-section-header token-usage-header">
+                                    <div><h3 data-i18n="settings.nav.tokenUsage">Token 用量</h3><p class="token-usage-subtitle" data-i18n="tokenUsageUI.subtitle">查看模型消耗、缓存利用与使用趋势</p></div>
+                                    <button id="settings-token-refresh" type="button" class="btn-secondary" onclick="refreshTokenUsage()" data-i18n="common.refresh">刷新</button>
+                                </div>
+                                <div class="token-usage-toolbar">
+                                    <label for="settings-token-days" data-i18n="dashboard.usagePeriod">统计周期</label>
+                                    <select id="settings-token-days" onchange="changeTokenUsagePeriod(this.value)">
+                                        <option value="7" data-i18n="dashboard.usage7Days">近 7 天</option>
+                                        <option value="30" data-i18n="dashboard.usage30Days">近 30 天</option>
+                                        <option value="90" data-i18n="dashboard.usage90Days">近 90 天</option>
+                                    </select>
+                                    <span id="settings-token-scope" class="token-usage-scope"></span>
+                                </div>
+                                <details class="token-usage-note"><summary data-i18n="tokenUsageUI.scopeNote">统计口径与说明</summary><p data-i18n="dashboard.usageScope">统计已记录的 Agent 运行中模型返回的用量，包括子 Agent。缓存读取和写入属于输入，推理属于输出，不重复加入总量。未返回或未采集的用量不在统计内；这不是供应商账单。模型按运行配置归类，切换模型的运行可能混合用量。</p></details>
+                                <div id="settings-token-analysis" aria-live="polite"></div>
+                            </div>
+
                             <!-- 基本设置 -->
                             <div id="settings-section-basic" class="settings-section-content active">
                                 <div class="settings-section-header">
@@ -5688,6 +5709,11 @@
                     </div>
                     <div class="attack-chain-sidebar">
                         <div class="attack-chain-sidebar-content">
+                            <details id="attack-chain-context" class="attack-chain-context" hidden>
+                                <summary><span id="attack-chain-context-title"></span></summary>
+                                <p id="attack-chain-context-notice" class="attack-chain-context-notice"></p>
+                                <div id="attack-chain-context-content"></div>
+                            </details>
                             <div class="attack-chain-legend">
                                 <div class="legend-section">
                                     <div class="legend-title" data-i18n="attackChainModal.riskLevel">风险等级</div>
@@ -6384,8 +6410,8 @@
                     <p class="form-hint" data-i18n="vulnerabilityModal.projectHint">绑定后 Agent 在项目范围内可通过 list_vulnerabilities 看到本条记录；留空则尝试从会话自动关联。</p>
                 </div>
                 <div class="form-group">
-                    <label for="vulnerability-conversation-id"><span data-i18n="vulnerabilityModal.conversationId">会话ID</span> <span style="color: red;">*</span></label>
-                    <input type="text" id="vulnerability-conversation-id" data-i18n="vulnerabilityModal.conversationIdPlaceholder" data-i18n-attr="placeholder" placeholder="输入会话ID" required />
+                    <label for="vulnerability-conversation-id"><span data-i18n="vulnerabilityModal.conversationId">会话ID</span></label>
+                    <input type="text" id="vulnerability-conversation-id" data-i18n="vulnerabilityModal.conversationIdPlaceholder" data-i18n-attr="placeholder" placeholder="可选：输入已有会话ID，留空可独立添加漏洞" />
                 </div>
                 <div class="form-group">
                     <label for="vulnerability-conversation-tag" data-i18n="vulnerabilityModal.conversationTag">对话标签</label>
@@ -6956,17 +6982,19 @@
     <script src="/static/js/info-collect.js?v=20261012-perf-1"></script>
     <script src="/static/js/assets.js?v=20261012-perf-1"></script>
     <script src="/static/js/agents.js"></script>
-    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/dashboard.js?v=20261011-token-settings-cache-only"></script>
     <script src="/static/js/chat-scroll.js?v=20260815-1"></script>
-    <script src="/static/js/monitor.js?v=20260907-blocked-1"></script>
-    <script src="/static/js/chat.js?v=20261015-img-1"></script>
+    <script src="/static/js/monitor.js?v=20261011-token-usage"></script>
+    <script src="/static/js/attack-chain-context.js?v=20261012-summary-2"></script>
+    <script src="/static/js/chat.js?v=20261016-context-memory-token-usage"></script>
     <script src="/static/js/chat-images.js?v=20261015-img-1"></script>
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/approval-ui-model.js?v=20260831-1"></script>
     <script src="/static/js/approval-ui.js?v=20260831-6"></script>
-    <script src="/static/js/hitl.js?v=20260828-1"></script>
-    <script src="/static/js/tool-guard.js?v=20260907-7"></script>
-    <script src="/static/js/settings.js?v=20260717-1"></script>
+    <script src="/static/js/hitl.js?v=20260819-1"></script>
+    <script src="/static/js/tool-guard.js?v=20261010-conflict"></script>
+    <script src="/static/js/token-usage.js?v=20261012-token-analytics"></script>
+    <script src="/static/js/settings.js?v=20261011-token-settings"></script>
     <script src="/static/js/audit-datetime-picker.js"></script>
     <script src="/static/js/audit.js"></script>
     <script src="/static/js/storage.js"></script>
@@ -6979,7 +7007,7 @@
     <script src="/static/js/fact-graph.js?v=20261012-perf-1"></script>
     <script src="/static/js/projects.js?v=20261014-spec-1"></script>
     <script src="/static/js/vulnerability.js?v=20261010-retest-2"></script>
-    <script src="/static/js/webshell.js?v=20260907-blocked-1"></script>
+    <script src="/static/js/webshell.js?v=20261011-token-usage"></script>
     <script src="/static/js/chat-files.js"></script>
     <script src="/static/js/tasks.js?v=20261015-spec-2"></script>
     <script src="/static/js/workflow-package-client.js"></script>

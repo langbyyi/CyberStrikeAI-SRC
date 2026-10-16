@@ -80,7 +80,7 @@ function harness(permissions = ['config:read', 'config:write']) {
         }
     });
     vm.runInContext(source, context);
-    const reply = (body, ok = true) => queue.push(async () => ({ ok, json: async () => body }));
+    const reply = (body, ok = true, etag = '"v1"') => queue.push(async () => ({ ok, headers: { get: () => etag }, json: async () => body }));
     const element = (id) => nodes.get('tool-guard-' + id);
     const text = (node) => [node.textContent, ...node.children.map(text)].join('\n');
     return { window, document, reply, queue, calls, element, text };
@@ -108,6 +108,77 @@ function fillDraft(h, values = {}) {
 function runLocal(h, prefix) {
     return h.element(prefix + '-test-run').listeners.click();
 }
+
+test('two pages sharing a version have one winner and the loser retains its draft and version', async () => {
+    const a = harness(), b = harness();
+    let stored = config(), version = '"v1"';
+    for (const h of [a, b]) {
+        h.reply(stored, true, version);
+        await h.window.loadToolGuardConfig();
+    }
+    fillField(a, 'rule-0-message', 'first user');
+    fillField(b, 'rule-0-message', 'second user');
+    const submit = async (h) => {
+        h.queue.push(async () => {
+            const call = h.calls.at(-1);
+            if (call.options.headers['If-Match'] !== version) return {
+                ok: false, headers: { get: () => version },
+                json: async () => ({ code: 'tool_guard_conflict', error: 'conflict' })
+            };
+            stored = JSON.parse(call.options.body);
+            version = '"v' + (Number(version.slice(2, -1)) + 1) + '"';
+            return { ok: true, headers: { get: () => version }, json: async () => stored };
+        });
+        await h.window.saveToolGuardConfig();
+    };
+    await Promise.all([submit(a), submit(b)]);
+    assert.equal(stored.rules[0].message, 'first user');
+    assert.equal(a.element('save').disabled, true);
+    assert.equal(b.element('save').disabled, false);
+    assert.equal(b.element('rule-0-message').value, 'second user');
+    assert.match(b.element('feedback').textContent, /Another user/);
+    await submit(b);
+    assert.equal(b.calls.at(-1).options.headers['If-Match'], '"v1"');
+    assert.equal(stored.rules[0].message, 'first user');
+    fillField(a, 'rule-0-name', 'fresh edit');
+    await submit(a);
+    assert.equal(a.calls.at(-1).options.headers['If-Match'], '"v2"');
+    // Discard the stale draft, then reload to intentionally edit the new baseline.
+    b.window.resetToolGuardConfig();
+    b.reply(stored, true, version);
+    await b.window.loadToolGuardConfig();
+    fillField(b, 'rule-0-message', 'rebased edit');
+    await submit(b);
+    assert.equal(stored.rules[0].message, 'rebased edit');
+});
+
+test('failed save keeps its version for retry, dry-run has no precondition, missing version fails visibly', async () => {
+    const h = harness();
+    h.reply(config(), true, '"original"');
+    await h.window.loadToolGuardConfig();
+    fillField(h, 'rule-0-name', 'edited');
+    h.reply({ error: 'disk full' }, false, '"untrusted"');
+    await h.window.saveToolGuardConfig();
+    assert.equal(h.calls.at(-1).options.headers['If-Match'], '"original"');
+    h.reply({ blocked: false });
+    await h.window.testToolGuardConfig();
+    assert.equal(h.calls.at(-1).options.headers['If-Match'], undefined);
+    h.reply({ ...config(), rules: [{ ...config().rules[0], name: 'edited' }] }, true, '"updated"');
+    await h.window.saveToolGuardConfig();
+    assert.equal(h.calls.at(-1).options.headers['If-Match'], '"original"');
+    fillField(h, 'rule-0-name', 'next');
+    h.reply({ ...config(), rules: [{ ...config().rules[0], name: 'next' }] }, true, '"next"');
+    await h.window.saveToolGuardConfig();
+    assert.equal(h.calls.at(-1).options.headers['If-Match'], '"updated"');
+    const old = harness();
+    old.reply(config(), true, null);
+    await old.window.loadToolGuardConfig();
+    fillField(old, 'rule-0-name', 'draft');
+    old.reply({ code: 'tool_guard_version_required' }, false);
+    await old.window.saveToolGuardConfig();
+    assert.match(old.element('feedback').textContent, /version is missing/);
+    assert.equal(old.element('rule-0-name').value, 'draft');
+});
 
 test('test uses the unsaved configuration and backend RE2 validation without saving or executing tools', async () => {
     const h = harness();

@@ -595,3 +595,12 @@ curl -k https://127.0.0.1:8080/api/eino-agent \
 - 统一审批：`internal/handler/approval.go`
 - 资产接口：`internal/handler/asset.go`
 - 资产存储与去重：`internal/database/asset.go`
+
+## 删除与空列表响应约定
+
+请求通过认证、权限检查且模块可用时：
+
+- `DELETE /api/c2/profiles/:id` 和 `DELETE /api/webshell/connections/:id` 对不存在或已删除的对象返回 `404`，分别使用 `profile not found` 和 `connection not found` 错误文案。真正的数据库失败返回 `500` 与通用错误文案，底层 SQL 错误仅记录在服务日志。
+- `GET /api/vulnerabilities` 与 `GET /api/batch-tasks` 成功查询但无匹配记录时返回 `200`；集合字段分别为 `"vulnerabilities": []` 和 `"queues": []`，正常计数为 `"total": 0`。
+
+客户端可按 HTTP 状态区分调用失败和成功的空结果；这两个列表的空集合由 `null` 调整为 `[]`。

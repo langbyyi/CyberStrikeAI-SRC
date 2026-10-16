@@ -151,7 +151,7 @@ func (h *AgentHandler) runRoleWorkflowStreamIfBound(
 			sendEvent("done", "", map[string]interface{}{"conversationId": conversationID})
 			return true
 		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(context.Cause(taskCtx), context.DeadlineExceeded) {
+		if taskDeadlineExceeded(taskCtx) {
 			taskStatus = "timeout"
 			h.tasks.UpdateTaskStatus(conversationID, taskStatus)
 			timeoutMsg := "任务执行超时，已自动终止。"

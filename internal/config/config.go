@@ -80,12 +80,18 @@ const (
 
 // ProjectConfig 项目黑板（跨对话共享事实）配置。
 type ProjectConfig struct {
+	ContextCheckpoints      *bool  `yaml:"context_checkpoints,omitempty" json:"context_checkpoints,omitempty"`
 	Enabled                 bool   `yaml:"enabled" json:"enabled"`
 	DefaultProjectID        string `yaml:"default_project_id,omitempty" json:"default_project_id,omitempty"` // 机器人/批量等无显式项目时绑定的默认项目
 	FactIndexMaxRunes       int    `yaml:"fact_index_max_runes,omitempty" json:"fact_index_max_runes,omitempty"`
 	FactIndexPathMaxRunes   int    `yaml:"fact_index_path_max_runes,omitempty" json:"fact_index_path_max_runes,omitempty"`
 	FactSummaryMaxRunes     int    `yaml:"fact_summary_max_runes,omitempty" json:"fact_summary_max_runes,omitempty"`
 	DefaultInjectDeprecated bool   `yaml:"default_inject_deprecated,omitempty" json:"default_inject_deprecated,omitempty"`
+}
+
+// ContextCheckpointsEnabled persists generated continuation notes on compaction.
+func (c ProjectConfig) ContextCheckpointsEnabled() bool {
+	return c.ContextCheckpoints == nil || *c.ContextCheckpoints
 }
 
 // FactIndexMaxRunesEffective 自动注入黑板索引的最大 rune 数。

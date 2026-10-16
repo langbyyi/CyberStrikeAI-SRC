@@ -61,6 +61,7 @@ test('a pending attack-chain render cannot resume after switching or closing its
         const container = { innerHTML: '', isConnected: true };
         const context = {
             window: {}, currentAttackChainConversationId: 'first',
+            attackChainCytoscape: null, attackChainOriginalData: null,
             document: { getElementById: () => container },
             loadFrontendVendor: () => new Promise(resolve => { ready = resolve; })
         };
@@ -90,9 +91,17 @@ test('attack-chain loading and errors wait for asynchronous rendering', async ()
         document: { getElementById: () => container, querySelector: () => button },
         isAttackChainLoading: () => loading,
         setAttackChainLoading: (_, value) => { loading = value; },
+        beginAttackChainRequest: () => { context.attackChainRequestSequence++; return context.attackChainRequestSequence; },
+        attackChainRequestSequence: 0,
+        attackChainRequestOwners: new Map(),
+        isCurrentAttackChainRequest: () => true,
+        finishAttackChainRequest: () => { loading = false; },
+        resetAttackChainContext: () => {},
         apiFetch: async () => ({ ok: true, json: async () => ({ nodes: [{}], edges: [] }) }),
         updateAttackChainStats: () => { updated = true; },
-        renderAttackChain: () => new Promise((resolve, reject) => { finishRender = reject; })
+        renderAttackChain: () => new Promise((resolve, reject) => { finishRender = reject; }),
+        renderAttackChainError: (el, message) => { el.innerHTML = '<div class="error-message">' + message + '</div>'; },
+        attackChainFailureText: (key, fallback, detail) => fallback + (detail || '')
     };
     vm.createContext(context);
     vm.runInContext(source.slice(start, end), context);

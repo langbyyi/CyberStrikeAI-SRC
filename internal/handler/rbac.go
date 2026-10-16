@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
@@ -20,6 +21,7 @@ type RBACHandler struct {
 	logger *zap.Logger
 	audit  *audit.Service
 	auth   *security.AuthManager
+	roleMu sync.Mutex // Serialize role snapshots, mutations, and revocation.
 }
 
 func NewRBACHandler(db *database.DB, logger *zap.Logger) *RBACHandler {
@@ -140,6 +142,8 @@ func (h *RBACHandler) CreateRole(c *gin.Context) {
 }
 
 func (h *RBACHandler) UpdateRole(c *gin.Context) {
+	h.roleMu.Lock()
+	defer h.roleMu.Unlock()
 	id := strings.TrimSpace(c.Param("id"))
 	existing, err := h.db.GetRBACRoleByID(id)
 	if err != nil {
@@ -159,6 +163,11 @@ func (h *RBACHandler) UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	previousPermissions, err := h.db.ListRBACRolePermissionKeys(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	role, err := h.db.UpsertRBACRole(id, req.Name, req.Description, req.Scope, req.Permissions)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -170,13 +179,15 @@ func (h *RBACHandler) UpdateRole(c *gin.Context) {
 	if h.audit != nil {
 		h.audit.RecordOK(c, "rbac", "update_role", "更新平台角色", "role", id, nil)
 	}
-	if h.auth != nil {
-		h.auth.RevokeAllSessions()
+	if h.auth != nil && (existing.Scope != role.Scope || !sameRolePermissions(previousPermissions, req.Permissions)) {
+		h.auth.RevokeRoleSessions(id)
 	}
 	c.JSON(http.StatusOK, gin.H{"role": role})
 }
 
 func (h *RBACHandler) DeleteRole(c *gin.Context) {
+	h.roleMu.Lock()
+	defer h.roleMu.Unlock()
 	id := strings.TrimSpace(c.Param("id"))
 	if err := h.db.DeleteRBACRole(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -186,9 +197,32 @@ func (h *RBACHandler) DeleteRole(c *gin.Context) {
 		h.audit.RecordOK(c, "rbac", "delete_role", "删除平台角色", "role", id, nil)
 	}
 	if h.auth != nil {
-		h.auth.RevokeAllSessions()
+		h.auth.RevokeRoleSessions(id)
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// Permission order, duplicate keys, and whitespace do not change authorization.
+func sameRolePermissions(a, b []string) bool {
+	normalize := func(keys []string) map[string]bool {
+		set := make(map[string]bool, len(keys))
+		for _, key := range keys {
+			if key = strings.TrimSpace(key); key != "" {
+				set[key] = true
+			}
+		}
+		return set
+	}
+	left, right := normalize(a), normalize(b)
+	if len(left) != len(right) {
+		return false
+	}
+	for key := range left {
+		if !right[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *RBACHandler) ListUsers(c *gin.Context) {

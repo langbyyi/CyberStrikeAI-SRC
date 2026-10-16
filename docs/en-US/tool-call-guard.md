@@ -12,6 +12,8 @@ Use **Test all rules** in the page header to check the configured order and enab
 
 Saving validates every rule, including disabled rules, writes only the `tool_guard` YAML section, and applies the policy immediately. Validation or write failure preserves the existing protection. Manual YAML edits require a restart; a non-null `tool_guard` section must explicitly provide `enabled` and `rules` (use `[]` for no rules). The first matching enabled rule supplies the reminder. Rules use Go/RE2 syntax; lookarounds and backreferences are unsupported. Up to 100 rules are allowed, with patterns and reminder templates capped at 4096 bytes each.
 
+When multiple users edit the same configuration version, only the first save succeeds. Stale saves report a conflict and retain the local draft. Copy any edits you need to keep, refresh to load the latest configuration, and edit again; repeating a stale save cannot overwrite another user's changes. Saving replaces the full rule list, so edits to different rules can also conflict.
+
 Reminder placeholders are `{match}` (matched text), `{tool}` (tool name), and `{rule}` (rule name). An optional named group `(?P<match>...)` selects the matched text. Empty templates use a default reminder.
 
 Checks inspect the tool name, serialized JSON, nested strings and keys, and up to three rounds of common URL percent decoding. Blocked calls use a separate **Blocked** status in the UI and execution records, with the reason preserved. Monitoring counts blocks separately and excludes them from failed calls and the success-rate denominator. At startup after an upgrade, clearly identifiable legacy guard-block records are migrated to this status. MCP results retain `isError: true` alongside `blocked: true` so the agent knows the request did not execute. External MCP policy blocks do not count as provider failures for circuit breaking. Updated rules cannot cancel calls already dispatched.
@@ -22,6 +24,6 @@ Text matching cannot establish target ownership from IP addresses, DNS aliases, 
 
 API endpoints:
 
-- `GET /api/tool-guard`: active `{enabled, rules}` configuration.
-- `PUT /api/tool-guard`: save that structure, explicitly providing both fields. Rules contain `id`, `name`, `enabled`, `pattern`, and `message`.
+- `GET /api/tool-guard`: active `{enabled, rules}` configuration with an `ETag` response header and `Cache-Control: no-store`.
+- `PUT /api/tool-guard`: save that structure, explicitly providing both fields. Rules contain `id`, `name`, `enabled`, `pattern`, and `message`. Send the complete ETag from the read (including quotes) in `If-Match`. Missing versions return HTTP 428 / `tool_guard_version_required`; stale versions return HTTP 409 / `tool_guard_conflict`, without saving. Successful saves return a new ETag. Existing API clients must adopt this protocol; `*` cannot bypass it. Read a new version after a server restart. Coordination is scoped to the current service instance, not multiple instances sharing configuration.
 - `POST /api/tool-guard/test`: accepts `{config, toolName, arguments}` and returns `{blocked, match?}`. Match fields are `ruleId`, `ruleName`, `matchedText`, and `message`.

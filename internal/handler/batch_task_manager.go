@@ -450,7 +450,7 @@ func (m *BatchTaskManager) ListQueues(limit, offset int, status, keyword string)
 }
 
 func (m *BatchTaskManager) ListQueuesForAccess(limit, offset int, status, keyword, userID, scope string) ([]*BatchTaskQueue, int, error) {
-	var queues []*BatchTaskQueue
+	queues := make([]*BatchTaskQueue, 0)
 	var total int
 
 	// 如果数据库可用，从数据库查询
