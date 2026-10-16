@@ -36,6 +36,7 @@ import (
 	"cyberstrike-ai/internal/skillpackage"
 	"cyberstrike-ai/internal/storage"
 	"cyberstrike-ai/internal/toolguard"
+	"cyberstrike-ai/internal/update"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -629,12 +630,12 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	})
 
 	// The one-click update acts on this installation's own tree, rooted where the live config
-	// file is. Its restart hook exits after a graceful shutdown, which is only "a restart" when
-	// something supervises the process - so the endpoint reports whether it is standing down or
-	// whether somebody has to start it again, instead of promising a boot that may not happen.
+	// file is. Its restart hook hands this process over to the binary on disk: on Linux that
+	// is an exec into it - same PID, so no supervisor has to be involved for the new code to
+	// run - and everywhere else it stands down for whatever started the process. Which of the
+	// two happened is not something the page can promise, so it reports the state it sees.
 	updateHandler := handler.NewUpdateHandler(configDir, log.Logger, auditSvc, func() {
-		app.Shutdown()
-		os.Exit(0)
+		restartInto(app.Shutdown, update.InstallBinaryPath(configDir))
 	}, configHandler.UpdateSource, configHandler.SetUpdateSource)
 
 	// 设置路由（使用 App 实例以便动态获取 handler）

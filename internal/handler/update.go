@@ -459,7 +459,9 @@ func (h *UpdateHandler) startJob(kind string, restart bool) (*updateJob, bool) {
 			release, lockErr := update.LockInstall(opts)
 			if lockErr == nil {
 				h.mu.Unlock()
-				// Keep both CLI and HTTP writers out until the old process exits.
+				// Keep both CLI and HTTP writers out until the handover. The lock goes away
+				// with this image - released on exit, and on the exec that replaces the image
+				// on Linux, because the lock file is opened close-on-exec.
 				time.AfterFunc(updateRestartDelay, func() {
 					defer release()
 					defer func() { h.mu.Lock(); h.active = ""; h.mu.Unlock() }()

@@ -27,6 +27,22 @@ func StampBinary(root string, opts Options) BinaryStamp {
 	return BinaryStamp{Exists: true, Size: info.Size(), ModTime: info.ModTime()}
 }
 
+// InstallBinaryPath is the executable inside an installation: the file an update replaces and
+// the file a restart has to become.
+//
+// Deliberately not os.Executable(). An update renames the running file aside to .prev before
+// putting the new build in its place, so a process that asks for its own path afterwards is
+// handed the old binary - and re-execing that would reinstate exactly the code the update
+// just replaced.
+func InstallBinaryPath(root string) string {
+	o := Options{Root: root}
+	abs, err := o.installRoot()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(abs, o.binaryName())
+}
+
 // Same reports whether two stamps describe the same file. The comparison is deliberately
 // stricter than "the disk file is newer": a rollback moves an older build back into place,
 // and the process running the newer one still has to restart for the rollback to be real.
