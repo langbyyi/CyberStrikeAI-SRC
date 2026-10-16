@@ -102,7 +102,7 @@ func defaultFieldsForProvider(provider string) string {
 	case "shodan":
 		return "ip_str,port,hostnames,domains,org,isp,location.country_name,location.city,product,transport"
 	default:
-		return "host,ip,port,domain,title,protocol,country,province,city,server"
+		return "host,ip,port,domain,title,protocol,country,region,city,server"
 	}
 }
 
@@ -689,7 +689,7 @@ func (h *FofaHandler) Search(c *gin.Context) {
 	if req.Size > 10000 {
 		req.Size = 10000
 	}
-	if req.Fields == "" {
+	if strings.TrimSpace(req.Fields) == "" {
 		req.Fields = defaultFieldsForProvider(provider)
 	}
 
@@ -697,6 +697,9 @@ func (h *FofaHandler) Search(c *gin.Context) {
 		h.searchExternalProvider(c, provider, req)
 		return
 	}
+
+	// 旧表单/旧客户端可能仍传 province 返回字段；FOFA 实际以 region 导出该值。
+	req.Fields = normalizeFofaFields(req.Fields)
 
 	runtime, err := h.resolveFofaRuntime()
 	if err != nil {

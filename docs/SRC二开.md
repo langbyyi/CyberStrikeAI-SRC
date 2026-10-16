@@ -258,6 +258,21 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 - 合并后审计（165 个官方变更文件三方探测）：**104 个与官方 v1.7.24 完全一致（UPTODATE）、28 个官方增量干净并入（UPDATED）、8 个 DIVERGED 全部为有意分歧（版本号/`go.mod` 依赖策略/`go.sum`/SRC 列 schema/`chat.js` 本分支队列与 async 签名/`style.css` 并集/`index.html` 并集）、25 个裁剪或迁址**，0 个遗漏。
 - 二开层完整保留：可复现强制、SRC 报告五块导出、FOFA 四引擎、漏洞五工具生命周期（与官方 `update_vulnerability_status` 并存）、统一审批（`approval:*` 目录未动，批量任务策略覆盖不变量保持）、SRC 化默认提示词、18 角色 / 116 工具 YAML / 79 Skills、前端资源按需加载与多模态图片直发均未改动。
 
+### 跟进官方 v1.7.24 未发版修复：FOFA region 返回字段（2026-10-17）
+
+官方 v1.7.24 发布后有 12 个提交，其中唯一代码修复 `0c0d4a53`「use supported FOFA region return field and preserve asset location」直接命中本分支招牌特性，已完整跟进；其余 11 个为文档（含官方 process journal 清理与双语翻译，本分支不收录）。
+
+- **问题**：FOFA 官方 API 的返回字段清单里没有 `province`（该值以 `region` 导出）。本分支 FOFA 默认字段、Web 端默认值与两套预设都在用 `province`，请求会因字段不受支持而失败——空间测绘主链路受影响。
+- **修复**（逐文件跟进官方）：
+  - `internal/handler/fofa.go`：默认字段 `province` → `region`；`req.Fields` 改用 `strings.TrimSpace` 判空（纯空白也走默认）；fofa 分支在调用 runtime 前先过 `normalizeFofaFields`。
+  - 新增 `internal/handler/fofa_fields.go`：`normalizeFofaFields` 将旧表单/旧客户端传来的 legacy 别名 `province` 归一为 `region`，同时去重去空；按本分支包结构补入 `splitAndCleanCSV` 辅助（与 `internal/fofaruntime` 同名实现一致）。
+  - 新增 `internal/handler/fofa_fields_test.go`（官方原样）：契约式上游 mock——对不支持的字段直接返 400，覆盖默认/空白默认/legacy 表单/别名去重/规范 region 五个子用例；已通过。
+  - 前端：`web/static/js/info-collect.js`（默认字段 + 「Web 常用」「情报增强」两套预设改用 `region`/`asn`/`org`，并补 legacy 字段串的 provider 切换守卫）、`web/static/js/assets.js`（`fofaResultToAsset` 的省份来源改为 `region` 优先、保留 `province` 与 quake 的 `location.province_cn` 兜底）、`web/templates/index.html`（`#fofa-fields` 默认值）。
+  - `tools/fofa_search.yaml`：字段清单同步为 `country,region,city,...,asn,org`。
+  - 测试迁址：`web/static/js/fofa-fields.test.cjs` → `web/tests/fofa-fields.test.cjs`（`__dirname` 路径适配）。7 项通过，含 region/province/quake 三来源 × 对象/数组两种行格式的导入落省断言。
+- **兼容**：旧客户端传 `province` 由后端归一，无需改动；已有保存的旧字段串在前端切换 provider 时会被重置为受支持默认值。
+- 验证：`go test ./internal/... ./cmd/...` 全过；前端 `web/tests/` **407/407** 通过（新增 7 项）。
+
 ### v1.7.20 同步说明（2026-09-27）
 
 官方 v1.7.19→v1.7.20 共 4 个提交：**2 个直接合入（含 1 个版本号）+ 1 个适配合并 + 1 个语义合并到统一审批**；另顺带收口一处官方同源的 supervisor 委派失效。逐提交与本地二开层比对后按语义合并，非直接 merge。
