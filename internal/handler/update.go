@@ -53,6 +53,16 @@ type UpdateHandler struct {
 	jobs   map[string]*updateJob
 	order  []string
 	active string
+	// checkFlight is the check currently on the network, so the next request can wait for
+	// its answer instead of being told the installation is busy with itself. Guarded by mu.
+	checkFlight *checkFlight
+}
+
+// checkFlight is one in-flight check that later requests share.
+type checkFlight struct {
+	done chan struct{}
+	snap *update.Snapshot
+	err  error
 }
 
 // updateJob is one running or finished apply. A build takes minutes, so the request
@@ -147,7 +157,7 @@ func (h *UpdateHandler) sourceView() gin.H {
 func (h *UpdateHandler) GetStatus(c *gin.Context) {
 	snap, err := update.Status(c.Request.Context(), h.options())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(statusForError(err), errorBody(err))
 		return
 	}
 	needsRestart, binaryBuiltAt := h.restartPending()
@@ -166,15 +176,49 @@ func (h *UpdateHandler) GetStatus(c *gin.Context) {
 // gap. A failed fetch is a 200 with checkError, not a 500 - "offline" and "bad token"
 // are answers the operator needs to read, not server faults to debug.
 func (h *UpdateHandler) Check(c *gin.Context) {
-	snap, err := update.Check(c.Request.Context(), h.options())
+	snap, err := h.sharedCheck(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(statusForError(err), errorBody(err))
 		return
 	}
 	h.record(c, "update.check", resultOf(snap.CheckError), fmt.Sprintf("检查更新：%s（默认分支 %s）", snap.Repo, snap.TargetBranch), map[string]interface{}{
 		"commit": snap.Commit, "remote_commit": snap.RemoteCommit, "behind": snap.Behind, "error": snap.CheckError,
 	})
 	c.JSON(http.StatusOK, gin.H{"status": snap})
+}
+
+// sharedCheck runs one check and hands its answer to every request that arrives while it is
+// in flight. A check holds the installation lock across a network round trip, and the
+// console fires one by itself whenever the page opens: without this, a second tab - or a
+// reload while the first check is still fetching - is refused with "已有更新、检查或回滚正在
+// 执行", which reads as a broken feature for what is only the same question asked twice.
+func (h *UpdateHandler) sharedCheck(ctx context.Context) (*update.Snapshot, error) {
+	h.mu.Lock()
+	if flight := h.checkFlight; flight != nil {
+		h.mu.Unlock()
+		select {
+		case <-flight.done:
+			return flight.snap, flight.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	flight := &checkFlight{done: make(chan struct{})}
+	h.checkFlight = flight
+	h.mu.Unlock()
+
+	// Deferred rather than written out at the end: every waiter's answer arrives with this
+	// close, so an unwind that skipped it - a panic recovered further up the chain - would
+	// leave later checks waiting on a channel nothing will ever close.
+	defer func() {
+		h.mu.Lock()
+		h.checkFlight = nil
+		h.mu.Unlock()
+		close(flight.done)
+	}()
+
+	flight.snap, flight.err = update.Check(ctx, h.options())
+	return flight.snap, flight.err
 }
 
 // SaveSource answers POST /api/system/update/source: the operator picks which repository

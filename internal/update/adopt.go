@@ -317,18 +317,24 @@ func adoptPreflight(ctx context.Context, opts Options) (root, source string, err
 // that ended up being, its short commit and its subject. Both callers fetch into a
 // repository of their own.
 func fetchSource(ctx context.Context, repo, source string) (string, string, string, error) {
-	out, err := gitCmd(ctx, repo, "ls-remote", "--symref", source, "HEAD")
+	// Both callers can be holding the installation lock here (an adoption is an update of
+	// the same tree), so these round trips run on the same ceiling a check does.
+	netCtx, cancel := context.WithTimeout(ctx, networkTimeout)
+	defer cancel()
+
+	out, err := gitCmd(netCtx, repo, "ls-remote", "--symref", source, "HEAD")
 	if err != nil {
-		return "", "", "", &Error{Reason: "fetch_failed", Message: "读取远端默认分支失败：" + err.Error()}
+		return "", "", "", &Error{Reason: "fetch_failed", Message: "读取远端默认分支失败：" + networkFailure(netCtx, source, err)}
 	}
 	branch := parseDefaultBranch(out)
 	if branch == "" {
 		return "", "", "", &Error{Reason: "no_branch", Message: "无法确定远端默认分支：" + source}
 	}
-	if _, err := gitCmd(ctx, repo, "fetch", "--quiet", "--no-tags", "--recurse-submodules=no",
+	if _, err := gitCmd(netCtx, repo, "fetch", "--quiet", "--no-tags", "--recurse-submodules=no",
 		source, "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
-		return "", "", "", &Error{Reason: "fetch_failed", Message: "拉取失败：" + err.Error()}
+		return "", "", "", &Error{Reason: "fetch_failed", Message: "拉取失败：" + networkFailure(netCtx, source, err)}
 	}
+	// The ref is local from here on.
 	ref := "origin/" + branch
 	commit, err := gitCmd(ctx, repo, "rev-parse", "--short", ref)
 	if err != nil {

@@ -23,6 +23,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,6 +31,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Binary is the default executable name an update replaces.
@@ -238,6 +240,12 @@ func gitCmd(ctx context.Context, root string, args ...string) (string, error) {
 // machine formats must use this, not gitCmd.
 func gitRaw(ctx context.Context, root string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	// git answers a network call through a helper process (git-remote-https) that inherits
+	// this command's output pipe. Killing git on a deadline therefore does not end the read:
+	// the orphan still holds the write end, Output waits for an EOF that never comes, and
+	// the installation lock stays held long after the timeout "fired" - the exact shape of
+	// "更新永远不可用". WaitDelay closes the pipes once the process is gone.
+	cmd.WaitDelay = execWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -247,6 +255,12 @@ func gitRaw(ctx context.Context, root string, args ...string) (string, error) {
 	}
 	return string(out), nil
 }
+
+// execWaitDelay is how long a finished-or-killed child process gets to close its output
+// pipes before they are closed for it. It only ever matters when a helper outlives the
+// process that spawned it - git leaves a transport helper behind, and `go build` leaves
+// compiler children - and without it a killed command can block the caller forever.
+var execWaitDelay = 5 * time.Second
 
 // nulList splits a `-z` machine-readable git output into its records.
 func nulList(blob string) []string {
@@ -378,6 +392,40 @@ func changeVerb(status string) string {
 	}
 }
 
+// networkTimeout is the ceiling on the feature's network round trips - a check's ls-remote
+// and fetch, an adoption's fetch. Whatever the source does not answer inside it is reported
+// as a timeout instead of being waited on.
+//
+// The ceiling is not about politeness, it is about the installation lock. These calls run
+// while holding it, and git has no deadline of its own: against a connection that swallows
+// packets without refusing them (the ordinary shape of 网络不通), ls-remote or fetch sits in
+// the connect until the kernel gives up, and a killed git leaves a transport helper holding
+// the result pipe even longer. The lock then never comes back, every click is refused with
+// "已有更新、检查或回滚正在执行", and the operation behind that refusal is invisible from the
+// console - the feature reading as broken for good.
+//
+// Generous rather than tight, because a slow link that does answer is a working
+// installation, not a failure: the fetch this ceiling was written for took four minutes on
+// the machine it came from, and a killed transfer does not keep the objects it had already
+// received, so a tight number would turn "slow" into "cannot update at all". It only has to
+// be finite. A variable rather than a constant so tests do not wait it out.
+var networkTimeout = 10 * time.Minute
+
+// networkFailure makes a killed git command answerable: when the deadline fires, git dies
+// with "signal: killed", which tells the operator nothing about the network it was talking
+// to or what to do next.
+func networkFailure(ctx context.Context, source string, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("访问更新源 %s 超时（本次上限 %s）：网络不通或更新源不可达，稍后重试即可",
+			source, timeoutLabel())
+	}
+	return err.Error()
+}
+
+// timeoutLabel is the ceiling as the operator reads it. Every message it lands in is prose,
+// and a Go duration ("10m0s") is not.
+func timeoutLabel() string { return fmt.Sprintf("%d 分钟", int(networkTimeout.Minutes())) }
+
 // Check asks the update source what it has and reports the gap. The two source calls are
 // the only network operations in this package, and a failure is a readable answer rather
 // than a fault: the page has to distinguish "up to date" from "could not look".
@@ -400,11 +448,17 @@ func check(ctx context.Context, opts Options) (*Snapshot, error) {
 	}
 	root := snap.Root
 
+	// Everything below talks to the update source, so it runs on a clock. An update reaches
+	// it through Apply too: a fetch that hangs there used to hold the installation lock for
+	// the whole job budget.
+	netCtx, cancel := context.WithTimeout(ctx, networkTimeout)
+	defer cancel()
+
 	// The branch to follow is the source repository's own default branch, so the
 	// operator never names one and a fork whose default differs from main still works.
-	target, err := resolveDefaultBranch(ctx, root, snap.Repo)
+	target, err := resolveDefaultBranch(netCtx, root, snap.Repo)
 	if err != nil {
-		snap.CheckError = err.Error()
+		snap.CheckError = networkFailure(netCtx, snap.Repo, err)
 		return snap, nil
 	}
 	snap.TargetBranch = target
@@ -412,9 +466,9 @@ func check(ctx context.Context, opts Options) (*Snapshot, error) {
 	// --recurse-submodules=no and --prune keep the fetch to this repository's own
 	// history. A branch-scoped fetch means a source with many refs cannot turn the
 	// update check into a full clone.
-	if _, err := gitCmd(ctx, root, "fetch", "--quiet", "--no-tags", "--prune", "--recurse-submodules=no",
+	if _, err := gitCmd(netCtx, root, "fetch", "--quiet", "--no-tags", "--prune", "--recurse-submodules=no",
 		snap.Repo, "+refs/heads/"+target+":refs/remotes/"+urlRefNamespace+"/"+target); err != nil {
-		snap.CheckError = err.Error()
+		snap.CheckError = networkFailure(netCtx, snap.Repo, err)
 		return snap, nil
 	}
 

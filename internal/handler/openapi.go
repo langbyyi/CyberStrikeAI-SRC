@@ -3511,7 +3511,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"系统更新"},
 					"summary":     "配置更新源（本安装从哪个仓库更新）",
-					"description": "把更新源写进 config.yaml 的 update 段：单个 repo 字段（仓库地址），更新跟随该仓库的默认分支。留空（或写空串）= 回到官方仓库 https://github.com/AIPentest/CyberStrikeAI.git。地址白名单为 https/http/ssh/git/file:// 与本机绝对路径（git 的 ext:: 传输会执行命令，一律拒绝）。",
+					"description": "把更新源写进 config.yaml 的 update 段：单个 repo 字段（仓库地址），更新跟随该仓库的默认分支。留空（或写空串）= 回到官方仓库 https://github.com/langbyyi/CyberStrikeAI-SRC.git。地址白名单为 https/http/ssh/git/file:// 与本机绝对路径（git 的 ext:: 传输会执行命令，一律拒绝）。",
 					"operationId": "saveUpdateSource",
 					"requestBody": map[string]interface{}{
 						"content": map[string]interface{}{
@@ -6613,7 +6613,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"post": map[string]interface{}{
 					"tags":        []string{"系统更新"},
 					"summary":     "检查本安装的更新源有无新提交",
-					"description": "对配置的更新源仓库（未配置 = 官方仓库 https://github.com/AIPentest/CyberStrikeAI.git）的默认分支执行 fetch，报告落后/领先提交数与新提交列表。检查失败返回 200 且带 checkError，不把「查不了」说成「已是最新」",
+					"description": "对配置的更新源仓库（未配置 = 官方仓库 https://github.com/langbyyi/CyberStrikeAI-SRC.git）的默认分支执行 fetch，报告落后/领先提交数与新提交列表。检查失败返回 200 且带 checkError，不把「查不了」说成「已是最新」；联网有上限，超时同样以 checkError 回答。另一次更新/检查/回滚正持有安装锁时返回 409",
 					"operationId": "checkUpdate",
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
@@ -6621,6 +6621,9 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						},
 						"401": map[string]interface{}{
 							"description": "未授权",
+						},
+						"409": map[string]interface{}{
+							"description": "安装目录已被另一次更新/检查/回滚占用（reason: update_busy）；同一安装上的并发检查会合并到同一次结果",
 						},
 					},
 				},

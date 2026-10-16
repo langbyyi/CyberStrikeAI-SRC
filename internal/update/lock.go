@@ -22,7 +22,11 @@ func LockInstall(opts Options) (func(), error) {
 	}
 	if err := lockFile(f); err != nil {
 		f.Close()
-		return nil, &Error{Reason: "update_busy", Message: "此安装目录已有更新、检查或回滚正在执行，请稍后重试"}
+		// The holder is usually another check that is still on the network, not a stuck
+		// lock: saying how long that can take is the difference between "wait a moment"
+		// and "this installation can never be updated again".
+		return nil, &Error{Reason: "update_busy", Message: "此安装目录已有更新、检查或回滚正在执行（联网那一步最长 " +
+			timeoutLabel() + "），等它结束后再点一次即可"}
 	}
 	return func() { f.Close() }, nil
 }

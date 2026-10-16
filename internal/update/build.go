@@ -11,17 +11,25 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // toolchain reports whether a Go compiler is reachable from the install tree. An update
 // that cannot compile must still update the source and say so plainly, because "no Go on
 // this box" is an environment fact the operator can fix, not a reason to refuse the pull.
+//
+// The probe runs on a clock because a check calls it while holding the installation lock:
+// a `go env` that never returns would be a lock nobody can release.
 func toolchain(ctx context.Context, root string) (string, bool) {
 	path, err := exec.LookPath("go")
 	if err != nil {
 		return "", false
 	}
-	out, err := exec.CommandContext(ctx, path, "env", "GOVERSION").Output()
+	ctx, cancel := context.WithTimeout(ctx, toolchainProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "env", "GOVERSION")
+	cmd.WaitDelay = execWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return path, true
 	}
@@ -31,6 +39,10 @@ func toolchain(ctx context.Context, root string) (string, bool) {
 	}
 	return v, true
 }
+
+// toolchainProbeTimeout is generous for a command that answers from the local toolchain in
+// milliseconds; it exists so the answer is always an answer.
+const toolchainProbeTimeout = 15 * time.Second
 
 // build compiles the server binary into outPath, never into the tree's own executable
 // name: a build that fails halfway must not leave a truncated binary where the running
@@ -45,6 +57,9 @@ func build(ctx context.Context, root, outPath string) error {
 	if home := os.Getenv("HOME"); home == "" || home == "/" {
 		cmd.Env = append(os.Environ(), "HOME="+root)
 	}
+	// compile children inherit this pipe, so a build killed on a deadline would otherwise
+	// never let CombinedOutput return - and the caller holds the installation lock.
+	cmd.WaitDelay = execWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))

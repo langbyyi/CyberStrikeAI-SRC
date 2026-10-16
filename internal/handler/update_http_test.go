@@ -424,6 +424,60 @@ func TestUpdateRestartRefusesMissingExecutable(t *testing.T) {
 	}
 }
 
+// TestUpdateCheckRefusalIsAConflict: a check that loses the lock race is a refusal the page
+// can act on - 409 with the reason that produced it - not a 500, which the page can only
+// report as a server fault.
+func TestUpdateCheckRefusalIsAConflict(t *testing.T) {
+	root := t.TempDir()
+	router, _ := newUpdateRouter(root, nil)
+	release, err := update.LockInstall(update.Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	w := doUpdate(router, http.MethodPost, "/api/system/update/check", "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "update_busy") {
+		t.Fatalf("check refusal = %d %s, want 409 update_busy", w.Code, w.Body)
+	}
+}
+
+// TestSecondCheckSharesTheOneInFlight: the console checks by itself whenever the page
+// opens, so reloading while the first check is on the network - or asking from a second tab
+// - is the same question asked twice. It has to be answered, not refused with "此安装目录已
+// 有更新、检查或回滚正在执行", which is what made a working installation look permanently
+// unupdateable.
+func TestSecondCheckSharesTheOneInFlight(t *testing.T) {
+	root := t.TempDir()
+	router, h := newUpdateRouter(root, nil)
+
+	flight := &checkFlight{
+		done: make(chan struct{}),
+		snap: &update.Snapshot{Root: root, Repo: "https://example.com/fork.git", Commit: "abc1234", Installed: true},
+	}
+	h.mu.Lock()
+	h.checkFlight = flight
+	h.mu.Unlock()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(flight.done)
+	}()
+
+	w := doUpdate(router, http.MethodPost, "/api/system/update/check", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("second check = %d %s, want the answer of the check in flight", w.Code, w.Body)
+	}
+	var body struct {
+		Status update.Snapshot `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status.Commit != "abc1234" {
+		t.Fatalf("second check did not share the in-flight answer: %s", w.Body)
+	}
+}
+
 func TestFailedUpdateSourceWriteKeepsActiveSource(t *testing.T) {
 	const original = "https://github.com/AIPentest/CyberStrikeAI.git"
 	h := &ConfigHandler{configPath: filepath.Join(t.TempDir(), "missing.yaml"), config: &config.Config{Update: config.UpdateConfig{Repo: original}}}
