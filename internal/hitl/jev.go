@@ -240,7 +240,7 @@ func DecideJev(result *typesafe.Result) (decision, comment string) {
 	}
 	// 5) 无理由试探（凑参数撞 DTO、批量、字典/区间枚举、随机参数）。
 	// comment 只说清事实与命中轴，不代执行 Agent 索要授权：是否请求授权、
-	// 何时请求由执行 Agent 决定（非必需的操作留到收尾一并提出）。
+	// 何时请求由执行 Agent 决定（被拒后是否继续也由它拍板，既必需又定不下来才留到收尾）。
 	if unjustified >= jevRejectThreshold {
 		return "reject", jevComment(
 			fmt.Sprintf("既无用户同意、也提不出可检验的理由：判定为无理由试探（无理由分=%.2f）", unjustified),
