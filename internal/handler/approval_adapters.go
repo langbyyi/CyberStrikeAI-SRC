@@ -88,8 +88,8 @@ func (h *AgentHandler) withApprovalToolInterceptor(ctx context.Context, conversa
 		grant, err := h.approvalCoordinator.Authorize(callCtx, invocation)
 		if err != nil {
 			if errors.Is(err, approval.ErrApprovalRejected) {
-				// 审批人原文必须原样传给模型：它包含"请确认是否授权本次操作"，
-				// 是主 Agent 唯一能走的解封路径。只传哨兵串会永久卡死该操作。
+				// 审批人原文必须原样传给模型：它是执行 Agent 判断"该操作被拒的原因"
+				// 与"要不要向用户索要授权"的唯一依据。只传哨兵串会永久卡死该操作。
 				reason := approval.RejectionReason(err)
 				if reason == "" {
 					reason = err.Error()

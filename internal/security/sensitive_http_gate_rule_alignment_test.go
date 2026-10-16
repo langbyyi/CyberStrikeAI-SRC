@@ -45,6 +45,11 @@ func TestSensitiveHTTPGateBlockedImpliesApprovalEnqueued(t *testing.T) {
 		{"硬闸独有路径 factory reset", "exec", `curl -s "http://t/api/factory-reset"`},
 		{"HTTP 工具 DELETE 方法", "http-framework-test", `{"method":"DELETE","url":"http://t/api/v1/panels/1"}`},
 		{"HTTP 工具改密路径", "http-framework-test", `{"method":"POST","url":"http://t/api/resetPassword"}`},
+		// 硬闸的路径词表比 HTTP 规则宽，差集内硬闸直接 IsError 且不产生审批单。
+		// 这三条此前正是死路，补规则后必须保持两侧同宽。
+		{"硬闸独有路径 format（HTTP 工具）", "http-framework-test", `{"method":"POST","url":"http://t/api/format"}`},
+		{"硬闸独有路径 wipe（HTTP 工具）", "http-framework-test", `{"method":"POST","url":"http://t/api/wipe"}`},
+		{"硬闸独有路径 unlink（HTTP 工具）", "http-framework-test", `{"method":"POST","url":"http://t/api/unlink"}`},
 		{"eino 通道写接口", "execute", `curl -s -X DELETE "http://t/api/v1/panels/1"`},
 	}
 
@@ -55,6 +60,12 @@ func TestSensitiveHTTPGateBlockedImpliesApprovalEnqueued(t *testing.T) {
 			switch tc.name {
 			case "HTTP 工具改密路径":
 				args = map[string]any{"method": "POST", "url": "http://t/api/resetPassword"}
+			case "硬闸独有路径 format（HTTP 工具）":
+				args = map[string]any{"method": "POST", "url": "http://t/api/format"}
+			case "硬闸独有路径 wipe（HTTP 工具）":
+				args = map[string]any{"method": "POST", "url": "http://t/api/wipe"}
+			case "硬闸独有路径 unlink（HTTP 工具）":
+				args = map[string]any{"method": "POST", "url": "http://t/api/unlink"}
 			}
 		}
 		blocked, message := CheckSensitiveHTTPGate(tc.tool, args)

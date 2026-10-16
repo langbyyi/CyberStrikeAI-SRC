@@ -29,8 +29,31 @@
         "DELETE"
       ],
       "pathPatterns": [
-        "(?i)(^|/)(delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|delones?|del[_-]?batch|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*)(?:[/?#._-]|$)"
+        "(?i)(^|/)(delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|delones?|del[_-]?batch|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*|clear[a-z0-9_]*|erase[a-z0-9_]*|discard[a-z0-9_]*|recycle[a-z0-9_]*|empty|wipe[a-z0-9_]*|unlink|rmdir|format|drop(?:table|database|db)?|kill(?:proc|process)?)(?:[/?#._-]|$)",
+        "(^|/)[a-z0-9]+(?:Delete|Remove|Purge|Destroy|Erase|Discard|Recycle|Truncate|Wipe)(?:[/?#._-]|$)",
+        "(?i)(^|/)[a-z0-9]+[_-](?:delete|remove|purge|destroy|erase|discard|recycle|truncate|wipe)(?:[/?#._-]|$)",
+        "(?i)(^|/)del[_-][a-z0-9_-]*(?:[/?#._-]|$)"
       ]
+    }
+  },
+  {
+    "id": "danger.http.destructive-verb-override",
+    "enabled": true,
+    "priority": 860,
+    "riskLevel": "high",
+    "matcher": {
+      "tools": [
+        "http-framework-test"
+      ],
+      "argumentPatterns": {
+        "url": [
+          "(?i)method['\\\"]?\\s*[=:]\\s*['\\\"]?(?:delete|put|patch)"
+        ],
+        "data": [
+          "(?i)method['\\\"]?\\s*[=:]\\s*['\\\"]?(?:delete|put|patch)",
+          "(?i)(?:op|action|cmd|command)['\\\"]?\\s*[=:]\\s*['\\\"]?(?:rm|del|delete|remove|drop|truncate|clear|purge|erase|wipe)"
+        ]
+      }
     }
   },
   {
@@ -151,8 +174,12 @@
       ],
       "requireHttpTransport": true,
       "textPatterns": [
-        "(?i)(-X\\s*DELETE|--request\\s*DELETE|requests\\.delete\\s*\\(|httpx\\.delete\\s*\\(|/(?:delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|del[_-]?batch[a-z0-9_]*|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*|drop(?:table|database|db)?|format|wipe|unlink|rmdir|kill(?:proc|process)?|resetpassword|changepassword|resetpwd|changepwd|deleteuser|disableuser|lockuser|restart(?:server|host|system|service|os)[a-z0-9_]*|factory[_-]?reset|execpower[a-z0-9_]*|execreboot[a-z0-9_]*)(?:[/?#._-]|['\\\"]|$))",
-        "(?i)((?:-X|--request)\\s*.{0,2}\\$|for\\s+\\w+\\s+in\\s+[^\\n;|&]*(?:PUT|PATCH|DELETE))"
+        "(?i)(-X\\s*DELETE|--request\\s*DELETE|requests\\.delete\\s*\\(|httpx\\.delete\\s*\\(|/(?:delete[a-z0-9_]*|del[_-]?one[a-z0-9_]*|del[_-]?batch[a-z0-9_]*|remove[a-z0-9_]*|purge[a-z0-9_]*|destroy[a-z0-9_]*|truncate[a-z0-9_]*|clear[a-z0-9_]*|erase[a-z0-9_]*|discard[a-z0-9_]*|recycle[a-z0-9_]*|empty|drop(?:table|database|db)?|format|wipe|unlink|rmdir|kill(?:proc|process)?|resetpassword|changepassword|resetpwd|changepwd|deleteuser|disableuser|lockuser|restart(?:server|host|system|service|os)[a-z0-9_]*|factory[_-]?reset|execpower[a-z0-9_]*|execreboot[a-z0-9_]*)(?:[/?#._-]|['\\\"]|$))",
+        "(?i)((?:-X|--request)\\s*.{0,2}\\$|for\\s+\\w+\\s+in\\s+[^\\n;|&]*(?:PUT|PATCH|DELETE))",
+        "/[a-z0-9]+(?:Delete|Remove|Purge|Destroy|Erase|Discard|Recycle|Truncate|Wipe)(?:[/?#._-]|['\\\"]|$)",
+        "(?i)/[a-z0-9]+[_-](?:delete|remove|purge|destroy|erase|discard|recycle|truncate|wipe)(?:[/?#._-]|['\\\"]|$)",
+        "(?i)method['\\\"]?\\s*[=:]\\s*['\\\"]?(?:delete|put|patch)",
+        "(?i)(?:op|action)['\\\"]?\\s*[=:]\\s*['\\\"]?(?:rm|del|delete|remove|drop|truncate|clear|purge|erase|wipe)"
       ]
     }
   },

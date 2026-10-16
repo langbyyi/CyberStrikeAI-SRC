@@ -125,3 +125,31 @@ func TestTestingSpecificationEmptyOverrideSurvivesProjectChange(t *testing.T) {
 		t.Fatalf("empty override injected rules: %q %v", block, err)
 	}
 }
+
+// 执行侧规范块不得再让 Agent 停下来征求用户意见：那会把每一次规范冲突变成一次等待，
+// 与「授权范围内直接执行」相冲突。摘掉的只是包装句，规范原文仍须原样带入。
+func TestTestingSpecificationBlockDoesNotInterruptForUserConsent(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "spec-no-interrupt.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	conv, err := db.CreateConversation("spec no interrupt", ConversationCreateMeta{
+		TestingSpecification: &TestingSpecification{Name: "task.md", Content: "禁止对删除类接口做真实触发。"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := db.ConversationTestingSpecificationBlock(conv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"先向用户说明", "如存在冲突或歧义"} {
+		if strings.Contains(block, forbidden) {
+			t.Errorf("规范块不得让执行 Agent 停下来问用户，命中 %q: %s", forbidden, block)
+		}
+	}
+	if !strings.Contains(block, "禁止对删除类接口做真实触发。") {
+		t.Errorf("规范原文丢失: %s", block)
+	}
+}

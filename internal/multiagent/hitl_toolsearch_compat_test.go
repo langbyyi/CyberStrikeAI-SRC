@@ -41,6 +41,9 @@ func TestHitlRejectToolResult_rejectsCallNotTool(t *testing.T) {
 	for _, want := range []string{
 		"本次调用未通过审批", "工具本身未被禁用", "重新发起", "删除业务数据属于破坏性操作",
 		"不要因为这一次被拒就偏离主线任务", "可检验的理由", "变相绕过",
+		// 授权提问不再由审计侧强制：被拒后"还要不要做"由执行 Agent 自行拍板，
+		// 定不了才留到收尾交给用户。
+		"被拒后是否仍要执行该操作由你决定", "收尾时与其他结论一并提出", "自行拍板",
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("reject result missing %q: %s", want, raw)

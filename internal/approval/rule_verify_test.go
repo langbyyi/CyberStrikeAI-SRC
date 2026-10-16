@@ -22,8 +22,8 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 15 {
-		t.Fatalf("默认规则集应为 15 条，实际 %d 条", len(rules))
+	if len(rules) != 16 {
+		t.Fatalf("默认规则集应为 16 条，实际 %d 条", len(rules))
 	}
 	byID := map[string]Rule{}
 	for _, r := range rules {
@@ -31,6 +31,7 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 	}
 	for _, id := range []string{
 		"danger.http.delete-method", "danger.http.destructive-path",
+		"danger.http.destructive-verb-override",
 		"danger.http.critical-identity-mutation", "danger.http.critical-control-path",
 		"danger.script.database-destruction", "danger.script.service-disruption",
 		"danger.script.filesystem-wipe", "danger.script.destructive-http-operation",
@@ -97,6 +98,14 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		// "硬闸拦下但不产生审批单"的死路，故两者必须同宽。
 		{"方法变量化长选项", "danger.script.destructive-http-operation", `M=PUT; curl -s --request $M "http://target/api/item/1"`, true},
 		{"方法变量化长选项带引号", "danger.script.destructive-http-operation", `for m in PUT DELETE; do curl -s --request "$m" "http://target/api/item/1"; done`, true},
+		// 语义等价不受命名/方法/参数名影响（AGENTS 四.4）：名字不同不等于语义不同。
+		// 规则层负责"入得了队"，具体是不是真危险交给审计 Agent 按语义裁决。
+		{"等价：clear 当 delete 用", "danger.script.destructive-http-operation", `curl -s -X POST "http://target/api/user/clear"`, true},
+		{"等价：erase 当 delete 用", "danger.script.destructive-http-operation", `curl -s -X POST "http://target/api/log/erase"`, true},
+		{"等价：recycle 清空", "danger.script.destructive-http-operation", `curl -s -X POST "http://target/api/recycle/empty"`, true},
+		{"等价：命名变体 userDelete", "danger.script.destructive-http-operation", `curl -s -X POST "http://target/api/userDelete"`, true},
+		{"等价：_method 伪装删除", "danger.script.destructive-http-operation", `curl -s -X POST -d "_method=delete" "http://target/api/item/1"`, true},
+		{"等价：op=rm 参数名伪装", "danger.script.destructive-http-operation", `curl -s -X POST -d "op=rm" "http://target/api/item/1"`, true},
 		{"只读 for 列表放行", "danger.script.destructive-http-operation", `for p in /a /b /c; do curl -s "http://target$p"; done`, false},
 		// 常规渗透操作放行
 		{"nmap 扫描放行", "danger.script.filesystem-wipe", "nmap -sV -p 1-65535 10.0.0.5", false},
@@ -158,6 +167,12 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		{"GET 删除类路径不入队", "danger.http.destructive-path", "get", "/api/v1/panel/delete", false},
 		{"PUT 身份类路径仍入队", "danger.http.critical-identity-mutation", "put", "/api/resetpassword", true},
 		{"GET 控制面仍拦", "danger.http.critical-control-path", "get", "/api/system/reboot", true},
+		// 语义等价（AGENTS 四.4）：换名词与命名/分隔符变体同归删除类
+		{"等价：clear 路径", "danger.http.destructive-path", "post", "/api/user/clear", true},
+		{"等价：erase 路径", "danger.http.destructive-path", "post", "/api/log/erase", true},
+		{"等价：命名变体 userDelete", "danger.http.destructive-path", "post", "/api/userDelete", true},
+		{"等价：分隔符变体 del-user", "danger.http.destructive-path", "post", "/api/del-user", true},
+		{"只读不受等价规则牵连", "danger.http.destructive-path", "get", "/api/user/clear", false},
 	}
 	for _, tc := range httpCases {
 		rule := byID[tc.rule]
@@ -167,6 +182,27 @@ func TestDefaultDangerRulesContract(t *testing.T) {
 		}
 		if got := ruleHits(t, rule, "http-framework-test", args); got != tc.want {
 			t.Errorf("%s: 命中=%v 期望=%v (%s %s)", tc.name, got, tc.want, tc.method, tc.path)
+		}
+	}
+
+	// 换方法 / 换参数名：最自然的绕过是先发 POST 再声称自己是 DELETE。
+	// 这类形态硬闸看方法字面量、规则层看路径，两者都看不见——只能从参数体识别。
+	// 只认写方法（DELETE/PUT/PATCH）：method=POST 是正常请求，进了队列纯属噪音。
+	overrideCases := []struct {
+		name string
+		args map[string]any
+		want bool
+	}{
+		{"URL 查询串声明 _method=delete", map[string]any{"method": "POST", "url": "https://target/api/item/1?_method=delete"}, true},
+		{"请求体声明 _method=delete", map[string]any{"method": "POST", "url": "https://target/api/item/1", "data": "_method=delete&id=1"}, true},
+		{"JSON 体声明 op=rm", map[string]any{"method": "POST", "url": "https://target/api/item", "data": `{"op":"rm"}`}, true},
+		{"Python 风格带引号的覆盖", map[string]any{"method": "POST", "url": "https://target/api/item/1", "data": `{"_method": "delete"}`}, true},
+		{"普通 POST 放行", map[string]any{"method": "POST", "url": "https://target/api/items", "data": `{"name":"x","options":1}`}, false},
+	}
+	overrideRule := byID["danger.http.destructive-verb-override"]
+	for _, tc := range overrideCases {
+		if got := ruleHits(t, overrideRule, "http-framework-test", tc.args); got != tc.want {
+			t.Errorf("%s: 命中=%v 期望=%v", tc.name, got, tc.want)
 		}
 	}
 }

@@ -69,9 +69,8 @@ func TestCoordinatorCreatesOneRequestForMergedTriggersAndOneShotGrant(t *testing
 	}
 }
 
-// 审批人原文必须一路传到工具层软结果：模型靠这段话里的
-// "请确认是否授权本次操作" 才知道该向用户索要授权。只回哨兵串
-// 会让被拦操作在会话里再无解封路径。
+// 审批人原文必须一路传到工具层软结果：模型靠这段话才知道被拒的原因
+// 与"要不要向用户索要授权"。只回哨兵串会让被拦操作在会话里再无解封路径。
 func TestCoordinatorRejectionCarriesReviewerWording(t *testing.T) {
 	db, err := database.NewDB(filepath.Join(t.TempDir(), "reject.db"), zap.NewNop())
 	if err != nil {
@@ -83,7 +82,7 @@ func TestCoordinatorRejectionCarriesReviewerWording(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const reason = "audit agent: 实际操作：调用密码重置接口；命中规则：R1 未声明——需要执行密码重置操作但任务未声明，请确认是否授权本次操作。"
+	const reason = "audit agent: 实际操作：调用密码重置接口；成功后的后果：目标账号口令被改写；命中规则：R1 未声明。"
 	reviewer := &recordingReviewer{result: ReviewDecision{
 		Decision: ReviewerReject, ActorType: ReviewerAgent, ActorID: "audit-model", Comment: reason,
 	}}

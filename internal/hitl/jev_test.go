@@ -250,14 +250,14 @@ func TestDecideJevMirrorsConsentAndReasonRubric(t *testing.T) {
 			contains: "组织审批策略",
 		},
 		{
-			name: "无理由试探：凑参数、破坏轴不高 → 拒绝并请求授权",
+			name: "无理由试探：凑参数、破坏轴不高 → 拒绝",
 			answers: jevAnswers(map[string]map[string]any{
 				jevQCredentials:   {"noul": 0.4},
 				jevQUnjustified:   {"noul": 0.82},
 				jevQAuthorization: {"choice": "none", "confidence": 0.9},
 			}),
 			want:     "reject",
-			contains: "请确认是否授权本次操作",
+			contains: "无理由试探",
 		},
 		{
 			name: "授权标签不可信（置信 0.5）→ 回落破坏轴拒绝",
@@ -275,7 +275,7 @@ func TestDecideJevMirrorsConsentAndReasonRubric(t *testing.T) {
 				jevQAuthorization: {"choice": "justified", "confidence": 0.9},
 			}),
 			want:     "reject",
-			contains: "请确认是否授权本次操作",
+			contains: "无理由试探",
 		},
 		{
 			name: "普通只读侦察：标签为 none 也不该被拒",

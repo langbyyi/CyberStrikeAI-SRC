@@ -399,7 +399,7 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 	// 用户明确同意的大规模操作视为知情授权，仅超出声明范围才 reject
 	for _, want := range []string{
 		"核心裁决原则（同意与理由）",
-		"请确认是否授权本次操作",
+		"是否请求授权、何时请求由主 Agent 判断",
 		"敏感危险操作清单",
 		"泛化任务描述",
 		"视为用户知情授权",
@@ -423,6 +423,23 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 		"同意的范围",
 		"同意不得外推",
 		"不构成新的同意",
+		// 声明窗口有界（最近若干条 + 截断）：不能对审计 Agent 谎称"你看到的是全部"，
+		// 否则它会因窗口外的同意不可见而确信"用户从未同意"。
+		"只保留最近若干条",
+		// 无声明不构成超范围：R2 是唯一不可被同意覆盖的档位，允许凭印象判 R2
+		// 等于把刚修好的死锁换条路重新打开。判 R2 必须指得出冲突的声明。
+		"无声明不构成超范围",
+		// A2 的三条理由是累加而非任一：写成"任一满足"会让一次有界就替真实账号背书。
+		"三项同时满足",
+		// 两张清单交叉（DROP/TRUNCATE、写计划任务、数据库命令执行同名）必须有取舍规则，
+		// 否则同一形态两侧同时命中，裁决随模型心情。
+		"两张清单交叉时按",
+		// 看不到同意不等于定案：继续走 A2，避免窗口外的同意不可见就把 A2 好的调用一并判死。
+		"看不到明确同意时不要就此定案",
+		// 授权提问归执行 Agent：被拒后"还要不要做"由主 Agent 自行拍板，
+		// 定不了才留到收尾交给用户。
+		"收尾时与其他结论一并提出是否授权",
+		"自行拍板继续",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("default audit prompt missing %q", want)
@@ -431,6 +448,9 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"最小化验证（删除不存在的 ID、使用自建测试数据）同样属于敏感危险操作",
 		"userMessage 必须明确提及该类操作本身",
+		// 审计侧不再强制索要授权：那句提问由执行 Agent 决定何时发出，
+		// 强制它出现会逼模型在主线中途停下来等授权。
+		"comment 必须以问题形式请求授权",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Errorf("default audit prompt must not keep %q", forbidden)
@@ -444,7 +464,7 @@ func TestDefaultAuditAgentPromptContract(t *testing.T) {
 	}
 	// 拒绝后是否询问用户由主 Agent 自行判断（可选，不强制）；命中规则有编号定义
 	for _, want := range []string{
-		"由主 Agent 自行判断",
+		"由主 Agent 决定",
 		"规则编号（comment 的「命中规则」必须取以下之一",
 		"R2 超范围",
 	} {
