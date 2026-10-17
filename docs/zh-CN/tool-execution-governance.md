@@ -8,9 +8,9 @@
 
 ## 本分支保留的治理机制
 
-### 敏感接口硬门
+### 敏感 HTTP 强制审批（原「敏感接口硬门」）
 
-工具真正执行前，Executor 会用敏感 HTTP 门对调用做分类：`http-framework-test`、`exec`、`execute-python-script` 等入口的请求若命中破坏性路径关键字（`delete`、`drop`、`truncate`、`shutdown`、`poweroff`、`resetpassword`、`kill` 等）且方法为写操作，或任意 `curl -X DELETE` 类自由命令，会被直接拦截，模型只会收到 `[sensitive_http_gate] blocked` 说明，真实请求不会发出。唯一的放行方式是 Context 中存在与该工具及**冻结的完整参数**完全匹配的内部审批授权（`DangerousInvocationGranted`，见 `internal/security/executor.go`），模型无法通过改写参数自行解锁。GET/HEAD/OPTIONS 等只读方法默认放行，但 `shutdown`、`drop`、`truncate` 等关键控制面路径即使 GET 也会拦截。
+敏感 HTTP 判定（`internal/security/sensitive_http_gate.go`）作为统一审批的一个触发器（`SensitiveHTTPGateTrigger`）接入审批链：`http-framework-test`、`exec`、`execute-python-script` 等入口的调用若命中破坏性路径关键字（`delete`、`drop`、`truncate`、`shutdown`、`poweroff`、`resetpassword`、`kill` 等）且方法为写操作、任意 `curl -X DELETE` 类自由命令、或把写方法藏进变量/for 列表枚举，会**强制进入服务器审批流程**（创建审批单），由审计 Agent、人工或二者协同裁决；不存在硬编码拒绝。工具参数在审批时冻结，一次批准只允许执行一次，模型无法通过改写参数自行解锁（`DangerousInvocationGranted` 在 MCP InvocationGuard 统一校验）。GET/HEAD/OPTIONS 等只读方法默认放行，但 `shutdown`、`drop`、`truncate` 等关键控制面路径即使 GET 也会进审批。
 
 ### record_vulnerability 可复现证据校验
 

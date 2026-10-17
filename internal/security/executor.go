@@ -126,16 +126,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Any("args", args),
 	)
 
-	// 敏感 HTTP 写操作硬闸：在真实发请求/执行命令前拦截（非 HITL、非纯提示词）。
-	if blocked, msg := CheckSensitiveHTTPGate(toolName, args); blocked && !DangerousInvocationGranted(ctx, toolName, args) {
-		e.logger.Warn("敏感接口硬拦截",
-			zap.String("toolName", toolName),
-		)
-		return &mcp.ToolResult{
-			Content: []mcp.Content{{Type: "text", Text: msg}},
-			IsError: true,
-		}, nil
-	}
+	// 敏感 HTTP 判定已并入统一审批流（security.SensitiveHTTPGateTrigger →
+	// Coordinator.Authorize）：MCP InvocationGuard 在真实执行前完成授权裁决，
+	// 执行器不再硬编码拒绝——到达这里的调用要么持有匹配 grant，要么本就无需审批。
 
 	// 特殊处理：exec工具直接执行系统命令
 	if toolName == "exec" {

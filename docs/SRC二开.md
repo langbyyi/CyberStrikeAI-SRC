@@ -135,6 +135,24 @@ Eino single、deep、supervisor 只有在根 Agent 的内部 `exit(final_result=
 
 **测试**：`internal/approval/coordinator_unified_test.go`（拒绝错误携带审批原文、非拒绝错误不误报）、`danger_rule_queue_regression_test.go`（真实记录形状的入队/放行对照）、`rule_verify_test.go`（只读降噪、硬闸对齐、通道纳管、方法变量化、命名变体、方法/参数伪装）、`internal/database/conversation_user_declarations_test.go`（跨轮可见、锚点截断、limit）、`internal/database/testing_specification_test.go`（规范块不得让执行 Agent 停下来问用户、规范原文仍须原样带入）、`internal/handler/hitl_context_test.go`（跨轮同意、测试规范入 payload 且不带执行侧免责文案）、`hitl_audit_agent_test.go`（httptest 桩：重试后成功、持续失败标记为非策略裁决）、`internal/security/sensitive_http_gate_method_sweep_test.go`（方法变量化拦截 + 只读不误伤）、`internal/security/sensitive_http_gate_rule_alignment_test.go`（跨层不变量：**硬闸拦下 ⇒ 规则层必须入队**，含 http 侧 `format`/`wipe`/`unlink` 死路，防"无审批单的死路"复发）、`internal/config/config_test.go`（提示词契约，含删除项不得复活）、`internal/multiagent/hitl_toolsearch_compat_test.go`（拒绝返回必须带「一次未通过不是终态 / 可检验的理由 / 变相绕过」——这两条规则的唯一下发渠道）、`internal/multiagent/approval_middleware_test.go`（审计拒绝文案不得出现 `rejected by user`）、`internal/hitl/jev_test.go`（TypeSafe 通道与提示词同向：同意解封 / 理由解封 / 超范围不可解封 / 组织策略不可解封 / 无理由试探拦下且 comment 不代索要授权 / 标签置信不足回落破坏轴 / 只读侦察不误伤）
 
+### 13. 敏感 HTTP 判定并入统一审批（消除硬编码拒绝）（2026-10-18）
+
+**问题（线上实测，shfft 验证码探测会话）**：`sensitive_http_gate`（07-15 `968bff31` 引入）在执行器里硬编码拒绝：命中即 `IsError` 返回 `[sensitive_http_gate] blocked`，且在规则层未命中的形态下**不产生审批单、不写审计、无解封路径**——Agent 重试只会反复撞墙。10-16 `86e0a23e` 给硬闸新增 `method:sweep` 后拦截面扩大，普通 Python 探测脚本开始成批撞上这条死路。
+
+**误判根因**：`collectToolTextBlob` 把整个 args 的 JSON 兜底串拼进扫描文本，字面量 `\n` 让 `reMethodListLoop` 捕获组 `[^\n;|&]+` 跨行吞进后续代码——`post,cj=newsess()` 的函数名 `post` 被当成 for 列表里的写方法 → `method:sweep` 误拦（本地用原始命令复现与线上一致）。
+
+**改动**：
+
+- **判定并入统一审批**：新增 `security.SensitiveHTTPGateTrigger`（实现 `approval.Trigger`），挂进 `GlobalRuntime` 触发器链（extra triggers 由 runtime 持有，规则热更新两参 `Update` 自动保留）。命中 ⇒ `RequiresApproval` + finding（`RuleID=reason`），与危险规则走同一审批、同一留痕（审批单 + ledger + 决策审计），**不存在硬编码拒绝**。
+- **删除执行器硬拒**：`executor.go` 的 gate 分支移除。覆盖依据：所有工具调用都过 `InvocationGuard`（`app.go` 内/外 MCP 各一处，eino 中间件另一路），授权统一由 `Coordinator.Authorize` 裁决；`DangerousInvocationGranted` 保留为 grant 语义的测试锚点。
+- **误判根修**：sweep 判定只作用于原始字段文本（`collectToolTexts`：原始字段非空时 JSON 兜底串不再参与扫描，仅原始字段全空时整体兜底）；线上真实命令固化为回归用例。
+- **不变量改写**：`sensitive_http_gate_rule_alignment_test.go` 由「硬闸拦下 ⇒ 规则层必须入队」改为「**判定命中 ⇒ GlobalRuntime 必入队且触发来源含 `sensitive_http_gate`**」——死路在结构上消失，不再依赖规则层同宽（§12 该不变量就此取代）。
+- **文案**：系统提示词与 `tool-execution-governance.md` 的「危险操作硬闸」改为「危险操作强制审批」——通用工具审批可关闭，危险操作强制审批不可关闭。
+
+**语义变化**：原来被硬闸 `IsError` 拒死的调用现在会创建审批单：默认 reviewer（人工，超时 15 分钟）裁决，或 reviewer=audit_agent 时由审计 Agent 按 §12 判据（超范围 → 同意 → 有理由 → 拒绝）自主裁决；批准即以冻结参数执行，拒绝则模型收到审批人原文并可向用户请求授权（§12 闭环）。「同意+理由」自主裁决自此覆盖原硬闸全部分类。
+
+**测试**：`go test ./...` 全量通过；security/approval/app/mcp/handler 逐包验证。
+
 ## 与官方版本及本仓库历史的关系（对照核实）
 
 **对比基准与结论均经代码检索核实**（2026-09-09 复核，`git diff v1.7.18` 工作区全量对比）：

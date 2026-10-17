@@ -159,7 +159,7 @@ func extractSensitiveHTTPRisk(toolName string, args map[string]interface{}) (met
 	}
 
 	// exec / execute-python-script / free-form command or script bodies
-	blob := collectToolTextBlob(args)
+	primary, blob := collectToolTexts(args)
 	if blob == "" {
 		return "", "", ""
 	}
@@ -186,25 +186,34 @@ func extractSensitiveHTTPRisk(toolName string, args map[string]interface{}) (met
 	}
 	// 方法藏在变量或 for 列表里：等价于对同一目标扫写方法，按写方法拦下。
 	// 例：for m in PUT put DELETE delete …; do curl -X "$m" http://target/; done
-	if swept := sweptWriteMethods(blob); len(swept) > 0 && len(targets) > 0 {
+	// 只扫原始字段文本（primary）：JSON 兜底串会把换行变成字面量 \n，
+	// 让 for-列表捕获跨行吞进后续代码（如 Python 函数名 post 被当成方法枚举）。
+	if swept := sweptWriteMethods(primary); len(swept) > 0 && len(targets) > 0 {
 		return strings.Join(swept, "/"), targets[0], "method:sweep"
 	}
 	return method, "", ""
 }
 
-func collectToolTextBlob(args map[string]interface{}) string {
+// collectToolTexts 返回（原始字段文本, 全量文本）。全量文本在原始字段之外附加
+// 整个 args 的 JSON 兜底串，用于覆盖不常见参数名里的 HTTP 命令；JSON 串不参与
+// 按行启发式（sweptWriteMethods），因为它会抹掉真实换行导致跨行误捕获。
+func collectToolTexts(args map[string]interface{}) (primary, full string) {
 	keys := []string{"command", "script", "script_content", "code", "body", "data", "url", "raw", "payload"}
-	parts := make([]string, 0, len(keys)+1)
+	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if v := strFromArgs(args, k); v != "" {
 			parts = append(parts, v)
 		}
 	}
-	// Fallback: whole args JSON (covers unusual param names).
-	if b, err := json.Marshal(args); err == nil {
-		parts = append(parts, string(b))
+	primary = strings.Join(parts, "\n")
+	full = primary
+	if primary == "" {
+		// 原始字段全空时才整体兜底，此时不存在可被跨行误捕获的原始文本。
+		if b, err := json.Marshal(args); err == nil {
+			full = string(b)
+		}
 	}
-	return strings.Join(parts, "\n")
+	return primary, full
 }
 
 func looksLikeHTTPTransport(s string) bool {

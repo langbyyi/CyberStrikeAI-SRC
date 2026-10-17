@@ -51,3 +51,14 @@ func TestCheckSensitiveHTTPGateKeepsReadOnlyProbesAllowed(t *testing.T) {
 		}
 	}
 }
+
+// 回归（线上真实误拦）：Python 脚本用 for 循环枚举验证码字段名、helper 恰好叫
+// post。旧实现把整个 args JSON 兜底拼接进扫描文本，字面量 \n 让 for-列表捕获
+// 跨行吞进 post,cj=newsess()，函数名 post 被当成"写方法枚举"→ method:sweep 误拦。
+// sweep 判定只允许作用于原始命令文本。
+func TestCheckSensitiveHTTPGateAllowsPythonFieldLoopWithPostHelper(t *testing.T) {
+	cmd := "python3 - <<'PY'\nimport json,base64,urllib.request,ssl,http.cookiejar,ddddocr,time\nBASE=\"https://www.example.com/api-gateway/oileus/\"\ndef newsess():\n    op=urllib.request.build_opener()\n    def post(p,o):\n        req=urllib.request.Request(BASE+p,data=json.dumps(o).encode(),headers={\"Content-Type\":\"application/json\"})\n        return json.loads(op.open(req,timeout=20).read().decode())\n    return post,cj\nfor fld in [\"captcha\",\"captchaCode\",\"imgCode\",\"checkCode\",\"code\"]:\n    post,cj=newsess()\n    resp=post(\"register/getImgCaptcha\",{}); res=resp.get(\"result\") or resp\n    body={\"mobile\":\"13000000000\",fld:\"abcd\"}\n    out=post(\"register/registerValidateImgCaptcha\",body)\n    print(\"%-12s -> %s\"%(fld,json.dumps(out,ensure_ascii=False)[:150]))\nPY"
+	if blocked, message := CheckSensitiveHTTPGate("exec", map[string]interface{}{"command": cmd}); blocked {
+		t.Errorf("Python 字段名循环 + post helper 不应被判为 method:sweep，实际: %s", message)
+	}
+}

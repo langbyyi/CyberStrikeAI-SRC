@@ -12,6 +12,7 @@ import (
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/handler"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -45,7 +46,7 @@ func buildApprovalCoordinator(cfg *config.Config, db *database.DB, agentHandler 
 	if err != nil {
 		return nil, nil, err
 	}
-	globalRuntime, err := approval.NewGlobalRuntime(globalApprovalConfigFromAppConfig(cfg), storedRules)
+	globalRuntime, err := approval.NewGlobalRuntime(globalApprovalConfigFromAppConfig(cfg), storedRules, security.NewSensitiveHTTPGateTrigger())
 	if err != nil {
 		return nil, nil, err
 	}
