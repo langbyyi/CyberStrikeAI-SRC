@@ -47,7 +47,7 @@
     <link rel="stylesheet" href="/static/vendor/xterm.css">
     <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
     <link rel="stylesheet" href="/static/css/mobile.css?v=20261015-project-table-3">
-    <script src="/static/js/router.js?v=20261011-token-settings"></script>
+    <script src="/static/js/router.js?v=20261024-network-integration-1"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -2574,10 +2574,17 @@
                                                 <h4 class="projects-settings-intro-title" data-i18n="projects.settingsIntroTitle">项目设置</h4>
                                                 <p class="projects-settings-intro-hint" data-i18n="projects.settingsIntroHint">配置项目元数据与 Agent 授权边界，保存后即时生效于绑定对话。</p>
                                             </div>
+                                            <nav class="project-settings-nav" aria-label="设置分区" data-i18n="projectSettings.sections" data-i18n-attr="aria-label">
+                                                <button type="button" class="is-active" data-settings-section="project-settings-basic" data-i18n="projects.basicInfoTitle">基本信息</button>
+                                                <button type="button" data-settings-section="project-settings-scope" data-i18n="projects.scopeTitle">测试范围</button>
+                                                <button type="button" data-settings-section="project-settings-rules" data-i18n="testingSpec.title">测试规范</button>
+                                                <button type="button" data-settings-section="project-network-card" data-i18n="projectSettings.network">项目网络</button>
+                                                <button type="button" data-settings-section="project-settings-danger" data-i18n="projects.dangerZoneTitle">危险操作</button>
+                                            </nav>
                                         </header>
                                         <div class="projects-settings-grid projects-settings-grid--specification">
                                             <div class="projects-settings-primary">
-                                            <section class="projects-settings-card projects-settings-card--basic">
+                                            <section id="project-settings-basic" class="projects-settings-card projects-settings-card--basic">
                                                 <div class="projects-settings-card-head">
                                                     <div class="projects-settings-card-head-left">
                                                         <span class="projects-settings-icon projects-settings-icon--blue" aria-hidden="true">
@@ -2593,7 +2600,7 @@
                                                     <div class="projects-form-row projects-form-row--2">
                                                         <div class="projects-form-field">
                                                             <label for="project-edit-name" data-i18n="projects.projectName">项目名称</label>
-                                                            <input type="text" id="project-edit-name" class="form-input" placeholder="例如：某客户 Web 渗透" data-i18n="projects.projectNamePlaceholder" data-i18n-attr="placeholder">
+                                                            <input type="text" maxlength="200" id="project-edit-name" class="form-input" placeholder="例如：某客户 Web 渗透" data-i18n="projects.projectNamePlaceholder" data-i18n-attr="placeholder">
                                                         </div>
                                                         <div class="projects-form-field">
                                                             <label for="project-edit-status" data-i18n="projects.status">状态</label>
@@ -2617,7 +2624,7 @@
                                                     </div>
                                                 </div>
                                             </section>
-                                            <section class="projects-settings-card projects-settings-card--scope">
+                                            <section id="project-settings-scope" class="projects-settings-card projects-settings-card--scope">
                                                 <div class="projects-settings-card-head">
                                                     <div class="projects-settings-card-head-left">
                                                         <span class="projects-settings-icon projects-settings-icon--violet" aria-hidden="true">
@@ -2629,8 +2636,8 @@
                                                         </div>
                                                     </div>
                                                     <div class="projects-scope-toolbar">
-                                                        <button type="button" class="btn-ghost btn-small" onclick="formatProjectScopeJson()" title="格式化 JSON" data-i18n="projects.formatJson" data-i18n-attr="title">格式化</button>
-                                                        <button type="button" class="btn-ghost btn-small" onclick="insertProjectScopeExample()" title="插入示例" data-i18n="projects.example" data-i18n-attr="title">示例</button>
+                                                        <button type="button" class="btn-ghost btn-small" id="project-scope-format" onclick="formatProjectScopeJson()" title="格式化 JSON" data-i18n="projects.formatJson" data-i18n-attr="title">格式化</button>
+                                                        <button type="button" class="btn-ghost btn-small" id="project-scope-example" onclick="insertProjectScopeExample()" title="插入示例" data-i18n="projects.example" data-i18n-attr="title">示例</button>
                                                     </div>
                                                 </div>
                                                 <div class="projects-settings-card-body projects-settings-card-body--fill">
@@ -2642,11 +2649,12 @@
                                                 </div>
                                             </section>
                                             </div>
-                                            <section class="projects-settings-card projects-settings-card--specification" aria-label="测试规范" data-i18n="testingSpec.title" data-i18n-attr="aria-label" data-i18n-skip-text="true">
+                                            <section id="project-settings-rules" class="projects-settings-card projects-settings-card--specification" aria-label="测试规范" data-i18n="testingSpec.title" data-i18n-attr="aria-label" data-i18n-skip-text="true">
+                                                <div class="projects-settings-card-head"><div><h4 class="projects-settings-card-title" data-i18n="testingSpec.title">测试规范</h4><p class="projects-settings-card-hint" data-i18n="projectSettings.rulesHint">为本项目的新任务提供测试要求，可导入 Markdown 或 TXT。</p></div></div>
                                                 <div id="project-settings-specification-target" class="projects-settings-card-body"></div>
                                             </section>
                                         </div>
-                                        <section class="projects-settings-card projects-settings-card--danger">
+                                        <section id="project-settings-danger" class="projects-settings-card projects-settings-card--danger">
                                             <div class="projects-settings-danger-main">
                                                 <span class="projects-settings-icon projects-settings-icon--red" aria-hidden="true">
                                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -2657,16 +2665,17 @@
                                                 </div>
                                             </div>
                                             <div class="projects-settings-danger-actions">
-                                                <button class="btn-secondary btn-small" data-require-permission="project:write" type="button" onclick="archiveCurrentProject()" data-i18n="projects.archiveRestore">归档 / 恢复</button>
+                                                <button class="btn-secondary btn-small" data-require-permission="project:write" type="button" id="project-settings-archive" onclick="archiveCurrentProject()" data-i18n="projects.archiveRestore">归档 / 恢复</button>
                                                 <button class="btn-secondary btn-small btn-danger-outline" data-require-permission="project:delete" type="button" onclick="deleteCurrentProject()" data-i18n="projects.deleteProject">删除项目</button>
                                             </div>
                                         </section>
                                     </div>
                                     <footer class="projects-settings-footer">
-                                        <span class="projects-settings-footer-hint" data-i18n="projects.saveChangesHint">修改后请点击保存以同步到服务器</span>
-                                        <button class="btn-primary" data-require-permission="project:write" type="button" onclick="saveProjectSettings()">
-                                            <span data-i18n="projects.saveSettings">保存更改</span>
-                                        </button>
+                                        <span id="project-settings-feedback" class="projects-settings-footer-hint" role="status" aria-live="polite"></span>
+                                        <div class="project-settings-save-actions"><button type="button" id="project-settings-reset" class="btn-secondary" data-i18n="projectSettings.reset">撤销更改</button>
+                                        <button id="project-settings-save" class="btn-primary" data-require-permission="project:write" type="button" onclick="saveProjectSettings()">
+                                            <span data-i18n="projectSettings.save">保存项目设置</span>
+                                        </button></div>
                                     </footer>
                                 </div>
                             </div>
@@ -6974,10 +6983,13 @@
     <script src="/static/vendor/i18next.min.js"></script>
     <script src="/static/js/i18n.js"></script>
     <script src="/static/js/theme.js"></script>
-    <script src="/static/js/builtin-tools.js"></script>
-    <script src="/static/js/auth.js?v=20261008-password-eye-1"></script>
+    <script src="/static/js/builtin-tools.js?v=20261016-network-1"></script>
+    <link rel="stylesheet" href="/static/css/network.css?v=20261023-4">
+    <link rel="stylesheet" href="/static/css/project-settings.css?v=20261023-3">
+    <script src="/static/js/network.js?v=20261024-2"></script>
+    <script src="/static/js/auth.js?v=20261016-network-1"></script>
     <script src="/static/js/modal.js"></script>
-    <script src="/static/js/testing-specification.js?v=20261015-5"></script>
+    <script src="/static/js/testing-specification.js?v=20261023-settings-1"></script>
     <script src="/static/js/notifications.js"></script>
     <script src="/static/js/info-collect.js?v=20261012-perf-1"></script>
     <script src="/static/js/assets.js?v=20261012-perf-1"></script>
@@ -7005,9 +7017,10 @@
     <script src="/static/js/knowledge.js"></script>
     <script src="/static/js/skills.js"></script>
     <script src="/static/js/fact-graph.js?v=20261012-perf-1"></script>
-    <script src="/static/js/projects.js?v=20261014-spec-1"></script>
+    <script src="/static/js/projects.js?v=20261023-settings-4"></script>
+    <script src="/static/js/project-settings.js?v=20261023-2"></script>
     <script src="/static/js/vulnerability.js?v=20261010-retest-2"></script>
-    <script src="/static/js/webshell.js?v=20261011-token-usage"></script>
+    <script src="/static/js/webshell.js?v=20261024-network-integration-1"></script>
     <script src="/static/js/chat-files.js"></script>
     <script src="/static/js/tasks.js?v=20261015-spec-2"></script>
     <script src="/static/js/workflow-package-client.js"></script>

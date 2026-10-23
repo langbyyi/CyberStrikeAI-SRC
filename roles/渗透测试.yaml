@@ -11,6 +11,12 @@ user_prompt: "你是一名专业的 Web 渗透测试专家。用户给定目标�
   \ update_vulnerability 补证；弱信号用 upsert_project_fact 记录线索；CORS、点击劫持等无实际危害配置不记录\n"
 icon: 🎯
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

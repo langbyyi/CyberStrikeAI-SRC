@@ -19,6 +19,12 @@ user_prompt: '你是面向 EDUSRC 的专业安全研究员。仅测试用户明�
   '
 icon: 🎯
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - analyze_image
 - record_vulnerability
 - list_vulnerabilities

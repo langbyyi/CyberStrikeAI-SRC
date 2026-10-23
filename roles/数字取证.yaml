@@ -11,6 +11,12 @@ user_prompt: "你是一名数字取证与隐写分析专家。用户会提供取
   \n## 边界\n\n- **不修改原始取证材料**，所有操作在副本上进行\n- 不在取证过程中执行可疑二进制文件\n"
 icon: 🔎
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

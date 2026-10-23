@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -67,7 +68,9 @@ func classifyWebshellOSProbeOutput(out string) string {
 // newHTTPExecFn 为 HTTP FileOp 路径构造"发命令取回显"的闭包，供探活复用。
 // 参数来自 HTTP 请求，复用 buildExecURL / buildExecBody 两个已有的命令编排器，
 // 确保探活包与实际文件操作包走完全一致的 webshell 协议（GET/POST、参数名、编码）。
-func (h *WebShellHandler) newHTTPExecFn(targetURL, password, shellType, method, cmdParam, encoding string) func(string) (string, bool) {
+func (h *WebShellHandler) newHTTPExecFn(targetURL, password, shellType, method, cmdParam, encoding string, contexts ...context.Context) func(string) (string, bool) {
+	ctx := webshellOperationContext(contexts)
+	project, _ := ctx.Value(webshellProjectContextKey{}).(string)
 	useGET := strings.ToUpper(strings.TrimSpace(method)) == "GET"
 	if strings.TrimSpace(cmdParam) == "" {
 		cmdParam = "cmd"
@@ -91,7 +94,7 @@ func (h *WebShellHandler) newHTTPExecFn(targetURL, password, shellType, method, 
 			return "", false
 		}
 		httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
-		resp, err := h.client.Do(httpReq)
+		resp, err := h.doTargetHTTPRequest(ctx, project, httpReq)
 		if err != nil {
 			return "", false
 		}

@@ -13,6 +13,12 @@ user_prompt: "你是一名二进制分析与逆向工程专家。用户会提供
   - 不对真实业务系统构造 exploit（仅授权的 CTF / 渗透目标）\n"
 icon: 🔬
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

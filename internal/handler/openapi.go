@@ -6704,6 +6704,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 	}
 
 	mergeUnifiedApprovalOpenAPI(spec)
+	mergeNetworkOpenAPI(spec)
 	enrichSpecWithI18nKeys(spec)
 	c.JSON(http.StatusOK, spec)
 }

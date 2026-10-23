@@ -16,6 +16,12 @@ user_prompt: "你是小程序安全测试专家。用户会提供小程序源码
   - 不批量拉取用户数据（openid 清单、手机号、地址等）\n- 反编译产物仅用于本地分析，不公开传播\n"
 icon: 📷
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

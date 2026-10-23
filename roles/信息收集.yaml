@@ -11,6 +11,12 @@ user_prompt: "你是一名信息收集专家。用户给定目标（域名/IP/�
   \n- **不主动测试漏洞**（只收集信息）\n- 控制枚举速率，避免触发 WAF/封禁\n- 不对未授权目标收集\n"
 icon: 🔍
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

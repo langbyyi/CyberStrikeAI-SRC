@@ -49,6 +49,8 @@ func mcpToolAuthorizer(db *database.DB) func(context.Context, string, map[string
 		}
 
 		switch toolName {
+		case "network_status", "network_diagnose", "network_acquire", "network_release", "network_bind_asset", "network_sync_source":
+			return require("agent:execute")
 		case builtin.ToolWebshellExec, builtin.ToolWebshellFileWrite:
 			return resource("webshell:write", "webshell", "connection_id")
 		case builtin.ToolWebshellFileList, builtin.ToolWebshellFileRead:

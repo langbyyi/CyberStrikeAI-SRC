@@ -283,6 +283,8 @@ type MultiAgentEinoMiddlewareConfig struct {
 	ToolSearchAlwaysVisible int  `yaml:"tool_search_always_visible,omitempty" json:"tool_search_always_visible,omitempty"` // default 12; first N tools stay always visible
 	// ToolSearchAlwaysVisibleTools keeps specified tool names always visible (never hidden by tool_search).
 	ToolSearchAlwaysVisibleTools []string `yaml:"tool_search_always_visible_tools,omitempty" json:"tool_search_always_visible_tools,omitempty"`
+	// Remember first-run defaults so an administrator's opt-out survives reloads.
+	NetworkToolDefaultsApplied bool `yaml:"network_tool_defaults_applied,omitempty" json:"-"`
 	// Plantask adds TaskCreate/Get/Update/List (file-backed under skills dir); requires eino_skills + local backend.
 	PlantaskEnable bool `yaml:"plantask_enable,omitempty" json:"plantask_enable,omitempty"`
 	// PlantaskRelDir relative to skills_dir for per-conversation task boards (default .eino/plantask).
@@ -1676,6 +1678,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
+	cfg.MultiAgent.EinoMiddleware.applyNetworkResidentDefaults()
 	if cfg.ToolGuard != nil {
 		if err := validateToolGuardYAML(data); err != nil {
 			return nil, fmt.Errorf("调用拦截配置无效: %w", err)
@@ -2384,7 +2387,7 @@ func LoadRoleFromFile(path string) (*RoleConfig, error) {
 
 func Default() *Config {
 	strictRobotIdentity := true
-	return &Config{
+	cfg := &Config{
 		Server: ServerConfig{
 			Host: "0.0.0.0",
 			Port: 8080,
@@ -2483,6 +2486,8 @@ func Default() *Config {
 			},
 		},
 	}
+	cfg.MultiAgent.EinoMiddleware.applyNetworkResidentDefaults()
+	return cfg
 }
 
 // C2Config 内置 C2 模块开关（与知识库 enabled 语义一致：关闭后不初始化监听器、不注册 C2 MCP 工具）。

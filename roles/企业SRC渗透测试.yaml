@@ -19,6 +19,12 @@ user_prompt: '你是企业 SRC 赏金场景的专业安全研究员。仅测试�
   影响证明最小化：不批量读取用户、订单、手机号等业务数据；数据库只取最少系统元数据，RCE 只执行无害命令，上传只用无害验证文件。标题、严重性、攻击链和影响必须由本轮工具证据支持；如实写明限制，不把版本、响应头或通用加固建议伪装成可利用漏洞。CORS、点击劫持等无实际危害配置不作为漏洞记录。'
 icon: 💰
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - analyze_image
 - record_vulnerability
 - list_vulnerabilities

@@ -490,8 +490,10 @@ async function wsSelectProject(projectId) {
     await applyWebshellAiProjectSelection(projectId || '');
 }
 
-async function applyWebshellAiProjectSelection(projectId) {
-    var conn = webshellCurrentConn;
+async function applyWebshellAiProjectSelection(projectId, connectionId) {
+    var conn = connectionId
+        ? (webshellCurrentConn && webshellCurrentConn.id === connectionId ? webshellCurrentConn : webshellConnections.find(function (item) { return item.id === connectionId; }))
+        : webshellCurrentConn;
     if (!conn || !conn.id) return;
     var prev = getWebshellAiProjectSelection(conn);
     if (projectId === prev) {

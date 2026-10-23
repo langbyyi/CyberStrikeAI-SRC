@@ -22,13 +22,15 @@ type processScopeKey struct{}
 // Start and Seal serialize under the same lock: no process can escape cleanup
 // by starting between the final snapshot and task completion.
 type ProcessScope struct {
-	ID       string
-	mu       sync.Mutex
-	closed   bool
-	sessions map[*ShellSession]struct{}
-	guard    processguard.Group
-	guardErr error
-	closeMu  sync.Mutex
+	ID             string
+	mu             sync.Mutex
+	closed         bool
+	sessions       map[*ShellSession]struct{}
+	guard          processguard.Group
+	guardErr       error
+	closeMu        sync.Mutex
+	networkContext context.Context
+	networkClosed  bool
 }
 
 func NewProcessScope() *ProcessScope {
@@ -47,6 +49,33 @@ func ProcessScopeFromContext(ctx context.Context) *ProcessScope {
 	return scope
 }
 
+// BeginTaskNetworkOperation owns network work even when no shell is launched.
+// The completion check also releases resources created while Close was running.
+func BeginTaskNetworkOperation(ctx context.Context) (func() error, error) {
+	scope := ProcessScopeFromContext(ctx)
+	if scope == nil {
+		return func() error { return nil }, nil
+	}
+	scope.mu.Lock()
+	defer scope.mu.Unlock()
+	if scope.closed {
+		return nil, ErrProcessScopeClosed
+	}
+	if scope.networkContext == nil {
+		scope.networkContext = ctx
+	}
+	return func() error {
+		scope.mu.Lock()
+		closed := scope.closed
+		scope.mu.Unlock()
+		if closed {
+			closeTaskNetwork(ctx)
+			return ErrProcessScopeClosed
+		}
+		return nil
+	}, nil
+}
+
 func (s *ProcessScope) Seal() {
 	if s == nil {
 		return
@@ -57,11 +86,29 @@ func (s *ProcessScope) Seal() {
 }
 
 func startShellSessionContext(ctx context.Context, cmd *exec.Cmd, start func() error) (*ShellSession, error) {
+	if scope := ProcessScopeFromContext(ctx); scope != nil {
+		scope.mu.Lock()
+		if scope.closed {
+			scope.mu.Unlock()
+			return nil, ErrProcessScopeClosed
+		}
+		if scope.networkContext == nil {
+			scope.networkContext = ctx
+		}
+		scope.mu.Unlock()
+	}
+	if err := prepareCommandNetwork(ctx, cmd); err != nil {
+		return nil, err
+	}
 	scope := ProcessScopeFromContext(ctx)
 	if scope != nil {
 		scope.mu.Lock()
 		defer scope.mu.Unlock()
 		if scope.closed {
+			// The scope sealed while the network was being prepared, so Close already
+			// spent its one-shot task cleanup. Release the work prepared above here,
+			// otherwise its environment and gateway outlive the task.
+			closeTaskNetwork(ctx)
 			return nil, ErrProcessScopeClosed
 		}
 	}
@@ -122,6 +169,11 @@ func (s *ProcessScope) Close() error {
 	defer s.closeMu.Unlock()
 	s.mu.Lock()
 	s.closed = true
+	networkContext := s.networkContext
+	if networkContext != nil && !s.networkClosed {
+		s.networkClosed = true
+		defer closeTaskNetwork(networkContext)
+	}
 	sessions := make([]*ShellSession, 0, len(s.sessions))
 	for session := range s.sessions {
 		sessions = append(sessions, session)

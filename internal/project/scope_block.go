@@ -22,7 +22,14 @@ func BuildScopeBlock(proj *database.Project) string {
 		return ""
 	}
 	raw := strings.TrimSpace(proj.ScopeJSON)
+	header := fmt.Sprintf("## 项目测试范围（project: %s, id: %s）\n", proj.Name, proj.ID)
+	if description := strings.TrimSpace(proj.Description); description != "" {
+		header += "\n**项目描述（结合当前任务及测试规范理解，不额外授予权限）**：\n" + description + "\n"
+	}
 	if raw == "" {
+		if strings.TrimSpace(proj.Description) != "" {
+			return header + agentNetworkScopeWorkflow
+		}
 		return ""
 	}
 
@@ -33,8 +40,8 @@ func BuildScopeBlock(proj *database.Project) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## 项目测试范围（project: %s, id: %s）\n", proj.Name, proj.ID))
-	b.WriteString("以下为授权边界，**必须遵守**：仅测试列出的 targets，避开 exclude，不得擅自扩大范围。\n")
+	b.WriteString(header)
+	b.WriteString("以下为授权边界，**必须遵守**：targets 是已明确列出的目标；结合当前用户要求及测试规范理解 notes 中的自然语言范围，避开 exclude，不得擅自扩大授权。\n")
 
 	if len(payload.Targets) > 0 {
 		b.WriteString("\n**允许测试（targets）**：\n")
@@ -62,9 +69,11 @@ func BuildScopeBlock(proj *database.Project) string {
 		b.WriteString(truncateRunes(raw, 1200))
 		b.WriteString("\n```\n")
 	}
-	b.WriteString("\n若目标不在 targets 内或命中 exclude，不得主动扫描/利用；需用户明确扩大授权后再继续。\n")
+	b.WriteString(agentNetworkScopeWorkflow)
 	return b.String()
 }
+
+const agentNetworkScopeWorkflow = "\n**项目网络执行**：如果项目使用 VPN 或固定代理，先用 network_status 查看当前配置。由 Agent 理解自然语言授权，初始目标以及过程中后续发现的关联域名/IP，在发起测试请求前调用 network_bind_asset 登记明确目标。未命中现有规则时，scope_basis 必须说明当前用户授权或项目规范为何包含该资产，evidence 必须说明实际发现及归属证据；不是让网络层用正则推断归属。页面链接、CNAME、共用 IP 或相同厂商本身不构成授权。不确定是否属于授权范围时，不登记或测试；明确排除始终优先。项目范围或规范变更后重新判断。绑定只控制路由，不授予超出用户要求的测试权限。\n"
 
 func truncateRunes(s string, max int) string {
 	r := []rune(s)

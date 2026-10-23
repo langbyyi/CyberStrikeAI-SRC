@@ -42,6 +42,12 @@ user_prompt: '你是一名综合漏洞检测专家。用户给定目标（IP/域
   '
 icon: ⚠
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

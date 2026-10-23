@@ -9,8 +9,8 @@ import (
 
 func TestBuildScopeBlock_targetsExcludeNotes(t *testing.T) {
 	proj := &database.Project{
-		ID:   "p1",
-		Name: "Acme",
+		ID:        "p1",
+		Name:      "Acme",
 		ScopeJSON: `{"targets":["https://app.example.com"],"exclude":["*.cdn.example.com"],"notes":"仅 Web 层"}`,
 	}
 	block := BuildScopeBlock(proj)
@@ -36,5 +36,14 @@ func TestBuildScopeBlock_invalidJSON(t *testing.T) {
 	block := BuildScopeBlock(proj)
 	if !strings.Contains(block, "非合法 JSON") {
 		t.Fatalf("unexpected: %s", block)
+	}
+}
+
+func TestBuildScopeBlockExplainsAgentNetworkAssessment(t *testing.T) {
+	block := BuildScopeBlock(&database.Project{ID: "p", Name: "synthetic", Description: "测试此应用及授权的自有 API。"})
+	for _, expected := range []string{"测试此应用及授权的自有 API", "network_bind_asset", "scope_basis", "初始", "后续"} {
+		if !strings.Contains(block, expected) {
+			t.Fatalf("Agent context missing %s: %s", expected, block)
+		}
 	}
 }

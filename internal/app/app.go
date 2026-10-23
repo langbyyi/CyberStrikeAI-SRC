@@ -31,6 +31,7 @@ import (
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/monitor"
 	"cyberstrike-ai/internal/multiagent"
+	"cyberstrike-ai/internal/network"
 	"cyberstrike-ai/internal/robot"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
@@ -46,6 +47,8 @@ import (
 
 // App 应用
 type App struct {
+	networkService        *network.Service
+	networkHandler        *handler.NetworkHandler
 	config                *config.Config
 	logger                *logger.Logger
 	router                *gin.Engine
@@ -544,6 +547,25 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		approvalCoordinator:   approvalCoordinator,
 		approvalHumanReviewer: approvalHumanReviewer,
 	}
+	networkRoot := strings.TrimSpace(os.Getenv("CYBERSTRIKE_NETWORK_STATE_DIR"))
+	if networkRoot == "" {
+		networkRoot = filepath.Join(filepath.Dir(dbPath), "network")
+	}
+	networkService, networkErr := network.Open(networkRoot)
+	if networkErr != nil {
+		return nil, fmt.Errorf("initialize project network service: %w", networkErr)
+	}
+	app.networkService = networkService
+	app.networkHandler = handler.NewNetworkHandler(networkService, db)
+	app.networkHandler.SetAudit(auditSvc)
+	webshellHandler.SetTargetHTTPClient(networkHTTPClient(db, networkService))
+	projectHandler.SetNetworkInvalidator(func(project string) { _ = networkService.DisconnectVPN(project) })
+	app.networkHandler.Fetcher = networkSourceFetcher(cfg)
+	app.networkHandler.Providers = func() []network.SourceProvider { return networkSourceProviders(cfg) }
+	registerNetworkTools(mcpServer, networkService, db, app.networkHandler.Fetcher)
+	security.SetNetworkCommandPreparer(networkCommandPreparer(db, networkService))
+	security.SetNetworkTaskCloser(networkTaskCloser(networkService))
+	externalMCPMgr.SetInvocationGuard(networkExternalGuard(db, networkService, approvalInvocationGuard(approvalCoordinator, "mcp_external")))
 	// 飞书/钉钉长连接（无需公网），启用时在后台启动；后续前端应用配置时会通过 RestartRobotConnections 重启
 	app.startRobotConnections()
 	alertCtx, alertCancel := context.WithCancel(context.Background())
@@ -558,6 +580,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		registerVisionTools(mcpServer, cfg, log.Logger)
 		registerFOFASearchTool(mcpServer, cfg, log.Logger)
 		registerWebSearchTools(mcpServer, cfg, log.Logger)
+		registerNetworkTools(mcpServer, app.networkService, db, app.networkHandler.Fetcher)
 		return nil
 	}
 	configHandler.SetVulnerabilityToolRegistrar(vulnerabilityRegistrar)
@@ -826,6 +849,14 @@ func (a *App) Shutdown() {
 	if a.agentHandler != nil {
 		a.agentHandler.ShutdownTasks()
 	}
+	if a.networkHandler != nil {
+		a.networkHandler.Close()
+	}
+	if a.networkService != nil {
+		_ = a.networkService.Close()
+		security.SetNetworkCommandPreparer(nil)
+		security.SetNetworkTaskCloser(nil)
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = einoobserve.ShutdownOtel(shutdownCtx)
 	shutdownCancel()
@@ -1021,6 +1052,9 @@ func setupRoutes(
 			})
 		}
 	}))
+	if app.networkHandler != nil {
+		app.networkHandler.Register(protected)
+	}
 	{
 		handler.RegisterApprovalRoutes(protected, approvalHandler)
 
@@ -1547,7 +1581,7 @@ func registerWebshellTools(mcpServer *mcp.Server, db *database.DB, webshellHandl
 		if err != nil || conn == nil {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "未找到该 WebShell 连接或查询失败"}}, IsError: true}, nil
 		}
-		output, ok, errMsg := webshellHandler.ExecWithConnection(conn, cmd)
+		output, ok, errMsg := webshellHandler.ExecWithConnection(conn, cmd, ctx)
 		if errMsg != "" {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: errMsg}}, IsError: true}, nil
 		}
@@ -1582,7 +1616,7 @@ func registerWebshellTools(mcpServer *mcp.Server, db *database.DB, webshellHandl
 		if err != nil || conn == nil {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "未找到该 WebShell 连接"}}, IsError: true}, nil
 		}
-		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "list", path, "", "")
+		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "list", path, "", "", ctx)
 		if errMsg != "" {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: errMsg}}, IsError: true}, nil
 		}
@@ -1614,7 +1648,7 @@ func registerWebshellTools(mcpServer *mcp.Server, db *database.DB, webshellHandl
 		if err != nil || conn == nil {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "未找到该 WebShell 连接"}}, IsError: true}, nil
 		}
-		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "read", path, "", "")
+		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "read", path, "", "", ctx)
 		if errMsg != "" {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: errMsg}}, IsError: true}, nil
 		}
@@ -1648,7 +1682,7 @@ func registerWebshellTools(mcpServer *mcp.Server, db *database.DB, webshellHandl
 		if err != nil || conn == nil {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "未找到该 WebShell 连接"}}, IsError: true}, nil
 		}
-		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "write", path, content, "")
+		output, ok, errMsg := webshellHandler.FileOpWithConnection(conn, "write", path, content, "", ctx)
 		if errMsg != "" {
 			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: errMsg}}, IsError: true}, nil
 		}
@@ -2078,7 +2112,7 @@ func registerWebshellManagementTools(mcpServer *mcp.Server, db *database.DB, web
 		}
 
 		// 执行测试命令
-		output, ok, errMsg := webshellHandler.ExecWithConnection(conn, testCmd)
+		output, ok, errMsg := webshellHandler.ExecWithConnection(conn, testCmd, ctx)
 		if errMsg != "" {
 			return &mcp.ToolResult{
 				Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("连接测试失败！\n\n连接ID: %s\nURL: %s\n错误: %s", connID, conn.URL, errMsg)}},

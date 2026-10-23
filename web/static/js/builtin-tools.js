@@ -6,6 +6,7 @@
  */
 
 // 内置工具名称常量
+// 注意：六个 network_* 工具按白名单（可点击「常驻」）管理，不属内置常驻。
 const BuiltinTools = {
     // 漏洞管理工具
     RECORD_VULNERABILITY: 'record_vulnerability',

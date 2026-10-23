@@ -2,11 +2,13 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"cyberstrike-ai/internal/audit"
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/security"
 
@@ -324,15 +327,72 @@ func (e simpleError) Error() string { return string(e) }
 
 // WebShellHandler 代理执行 WebShell 命令（类似冰蝎/蚁剑），避免前端跨域并统一构建请求
 type WebShellHandler struct {
-	logger *zap.Logger
-	client *http.Client
-	db     *database.DB
-	audit  *audit.Service
+	logger           *zap.Logger
+	client           *http.Client
+	db               *database.DB
+	audit            *audit.Service
+	targetHTTPClient func(context.Context, string, *http.Client) (*http.Client, error)
 }
 
 // SetAudit wires platform audit logging.
 func (h *WebShellHandler) SetAudit(s *audit.Service) {
 	h.audit = s
+}
+
+// SetTargetHTTPClient wires project routing for target requests; configure it before serving.
+func (h *WebShellHandler) SetTargetHTTPClient(provider func(context.Context, string, *http.Client) (*http.Client, error)) {
+	h.targetHTTPClient = provider
+}
+
+type webshellProjectContextKey struct{}
+
+func webshellRequestContext(c *gin.Context, project string) context.Context {
+	ctx := c.Request.Context()
+	if session, ok := security.CurrentSession(c); ok {
+		ctx = authctx.WithPrincipal(ctx, authctx.NewPrincipalWithScopes(session.UserID, session.Username, session.Scope, session.Permissions, session.PermissionScopes))
+	}
+	return context.WithValue(ctx, webshellProjectContextKey{}, project)
+}
+
+func webshellOperationContext(contexts []context.Context) context.Context {
+	if len(contexts) > 0 && contexts[0] != nil {
+		return contexts[0]
+	}
+	return context.Background()
+}
+
+type webshellTargetResponseBody struct {
+	io.ReadCloser
+	client *http.Client
+}
+
+func (body *webshellTargetResponseBody) Close() error {
+	err := body.ReadCloser.Close()
+	body.client.CloseIdleConnections()
+	return err
+}
+
+func (h *WebShellHandler) doTargetHTTPRequest(ctx context.Context, project string, request *http.Request) (*http.Response, error) {
+	client := h.client
+	if h.targetHTTPClient != nil {
+		var err error
+		client, err = h.targetHTTPClient(ctx, project, h.client)
+		if err != nil {
+			return nil, fmt.Errorf("prepare WebShell project network: %w", err)
+		}
+		if client == nil {
+			return nil, fmt.Errorf("prepare WebShell project network: HTTP client is unavailable")
+		}
+	}
+	response, err := client.Do(request.WithContext(ctx))
+	if h.targetHTTPClient != nil && client != h.client {
+		if err != nil {
+			client.CloseIdleConnections()
+		} else {
+			response.Body = &webshellTargetResponseBody{ReadCloser: response.Body, client: client}
+		}
+	}
+	return response, err
 }
 
 // NewWebShellHandler 创建 WebShell 处理器，db 可为 nil（连接配置接口将不可用）
@@ -694,6 +754,7 @@ func (h *WebShellHandler) ListAIConversations(c *gin.Context) {
 
 // ExecRequest 执行命令请求（前端传入连接信息 + 命令）
 type ExecRequest struct {
+	ProjectID    string `json:"project_id,omitempty"`
 	URL          string `json:"url" binding:"required"`
 	Password     string `json:"password"`
 	Type         string `json:"type"`      // php, asp, aspx, jsp, custom
@@ -715,6 +776,7 @@ type ExecResponse struct {
 
 // FileOpRequest 文件操作请求
 type FileOpRequest struct {
+	ProjectID    string `json:"project_id,omitempty"`
 	URL          string `json:"url" binding:"required"`
 	Password     string `json:"password"`
 	Type         string `json:"type"`
@@ -760,6 +822,7 @@ func (h *WebShellHandler) Exec(c *gin.Context) {
 		}
 		// Never let a caller pair an authorized ID with attacker-controlled
 		// transport credentials or a URL.
+		req.ProjectID = conn.ProjectID
 		req.URL, req.Password, req.Type = conn.URL, conn.Password, conn.Type
 		req.Method, req.CmdParam, req.Encoding = conn.Method, conn.CmdParam, conn.Encoding
 	} else if !security.SessionHasPermission(c, "webshell:write") {
@@ -770,6 +833,12 @@ func (h *WebShellHandler) Exec(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请使用已保存连接或填写新的连接口令"})
 		return
 	}
+
+	if strings.TrimSpace(req.ConnectionID) == "" && strings.TrimSpace(req.ProjectID) != "" && (h.db == nil || !h.canAccessProject(c, req.ProjectID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问项目网络"})
+		return
+	}
+	ctx := webshellRequestContext(c, strings.TrimSpace(req.ProjectID))
 
 	parsed, err := url.Parse(req.URL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -798,7 +867,7 @@ func (h *WebShellHandler) Exec(c *gin.Context) {
 	}
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
 
-	resp, err := h.client.Do(httpReq)
+	resp, err := h.doTargetHTTPRequest(ctx, req.ProjectID, httpReq)
 	if err != nil {
 		h.logger.Warn("webshell exec Do", zap.String("url", req.URL), zap.Error(err))
 		c.JSON(http.StatusOK, ExecResponse{OK: false, Error: err.Error()})
@@ -869,12 +938,19 @@ func (h *WebShellHandler) FileOp(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
 			return
 		}
+		req.ProjectID = conn.ProjectID
 		req.URL, req.Password, req.Type = conn.URL, conn.Password, conn.Type
 		req.Method, req.CmdParam, req.Encoding, req.OS = conn.Method, conn.CmdParam, conn.Encoding, conn.OS
 	} else if !security.SessionHasPermission(c, "webshell:write") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
 		return
 	}
+
+	if strings.TrimSpace(req.ConnectionID) == "" && strings.TrimSpace(req.ProjectID) != "" && (h.db == nil || !h.canAccessProject(c, req.ProjectID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问项目网络"})
+		return
+	}
+	ctx := webshellRequestContext(c, strings.TrimSpace(req.ProjectID))
 
 	parsed, err := url.Parse(req.URL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -887,7 +963,7 @@ func (h *WebShellHandler) FileOp(c *gin.Context) {
 	osTag := req.OS
 	detectedOS := ""
 	if normalizeWebshellOS(osTag) == "auto" {
-		if probed := probeWebshellOSViaExec(h.newHTTPExecFn(req.URL, req.Password, req.Type, req.Method, req.CmdParam, req.Encoding)); probed != "" {
+		if probed := probeWebshellOSViaExec(h.newHTTPExecFn(req.URL, req.Password, req.Type, req.Method, req.CmdParam, req.Encoding, ctx)); probed != "" {
 			osTag = probed
 			detectedOS = probed
 			// 若前端带了 connection_id，顺带把探活结果持久化到该连接，后续刷新零成本
@@ -931,7 +1007,7 @@ func (h *WebShellHandler) FileOp(c *gin.Context) {
 	}
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
 
-	resp, err := h.client.Do(httpReq)
+	resp, err := h.doTargetHTTPRequest(ctx, req.ProjectID, httpReq)
 	if err != nil {
 		c.JSON(http.StatusOK, FileOpResponse{OK: false, Error: err.Error()})
 		return
@@ -989,10 +1065,11 @@ func (h *WebShellHandler) canAccessProject(c *gin.Context, projectID string) boo
 }
 
 // ExecWithConnection 在指定 WebShell 连接上执行命令（供 MCP/Agent 等非 HTTP 调用）
-func (h *WebShellHandler) ExecWithConnection(conn *database.WebShellConnection, command string) (output string, ok bool, errMsg string) {
+func (h *WebShellHandler) ExecWithConnection(conn *database.WebShellConnection, command string, contexts ...context.Context) (output string, ok bool, errMsg string) {
 	if conn == nil {
 		return "", false, "connection is nil"
 	}
+	ctx := webshellOperationContext(contexts)
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", false, "command is required"
@@ -1016,7 +1093,7 @@ func (h *WebShellHandler) ExecWithConnection(conn *database.WebShellConnection, 
 		return "", false, err.Error()
 	}
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
-	resp, err := h.client.Do(httpReq)
+	resp, err := h.doTargetHTTPRequest(ctx, conn.ProjectID, httpReq)
 	if err != nil {
 		return "", false, err.Error()
 	}
@@ -1029,10 +1106,11 @@ func (h *WebShellHandler) ExecWithConnection(conn *database.WebShellConnection, 
 }
 
 // FileOpWithConnection 在指定 WebShell 连接上执行文件操作（供 MCP/Agent 调用），支持 list / read / write
-func (h *WebShellHandler) FileOpWithConnection(conn *database.WebShellConnection, action, path, content, targetPath string) (output string, ok bool, errMsg string) {
+func (h *WebShellHandler) FileOpWithConnection(conn *database.WebShellConnection, action, path, content, targetPath string, contexts ...context.Context) (output string, ok bool, errMsg string) {
 	if conn == nil {
 		return "", false, "connection is nil"
 	}
+	ctx := webshellOperationContext(contexts)
 	action = strings.ToLower(strings.TrimSpace(action))
 	// MCP 入口仅开放 list / read / write 三种动作，与工具文档的承诺保持一致
 	switch action {
@@ -1046,7 +1124,7 @@ func (h *WebShellHandler) FileOpWithConnection(conn *database.WebShellConnection
 	osTag := conn.OS
 	if normalizeWebshellOS(osTag) == "auto" {
 		if probed := probeWebshellOSViaExec(func(cmd string) (string, bool) {
-			out, exOk, _ := h.ExecWithConnection(conn, cmd)
+			out, exOk, _ := h.ExecWithConnection(conn, cmd, ctx)
 			return out, exOk
 		}); probed != "" {
 			osTag = probed
@@ -1085,7 +1163,7 @@ func (h *WebShellHandler) FileOpWithConnection(conn *database.WebShellConnection
 		return "", false, err.Error()
 	}
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
-	resp, err := h.client.Do(httpReq)
+	resp, err := h.doTargetHTTPRequest(ctx, conn.ProjectID, httpReq)
 	if err != nil {
 		return "", false, err.Error()
 	}

@@ -17,6 +17,8 @@ func DefaultSingleAgentSystemPrompt() string {
 
 ## 挖洞方法论（每回合都按此闭环推进）
 
+项目配置了固定代理/OpenVPN 时，本地工具由执行层自动准备网络，不修改 VPN 文件、不要求用户逐项管理代理。后续发现且属于已授权测试范围的关联 API/主机，可用 network_bind_asset 提交来源证据，不能据此扩大测试授权。全局代理池可通过 network_status 查看，network_diagnose 验证当前目标，network_acquire 指定节点；保持任务内出口稳定，失败后先区分网络故障与 HTTP/WAF 拒绝，结束时 network_release。外部 MCP 未配置同等网络适配时不要绕过项目网络限制。
+
 **侦察 → 攻击面枚举 → 假设验证 → 落库**，循环推进：
 
 1. **开局侦察（指纹+前端）**：可达性与技术栈确认后，识别框架/中间件/版本（响应头、页面特征、JS 特征）并匹配**已知 CVE/EXP**；同时识别 WAF/防护（如 510/拦截页）——换 UA/参数编码/协议绕过，别硬刚。尽早拉取 JS/HTML/SourceMap，提取隐藏路由、接口 basePath、硬编码密钥、调试开关、同站 API 清单。

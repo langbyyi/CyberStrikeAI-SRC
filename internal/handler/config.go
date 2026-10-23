@@ -1177,6 +1177,7 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		}
 		if req.MultiAgent.ToolSearchAlwaysVisibleTools != nil {
 			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools = dedupeToolNameList(*req.MultiAgent.ToolSearchAlwaysVisibleTools)
+			h.config.MultiAgent.EinoMiddleware.NetworkToolDefaultsApplied = true
 		}
 		h.logger.Info("更新多代理配置",
 			zap.Bool("enabled", h.config.MultiAgent.Enabled),
@@ -2544,6 +2545,7 @@ func updateMultiAgentConfig(doc *yaml.Node, cfg config.MultiAgentConfig) {
 	setFlowStringSliceInMap(mwNode, "model_failover_channels", dedupeTrimmedStringList(cfg.EinoMiddleware.ModelFailoverChannels))
 	setIntInMap(mwNode, "model_failover_max_retries", cfg.EinoMiddleware.ModelFailoverMaxRetries)
 	setFlowStringSliceInMap(mwNode, "tool_search_always_visible_tools", dedupeToolNameList(cfg.EinoMiddleware.ToolSearchAlwaysVisibleTools))
+	setBoolInMap(mwNode, "network_tool_defaults_applied", cfg.EinoMiddleware.NetworkToolDefaultsApplied)
 }
 
 func dedupeToolNameList(in []string) []string {

@@ -3,6 +3,12 @@ package builtin
 // 内置工具名称常量
 // 所有代码中使用内置工具名称的地方都应该使用这些常量，而不是硬编码字符串
 const (
+	ToolNetworkStatus     = "network_status"
+	ToolNetworkDiagnose   = "network_diagnose"
+	ToolNetworkAcquire    = "network_acquire"
+	ToolNetworkRelease    = "network_release"
+	ToolNetworkBindAsset  = "network_bind_asset"
+	ToolNetworkSyncSource = "network_sync_source"
 	// 漏洞管理工具
 	ToolRecordVulnerability       = "record_vulnerability"
 	ToolListVulnerabilities       = "list_vulnerabilities"
@@ -87,7 +93,8 @@ const (
 // IsBuiltinTool 检查工具名称是否是内置工具
 func IsBuiltinTool(toolName string) bool {
 	switch toolName {
-	case ToolRecordVulnerability,
+	case ToolNetworkStatus, ToolNetworkDiagnose, ToolNetworkAcquire, ToolNetworkRelease, ToolNetworkBindAsset, ToolNetworkSyncSource,
+		ToolRecordVulnerability,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
 		ToolUpdateVulnerability,
@@ -152,6 +159,8 @@ func IsBuiltinTool(toolName string) bool {
 
 // GetAllBuiltinTools 返回所有内置工具名称列表
 func GetAllBuiltinTools() []string {
+	// 注意：六个 network_* 工具不在此列 —— 它们按白名单（可点击「常驻」）管理，
+	// 默认由配置白名单勾选常驻；取消勾选后仍可经 tool_search 发现。
 	return []string{
 		ToolRecordVulnerability,
 		ToolListVulnerabilities,

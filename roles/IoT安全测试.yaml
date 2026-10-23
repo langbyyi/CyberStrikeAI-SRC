@@ -18,6 +18,12 @@ user_prompt: "你是 IoT 与嵌入式安全测试专家。用户会提供固件�
   - 不利用提取的密钥对非授权设备/平台操作\n- 固件分析在隔离环境进行，不运行恶意代码\n"
 icon: 🤖
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

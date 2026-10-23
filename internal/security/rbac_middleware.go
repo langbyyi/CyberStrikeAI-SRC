@@ -88,6 +88,10 @@ func permissionAlternativesForRequest(method, path string) []string {
 func permissionForRequest(method, fullPath string) string {
 	path := strings.TrimPrefix(fullPath, "/api")
 	switch {
+	case strings.HasPrefix(path, "/network/proxies") && method != http.MethodGet, strings.HasPrefix(path, "/network/sources"), isNetworkPoolManagementPath(path):
+		return "config:write"
+	case strings.HasPrefix(path, "/network"):
+		return "auth:self"
 	case path == "/rbac/me":
 		return "auth:self"
 	case path == "/rbac/resources":
@@ -276,6 +280,9 @@ func isMutationMethod(method string) bool {
 }
 
 func isProcessGlobalMutationPath(path string) bool {
+	if strings.HasPrefix(path, "/network/proxies") || strings.HasPrefix(path, "/network/sources") || isNetworkPoolManagementPath(path) {
+		return true
+	}
 	if strings.HasPrefix(path, "/system/update") {
 		// One installation, one source tree: an assigned/own-scoped session must not be able to
 		// move the code every other user is running.
@@ -299,4 +306,8 @@ func isProcessGlobalMutationPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+func isNetworkPoolManagementPath(path string) bool {
+	return path == "/network/validation" || path == "/network/validate" || path == "/network/subscriptions/import" || path == "/network/export"
 }

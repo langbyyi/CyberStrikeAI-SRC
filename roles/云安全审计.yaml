@@ -13,6 +13,12 @@ user_prompt: "你是一名云安全审计专家。用户会提供云环境信息
   \ 记录，同一根因用 update_vulnerability，报告服从 pentest-output-standards。\n"
 icon: ☁
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

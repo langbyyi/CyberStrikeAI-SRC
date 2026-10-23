@@ -596,6 +596,61 @@ curl -k https://127.0.0.1:8080/api/eino-agent \
 - 资产接口：`internal/handler/asset.go`
 - 资产存储与去重：`internal/database/asset.go`
 
+## 代理池与项目网络
+
+部署要求、分流规则及协议限制见[代理池与项目 OpenVPN](network-and-proxy.md)。以下接口均需认证；共享代理配置修改需全局 `config:write`。读取池、诊断和任务查询使用 `auth:self`；完整导出与来源读取要求全局 `config:write`。项目接口分别要求 `project:read` / `project:write`，并检查调用者对项目的访问权限。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/network/proxies?target=...` | 不传目标时列出全局节点和脱敏来源；传目标时返回逐节点候选与历史观察。 |
+| `POST /api/network/proxies` | `{"addresses":"http://127.0.0.1:8081"}`，支持 URI 列表、Base64、Clash YAML、V2Ray JSON，最多 10000 节点 / 2 MiB。`imported` 为实际新增数，重复节点不重复计数；另返回跳过数及未接入协议计数。 |
+| `POST /api/network/proxies/bulk` | `{"node_ids":["..."],"action":"enable"}`，单次 1–1000 个 ID；支持 `enable` / `disable` / `delete`。私有节点跳过，引用中的节点禁止删除。 |
+| `PUT /api/network/proxies/:node` | 更新 `enabled`；可用 `address` 替换 URI 和认证信息。 |
+| `DELETE /api/network/proxies/:node` | 删除节点；被固定项目策略引用时拒绝删除。 |
+| `GET /api/network/export` | 全局管理员下载全部共享节点的完整代理 URI，包含账号密码和停用节点；项目私有代理排除，响应 no-store，文件名 proxies.txt。 |
+| `GET /api/network/events` | 全局管理员读取网络切换事件（环境重建、租约获取/释放/过期、节点退役、策略版本变更），最多 200 条，仅含资源 ID 与原因，不含地址或凭据。 |
+| `GET /api/network/sources` | 返回 `sources` 和 `providers` 配置状态；providers 只反映系统级密钥是否已配置。订阅 URL 仅显示协议和主机。 |
+| `POST /api/network/sources` | 保存 `name`、`kind`（`fofa` / `quake` / `hunter` / `zoomeye` / `shodan` / `subscription`）、`query` / `url`、`limit`（1–10000）；凭据一律使用系统配置，无来源级密钥字段；传已有 `id` 更新。 |
+| `DELETE /api/network/sources/:source` | 删除来源，保留已导入节点。 |
+| `POST /api/network/sources/:source/sync` | 提交同步任务，按来源上限分页，最长 20 分钟。 |
+| `POST /api/network/sources/sync` | `{"source_ids":[]}` 同步全部，或指定最多 20 个来源；失败保留已完成计数。 |
+| `POST /api/network/subscriptions/import` | `{"content":"..."}` 或 `{"urls":["https://example.test/subscription"]}`；二选一，URL 最多 20 个并保存为来源。返回作业。 |
+| `GET /api/network/validation` | 读取全池验证配置，初始默认百度；需全局配置写权限，已有自定义设置保留。 |
+| `PUT /api/network/validation` | `{"target":"https://example.test","contains":"","failure_action":"keep","failure_threshold":3}`；处理为 `keep` / `disable` / `delete`，阈值 1–10。 |
+| `POST /api/network/validate` | `{"node_ids":[]}` 验证全部，或显式选定最多 10000 个节点；最多 8 并发、最长 20 分钟。留空验证目标跳过。 |
+| `POST /api/network/diagnose` | `{"target":"https://example.test","node_ids":[]}`；省略节点最多诊断 3 个，显式指定最多 8 个。 |
+| `GET /api/network/jobs` | 查询本人尚未结束的可暂停任务，供刷新页面后恢复进度显示。 |
+| `GET /api/network/jobs/:job` | 仅创建者可查询任务的 `state`、`result`、`error`。 |
+| `POST /api/network/jobs/:job/pause` | 请求暂停采集、订阅导入、池验证或诊断任务；当前页或批次提交后进入 `paused`，已完成结果保留。VPN 连接任务不可暂停。 |
+| `POST /api/network/jobs/:job/resume` | 继续本人暂停的任务；涉及池配置写入的任务还需全局配置写权限。 |
+| `POST /api/network/jobs/:job/cancel` | 仅创建者可取消任务；随后查询状态确认结束。 |
+| `GET /api/projects/:id/network-policy` | 读取策略、脱敏指定代理、有效范围 `scope`、明确范围 `declared_scope`、关联资产及 VPN 状态。资产的 `scope_state` 区分 `active` / `excluded` / `needs_reassessment` / `out_of_scope`；`vpn_has_auth` 仅表示是否已配置账号密码。 |
+| `PUT /api/projects/:id/network-policy` | 保存策略；`mode` 为 `auto` / `fixed_proxy` / `fixed_vpn`，须携带读取到的 `version`；固定代理可传 `proxy_address`。 |
+| `POST /api/projects/:id/vpn-profile` | 上传 `config` 和可选 `files`（文件名到正文的映射），可附 `targets`、`dns_servers`、预期策略 `version` 及只写的 `credentials`（`username`、`password`）；配置和策略原子保存。已有配置可单独更新凭据，无需重传证书。 |
+| `POST /api/projects/:id/vpn/connect` | 提交项目 VPN 连接任务。 |
+| `POST /api/projects/:id/vpn/disconnect` | 断开项目 VPN 并清理隔离网络。 |
+| `GET /api/projects/:id/vpn/status` | 查询 `stopped` / `connecting` / `ready` / `reconnecting` / `failed` 状态。 |
+| `POST /api/projects/:id/network-assets` | 用 `target`、`evidence`、`excluded` 关联或排除资产；不能扩大项目测试授权。 |
+
+同步、诊断和连接接口返回 `202 {"job_id":"..."}`，通过任务查询接口等待 `completed` / `failed`。可暂停任务还会返回 `pausing` / `paused`；暂停位置仅保留在当前服务进程中，重启后已落库结果保留，但未完成操作需重新发起。策略版本冲突返回 `409`，先重新读取策略，再合并修改；不要盲目重复覆盖。代理 407 是代理认证失败；目标 403/429 表示已到达 HTTP 服务，应继续判断目标鉴权、WAF 或限流。
+
+Agent 的六个网络工具要求 `agent:execute`，不要求全局配置管理权限；项目操作额外检查项目访问权限。它们默认加入可编辑的「常驻」白名单，用户可以取消勾选，保存后跨重启保留；没有加入强制内置常驻列表。预置角色允许这些工具，自定义角色仍按自身工具列表过滤。
+
+| Agent 工具 | 参数与结果 |
+| --- | --- |
+| `network_status` | 可传 `target`、`offset`（默认 0）、`limit`（默认 10，1–20）、`status`（`all/enabled/disabled/passed/failed/untested`）及 `protocol`。返回同页 `nodes` / `candidates`、筛选总数 `total`、`summary` 和分页字段；存在后页时返回 `next_offset`。不传目标只列共享节点，传目标可含当前项目私有候选。`project_context` 提供当前项目说明、规范及 `scope_context`；`execution`、`next_action`、`next_call` 说明本任务租约与建议调用。读取状态不会自动探测或切换出口。 |
+| `network_diagnose` | `target` 必填，`node_ids` 省略时最多 3 个，显式最多 8 个；返回各节点对目标的连通结果。 |
+| `network_acquire` | `target` 必填，可指定 `node_id`，失败返回尝试结果和有限备选 ID。成功返回租约；节点在探测期间发生版本变更时拒绝旧结果。 |
+| `network_release` | `lease_id` 必填，只释放当前任务自己的租约。 |
+| `network_sync_source` | `source_id` 必填，同步后台已配置来源，结果进入同一共享池。 |
+| `network_bind_asset` | `target` 与来源 `evidence` 必填。Agent 根据自然语言授权登记初始或后续发现的资产；未命中明确规则时，提供 `scope_basis` 说明授权依据，并原样回传 `network_status.project_context.scope_context`。`scope_origin` 默认 `discovered`，仅登记具体域名/IP；用户明确授权的通配域名/网段使用 `declared`。排除始终优先，旧上下文拒绝登记；绑定路由不扩大用户授权。 |
+
+网络 Handler 的失败响应为 `{"error":"network_invalid_request","message":"可读原因"}`。对应 400 / 401 / 403 / 404 / 409 / 429 的稳定代码分别为 `network_invalid_request`、`network_unauthenticated`、`network_forbidden`、`network_not_found`、`network_conflict`、`network_capacity_reached`。进入 Handler 之前的公共认证/权限中间件仍可能返回旧式 `{"error":"原因"}`；客户端优先展示 `message`，缺省时兼容 `error`。
+
+OpenVPN 配置正文最多 2 MiB，外置文件各最多 1 MiB，配置与文件总计最多 4 MiB，JSON 请求上限 6 MiB。证书、私钥、带认证的代理地址仅作为写入参数，节点 / 项目接口返回脱敏数据；完整导出按管理员请求包含共享代理账号密码，不包含项目私有节点或 VPN 文件。网络修改操作记录 `network` 类审计，包含操作、资源 ID、HTTP 方法和路由模板；不记录请求正文、代理凭据或 VPN 证书/私钥。后台任务的 `202` 审计表示已接受请求，实际完成状态以任务查询为准。
+
+源码入口：[`internal/handler/network.go`](../../internal/handler/network.go)、[`internal/handler/network_openapi.go`](../../internal/handler/network_openapi.go)、[`internal/audit/meta.go`](../../internal/audit/meta.go)。
+
 ## 删除与空列表响应约定
 
 请求通过认证、权限检查且模块可用时：

@@ -5,6 +5,7 @@ let projectsCache = [];
 let projectsCacheAll = [];
 const PROJECTS_LIST_PAGE_SIZE_KEY = 'cyberstrike.projects_list_page_size';
 let currentProjectId = null;
+let projectSelectionSequence = 0;
 let currentProjectUpdatedAt = null;
 let currentProjectTab = 'facts';
 let currentProjectAssets = [];
@@ -992,7 +993,12 @@ function updateProjectStats(stats) {
 }
 
 async function selectProject(id) {
+    if (id === currentProjectId && window.ProjectSettingsUI?.hasDraft()) return;
+    if (currentProjectId && id !== currentProjectId && window.ProjectSettingsUI?.canLeave() === false) return;
+    const sequence = ++projectSelectionSequence;
     currentProjectId = id;
+    window.ProjectSettingsUI?.beginLoad(id);
+    if (window.NetworkTools) { window.NetworkTools.loadProject(id).catch(error => console.warn('Project network:', error.message)); }
     if (id) setActiveProjectId(id);
     projectAssetsPagination.page = 1;
     const searchEl = document.getElementById('project-facts-search');
@@ -1013,9 +1019,15 @@ async function selectProject(id) {
     renderProjectsSidebar();
     updateProjectsDetailVisibility();
     try {
+        // A project reopened during a write must read the committed version.
+        while (window._projectWrites?.has(id)) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+            if (currentProjectId !== id || sequence !== projectSelectionSequence) return;
+        }
         const res = await apiFetch(`/api/projects/${id}`);
         if (!res.ok) throw new Error(tp('projects.projectNotFound'));
         const p = await res.json();
+        if (currentProjectId !== id || sequence !== projectSelectionSequence) return;
         renderProjectDetailTitle(p.name);
         document.getElementById('project-edit-name').value = p.name || '';
         document.getElementById('project-edit-description').value = p.description || '';
@@ -1031,10 +1043,14 @@ async function selectProject(id) {
         renderProjectDetailMeta(currentProjectUpdatedAt);
         renderProjectDetailDesc(p.description);
         projectNameById[p.id] = p.name || p.id;
+        window.ProjectSettingsUI?.loaded(p);
     } catch (e) {
+        if (currentProjectId !== id || sequence !== projectSelectionSequence) return;
         console.warn(e);
+        window.ProjectSettingsUI?.error(e.message || tp('projects.projectNotFound'));
     }
     await refreshProjectHeaderStats();
+    if (currentProjectId !== id || sequence !== projectSelectionSequence) return;
     switchProjectTab(currentProjectTab);
 }
 
@@ -1940,8 +1956,18 @@ function closeProjectsOverlay(id) {
     closeAppModal(id);
 }
 
+function setProjectModalBusy(busy) {
+    for (const id of ['project-modal-name','project-modal-description','project-modal-spec-name','project-modal-spec-content','project-modal-spec-file','project-modal-spec-file-trigger','project-modal-submit-btn']) {
+        const field = document.getElementById(id); if (field) field.disabled = busy;
+    }
+    document.getElementById('project-modal-submit-btn')?.setAttribute('aria-busy', String(busy));
+}
+
 function showNewProjectModal() {
     if (!requireProjectWrite()) return;
+    window._projectModalSequence = (window._projectModalSequence || 0) + 1;
+    window._projectModalChatContext = window._projectModalFromChat ? {conversationId: window.currentConversationId || ''} : null;
+    setProjectModalBusy(false);
     document.getElementById('project-modal-title').textContent = tp('projects.modalNewTitle');
     const sub = document.getElementById('project-modal-subtitle');
     if (sub) sub.textContent = tp('projects.modalNewSubtitle');
@@ -1960,6 +1986,10 @@ async function showEditProjectModal(projectId, options = {}) {
     window._projectModalFromChat = false;
     window._projectModalFromChatSidebar = options.fromChatSidebar === true;
     window._projectModalEditId = projectId;
+    const sequence = window._projectModalSequence = (window._projectModalSequence || 0) + 1;
+    const isCurrent = () => window._projectModalEditId === projectId && window._projectModalSequence === sequence;
+    window.TestingSpecifications?.fillEditor('project-modal-spec', null);
+    setProjectModalBusy(true);
     document.getElementById('project-modal-title').textContent = tp('projects.modalEditTitle');
     const sub = document.getElementById('project-modal-subtitle');
     if (sub) sub.textContent = tp('projects.modalEditSubtitle');
@@ -1973,19 +2003,26 @@ async function showEditProjectModal(projectId, options = {}) {
     let p = null; // Fetch full project data: list entries intentionally omit specification content.
     if (!p) {
         try {
+            while (window._projectWrites?.has(projectId)) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+                if (!isCurrent()) return;
+            }
             const res = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`);
             if (!res.ok) throw new Error(tp('projects.projectNotFound'));
             p = await res.json();
+            if (!isCurrent()) return;
         } catch (e) {
+            if (!isCurrent()) return;
             closeProjectModal();
             alert(e.message || tp('projects.projectNotFound'));
             window._projectModalEditId = null;
             return;
-        }
+        } finally { if (isCurrent()) setProjectModalBusy(false); }
     }
     const name = (p.name || '').slice(0, PROJECT_NAME_MAX_LENGTH);
     const description = clampProjectDescription(p.description || '');
     deferModalContent(() => {
+        if (!isCurrent()) return;
         if (nameEl) nameEl.value = name;
         if (descEl) descEl.value = description;
         window.TestingSpecifications?.fillEditor('project-modal-spec', p.testing_specification);
@@ -2010,123 +2047,131 @@ function showNewProjectModalFromChatSidebar() {
 
 async function saveProjectModal() {
     if (!requireProjectWrite()) return;
+    const editId = window._projectModalEditId;
+    const sequence = window._projectModalSequence;
+    const selection = projectSelectionSequence;
+    const writeKey = editId || '@new-project';
+    if (window._projectWrites?.has(writeKey)) return;
     const name = document.getElementById('project-modal-name').value.trim().slice(0, PROJECT_NAME_MAX_LENGTH);
     if (!name) return alert(tp('projects.enterProjectName'));
     let testingSpecification;
     try { testingSpecification = window.TestingSpecifications?.readEditor('project-modal-spec'); }
     catch (error) { alert(error.message); return; }
-    const body = {
-        name,
-        description: clampProjectDescription(document.getElementById('project-modal-description').value),
-        testing_specification: testingSpecification,
-    };
-    const editId = window._projectModalEditId;
-    const submitBtn = document.getElementById('project-modal-submit-btn');
-    if (submitBtn) submitBtn.disabled = true;
+    const body = {name, description: clampProjectDescription(document.getElementById('project-modal-description').value), testing_specification: testingSpecification};
+    const fromChat = !!window._projectModalFromChat;
+    const chatConversationId = window._projectModalChatContext?.conversationId ?? (window.currentConversationId || '');
+    const fromChatSidebar = !!window._projectModalFromChatSidebar;
+    const fromWebshellConnId = window._projectModalFromWebshellConnId || '';
+    const isCurrentModal = () => window._projectModalEditId === editId && window._projectModalSequence === sequence;
+    window._projectWrites ||= new Set(); window._projectWrites.add(writeKey);
+    let released = false;
+    setProjectModalBusy(true);
     try {
         const res = editId
-            ? await apiFetch(`/api/projects/${editId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-            : await apiFetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', '保存失败'))) return;
-        const fromChat = !!window._projectModalFromChat;
-        const fromChatSidebar = !!window._projectModalFromChatSidebar;
-        const fromWebshellConnId = window._projectModalFromWebshellConnId || '';
-        window._projectModalFromChat = false;
-        window._projectModalFromChatSidebar = false;
-        window._projectModalFromWebshellConnId = '';
-        closeProjectModal();
+            ? await apiFetch(`/api/projects/${encodeURIComponent(editId)}`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+            : await apiFetch('/api/projects', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', 'Save failed'))) return;
         const saved = await res.json();
-        await loadProjectsList();
-        if (saved.id) {
-            if (fromWebshellConnId && !editId) {
-                if (typeof applyWebshellAiProjectSelection === 'function') {
-                    await applyWebshellAiProjectSelection(saved.id);
-                }
-            } else if (fromChat && !editId) {
-                await applyChatProjectSelection(saved.id);
-            } else if (!fromChatSidebar) {
-                await selectProject(saved.id);
-            }
+        if (editId && currentProjectId === editId) {
+            window.ProjectSettingsUI?.mergeSavedProject({...body, ...saved});
+            renderProjectDetailTitle(saved.name || body.name);
+            renderProjectDetailDesc(saved.description ?? body.description);
+            currentProjectUpdatedAt = saved.updated_at; renderProjectDetailMeta(currentProjectUpdatedAt);
+            projectNameById[editId] = saved.name || body.name;
         }
+        if (isCurrentModal()) closeProjectModal();
+        window._projectWrites.delete(writeKey); released = true;
+        try { await loadProjectsList(); }
+        catch (error) { console.warn('Project saved; list refresh failed:', error); }
+        if (!saved.id || editId && currentProjectId === editId) return;
+        if (fromWebshellConnId && !editId) {
+            if (typeof applyWebshellAiProjectSelection === 'function') await applyWebshellAiProjectSelection(saved.id, fromWebshellConnId);
+        } else if (fromChat && !editId) await applyChatProjectSelection(saved.id, {conversationId: chatConversationId});
+        else if (!fromChatSidebar && selection === projectSelectionSequence) await selectProject(saved.id);
     } catch (error) {
-        if (typeof notifyApiError === 'function') {
-            notifyApiError(error?.message || tpFmt('projects.saveFailed', '保存失败'));
-        } else {
-            alert(error?.message || tpFmt('projects.saveFailed', '保存失败'));
-        }
+        if (typeof notifyApiError === 'function') notifyApiError(error?.message || tpFmt('projects.saveFailed','Save failed'));
+        else alert(error?.message || tpFmt('projects.saveFailed','Save failed'));
     } finally {
-        if (submitBtn) submitBtn.disabled = false;
+        if (!released) window._projectWrites.delete(writeKey);
+        if (isCurrentModal()) setProjectModalBusy(false);
     }
 }
 
 function closeProjectModal() {
+    window._projectModalSequence = (window._projectModalSequence || 0) + 1;
     window._projectModalFromChat = false;
     window._projectModalFromChatSidebar = false;
+    window._projectModalFromWebshellConnId = '';
+    window._projectModalChatContext = null;
     window._projectModalEditId = null;
     closeProjectsOverlay('project-modal');
 }
 
 function formatProjectScopeJson() {
     const el = document.getElementById('project-edit-scope');
-    if (!el) return;
+    if (!el || el.disabled) return;
     const raw = el.value.trim();
     if (!raw) return;
     try {
         el.value = JSON.stringify(JSON.parse(raw), null, 2);
+        window.ProjectSettingsUI?.refresh();
     } catch (e) {
-        alert(tp('projects.invalidJson') + ': ' + (e.message || String(e)));
+        if (window.ProjectSettingsUI) window.ProjectSettingsUI.error(tp('projects.invalidJson') + ': ' + e.message, 'project-edit-scope');
+        else alert(tp('projects.invalidJson') + ': ' + e.message);
     }
 }
 
 function insertProjectScopeExample() {
     const el = document.getElementById('project-edit-scope');
-    if (!el) return;
+    if (!el || el.disabled) return;
     const example = {
         targets: ['https://example.com'],
         exclude: ['*.cdn.example.com'],
         notes: tp('projects.scopeNoteAuthorizedWebOnly'),
     };
+    if (el.value.trim() && !window.confirm(tpFmt('projects.replaceScopeConfirm', '替换当前测试范围为示例？现有内容将被覆盖。'))) return;
     el.value = JSON.stringify(example, null, 2);
+    window.ProjectSettingsUI?.refresh();
     el.focus();
 }
 
 async function saveProjectSettings() {
     if (!currentProjectId || !requireProjectWrite()) return;
+    const ui = typeof window !== 'undefined' ? window.ProjectSettingsUI : null;
+    const fail = (message, field) => { if (ui) ui.error(message, field); else alert(message); };
     const name = document.getElementById('project-edit-name').value.trim();
-    if (!name) return alert(tp('projects.enterProjectName'));
+    if (!name) return fail(tp('projects.enterProjectName'), 'project-edit-name');
     const scopeRaw = document.getElementById('project-edit-scope').value.trim();
     if (scopeRaw) {
-        try {
-            JSON.parse(scopeRaw);
-        } catch (e) {
-            alert(tp('projects.invalidScopeJson') + ': ' + (e.message || String(e)));
-            return;
-        }
+        try { JSON.parse(scopeRaw); }
+        catch (error) { return fail(tp('projects.invalidScopeJson') + ': ' + error.message, 'project-edit-scope'); }
     }
     let testingSpecification;
     try { testingSpecification = window.TestingSpecifications?.readEditor('project-spec'); }
-    catch (error) { alert(error.message); return; }
-    const body = {
-        name,
-        description: clampProjectDescription(document.getElementById('project-edit-description').value),
-        testing_specification: testingSpecification,
-        scope_json: scopeRaw,
-        status: document.getElementById('project-edit-status')?.value || 'active',
-        pinned: !!document.getElementById('project-edit-pinned')?.checked,
-    };
-    const res = await apiFetch(`/api/projects/${currentProjectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    });
-    if (!(await notifyProjectApiFailure(res, 'projects.saveFailed', '保存失败'))) return;
-    await loadProjectsList();
-    await selectProject(currentProjectId);
-    if (typeof notifyApiError === 'function') {
-        notifyApiError(tp('projects.saved'), 'success');
-    } else {
-        alert(tp('projects.saved'));
-    }
+    catch (error) { return fail(error.message, 'project-spec-content'); }
+    const id = currentProjectId;
+    if (window._projectWrites?.has(id)) return;
+    window._projectWrites ||= new Set();
+    window._projectWrites.add(id);
+    const selection = typeof projectSelectionSequence === 'number' ? projectSelectionSequence : 0;
+    const isCurrent = () => currentProjectId === id && (typeof projectSelectionSequence !== 'number' || projectSelectionSequence === selection);
+    const snapshot = ui?.snapshot();
+    const body = {name, description: clampProjectDescription(document.getElementById('project-edit-description').value), testing_specification: testingSpecification, scope_json: scopeRaw, status: document.getElementById('project-edit-status')?.value || 'active', pinned: !!document.getElementById('project-edit-pinned')?.checked};
+    ui?.setSaving(true);
+    try {
+        const response = await apiFetch(`/api/projects/${encodeURIComponent(id)}`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        const saved = await response.json();
+        if (!response.ok) { if (isCurrent()) fail(saved.message || saved.error || tp('projects.saveFailed')); return; }
+        if (isCurrent()) {
+            // Saving metadata must never reload the independent network draft.
+            renderProjectDetailTitle(saved.name || body.name); updateProjectStatusPill(saved.status || body.status);
+            currentProjectUpdatedAt = saved.updated_at; renderProjectDetailMeta(currentProjectUpdatedAt); renderProjectDetailDesc(saved.description ?? body.description);
+            projectNameById[id] = saved.name || body.name; ui?.saved(snapshot);
+        }
+        try { await loadProjectsList(); }
+        catch (error) { console.warn('Project saved; list refresh failed:', error); }
+    } catch (error) { if (isCurrent()) fail(error.message || tp('projects.saveFailed')); }
+    finally { window._projectWrites.delete(id); if (isCurrent()) ui?.setSaving(false); }
 }
 
 function findProjectById(projectId) {
@@ -2253,26 +2298,38 @@ function initProjectListActionMenu() {
 }
 
 async function toggleProjectArchiveById(projectId) {
-    if (!requireProjectWrite()) return;
+    if (!requireProjectWrite() || window._projectWrites?.has(projectId)) return;
     const p = findProjectById(projectId);
     if (!p) return;
     const cur = p.status || 'active';
     const next = cur === 'archived' ? 'active' : 'archived';
     if (!confirm(next === 'archived' ? tp('projects.confirmArchiveProject') : tp('projects.confirmRestoreProjectActive'))) return;
-    const res = await apiFetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: next }),
-    });
-    if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
-    await loadProjectsList();
-    if (currentProjectId === projectId && projectsCache.some((item) => item.id === projectId)) {
-        await selectProject(projectId);
-    } else if (currentProjectId === projectId) {
-        currentProjectId = null;
-        updateProjectsDetailVisibility();
-        if (projectsCache.length) await selectProject(projectsCache[0].id);
-    }
+    const selection = projectSelectionSequence;
+    window._projectWrites ||= new Set();
+    window._projectWrites.add(projectId);
+    let released = false;
+    try {
+        const res = await apiFetch(`/api/projects/${projectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: next }),
+        });
+        if (!(await notifyProjectApiFailure(res, 'projects.operationFailed', '操作失败'))) return;
+        if (currentProjectId === projectId) {
+            window.ProjectSettingsUI?.syncStatus(next);
+            updateProjectStatusPill(next);
+        }
+        window._projectWrites.delete(projectId); released = true;
+        await loadProjectsList();
+        if (selection !== projectSelectionSequence || (currentProjectId === projectId && window.ProjectSettingsUI?.hasDraft())) return;
+        if (currentProjectId === projectId && projectsCache.some((item) => item.id === projectId)) {
+            await selectProject(projectId);
+        } else if (currentProjectId === projectId) {
+            currentProjectId = null;
+            updateProjectsDetailVisibility();
+            if (projectsCache.length) await selectProject(projectsCache[0].id);
+        }
+    } finally { if (!released) window._projectWrites.delete(projectId); }
 }
 
 async function deleteProjectById(projectId) {
@@ -3987,41 +4044,50 @@ async function selectChatProject(projectId) {
     await applyChatProjectSelection(projectId || '');
 }
 
-async function applyChatProjectSelection(projectId) {
-    const prev = getChatProjectSelection();
-    if (projectId === prev) {
-        updateChatProjectButtonLabel();
-        await refreshChatProjectFolders();
-        return;
-    }
-    if (window.currentConversationId) {
-        try {
-            const res = await apiFetch(`/api/conversations/${encodeURIComponent(window.currentConversationId)}/project`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId }),
+async function applyChatProjectSelection(projectId, options = {}) {
+    const conversationId = typeof options.conversationId === 'string' ? options.conversationId : window.currentConversationId || '';
+    const isCurrent = () => (window.currentConversationId || '') === conversationId;
+    const key = conversationId || '@new-conversation';
+    const operations = window._chatProjectBindingOperations ||= new Map();
+    const previous = operations.get(key);
+    let release;
+    const operation = new Promise(resolve => { release = resolve; });
+    operations.set(key, operation);
+    const isLatest = () => operations.get(key) === operation;
+    try {
+        // Serialize writes to one conversation so late requests cannot restore an older choice.
+        if (previous) await previous;
+        if (!conversationId && !isCurrent()) return false;
+        const unchanged = !previous && isCurrent() && projectId === getChatProjectSelection();
+        if (!unchanged && conversationId) {
+            const res = await apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/project`, {
+                method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({projectId}),
             });
             if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || res.statusText);
+                const error = await res.json().catch(() => ({}));
+                throw new Error(error.error || res.statusText);
             }
-            window._loadedConversationProjectId = projectId;
-            if (typeof showNotification === 'function') {
-                showNotification(projectId ? tp('projects.projectBound') : tp('projects.projectUnbound'), 'success');
+            if (isCurrent() && isLatest()) {
+                window._loadedConversationProjectId = projectId;
+                if (typeof showNotification === 'function') showNotification(projectId ? tp('projects.projectBound') : tp('projects.projectUnbound'), 'success');
             }
-        } catch (e) {
-            console.error(e);
-            alert(tp('projects.updateProjectBindingFailed') + ': ' + (e.message || e));
+        } else if (!unchanged && isCurrent() && isLatest()) setActiveProjectId(projectId);
+        if (!isCurrent() || !isLatest()) return true;
+        updateChatProjectButtonLabel();
+        try { await refreshChatProjectFolders(); }
+        catch (error) { console.warn('Conversation project saved; folders refresh failed:', error); }
+        if (!unchanged && isCurrent() && isLatest() && typeof window.onConversationProjectBindingChanged === 'function') await window.onConversationProjectBindingChanged(projectId);
+        return true;
+    } catch (error) {
+        console.error(error);
+        if (isCurrent() && isLatest()) {
+            alert(tp('projects.updateProjectBindingFailed') + ': ' + (error.message || error));
             updateChatProjectButtonLabel();
-            return;
         }
-    } else {
-        setActiveProjectId(projectId);
-    }
-    updateChatProjectButtonLabel();
-    await refreshChatProjectFolders();
-    if (typeof window.onConversationProjectBindingChanged === 'function') {
-        window.onConversationProjectBindingChanged(projectId);
+        return false;
+    } finally {
+        release();
+        if (isLatest()) operations.delete(key);
     }
 }
 

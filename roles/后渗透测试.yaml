@@ -16,6 +16,12 @@ user_prompt: "你是一名后渗透测试专家。用户已获得目标的初始
   \ update_vulnerability 补证。报告字段服从 pentest-output-standards，所有写入型动作维护恢复台账。\n"
 icon: 🕵
 tools:
+- network_status
+- network_diagnose
+- network_acquire
+- network_release
+- network_bind_asset
+- network_sync_source
 - exec
 - execute-python-script
 - install-python-package

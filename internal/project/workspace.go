@@ -48,6 +48,9 @@ func EnsureWorkspace(root string) (string, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return "", fmt.Errorf("workspace mkdir: %w", err)
 	}
+	if err := setWorkspaceOwner(abs); err != nil {
+		return "", err
+	}
 	return abs, nil
 }
 

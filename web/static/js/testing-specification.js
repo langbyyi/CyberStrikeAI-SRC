@@ -8,6 +8,7 @@
     let dialogSave = null;
     let openSequence = 0;
     let generation = 0;
+    const editorVersions = new Map();
     const el = id => document.getElementById(id);
     const tr = key => typeof window.t === 'function' ? window.t('testingSpec.' + key) : key;
     function node(tag, text, attrs = {}) {
@@ -30,6 +31,7 @@
         return validate({ name: file.name, content });
     }
     function fillEditor(prefix, spec) {
+        editorVersions.set(prefix, (editorVersions.get(prefix) || 0) + 1);
         if (el(prefix + '-name')) el(prefix + '-name').value = spec?.name || '';
         if (el(prefix + '-content')) el(prefix + '-content').value = spec?.content || '';
         const fileName = el(prefix + '-file-name');
@@ -57,7 +59,10 @@
             mode.addEventListener('change', () => syncEditor(prefix));
             wrap.append(mode);
         }
-        wrap.append(translated('label', 'name', { for: prefix + '-name' }), node('input', '', { id: prefix + '-name', class: 'form-input', maxlength: '200', autocomplete: 'off' }));
+        const nameInput = node('input', '', { id: prefix + '-name', class: 'form-input', maxlength: '200', autocomplete: 'off' });
+        const invalidateImport = () => editorVersions.set(prefix, (editorVersions.get(prefix) || 0) + 1);
+        nameInput.addEventListener('input', invalidateImport);
+        wrap.append(translated('label', 'name', { for: prefix + '-name' }), nameInput);
         wrap.append(translated('label', 'import', { for: prefix + '-file' }));
         const file = node('input', '', { id: prefix + '-file', type: 'file', accept: '.md,.markdown,.txt', hidden: '' });
         const upload = node('div', '', { class: 'testing-specification-upload' });
@@ -69,13 +74,17 @@
         upload.append(file, trigger, translated('span', 'noFile', { id: prefix + '-file-name', class: 'testing-specification-file-name', 'aria-live': 'polite' }));
         file.addEventListener('change', async () => {
             const currentGeneration = generation;
+            const editorVersion = (editorVersions.get(prefix) || 0) + 1;
+            editorVersions.set(prefix, editorVersion);
             const chosen = file.files?.[0];
             if (!chosen) return;
-            try { const spec = await parseFile(chosen); if (generation === currentGeneration) fillEditor(prefix, spec); }
-            catch (error) { window.alert(error.message); }
+            try { const spec = await parseFile(chosen); if (generation === currentGeneration && editorVersions.get(prefix) === editorVersion) { fillEditor(prefix, spec); if (prefix === 'project-spec' && document.dispatchEvent) document.dispatchEvent(new Event('projectsettingschange')); } }
+            catch (error) { if (generation === currentGeneration && editorVersions.get(prefix) === editorVersion) window.alert(error.message); }
             finally { file.value = ''; }
         });
-        wrap.append(upload, translated('label', 'content', { for: prefix + '-content' }), node('textarea', '', { id: prefix + '-content', rows: '9', class: 'form-input', spellcheck: 'false' }), translated('small', 'hint', { class: 'form-hint' }));
+        const contentInput = node('textarea', '', { id: prefix + '-content', rows: '9', class: 'form-input', spellcheck: 'false' });
+        contentInput.addEventListener('input', invalidateImport);
+        wrap.append(upload, translated('label', 'content', { for: prefix + '-content' }), contentInput, translated('small', 'hint', { class: 'form-hint' }));
         return wrap;
     }
     function mountEditor(prefix, anchor, withMode, targetID) {

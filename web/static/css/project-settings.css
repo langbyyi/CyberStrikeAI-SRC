@@ -1,0 +1,108 @@
+#project-panel-settings { --m-r-btn: 6px; --m-ctl-h: 34px; --m-ctl-fs: 13px; --m-ctl-pad-x: 12px; min-height: 0; padding: 0; font-family: 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif; }
+#project-panel-settings[hidden] { display: none !important; }
+#project-panel-settings .projects-settings-layout { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; background: var(--bg-primary); scroll-padding-top: var(--project-settings-nav-offset,100px); }
+#project-panel-settings .projects-settings-intro { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border-color); background: var(--bg-primary); }
+#project-panel-settings .projects-settings-intro-title { color: var(--text-primary); font-size: 16px; font-weight: 650; }
+#project-panel-settings .projects-settings-intro-hint { max-width: 46ch; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.project-settings-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+.project-settings-nav button { padding: 7px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap; cursor: pointer; }
+.project-settings-nav button:hover, .project-settings-nav button.is-active { background: color-mix(in srgb,var(--accent-color) 8%,var(--bg-primary)); color: var(--accent-color); }
+#project-panel-settings .projects-settings-grid { display: flex; flex-direction: column; flex: 0 0 auto; gap: 0; padding: 0 24px; min-height: 0; }
+#project-panel-settings .projects-settings-primary { display: contents; }
+#project-panel-settings .projects-settings-card, #project-panel-settings #project-network-card { flex: 0 0 auto; width: 100%; height: auto; min-height: 0; margin: 0; padding: 24px 0; border: 0; border-bottom: 1px solid var(--border-color); border-radius: 0; background: transparent; box-shadow: none; scroll-margin-top: 0; }
+#project-settings-basic { order: 1; } #project-settings-scope { order: 2; } #project-settings-rules { order: 3; } #project-panel-settings #project-network-card { order: 4; }
+#project-panel-settings .projects-settings-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 0 0 16px; border: 0; background: transparent; }
+#project-panel-settings .projects-settings-card-head-left { align-items: center; }
+#project-panel-settings .projects-settings-icon { display: none; }
+#project-panel-settings .projects-settings-card-title, #project-network-card h3 { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 650; letter-spacing: 0; }
+#project-panel-settings .projects-settings-card-hint { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; max-width: 78ch; }
+#project-panel-settings .projects-settings-card-body { padding: 0; }
+#project-panel-settings .projects-form-row--2 { display: grid; grid-template-columns: minmax(0,1fr) 180px; gap: 18px; }
+#project-panel-settings .projects-form-field { min-width: 0; margin-bottom: 18px; }
+#project-panel-settings .projects-form-field:last-child { margin-bottom: 0; }
+#project-panel-settings label, #project-panel-settings .network-field > span { color: var(--text-primary); font-size: 13px; font-weight: 500; }
+#project-panel-settings .form-input { width: 100%; min-width: 0; height: 38px; padding: 8px 11px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--input-bg); color: var(--text-primary); box-shadow: none; font: 13px/1.6 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif; }
+#project-panel-settings textarea.form-input { height: auto; min-height: 88px; resize: vertical; }
+/* Native file buttons need their own content height inside the bordered control. */
+#project-panel-settings input[type="file"].form-input { height: auto; min-height: 44px; padding: 5px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 30px; }
+#project-panel-settings input[type="file"].form-input::file-selector-button { box-sizing: border-box; height: 32px; margin: 0 10px 0 0; padding: 0 12px; line-height: 30px; vertical-align: middle; }
+#project-panel-settings .form-input:disabled { background: var(--bg-secondary); color: var(--text-secondary); opacity: .8; }
+#project-panel-settings .form-input[aria-invalid="true"] { border-color: var(--error-color); outline-color: var(--error-color); }
+#project-panel-settings .form-hint, #project-panel-settings .projects-scope-footnote { display: block; margin: 7px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
+#project-panel-settings .projects-pin-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; margin: 0; color: var(--text-secondary); }
+#project-panel-settings input[type="checkbox"] { width: 16px !important; height: 16px !important; min-width: 16px !important; min-height: 16px !important; margin: 0; accent-color: var(--accent-color); }
+#project-panel-settings .projects-scope-editor { display: block; padding: 0; border: 0; border-radius: 0; background: transparent; }
+#project-panel-settings #project-edit-scope { min-height: 150px; height: 150px; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--input-bg); color: var(--text-primary); font: 12px/1.75 Consolas,ui-monospace,monospace; }
+#project-panel-settings .projects-scope-toolbar { margin: 0; gap: 6px; }
+#project-settings-rules .testing-specification-editor { margin: 0; padding: 0; border: 0; }
+#project-settings-rules .testing-specification-editor > summary { display: none; }
+#project-panel-settings .testing-specification-fields { gap: 9px; }
+#project-panel-settings .testing-specification-upload { padding: 12px; border-radius: 6px; box-shadow: none; }
+#project-panel-settings .testing-specification-upload-trigger { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 6px; }
+#project-panel-settings .testing-specification-file-name { font-size: 12px; }
+#project-panel-settings #project-spec-content { min-height: 210px; font-family: Consolas,ui-monospace,monospace; font-size: 12px; }
+#project-panel-settings #project-network-card { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px 18px; }
+#project-network-card > .projects-settings-card-head, #project-network-card > .network-mode-field, #project-network-card > .project-network-draft, #project-network-card > details, #project-network-card > .network-message, #project-network-card > .network-actions, #project-network-card > p, #project-network-card > label:has(#project-network-targets), #project-network-card > label:has(#project-network-proxy) { grid-column: 1 / -1; }
+#project-network-card .network-field { margin: 0; }
+#project-network-card #project-network-targets { min-height: 90px; }
+#project-network-card > details { padding: 14px; border: 1px solid var(--border-color); border-radius: 6px; }
+#project-network-card > details > summary { color: var(--text-secondary); font-size: 13px; cursor: pointer; }
+#project-network-card > details .network-field { margin: 12px 0; }
+#project-network-card .network-source { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 12px; }
+#project-network-card .network-source span { min-width: 0; overflow-wrap: anywhere; }
+#project-network-card .network-message { margin: 0; padding: 10px 12px; font-size: 12px; }
+#project-network-card .project-network-draft { margin: 0; color: var(--accent-color); font-size: 12px; }
+#project-network-card #project-network-profile-hint, #project-network-card #project-network-auth-hint { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+#project-panel-settings .btn-secondary, #project-panel-settings .btn-primary, #project-panel-settings .btn-ghost { min-height: 34px; padding: 7px 12px; border-radius: 6px; box-shadow: none; font-size: 13px; font-weight: 500; }
+#project-panel-settings .btn-secondary { background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); }
+#project-panel-settings .project-network-actions > :first-child { background: var(--accent-color); border-color: var(--accent-color); color: #fff; }
+#project-panel-settings .projects-settings-card--danger { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; width: auto; margin: 0 24px; padding: 24px 0; border-bottom: 0; }
+#project-panel-settings .projects-settings-card--danger .projects-settings-card-title { color: var(--error-color); }
+#project-panel-settings .projects-settings-danger-main { gap: 0; }
+#project-panel-settings .projects-settings-card--danger .projects-settings-card-hint { max-width: 65ch; }
+#project-panel-settings .projects-settings-footer { position: relative; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 62px; padding: 12px 24px; border-top: 1px solid var(--border-color); border-radius: 0; background: var(--bg-primary); box-shadow: none; }
+#project-settings-feedback { flex: 1 1 180px; min-width: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+#project-settings-feedback[data-state="error"] { color: var(--error-color); }
+#project-settings-feedback[data-state="dirty"], #project-settings-feedback[data-state="success"] { color: var(--accent-color); }
+.project-settings-save-actions { display: flex; gap: 8px; margin-left: auto; }
+#project-panel-settings button:disabled { cursor: not-allowed; opacity: .55; }
+#project-panel-settings button:focus-visible, #project-panel-settings input:focus-visible, #project-panel-settings textarea:focus-visible, #project-panel-settings select:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+html[data-theme="dark"] #project-panel-settings .projects-settings-intro, html[data-theme="dark"] #project-panel-settings .projects-settings-footer { background: var(--bg-primary); }
+html[data-theme="dark"] #project-panel-settings .project-network-actions > :first-child { background: #2563eb; border-color: #3b82f6; color: #fff !important; }
+@media(max-width:1100px) { #project-panel-settings .projects-settings-intro { gap: 10px; } .project-settings-nav { width: 100%; } }
+@media(max-width:767.98px) {
+ #page-projects .projects-page-layout:has(#project-panel-settings:not([hidden])) { scroll-padding-top: var(--project-settings-nav-offset,160px); scroll-padding-bottom: 120px; }
+ #project-panel-settings { display: flex; flex-direction: column; flex: 0 0 auto; overflow: visible; padding-bottom: calc(240px + env(safe-area-inset-bottom,0px)); }
+ #page-projects .projects-detail-inner:has(#project-panel-settings:not([hidden])) { flex: 0 0 auto; min-height: 0; overflow: visible; }
+ #project-panel-settings .projects-settings-layout { flex: 0 0 auto; min-height: 0; overflow: visible; }
+ #project-panel-settings .projects-settings-intro { padding: 14px 16px; z-index: 5; }
+ #project-panel-settings .projects-settings-grid { padding: 0 16px; }
+ #project-panel-settings .projects-settings-card--danger { margin: 0 16px; }
+ #project-panel-settings .projects-form-row--2 { grid-template-columns: minmax(0,1fr) 120px; gap: 12px; }
+ #project-panel-settings #project-network-card { grid-template-columns: minmax(0,1fr); }
+ #project-panel-settings #project-network-card > * { grid-column: 1; }
+ #project-panel-settings .projects-settings-footer { position: fixed; left: 12px; right: 12px; bottom: calc(68px + env(safe-area-inset-bottom,0px)); width: auto; flex-direction: row; padding: 10px 16px; border: 1px solid var(--border-color); z-index: 20; }
+ #project-settings-feedback { flex-basis: 100%; }
+ #project-panel-settings .project-settings-save-actions { width: 100%; justify-content: flex-end; }
+ #project-panel-settings .projects-settings-danger-actions { justify-content: flex-start; }
+ #project-panel-settings .project-settings-save-actions > .btn-secondary { flex: 0 0 auto; white-space: nowrap; }
+ #project-panel-settings .project-settings-save-actions > .btn-primary { width: auto; min-width: 0; flex: 1 1 auto; white-space: nowrap; }
+ .project-settings-nav { gap: 2px; } .project-settings-nav button { padding: 6px 7px; }
+}
+@media(prefers-reduced-motion:reduce) { #project-panel-settings * { scroll-behavior: auto !important; transition: none !important; } }
+
+/* The legacy scope editor hard-codes a dark surface with important rules. */
+#project-panel-settings #project-edit-scope { border: 1px solid var(--border-color) !important; border-radius: 6px !important; background: var(--input-bg) !important; color: var(--text-primary) !important; }
+
+@media(min-width:768px) and (max-height:700px) {
+ #project-panel-settings .projects-settings-intro { position: static; }
+ #project-panel-settings .projects-settings-layout { scroll-padding-top: 16px; }
+}
+
+/* On short phones, a fixed save bar covers the section navigation and fields. */
+@media(max-width:767.98px) and (max-height:640px) {
+ #project-panel-settings .projects-settings-intro { position: static; }
+ #page-projects .projects-page-layout:has(#project-panel-settings:not([hidden])) { scroll-padding-top: 16px; }
+ #project-panel-settings .projects-settings-footer { position: static; inset: auto; width: auto; margin: 0 12px; }
+ #project-panel-settings { padding-bottom: calc(96px + env(safe-area-inset-bottom,0px)); }
+}

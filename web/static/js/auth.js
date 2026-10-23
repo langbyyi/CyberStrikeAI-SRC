@@ -421,6 +421,7 @@ const PAGE_PERMISSION_MAP = {
     tasks: 'tasks:read',
     workflows: 'workflow:read',
     projects: 'project:read',
+	 network: 'auth:self',
     vulnerabilities: 'vulnerability:read',
     'chat-files': 'files:read',
     webshell: 'webshell:read',

@@ -27,8 +27,13 @@ func clampProjectDescription(s string) string {
 
 // ProjectHandler 项目管理处理器。
 type ProjectHandler struct {
-	db     *database.DB
-	logger *zap.Logger
+	db                 *database.DB
+	logger             *zap.Logger
+	networkInvalidator func(string)
+}
+
+func (h *ProjectHandler) SetNetworkInvalidator(invalidate func(string)) {
+	h.networkInvalidator = invalidate
 }
 
 // NewProjectHandler 创建项目管理处理器。
@@ -238,6 +243,9 @@ func (h *ProjectHandler) UpdateProject(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if (req.ScopeJSON != nil || req.Description != nil || req.TestingSpecification != nil) && h.networkInvalidator != nil {
+		h.networkInvalidator(p.ID)
+	}
 	c.JSON(http.StatusOK, p)
 }
 
@@ -246,6 +254,9 @@ func (h *ProjectHandler) DeleteProject(c *gin.Context) {
 	if err := h.db.DeleteProject(c.Param("id")); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if h.networkInvalidator != nil {
+		h.networkInvalidator(c.Param("id"))
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
