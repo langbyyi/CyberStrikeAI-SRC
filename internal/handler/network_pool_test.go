@@ -267,6 +267,19 @@ func TestNetworkPoolValidateAllCoversMultipleBatches(t *testing.T) {
 	if job["state"] != "completed" || result["checked"] != float64(1001) || result["passed"] != float64(1001) || hits.Load() != 1001 {
 		t.Fatalf("all-validation did not cover second batch: state=%v checked=%v passed=%v hits=%d", job["state"], result["checked"], result["passed"], hits.Load())
 	}
+	progress := job["progress"].(map[string]interface{})
+	if progress["total"] != float64(1001) || progress["completed"] != float64(1001) || progress["passed"] != float64(1001) {
+		t.Fatalf("validation progress lost committed batches: %+v", progress)
+	}
+	observations := h.Service.PoolObservations()
+	if len(observations) != 1001 {
+		t.Fatalf("validation did not retain every committed result: %d", len(observations))
+	}
+	for id, observation := range observations {
+		if observation.NodeID != id || !observation.Reachable || observation.HTTPStatus != http.StatusNoContent {
+			t.Fatalf("invalid committed validation result: %+v", observation)
+		}
+	}
 	if w := poolRequest(r, "POST", "/api/network/validate", map[string]interface{}{"node_ids": make([]string, 10001)}); w.Code != 400 {
 		t.Fatal("unbounded validation accepted")
 	}

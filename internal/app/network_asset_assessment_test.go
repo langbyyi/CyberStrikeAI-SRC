@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -98,12 +99,20 @@ func TestAgentAssessedNetworkAssetsFollowProjectScopeAndExecution(t *testing.T) 
 		}
 	}
 	status, _, err := server.CallTool(ctx, "network_status", map[string]interface{}{"target": "http://api.backend.test"})
-	if err != nil || status == nil || status.IsError || !strings.Contains(status.Content[0].Text, "execute_with_project_policy") {
+	if err != nil || status == nil || status.IsError {
 		t.Fatalf("status disagrees with execution: %+v %v", status, err)
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(status.Content[0].Text), &payload); err != nil {
 		t.Fatal(err)
+	}
+	wantAction := "execute_with_project_policy"
+	if runtime.GOOS != "linux" {
+		wantAction = "use_linux_runner"
+	}
+	execution, ok := payload["execution"].(map[string]interface{})
+	if payload["next_action"] != wantAction || !ok || execution["effective_target_mode"] != "fixed_proxy" || execution["automatic_project_network"] != true || execution["needs_acquire_for_exec_target"] != false || payload["next_call"] != nil {
+		t.Fatalf("status disagrees with platform or assigned project routing: %+v", payload)
 	}
 	if payload["project_context"] == nil {
 		t.Fatal("Agent cannot read project natural-language scope")

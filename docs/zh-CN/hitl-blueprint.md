@@ -1,6 +1,6 @@
 # 统一审批架构
 
-> 本文档描述当前实现。详细决策记录见 `docs/superpowers/specs/2026-08-30-unified-approval-design.md`。
+> 本文档描述当前实现。
 
 ## 目标
 

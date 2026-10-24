@@ -241,11 +241,7 @@ func (s *Service) mutate(fn func() error) error {
 	if s.closed {
 		return fmt.Errorf("network service is closed")
 	}
-	before, _ := json.Marshal(s.state)
-	var previous diskState
-	if err := json.Unmarshal(before, &previous); err != nil {
-		return fmt.Errorf("snapshot network state: %w", err)
-	}
+	previous := s.state.clone()
 	if err := fn(); err != nil {
 		s.state = previous
 		return err
